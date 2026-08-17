@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui";
-import { HealthBar, Metric, PageHeader, StatusBadge, formatHours } from "@/components/product";
+import { EmptyState, HealthBar, Metric, PageHeader, StatusBadge, formatHours } from "@/components/product";
 import { requireClient } from "@/lib/auth";
 import { activeWorkStatuses, deliveredStatuses } from "@/lib/domain";
 import { getStore } from "@/lib/store";
@@ -78,7 +78,7 @@ export default async function DashboardPage() {
             <h2 className="mb-3 text-sm font-semibold">Approval requests</h2>
             <div className="space-y-2">
               {approvals.length === 0 ? (
-                <p className="text-sm text-muted">Nothing waiting on you.</p>
+                <p className="text-sm text-muted">No approvals waiting. External and sensitive work will pause here.</p>
               ) : (
                 approvals.map((a) => (
                   <Link key={a.id} href="/app/approvals" className="block rounded-lg border border-line bg-surface px-4 py-3 text-sm hover:bg-bg-elevated">
@@ -92,12 +92,16 @@ export default async function DashboardPage() {
           <div>
             <h2 className="mb-3 text-sm font-semibold">Recent deliveries</h2>
             <div className="space-y-2">
-              {recent.map((r) => (
-                <Link key={r.id} href={`/app/requests/${r.id}`} className="flex items-center justify-between rounded-lg border border-line bg-surface px-4 py-3 text-sm hover:bg-bg-elevated">
-                  <span>{r.title}</span>
-                  <StatusBadge status={r.status} />
-                </Link>
-              ))}
+              {recent.length === 0 ? (
+                <p className="text-sm text-muted">No deliveries yet. Accepted outcomes will land here with their status.</p>
+              ) : (
+                recent.map((r) => (
+                  <Link key={r.id} href={`/app/requests/${r.id}`} className="flex items-center justify-between rounded-lg border border-line bg-surface px-4 py-3 text-sm hover:bg-bg-elevated">
+                    <span>{r.title}</span>
+                    <StatusBadge status={r.status} />
+                  </Link>
+                ))
+              )}
             </div>
           </div>
         </section>
@@ -105,6 +109,12 @@ export default async function DashboardPage() {
 
       <section>
         <h2 className="mb-3 text-sm font-semibold">Activity</h2>
+        {feed.length === 0 ? (
+          <EmptyState
+            title="No activity recorded"
+            body="Logins, request changes, approvals, assignments, and AI actions write to this feed for this organization only."
+          />
+        ) : (
         <ul className="space-y-2">
           {feed.map((e) => (
             <li key={e.id} className="flex justify-between gap-4 rounded-lg border border-line bg-surface px-4 py-2 text-sm">
@@ -113,6 +123,7 @@ export default async function DashboardPage() {
             </li>
           ))}
         </ul>
+        )}
       </section>
     </div>
   );

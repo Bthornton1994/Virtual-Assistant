@@ -1,5 +1,5 @@
 import { decideApprovalAction } from "@/app/actions/requests";
-import { ActionClassBadge, PageHeader } from "@/components/product";
+import { ActionClassBadge, EmptyState, PageHeader } from "@/components/product";
 import { Button, Input } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { getStore } from "@/lib/store";
@@ -15,6 +15,12 @@ export default async function ApprovalsPage() {
         title="Approvals"
         description="Sensitive execution never proceeds without an explicit decision here."
       />
+      {approvals.length === 0 ? (
+        <EmptyState
+          title="Nothing needs your signature"
+          body="External and sensitive work pauses here. When operations needs authority, the request and the action class will appear on this list."
+        />
+      ) : (
       <div className="space-y-4">
         {approvals.map((a) => (
           <article key={a.id} className="rounded-xl border border-line bg-surface p-5">
@@ -41,6 +47,7 @@ export default async function ApprovalsPage() {
           </article>
         ))}
       </div>
+      )}
     </div>
   );
 }

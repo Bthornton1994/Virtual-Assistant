@@ -677,6 +677,18 @@ export class MemoryStore {
     return org;
   }
 
+  updateOrganization(
+    actor: Actor,
+    id: string,
+    patch: Partial<Pick<Organization, "name" | "industry" | "companySize" | "timezone">>,
+  ) {
+    if (!canManageTeam(actor)) throw new AuthzError("Only a client admin can change organization settings");
+    const org = this.getOrganization(actor, id);
+    Object.assign(org, patch);
+    this.audit(actor, "permission.changed", "organization", id, id, { patch });
+    return org;
+  }
+
   listMembers(actor: Actor, organizationId: string) {
     assertOrgAccess(actor, organizationId);
     return this.data.members

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { opsQaAction } from "@/app/actions/requests";
-import { PageHeader, StatusBadge } from "@/components/product";
+import { EmptyState, PageHeader, StatusBadge } from "@/components/product";
 import { Button, Textarea, Input } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
 import { getStore } from "@/lib/store";
@@ -39,7 +39,12 @@ export default async function QaPage() {
             </form>
           </article>
         ))}
-        {inQa.length === 0 ? <p className="text-sm text-muted">Nothing in QA.</p> : null}
+        {inQa.length === 0 ? (
+          <EmptyState
+            title="Nothing waiting on quality review"
+            body="Move a request to QA from the request console after the operator finishes. A completed task is not a completed outcome until this step passes."
+          />
+        ) : null}
       </div>
       <section>
         <h2 className="mb-3 text-sm font-semibold">Recent reviews</h2>

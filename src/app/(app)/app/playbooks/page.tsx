@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createPlaybookAction } from "@/app/actions/requests";
-import { PageHeader } from "@/components/product";
+import { EmptyState, PageHeader } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { getStore } from "@/lib/store";
@@ -15,6 +15,12 @@ export default async function PlaybooksPage() {
   return (
     <div className="space-y-8">
       <PageHeader title="Playbooks" description="Reusable SOPs for this organization. Inspectable and versioned." />
+      {playbooks.length === 0 ? (
+        <EmptyState
+          title="No playbooks captured yet"
+          body="After a path is delivered and checked, write it down here. Playbooks stay inside this organization and are never reused as another tenant’s SOP."
+        />
+      ) : (
       <div className="grid gap-3">
         {playbooks.map((p) => (
           <Link key={p.id} href={`/app/playbooks/${p.id}`} className="rounded-xl border border-line bg-surface px-5 py-4 hover:bg-bg-elevated">
@@ -24,6 +30,7 @@ export default async function PlaybooksPage() {
           </Link>
         ))}
       </div>
+      )}
       {actor.role === "client_admin" ? (
         <form action={createPlaybookAction} className="space-y-4 rounded-xl border border-line bg-surface p-5">
           <h2 className="text-sm font-semibold">New playbook</h2>

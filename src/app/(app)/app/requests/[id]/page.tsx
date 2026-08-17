@@ -115,6 +115,11 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
 
       <section>
         <h2 className="mb-3 text-sm font-semibold">Discussion</h2>
+        {comments.length === 0 ? (
+          <p className="mb-3 text-sm text-muted">
+            No discussion yet. Add source context, authority limits, or a correction. Do not paste another organization’s material.
+          </p>
+        ) : null}
         <ul className="space-y-2">
           {comments.map((c) => (
             <li key={c.id} className="rounded-lg border border-line bg-surface px-4 py-3 text-sm">

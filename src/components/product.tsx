@@ -99,11 +99,20 @@ export function HealthBar({ score }: { score: number }) {
   );
 }
 
-export function EmptyState({ title, body }: { title: string; body: string }) {
+export function EmptyState({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body: string;
+  action?: ReactNode;
+}) {
   return (
     <div className="rounded-xl border border-dashed border-line-strong bg-bg-elevated px-6 py-12 text-center">
       <p className="font-medium text-ink">{title}</p>
-      <p className="mt-1 text-sm text-muted">{body}</p>
+      <p className="mx-auto mt-1 max-w-md text-sm text-muted">{body}</p>
+      {action ? <div className="mt-4 flex justify-center">{action}</div> : null}
     </div>
   );
 }

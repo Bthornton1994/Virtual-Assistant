@@ -169,3 +169,88 @@ describe("demo authentication", () => {
     expect(store.data.audits[0]?.action).toBe("auth.failed_login");
   });
 });
+
+describe("signup tenant isolation", () => {
+  it("creates a new org that cannot read Northline requests or playbooks", () => {
+    const store = new MemoryStore(seedData());
+    const newbie = store.signup({
+      name: "Ada",
+      email: "ada@newco.example",
+      password: "demo",
+      organization: "Newco Studio",
+      industry: "Design",
+    });
+    expect(newbie.role).toBe("client_admin");
+    expect(newbie.organizationId).not.toBe("org_northline");
+    expect(store.listRequests(newbie).every((r) => r.organizationId === newbie.organizationId)).toBe(true);
+    expect(store.listPlaybooks(newbie).every((p) => p.organizationId === newbie.organizationId)).toBe(true);
+    expect(() => store.getRequest(newbie, "req_brief")).toThrow(AuthzError);
+    expect(() => store.getPlaybook(newbie, "pb_inbox")).toThrow(AuthzError);
+  });
+});
+
+describe("operator visibility", () => {
+  it("hides another operator's assigned foreign-tenant request", () => {
+    const store = new MemoryStore(seedData());
+    const { operator } = actors(store);
+    expect(() => store.getRequest(operator, "req_harbor")).toThrow(AuthzError);
+  });
+});
+
+describe("end-to-end request flow", () => {
+  it("intakes, gates sensitive work, assigns, QAs, delivers, and accepts", async () => {
+    const store = new MemoryStore(seedData());
+    const { founder, manager } = actors(store);
+    const bundle = await store.createRequest(founder, {
+      title: "Prepare vendor retainer payment pack and transfer funds",
+      objective: "Finance-ready pack. Do not pay until approved.",
+      description: "Compile invoice and SOW. Transfer funds is mentioned so the action class must be sensitive.",
+      deliverable: "Payment pack",
+      dueAt: null,
+      workstreamId: "ws_back",
+      recurring: false,
+      externalCommunication: false,
+    });
+    expect(bundle.request.approvalLevel).toBe("sensitive_execution");
+    expect(bundle.request.status).toBe("awaiting_approval");
+    expect(bundle.plan?.approvalsRequired).toBe(true);
+
+    const approval = store.listApprovals(founder).find((a) => a.requestId === bundle.request.id);
+    expect(approval?.status).toBe("pending");
+    store.transitionRequest(manager, bundle.request.id, "queued");
+    expect(() => store.transitionRequest(manager, bundle.request.id, "in_progress")).toThrow(/explicit approval/i);
+
+    store.decideApproval(founder, approval!.id, "approved", "Pack only. Still do not pay.");
+    store.assignOperator(manager, bundle.request.id, "op_priya");
+    store.transitionRequest(manager, bundle.request.id, "in_progress");
+    store.transitionRequest(manager, bundle.request.id, "qa");
+    store.createQaReview(manager, bundle.request.id, { passed: true, score: 92, notes: "Sources attached. Approval on file." });
+    store.transitionRequest(manager, bundle.request.id, "delivered");
+    store.transitionRequest(founder, bundle.request.id, "accepted");
+    expect(store.getRequest(founder, bundle.request.id).status).toBe("accepted");
+    expect(store.data.audits.some((a) => a.action === "request.created" && a.entityId === bundle.request.id)).toBe(true);
+    expect(store.data.audits.some((a) => a.action === "approval.decided")).toBe(true);
+    expect(store.data.audits.some((a) => a.action === "ai.action")).toBe(true);
+  });
+});
+
+describe("audit export", () => {
+  it("lets client_admin export and blocks client_member", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate } = actors(store);
+    const rows = store.exportAudit(founder, "org_northline");
+    expect(rows.every((r) => r.organizationId === "org_northline")).toBe(true);
+    expect(store.data.audits.some((a) => a.action === "data.exported")).toBe(true);
+    expect(() => store.exportAudit(teammate, "org_northline")).toThrow(AuthzError);
+  });
+});
+
+describe("organization settings", () => {
+  it("lets client_admin rename the org and blocks members", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate } = actors(store);
+    store.updateOrganization(founder, "org_northline", { name: "Northline Advisory LLP" });
+    expect(store.getOrganization(founder, "org_northline").name).toBe("Northline Advisory LLP");
+    expect(() => store.updateOrganization(teammate, "org_northline", { name: "Hijack" })).toThrow(AuthzError);
+  });
+});

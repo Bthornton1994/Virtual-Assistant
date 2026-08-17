@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { Button } from "@/components/ui";
+import { ACTION_CLASS_COPY, WORKSTREAM_TEMPLATES } from "@/lib/domain";
 
 export const metadata = { title: "Stop managing tasks. Start delegating outcomes." };
 
 const stages = [
   { label: "You", detail: "State the outcome, deadline, and authority." },
   { label: "Delegation Cloud", detail: "Triage, route, and hold the operating system." },
-  { label: "AI · Automation · Operator · Specialist", detail: "The right executor for each step — never all of them by default." },
+  { label: "AI | Automation | Operator | Specialist", detail: "The right executor for each step — never all of them by default." },
   { label: "Completed outcome", detail: "Checked against the request, then delivered." },
 ];
 
@@ -39,21 +40,24 @@ export default function HomePage() {
       <section className="border-y border-line bg-bg-elevated">
         <div className="mx-auto max-w-6xl px-5 py-16">
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted">The path</p>
+          <div className="mt-6 hidden items-center justify-between gap-3 font-mono text-[11px] uppercase tracking-[0.16em] text-muted md:flex">
+            <span>You</span>
+            <span>↓</span>
+            <span>Delegation Cloud</span>
+            <span>↓</span>
+            <span>AI | Automation | Operator | Specialist</span>
+            <span>↓</span>
+            <span>Completed outcome</span>
+          </div>
           <div className="mt-8 grid gap-4 md:grid-cols-4">
             {stages.map((stage, i) => (
               <div key={stage.label} className="relative rounded-xl border border-line bg-surface p-5">
                 <p className="font-mono text-[11px] text-muted">{String(i + 1).padStart(2, "0")}</p>
                 <h2 className="mt-3 text-sm font-semibold uppercase tracking-[0.08em]">{stage.label}</h2>
                 <p className="mt-2 text-sm leading-relaxed text-muted">{stage.detail}</p>
-                {i < stages.length - 1 ? (
-                  <p className="mt-4 hidden text-xs uppercase tracking-[0.16em] text-gold md:block">↓</p>
-                ) : null}
               </div>
             ))}
           </div>
-          <p className="mt-6 text-center font-mono text-xs uppercase tracking-[0.22em] text-muted md:hidden">
-            You → Delegation Cloud → AI | Automation | Operator | Specialist → Completed outcome
-          </p>
         </div>
       </section>
 
@@ -77,6 +81,51 @@ export default function HomePage() {
             <p className="mt-2 text-sm leading-relaxed text-muted">{card.body}</p>
           </div>
         ))}
+      </section>
+
+      <section className="border-t border-line bg-bg-elevated">
+        <div className="mx-auto max-w-6xl px-5 py-16">
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted">Workstreams</p>
+          <h2 className="mt-3 max-w-2xl text-3xl font-semibold tracking-tight">Capacity organized around results</h2>
+          <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {WORKSTREAM_TEMPLATES.map((tpl) => (
+              <article key={tpl.id} className="rounded-xl border border-line bg-surface p-4">
+                <h3 className="font-medium">{tpl.name}</h3>
+                <p className="mt-2 text-sm text-muted">{tpl.objective}</p>
+              </article>
+            ))}
+          </div>
+          <p className="mt-6">
+            <Link href="/solutions" className="text-sm font-medium underline">
+              See SLA and recurring work for each workstream
+            </Link>
+          </p>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-6xl px-5 py-16">
+        <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted">Action classes</p>
+        <h2 className="mt-3 text-3xl font-semibold tracking-tight">What we are allowed to do is written down</h2>
+        <div className="mt-8 grid gap-4 md:grid-cols-2">
+          {Object.values(ACTION_CLASS_COPY).map((copy) => (
+            <article key={copy.label} className="rounded-xl border border-line bg-surface p-5">
+              <h3 className="font-medium">{copy.label}</h3>
+              <p className="mt-2 text-sm text-muted">{copy.description}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="border-t border-line">
+        <div className="mx-auto max-w-6xl px-5 py-16">
+          <h2 className="text-3xl font-semibold tracking-tight">What this is not</h2>
+          <ul className="mt-6 max-w-2xl space-y-2 text-sm leading-relaxed text-ink-soft">
+            <li>Not a freelancer marketplace or hourly assistant directory.</li>
+            <li>Not a chatbot that sends mail, pays vendors, or publishes on its own.</li>
+            <li>Not healthcare, legal practice, or custody of customer funds.</li>
+            <li>Not a claim about hours you will save. Run the audit for an estimate labeled as an estimate.</li>
+          </ul>
+        </div>
       </section>
     </>
   );

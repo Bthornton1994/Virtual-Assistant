@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { opsAssignAction } from "@/app/actions/requests";
-import { PageHeader, PriorityBadge, RiskBadge, StatusBadge, formatDate } from "@/components/product";
+import { EmptyState, PageHeader, PriorityBadge, RiskBadge, StatusBadge, formatDate } from "@/components/product";
 import { Button } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
 import { getStore } from "@/lib/store";
@@ -20,6 +20,12 @@ export default async function QueuePage() {
         title="Queue"
         description="Request, client, priority, deadline, status, risk, operator, workstream."
       />
+      {requests.length === 0 ? (
+        <EmptyState
+          title="The queue is empty"
+          body="When a customer submits an outcome it lands here for triage, assignment, and QA. This list is work to deliver, not a staffing board."
+        />
+      ) : (
       <div className="overflow-x-auto rounded-xl border border-line bg-surface">
         <table className="w-full min-w-[960px] text-left text-sm">
           <thead className="border-b border-line text-xs uppercase tracking-wide text-muted">
@@ -77,6 +83,7 @@ export default async function QueuePage() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }

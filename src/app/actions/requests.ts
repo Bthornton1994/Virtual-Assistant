@@ -3,8 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getSession, requireClient, requireOps, requireSession } from "@/lib/auth";
-import type { RequestStatus } from "@/lib/domain";
+import { AuthzError, DomainError, type RequestStatus } from "@/lib/domain";
 import { getStore } from "@/lib/store";
+
+function rethrowAction(error: unknown): never {
+  if (error instanceof DomainError || error instanceof AuthzError) {
+    throw new Error(error.message);
+  }
+  throw error;
+}
 
 export async function createRequestAction(formData: FormData) {
   const actor = await requireClient();
@@ -56,7 +63,11 @@ export async function decideApprovalAction(formData: FormData) {
   const actor = await requireClient();
   const id = String(formData.get("approvalId") || "");
   const decision = String(formData.get("decision") || "") as "approved" | "rejected";
-  getStore().decideApproval(actor, id, decision, String(formData.get("note") || ""));
+  try {
+    getStore().decideApproval(actor, id, decision, String(formData.get("note") || ""));
+  } catch (error) {
+    rethrowAction(error);
+  }
   revalidatePath("/app/approvals");
   revalidatePath("/app");
 }
@@ -65,7 +76,11 @@ export async function opsTransitionAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
   const to = String(formData.get("status") || "") as RequestStatus;
-  getStore().transitionRequest(actor, id, to, String(formData.get("note") || ""));
+  try {
+    getStore().transitionRequest(actor, id, to, String(formData.get("note") || ""));
+  } catch (error) {
+    rethrowAction(error);
+  }
   revalidatePath("/ops");
   revalidatePath(`/ops/requests/${id}`);
 }
@@ -73,7 +88,11 @@ export async function opsTransitionAction(formData: FormData) {
 export async function opsAssignAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
-  getStore().assignOperator(actor, id, String(formData.get("operatorId") || ""));
+  try {
+    getStore().assignOperator(actor, id, String(formData.get("operatorId") || ""));
+  } catch (error) {
+    rethrowAction(error);
+  }
   revalidatePath("/ops");
 }
 
@@ -151,6 +170,18 @@ export async function activatePlanAction(formData: FormData) {
   const hours = plan === "starter" ? 20 : plan === "firm" ? 80 : 40;
   getStore().setMockSubscription(actor, plan, hours);
   revalidatePath("/app/billing");
+}
+
+export async function updateOrganizationAction(formData: FormData) {
+  const actor = await requireClient();
+  if (!actor.organizationId) return;
+  getStore().updateOrganization(actor, actor.organizationId, {
+    name: String(formData.get("name") || "").trim(),
+    industry: String(formData.get("industry") || "").trim(),
+    companySize: String(formData.get("companySize") || "").trim(),
+    timezone: String(formData.get("timezone") || "").trim(),
+  });
+  revalidatePath("/app/settings");
 }
 
 export async function createPlaybookAction(formData: FormData) {

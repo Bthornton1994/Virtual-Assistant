@@ -1,5 +1,5 @@
 import { inviteMemberAction } from "@/app/actions/requests";
-import { PageHeader } from "@/components/product";
+import { EmptyState, PageHeader } from "@/components/product";
 import { Button, Field, Input } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { getStore } from "@/lib/store";
@@ -14,6 +14,12 @@ export default async function TeamPage() {
   return (
     <div className="space-y-8">
       <PageHeader title="Team" description="People in your organization. Operators are not listed here." />
+      {members.length === 0 ? (
+        <EmptyState
+          title="No members in this organization"
+          body="Invite the people who request work and decide approvals. Operators are hired into Delegation Cloud and do not appear on this list."
+        />
+      ) : (
       <div className="overflow-hidden rounded-xl border border-line bg-surface">
         <table className="w-full text-left text-sm">
           <thead className="border-b border-line text-xs uppercase text-muted">
@@ -37,6 +43,7 @@ export default async function TeamPage() {
           </tbody>
         </table>
       </div>
+      )}
       {actor.role === "client_admin" ? (
         <form action={inviteMemberAction} className="grid gap-3 rounded-xl border border-line bg-surface p-5 sm:grid-cols-4">
           <Field label="Name">

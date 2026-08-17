@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui";
-import { ActionClassBadge, PageHeader, PriorityBadge, StatusBadge, formatDate } from "@/components/product";
+import { ActionClassBadge, EmptyState, PageHeader, PriorityBadge, StatusBadge, formatDate } from "@/components/product";
 import { requireClient } from "@/lib/auth";
 import { getStore } from "@/lib/store";
 
@@ -21,6 +21,17 @@ export default async function RequestsPage() {
           </Link>
         }
       />
+      {requests.length === 0 ? (
+        <EmptyState
+          title="No outcomes in motion"
+          body="Describe what needs to happen. We will return an execution plan before work starts. This is not a ticket inbox."
+          action={
+            <Link href="/app/requests/new">
+              <Button>What should we take off your plate?</Button>
+            </Link>
+          }
+        />
+      ) : (
       <div className="overflow-x-auto rounded-xl border border-line bg-surface">
         <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="border-b border-line text-xs uppercase tracking-wide text-muted">
@@ -55,6 +66,7 @@ export default async function RequestsPage() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { HealthBar, PageHeader, formatHours } from "@/components/product";
+import { EmptyState, HealthBar, PageHeader, formatHours } from "@/components/product";
 import { requireClient } from "@/lib/auth";
 import { getStore } from "@/lib/store";
 
@@ -11,6 +11,12 @@ export default async function WorkstreamsPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="Workstreams" description="Recurring operational systems, not a list of people." />
+      {workstreams.length === 0 ? (
+        <EmptyState
+          title="No workstreams scoped"
+          body="A new organization starts with the eight standard workstreams in scoping. If you are seeing this, the workspace has no organization_id on the session."
+        />
+      ) : (
       <div className="grid gap-4 md:grid-cols-2">
         {workstreams.map((ws) => (
           <Link key={ws.id} href={`/app/workstreams/${ws.id}`} className="rounded-xl border border-line bg-surface p-5 hover:border-line-strong">
@@ -27,6 +33,7 @@ export default async function WorkstreamsPage() {
           </Link>
         ))}
       </div>
+      )}
     </div>
   );
 }

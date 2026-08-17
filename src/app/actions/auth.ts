@@ -21,7 +21,15 @@ export async function loginAction(formData: FormData) {
   const password = String(formData.get("password") || "");
   const next = String(formData.get("next") || "");
   const store = getStore();
-  const actor = store.authenticate(email, password);
+  let actor;
+  try {
+    actor = store.authenticate(email, password);
+  } catch {
+    const qs = new URLSearchParams();
+    qs.set("error", "invalid");
+    if (next) qs.set("next", next);
+    redirect(`/login?${qs.toString()}`);
+  }
   const jar = await cookies();
   jar.set(SESSION_COOKIE, actor.id, cookieOptions());
   if (next.startsWith("/")) redirect(next);
@@ -30,13 +38,18 @@ export async function loginAction(formData: FormData) {
 
 export async function signupAction(formData: FormData) {
   const store = getStore();
-  const actor = store.signup({
-    name: String(formData.get("name") || "").trim(),
-    email: String(formData.get("email") || "").trim(),
-    password: String(formData.get("password") || "demo"),
-    organization: String(formData.get("organization") || "").trim(),
-    industry: String(formData.get("industry") || "").trim(),
-  });
+  let actor;
+  try {
+    actor = store.signup({
+      name: String(formData.get("name") || "").trim(),
+      email: String(formData.get("email") || "").trim(),
+      password: String(formData.get("password") || "demo"),
+      organization: String(formData.get("organization") || "").trim(),
+      industry: String(formData.get("industry") || "").trim(),
+    });
+  } catch {
+    redirect("/signup?error=exists");
+  }
   const jar = await cookies();
   jar.set(SESSION_COOKIE, actor.id, cookieOptions());
   redirect("/app/dashboard");
