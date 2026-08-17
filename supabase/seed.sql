@@ -1,0 +1,15 @@
+-- Optional SQL seed for a live Supabase project.
+-- The running MVP also seeds an in-memory demo store (see src/lib/store.ts)
+-- so the product is operational without credentials.
+
+insert into public.workstream_templates (id, name, slug, objective, sla, recurring_tasks, metrics)
+values
+  ('11111111-1111-1111-1111-111111111001', 'Executive Operations', 'executive-operations', 'Protect founder time with briefing, follow-through, and decision logistics.', 'Same-day on urgent, 1 business day otherwise', '["Daily priority brief","Decision log upkeep","Follow-up chase list"]', '["Hours returned","Brief on-time rate","Open decisions"]'),
+  ('11111111-1111-1111-1111-111111111002', 'Inbox Operations', 'inbox-operations', 'Triage, draft, and file communications so only decisions reach the founder.', 'Inbox zero-ready draft pack twice daily', '["Morning triage","Draft replies","Label and file"]', '["Messages processed","Response latency","Escalation rate"]'),
+  ('11111111-1111-1111-1111-111111111003', 'Sales Operations', 'sales-operations', 'Keep pipeline hygiene, proposals, and follow-ups moving without founder admin.', 'CRM updates same day; proposals in 2 business days', '["Pipeline hygiene","Proposal assembly","Follow-up sequences"]', '["Stale deals","Proposal cycle time","Follow-up coverage"]'),
+  ('11111111-1111-1111-1111-111111111004', 'Meeting Operations', 'meeting-operations', 'Schedule, prep, capture, and convert meetings into owned next steps.', 'Agenda 4 hours before; notes within 4 hours after', '["Scheduling","Agenda packs","Notes and actions"]', '["Prep on-time","Action capture rate","Hours in meetings avoided"]'),
+  ('11111111-1111-1111-1111-111111111005', 'Research Desk', 'research-desk', 'Produce sourced briefs the team can act on without starting from a blank page.', 'Standard brief in 2 business days', '["Market scans","Account research","Competitive notes"]', '["Briefs delivered","Source completeness","Reuse rate"]'),
+  ('11111111-1111-1111-1111-111111111006', 'Customer Operations', 'customer-operations', 'Onboard, renew, and support accounts with a consistent operating rhythm.', 'Onboarding pack in 1 business day; renewals 14 days out', '["Onboarding checklists","Health reviews","Renewal prep"]', '["Time to onboard","At-risk accounts","Renewal readiness"]'),
+  ('11111111-1111-1111-1111-111111111007', 'Content Operations', 'content-operations', 'Turn approved points of view into drafts, assets, and a publish-ready queue.', 'First draft in 3 business days; publish only after approval', '["Editorial calendar","Draft production","Asset packaging"]', '["Drafts delivered","Revision cycles","Publish-ready queue"]'),
+  ('11111111-1111-1111-1111-111111111008', 'Back Office Operations', 'back-office-operations', 'Keep billing, vendors, and reporting current without founder bookkeeping.', 'Weekly close pack every Friday; invoices within 1 day of trigger', '["Invoice prep","Vendor follow-up","Weekly operating report"]', '["Close on-time","Aging invoices","Report punctuality"]')
+on conflict (slug) do nothing;

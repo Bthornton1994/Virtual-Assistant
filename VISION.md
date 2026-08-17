@@ -73,6 +73,42 @@ Workflow memory must remain inspectable and correctable. The system should disti
 
 The long-term path is managed delegation, then workflow intelligence, then earned automation, then increasingly autonomous workstreams with humans focused on exceptions. Each step must be earned by evidence from successful prior delivery.
 
+## Long-term progression
+
+This sequence is a governing path, not a feature backlog. A later stage is not started because it is impressive. It is started when the prior stage has produced inspectable evidence.
+
+### 1. Managed delegation
+
+The current product. A customer states an outcome and authority limits. Delegation Cloud owns intake, routing, the operations queue, assignment, comments, attachments, quality review, approvals, and delivery. Humans remain accountable. AI may classify, draft, and check. It must not independently send, purchase, publish, commit, transfer funds, or change access.
+
+Exit evidence: customers can see status, authority, and deliveries without managing individual workers. Sensitive execution never proceeds without explicit approval.
+
+### 2. Workflow intelligence
+
+Repeated, accepted work is captured as organization-owned playbooks: steps, preferences, warnings, examples, and escalation points. The system distinguishes this tenant’s knowledge from generalized methods. Confidential material never crosses organizations.
+
+Exit evidence: a second occurrence of the same outcome starts from an inspectable playbook, not from an operator’s memory.
+
+### 3. Automation
+
+Deterministic automation is introduced only where a playbook’s rules are understood, exceptions are mapped, quality can be checked, and the action class is explicit. Automation executes prepare-only and other pre-authorized low-risk steps. It does not inherit authority the customer did not grant.
+
+Exit evidence: a named step runs without an operator and still appears in the audit log with the same authority checks.
+
+### 4. Autonomous workstreams
+
+A workstream may run with less day-to-day coordination when its playbook, quality checks, and authority limits have a record of successful delivery. Autonomy is bounded by action class. External and sensitive steps still stop for approval. Autonomy can be revoked.
+
+Exit evidence: a recurring workstream completes within its stated authority without the customer assigning intermediate tasks, and every exception is visible.
+
+### 5. Human exception layer
+
+Humans concentrate on judgment, exceptions, quality, and authority — not on repeating a solved path. Operators and specialists remain the accountable layer when the system is uncertain, the playbook is silent, or the action is consequential.
+
+This is not an unmanned product. It is a product where humans supervise the edges.
+
+We do not skip stages. An agent that performs an unproven workflow is not progress.
+
 ## Manual first, automation after proof
 
 The MVP is human-assisted software. It should prove request intake, workstream routing, operations queues, assignment, approvals, comments, attachments, delivery, and accountability before attempting broad autonomy.
