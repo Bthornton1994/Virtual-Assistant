@@ -13,6 +13,12 @@ function rethrowAction(error: unknown): never {
   throw error;
 }
 
+function parseDue(raw: string) {
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString();
+}
+
 export async function createRequestAction(formData: FormData) {
   const actor = await requireClient();
   const store = getStore();
@@ -25,7 +31,7 @@ export async function createRequestAction(formData: FormData) {
     objective: String(formData.get("objective") || "").trim(),
     description: String(formData.get("description") || formData.get("what") || "").trim(),
     deliverable: String(formData.get("deliverable") || "").trim(),
-    dueAt: String(formData.get("dueAt") || "") || null,
+    dueAt: parseDue(String(formData.get("dueAt") || "")),
     workstreamId: String(formData.get("workstreamId") || "") || null,
     recurring: formData.get("recurring") === "on" || formData.get("recurring") === "true",
     externalCommunication:

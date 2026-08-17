@@ -182,6 +182,8 @@ describe("signup tenant isolation", () => {
     });
     expect(newbie.role).toBe("client_admin");
     expect(newbie.organizationId).not.toBe("org_northline");
+    expect(store.listIntegrations(newbie).length).toBeGreaterThan(0);
+    expect(store.listIntegrations(newbie).every((i) => i.organizationId === newbie.organizationId)).toBe(true);
     expect(store.listRequests(newbie).every((r) => r.organizationId === newbie.organizationId)).toBe(true);
     expect(store.listPlaybooks(newbie).every((p) => p.organizationId === newbie.organizationId)).toBe(true);
     expect(() => store.getRequest(newbie, "req_brief")).toThrow(AuthzError);

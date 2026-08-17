@@ -39,10 +39,28 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
         title={request.title}
         description={request.objective}
       />
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <StatusBadge status={request.status} />
         <RiskBadge risk={request.riskLevel} />
         <ActionClassBadge value={request.approvalLevel} />
+        {canManage && request.status === "in_progress" ? (
+          <form action={opsTransitionAction}>
+            <input type="hidden" name="requestId" value={request.id} />
+            <input type="hidden" name="status" value="qa" />
+            <Button type="submit" size="sm">
+              Initiate QA
+            </Button>
+          </form>
+        ) : null}
+        {canManage && request.status === "ready" ? (
+          <form action={opsTransitionAction}>
+            <input type="hidden" name="requestId" value={request.id} />
+            <input type="hidden" name="status" value="delivered" />
+            <Button type="submit" size="sm">
+              Deliver to customer
+            </Button>
+          </form>
+        ) : null}
       </div>
 
       {canManage ? (

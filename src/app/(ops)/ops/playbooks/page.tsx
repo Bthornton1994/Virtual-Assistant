@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createPlaybookAction } from "@/app/actions/requests";
-import { PageHeader } from "@/components/product";
+import { EmptyState, PageHeader } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
 import { getStore } from "@/lib/store";
@@ -15,6 +15,12 @@ export default async function OpsPlaybooksPage() {
   return (
     <div className="space-y-8">
       <PageHeader title="Playbooks" description="Organization-owned SOPs. Confidentiality does not cross tenants." />
+      {playbooks.length === 0 ? (
+        <EmptyState
+          title="No playbooks in view"
+          body="Playbooks belong to a customer organization. They appear here after a path is captured. Do not copy one tenant’s SOP into another."
+        />
+      ) : (
       <div className="space-y-2">
         {playbooks.map((p) => (
           <div key={p.id} className="rounded-xl border border-line bg-surface px-5 py-4">
@@ -26,6 +32,7 @@ export default async function OpsPlaybooksPage() {
           </div>
         ))}
       </div>
+      )}
       {actor.role !== "operator" ? (
         <form action={createPlaybookAction} className="space-y-3 rounded-xl border border-line bg-surface p-5">
           <h2 className="text-sm font-semibold">Draft from a proven path</h2>

@@ -660,6 +660,21 @@ export class MemoryStore {
       stripeSubscriptionId: null,
       currentPeriodEnd: new Date(Date.now() + 14 * 86400000).toISOString(),
     });
+    for (const provider of [
+      { provider: "Google Workspace", scopes: ["email.readonly", "calendar.readonly"] },
+      { provider: "HubSpot", scopes: ["crm.objects.deals.read"] },
+      { provider: "Slack", scopes: ["chat:write"] },
+      { provider: "QuickBooks", scopes: ["invoices.read"] },
+    ]) {
+      this.data.integrations.push({
+        id: uid("in"),
+        organizationId: org.id,
+        provider: provider.provider,
+        status: "disconnected",
+        scopes: provider.scopes,
+        lastAccessedAt: null,
+      });
+    }
     const actor = this.actorFromUser(user.id)!;
     this.audit(actor, "auth.signup", "organization", org.id, org.id, { email: user.email });
     return actor;

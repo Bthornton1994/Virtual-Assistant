@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { logoutAction } from "@/app/actions/auth";
+import { NavLink } from "@/components/nav-link";
 import { Button } from "@/components/ui";
 import type { Actor } from "@/lib/domain";
 import { cn } from "@/lib/cn";
@@ -37,7 +38,7 @@ export function MarketingHeader() {
           ))}
         </nav>
         <div className="flex items-center gap-2">
-          <Link href="/login" className="hidden text-sm text-ink-soft hover:text-ink sm:inline">
+          <Link href="/login" className="text-sm text-ink-soft hover:text-ink">
             Log in
           </Link>
           <Link href="/delegation-audit">
@@ -45,6 +46,13 @@ export function MarketingHeader() {
           </Link>
         </div>
       </div>
+      <nav className="flex flex-wrap gap-x-4 gap-y-2 border-t border-line px-5 py-2 text-sm text-ink-soft md:hidden">
+        {marketingLinks.map((l) => (
+          <Link key={l.href} href={l.href} className="hover:text-ink">
+            {l.label}
+          </Link>
+        ))}
+      </nav>
     </header>
   );
 }
@@ -101,19 +109,17 @@ function SideNav({
       </div>
       <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-col md:overflow-visible md:px-3">
         {items.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-sm text-ink-soft hover:bg-white hover:text-ink"
-          >
+          <NavLink key={item.href} href={item.href}>
             {item.label}
-          </Link>
+          </NavLink>
         ))}
       </nav>
-      <div className="mt-auto hidden border-t border-line p-4 md:block">
-        <p className="text-sm font-medium">{actor.name}</p>
-        <p className="text-xs text-muted">{actor.role.replaceAll("_", " ")}</p>
-        <form action={logoutAction} className="mt-3">
+      <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-3 md:mt-auto md:block">
+        <div>
+          <p className="text-sm font-medium">{actor.name}</p>
+          <p className="text-xs text-muted">{actor.role.replaceAll("_", " ")}</p>
+        </div>
+        <form action={logoutAction} className="md:mt-3">
           <Button variant="ghost" size="sm" type="submit">
             Sign out
           </Button>
