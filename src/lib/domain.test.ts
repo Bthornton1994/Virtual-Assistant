@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ACTION_CLASSES,
+  APPROVAL_KINDS,
   ROLES,
   REQUEST_STATUSES,
   blocksWithoutApproval,
   canTransition,
+  identifyMissingContext,
+  inferApprovalKind,
   requiresExplicitApproval,
 } from "@/lib/domain";
 
@@ -19,11 +22,24 @@ describe("domain contracts", () => {
     ]);
   });
 
-  it("includes every request status", () => {
-    expect(REQUEST_STATUSES).toContain("triage");
-    expect(REQUEST_STATUSES).toContain("awaiting_approval");
-    expect(REQUEST_STATUSES).toContain("accepted");
-    expect(REQUEST_STATUSES).toHaveLength(11);
+  it("includes the full request lifecycle", () => {
+    expect(REQUEST_STATUSES).toEqual([
+      "draft",
+      "triage",
+      "needs_clarification",
+      "awaiting_plan_approval",
+      "queued",
+      "assigned",
+      "in_progress",
+      "blocked",
+      "qa",
+      "revision_required",
+      "awaiting_action_approval",
+      "ready_to_deliver",
+      "delivered",
+      "accepted",
+      "cancelled",
+    ]);
   });
 
   it("treats sensitive execution as a hard approval gate", () => {
@@ -31,11 +47,37 @@ describe("domain contracts", () => {
     expect(blocksWithoutApproval("prepare_only")).toBe(false);
     expect(requiresExplicitApproval("external_execution")).toBe(true);
     expect(ACTION_CLASSES).toHaveLength(4);
+    expect(APPROVAL_KINDS).toContain("execution_plan");
+    expect(APPROVAL_KINDS).toContain("sensitive_action");
   });
 
   it("does not allow skipping QA on the way to accepted", () => {
     expect(canTransition("in_progress", "accepted")).toBe(false);
     expect(canTransition("queued", "delivered")).toBe(false);
-    expect(canTransition("ready", "delivered")).toBe(true);
+    expect(canTransition("ready_to_deliver", "delivered")).toBe(true);
+    expect(canTransition("qa", "ready_to_deliver")).toBe(true);
+    expect(canTransition("qa", "revision_required")).toBe(true);
+  });
+
+  it("identifies missing context and maps approval kinds", () => {
+    expect(
+      identifyMissingContext({
+        title: "Help",
+        objective: "x",
+        description: "short",
+        deliverable: "",
+      }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      identifyMissingContext({
+        title: "Help",
+        objective: "x",
+        description: "short",
+        deliverable: "",
+        playbookApplied: true,
+      }),
+    ).toEqual([]);
+    expect(inferApprovalKind("Send follow-up email to the champion")).toBe("external_email");
+    expect(inferApprovalKind("CRM overwrite of closed deals")).toBe("crm_destructive_change");
   });
 });

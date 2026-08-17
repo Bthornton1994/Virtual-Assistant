@@ -30,7 +30,13 @@ import {
   type UsageRecord,
   type UserRecord,
   type Workstream,
+  type WorkstreamSchedule,
   type WorkstreamTemplate,
+  type Clarification,
+  type DeliveryPackage,
+  type ApprovalKind,
+  type OperatingMemory,
+  type Priority,
   WORKSTREAM_TEMPLATES,
   assertOrgAccess,
   blocksWithoutApproval,
@@ -41,12 +47,17 @@ import {
   canRequestCustomerApproval,
   canTransition,
   canWritePlaybook,
+  computeNextRunAt,
   deliveredStatuses,
+  emptyOperatingMemory,
+  emptyPlaybookVersionFields,
+  formatOperatingMemory,
+  inferApprovalKind,
   isClientRole,
   nowIso,
   uid,
 } from "@/lib/domain";
-import { mockAI } from "@/lib/ai";
+import { delegationAI } from "@/lib/ai";
 
 export type StoreData = {
   users: UserRecord[];
@@ -72,6 +83,10 @@ export type StoreData = {
   usage: UsageRecord[];
   audits: AuditEvent[];
   plans: Record<string, ExecutionPlan>;
+  clarifications: Clarification[];
+  deliveries: DeliveryPackage[];
+  internalNotes: Array<{ id: string; organizationId: string; requestId: string; authorId: string; body: string; createdAt: string }>;
+  operatingMemory: OperatingMemory[];
 };
 
 const DEMO_PASSWORD = "demo";
@@ -108,6 +123,10 @@ export function emptyData(): StoreData {
     usage: [],
     audits: [],
     plans: {},
+    clarifications: [],
+    deliveries: [],
+    internalNotes: [],
+    operatingMemory: [],
   };
 }
 
@@ -128,7 +147,7 @@ export function seedData(): StoreData {
   data.organizations = [
     {
       id: "org_northline",
-      name: "Northline Advisory",
+      name: "Northline Consulting",
       slug: "northline",
       industry: "Management consulting",
       companySize: "18",
@@ -198,6 +217,8 @@ export function seedData(): StoreData {
       status,
       healthScore: health,
       hoursReturned: hours,
+      schedule: null,
+      nextRunAt: null,
       createdAt,
       updatedAt: nowIso(),
     };
@@ -230,12 +251,40 @@ export function seedData(): StoreData {
     automationScore: 30,
     recurring: false,
     externalCommunication: false,
+    playbookId: null,
+    missingContext: [],
+    customerInstructions: "",
+    internalInstructions: "",
+    qaChecklist: [
+      "Matches stated objective",
+      "Authority limits respected",
+      "Residual uncertainty disclosed",
+    ],
     createdAt: isoDaysFromNow(-4),
     updatedAt: nowIso(),
     ...partial,
   });
 
   data.requests = [
+    req({
+      id: "req_conference",
+      workstreamId: "ws_sales",
+      title: "Make sure every lead from last week's conference gets followed up",
+      objective: "Every conference lead has an owner, a CRM update, and a prepared follow-up. Nothing is sent until approved.",
+      description:
+        "Last week's conference produced a lead list. Identify unassigned leads, prepare required CRM updates, draft follow-up emails, and escalate exceptions. Use Northline CRM rules. Do not send, overwrite, or delete records until the customer approves outbound action.",
+      deliverable: "Follow-up pack: owned leads, CRM updates, draft emails, exception log",
+      status: "awaiting_plan_approval",
+      priority: "high",
+      riskLevel: "high",
+      approvalLevel: "external_execution",
+      externalCommunication: true,
+      assignedOperatorId: null,
+      estimatedEffort: 4,
+      automationScore: 35,
+      dueAt: isoDaysFromNow(2),
+      createdAt: isoDaysFromNow(0, 9),
+    }),
     req({
       id: "req_brief",
       workstreamId: "ws_exec",
@@ -246,6 +295,9 @@ export function seedData(): StoreData {
       status: "in_progress",
       priority: "high",
       approvalLevel: "prepare_only",
+      playbookId: "pb_brief",
+      customerInstructions: "One page. Decisions, owners, blocks. Bullets over prose.",
+      internalInstructions: "No confidential Harbor material.",
       recurring: true,
     }),
     req({
@@ -272,6 +324,10 @@ export function seedData(): StoreData {
       assignedOperatorId: "op_julian",
       estimatedEffort: 4,
       automationScore: 45,
+      playbookId: "pb_proposal",
+      customerInstructions: "Fixed-fee first. No discount language.",
+      internalInstructions: "Do not send to the client.",
+      qaChecklist: ["Rate card applied", "Scope matches discovery notes", "Authority limits respected"],
     }),
     req({
       id: "req_wire",
@@ -280,7 +336,7 @@ export function seedData(): StoreData {
       objective: "Everything finance needs to pay the research vendor — without initiating payment.",
       description: "Compile invoice, SOW, and approval history. Payment is sensitive and must not proceed without explicit approval.",
       deliverable: "Payment pack + approval request",
-      status: "awaiting_approval",
+      status: "awaiting_action_approval",
       priority: "urgent",
       riskLevel: "critical",
       approvalLevel: "sensitive_execution",
@@ -294,7 +350,7 @@ export function seedData(): StoreData {
       objective: "A checked follow-up email after approval.",
       description: "External email to the buying champion summarizing next steps.",
       deliverable: "Approved email sent by operator",
-      status: "awaiting_approval",
+      status: "awaiting_action_approval",
       riskLevel: "high",
       approvalLevel: "external_execution",
       externalCommunication: true,
@@ -341,7 +397,7 @@ export function seedData(): StoreData {
       objective: "A publish-ready draft. Do not publish.",
       description: "Content operations. Prepare only.",
       deliverable: "1,000-word draft",
-      status: "ready",
+      status: "ready_to_deliver",
       approvalLevel: "prepare_only",
       assignedOperatorId: "op_priya",
     }),
@@ -352,9 +408,10 @@ export function seedData(): StoreData {
       objective: "Friday pack for the partners meeting.",
       description: "Recurring back-office report.",
       deliverable: "Weekly report",
-      status: "triage",
+      status: "needs_clarification",
       recurring: true,
       assignedOperatorId: null,
+      missingContext: ["Which Friday pack template should we use this week?"],
     }),
     req({
       id: "req_harbor",
@@ -374,7 +431,32 @@ export function seedData(): StoreData {
     { id: "st_1", organizationId: "org_northline", requestId: "req_brief", title: "Pull open decisions", detail: "From last week’s log", owner: "ai", status: "done", sortOrder: 1 },
     { id: "st_2", organizationId: "org_northline", requestId: "req_brief", title: "Write brief", detail: "One page, no fluff", owner: "operator", status: "in_progress", sortOrder: 2 },
     { id: "st_3", organizationId: "org_northline", requestId: "req_brief", title: "QA", detail: "Check owners and dates", owner: "specialist", status: "pending", sortOrder: 3 },
+    { id: "st_conf_1", organizationId: "org_northline", requestId: "req_conference", title: "Pull the conference lead list", detail: "Use the attached export. Do not invent names.", owner: "operator", status: "pending", sortOrder: 1 },
+    { id: "st_conf_2", organizationId: "org_northline", requestId: "req_conference", title: "Identify unassigned leads", detail: "Every row needs an owner or an exception.", owner: "operator", status: "pending", sortOrder: 2 },
+    { id: "st_conf_3", organizationId: "org_northline", requestId: "req_conference", title: "Prepare required CRM updates", detail: "Draft field changes. Do not overwrite records yet.", owner: "operator", status: "pending", sortOrder: 3 },
+    { id: "st_conf_4", organizationId: "org_northline", requestId: "req_conference", title: "Draft follow-up emails", detail: "Northline tone. No send.", owner: "operator", status: "pending", sortOrder: 4 },
+    { id: "st_conf_5", organizationId: "org_northline", requestId: "req_conference", title: "Escalate exceptions", detail: "Duplicates, missing contacts, and out-of-ICP rows.", owner: "operator", status: "pending", sortOrder: 5 },
+    { id: "st_conf_6", organizationId: "org_northline", requestId: "req_conference", title: "QA the pack", detail: "Owners, drafts, and exceptions present.", owner: "specialist", status: "pending", sortOrder: 6 },
+    { id: "st_conf_7", organizationId: "org_northline", requestId: "req_conference", title: "Obtain outbound approval", detail: "Customer must approve before any email is sent.", owner: "customer", status: "pending", sortOrder: 7 },
   ];
+  data.plans["req_conference"] = {
+    summary:
+      "Prepare a complete follow-up pack for every conference lead. AI classifies and drafts; an operator owns judgment. No email is sent and no CRM record is overwritten until the customer approves outbound action.",
+    actionClass: "external_execution",
+    riskLevel: "high",
+    steps: [
+      { title: "Pull the conference lead list", detail: "Use the attached export.", owner: "operator" },
+      { title: "Identify unassigned leads", detail: "Owner or exception on every row.", owner: "operator" },
+      { title: "Prepare required CRM updates", detail: "Draft only.", owner: "operator" },
+      { title: "Draft follow-up emails", detail: "Do not send.", owner: "operator" },
+      { title: "Escalate exceptions", detail: "Duplicates and missing data.", owner: "operator" },
+      { title: "QA the pack", detail: "Then request outbound approval.", owner: "specialist" },
+      { title: "Obtain outbound approval", detail: "Required before send.", owner: "customer" },
+    ],
+    approvalsRequired: true,
+    automationCandidates: ["Lead list parsing", "Checklist generation"],
+    humanOwned: ["Owner assignment", "Exception judgment", "Sending email"],
+  };
 
   data.assignments = [
     { id: "as_1", organizationId: "org_northline", requestId: "req_brief", operatorId: "op_maya", assignedBy: "usr_manager", assignedAt: isoDaysFromNow(-1) },
@@ -386,6 +468,10 @@ export function seedData(): StoreData {
       id: "ap_wire",
       organizationId: "org_northline",
       requestId: "req_wire",
+      kind: "sensitive_action",
+      action: "Prepare vendor payment pack",
+      description: "Payment pack is ready. Initiating payment requires explicit approval.",
+      riskLevel: "critical",
       actionClass: "sensitive_execution",
       status: "pending",
       requestedBy: "usr_manager",
@@ -396,9 +482,31 @@ export function seedData(): StoreData {
       decidedAt: null,
     },
     {
+      id: "ap_conference",
+      organizationId: "org_northline",
+      requestId: "req_conference",
+      kind: "execution_plan",
+      action: "Approve execution plan",
+      description:
+        "Prepare a complete follow-up pack for every conference lead. No email is sent until a separate outbound approval.",
+      riskLevel: "high",
+      actionClass: "external_execution",
+      status: "pending",
+      requestedBy: "usr_founder",
+      decidedBy: null,
+      reason: "Execution plan for conference lead follow-up.",
+      decisionNote: null,
+      createdAt: isoDaysFromNow(0, 9),
+      decidedAt: null,
+    },
+    {
       id: "ap_mail",
       organizationId: "org_northline",
       requestId: "req_outreach",
+      kind: "external_email",
+      action: "Send follow-up email",
+      description: "External email to a client champion.",
+      riskLevel: "high",
       actionClass: "external_execution",
       status: "pending",
       requestedBy: "usr_op",
@@ -435,6 +543,14 @@ export function seedData(): StoreData {
       steps: ["Scan unread", "Bucket", "Draft"],
       clientPreferences: ["Short"],
       warnings: ["Do not send"],
+      trigger: "Weekday morning",
+      requiredInputs: ["Inbox access"],
+      tools: ["Google Workspace"],
+      authorityLimits: ["Prepare only"],
+      approvalPoints: ["Anything sent externally"],
+      qaChecklist: ["No send", "Buckets present"],
+      knownExceptions: ["Legal threads"],
+      templates: [],
       createdBy: "usr_founder",
       createdAt: isoDaysFromNow(-20),
     },
@@ -452,6 +568,14 @@ export function seedData(): StoreData {
       ],
       clientPreferences: ["No exclamation points", "Sign-off reserved for Elena"],
       warnings: ["Never send. Never share another client’s threads."],
+      trigger: "Weekday morning",
+      requiredInputs: ["Inbox access", "VIP list"],
+      tools: ["Google Workspace"],
+      authorityLimits: ["Prepare only — never send"],
+      approvalPoints: ["Anything sent externally"],
+      qaChecklist: ["No send", "Voice check", "VIP escalated"],
+      knownExceptions: ["Legal threads", "Investor mail"],
+      templates: ["Morning triage pack"],
       createdBy: "op_maya",
       createdAt: isoDaysFromNow(-6),
     },
@@ -463,6 +587,14 @@ export function seedData(): StoreData {
       steps: ["Pull discovery notes", "Apply rate card", "Draft scope", "Internal QA"],
       clientPreferences: ["Fixed-fee first", "No discount language"],
       warnings: ["Do not send to the client."],
+      trigger: "New opportunity reaches proposal stage",
+      requiredInputs: ["Discovery notes", "Rate card"],
+      tools: ["HubSpot", "Google Docs"],
+      authorityLimits: ["No discount language", "Do not send"],
+      approvalPoints: ["Client-facing send"],
+      qaChecklist: ["Rate card applied", "Scope matches notes"],
+      knownExceptions: ["Custom pricing"],
+      templates: ["Northline proposal"],
       createdBy: "op_julian",
       createdAt: isoDaysFromNow(-5),
     },
@@ -474,18 +606,27 @@ export function seedData(): StoreData {
       steps: ["Collect open decisions", "Mark owners", "Flag blocks", "One page"],
       clientPreferences: ["Bullets over prose"],
       warnings: ["No confidential Harbor material."],
+      trigger: "Sunday evening",
+      requiredInputs: ["Decision log"],
+      tools: ["Notion"],
+      authorityLimits: ["Prepare only"],
+      approvalPoints: [],
+      qaChecklist: ["Owners present", "Dates present"],
+      knownExceptions: [],
+      templates: ["One-page brief"],
       createdBy: "usr_founder",
       createdAt: isoDaysFromNow(-3),
     },
   ];
 
   data.comments = [
-    { id: "cm_1", organizationId: "org_northline", requestId: "req_brief", authorId: "usr_founder", body: "Keep it to one page. Call out the Meridian decision first.", createdAt: isoDaysFromNow(-1) },
-    { id: "cm_2", organizationId: "org_northline", requestId: "req_onboard", authorId: "op_priya", body: "Blocked on the security questionnaire from Helio.", createdAt: isoDaysFromNow(-1) },
+    { id: "cm_1", organizationId: "org_northline", requestId: "req_brief", authorId: "usr_founder", body: "Keep it to one page. Call out the Meridian decision first.", visibility: "customer", createdAt: isoDaysFromNow(-1) },
+    { id: "cm_2", organizationId: "org_northline", requestId: "req_onboard", authorId: "op_priya", body: "Blocked on the security questionnaire from Helio.", visibility: "customer", createdAt: isoDaysFromNow(-1) },
   ];
 
   data.attachments = [
     { id: "at_1", organizationId: "org_northline", requestId: "req_proposal", playbookId: null, name: "northline-rate-card.pdf", path: "org_northline/req_proposal/northline-rate-card.pdf", uploadedBy: "usr_founder", createdAt: isoDaysFromNow(-3) },
+    { id: "at_conf", organizationId: "org_northline", requestId: "req_conference", playbookId: null, name: "conference-leads.csv", path: "org_northline/req_conference/conference-leads.csv", uploadedBy: "usr_founder", createdAt: isoDaysFromNow(0, 9) },
   ];
 
   data.timeEntries = [
@@ -494,8 +635,73 @@ export function seedData(): StoreData {
   ];
 
   data.qaReviews = [
-    { id: "qa_1", organizationId: "org_northline", requestId: "req_proposal", reviewerId: "usr_manager", passed: false, score: 80, notes: "In QA. Check rate card line items.", createdAt: isoDaysFromNow(-1) },
+    {
+      id: "qa_1",
+      organizationId: "org_northline",
+      requestId: "req_proposal",
+      reviewerId: "usr_manager",
+      passed: false,
+      score: 80,
+      notes: "In QA. Check rate card line items.",
+      checklist: [
+        { item: "Matches stated objective", ok: true },
+        { item: "Rate card applied", ok: false },
+        { item: "Authority limits respected", ok: true },
+      ],
+      defects: ["Rate card line items need a second pass"],
+      createdAt: isoDaysFromNow(-1),
+    },
   ];
+
+  data.clarifications = [
+    {
+      id: "cl_1",
+      organizationId: "org_northline",
+      requestId: "req_report",
+      question: "Which Friday pack template should we use this week?",
+      askedBy: "usr_manager",
+      answer: null,
+      answeredBy: null,
+      createdAt: isoDaysFromNow(-1),
+      answeredAt: null,
+    },
+  ];
+  data.deliveries = [];
+  data.internalNotes = [];
+  const sales = data.workstreams.find((w) => w.id === "ws_sales");
+  if (sales) {
+    sales.schedule = {
+      cadence: "weekdays",
+      time: "08:00",
+      tasks: [
+        "Inspect CRM",
+        "Identify overdue follow-ups",
+        "Identify unassigned leads",
+        "Prepare required updates",
+        "Escalate exceptions",
+      ],
+    };
+    sales.nextRunAt = isoDaysFromNow(-1, 8);
+  }
+
+  data.operatingMemory = [
+    {
+      id: "om_northline",
+      organizationId: "org_northline",
+      communicationTone: "Direct, no exclamation points, Elena’s sign-off reserved for Elena.",
+      preferredMeetingWindows: "Tue–Thu 9:00–11:30 America/Chicago. No Friday afternoon holds.",
+      crmRules: "HubSpot is source of truth. Never delete a deal. Draft overwrites; apply only after approval.",
+      escalationContacts: "Elena Voss for relationship-critical accounts. Marcus Hale for delivery exceptions.",
+      preferredVendors: "Existing research vendor on the approved rate card only.",
+      prohibitedActions: "Do not send email, publish, transfer funds, change access, or delete CRM records.",
+      approvalThresholds: "Any outbound email. Any CRM overwrite. Any vendor contact. Any payment pack.",
+      formattingPreferences: "Bullets over prose. One-page briefs. Fixed-fee language first. No discount language.",
+      updatedBy: "usr_founder",
+      updatedAt: isoDaysFromNow(-2),
+    },
+    emptyOperatingMemory("org_harbor"),
+  ];
+  data.operatingMemory[1].id = "om_harbor";
 
   data.integrations = [
     { id: "in_1", organizationId: "org_northline", provider: "Google Workspace", status: "connected", scopes: ["email.readonly", "calendar.readonly"], lastAccessedAt: isoDaysFromNow(-1) },
@@ -524,6 +730,8 @@ export function seedData(): StoreData {
   data.audits = [
     { id: "au_1", organizationId: "org_northline", actorId: "usr_founder", action: "auth.login", entityType: "user", entityId: "usr_founder", metadata: {}, createdAt: isoDaysFromNow(-1) },
     { id: "au_2", organizationId: "org_northline", actorId: "usr_founder", action: "request.created", entityType: "request", entityId: "req_brief", metadata: { title: "Monday decision brief" }, createdAt: isoDaysFromNow(-4) },
+    { id: "au_conf", organizationId: "org_northline", actorId: "usr_founder", action: "request.created", entityType: "request", entityId: "req_conference", metadata: { title: "Make sure every lead from last week's conference gets followed up" }, createdAt: isoDaysFromNow(0, 9) },
+    { id: "au_conf_ai", organizationId: "org_northline", actorId: "usr_founder", action: "ai.action", entityType: "request", entityId: "req_conference", metadata: { fn: "triageRequest+generateExecutionPlan", actionClass: "external_execution" }, createdAt: isoDaysFromNow(0, 9) },
   ];
 
   return data;
@@ -646,6 +854,8 @@ export class MemoryStore {
         status: "scoping",
         healthScore: 70,
         hoursReturned: 0,
+        schedule: null,
+        nextRunAt: null,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       });
@@ -675,9 +885,30 @@ export class MemoryStore {
         lastAccessedAt: null,
       });
     }
+    this.data.operatingMemory.push(emptyOperatingMemory(org.id));
     const actor = this.actorFromUser(user.id)!;
     this.audit(actor, "auth.signup", "organization", org.id, org.id, { email: user.email });
     return actor;
+  }
+
+  getOperatingMemory(actor: Actor, organizationId?: string) {
+    const orgId = organizationId ?? actor.organizationId;
+    if (!orgId) throw new DomainError("No organization");
+    assertOrgAccess(actor, orgId);
+    let row = this.data.operatingMemory.find((m) => m.organizationId === orgId);
+    if (!row) {
+      row = emptyOperatingMemory(orgId);
+      this.data.operatingMemory.push(row);
+    }
+    return row;
+  }
+
+  updateOperatingMemory(actor: Actor, organizationId: string, patch: Partial<Omit<OperatingMemory, "id" | "organizationId">>) {
+    if (!canManageTeam(actor) && !canMutateOpsQueue(actor)) throw new AuthzError();
+    const row = this.getOperatingMemory(actor, organizationId);
+    Object.assign(row, patch, { updatedBy: actor.id, updatedAt: nowIso() });
+    this.audit(actor, "memory.updated", "operating_memory", row.id, organizationId, { fields: Object.keys(patch) });
+    return row;
   }
 
   listOrganizations(actor: Actor) {
@@ -781,14 +1012,47 @@ export class MemoryStore {
     return ws;
   }
 
-  listRequests(actor: Actor, filters?: { organizationId?: string; status?: RequestStatus; workstreamId?: string }) {
+  listRequests(
+    actor: Actor,
+    filters?: {
+      organizationId?: string;
+      status?: RequestStatus | RequestStatus[];
+      workstreamId?: string;
+      operatorId?: string;
+      priority?: Priority;
+      riskLevel?: RequestRecord["riskLevel"];
+      deadline?: "overdue" | "today" | "week";
+    },
+  ) {
     let rows = this.filterByTenant(actor, this.data.requests);
     if (filters?.organizationId) {
       assertOrgAccess(actor, filters.organizationId);
       rows = rows.filter((r) => r.organizationId === filters.organizationId);
     }
-    if (filters?.status) rows = rows.filter((r) => r.status === filters.status);
+    if (filters?.status) {
+      const wanted = Array.isArray(filters.status) ? filters.status : [filters.status];
+      rows = rows.filter((r) => wanted.includes(r.status));
+    }
     if (filters?.workstreamId) rows = rows.filter((r) => r.workstreamId === filters.workstreamId);
+    if (filters?.operatorId) rows = rows.filter((r) => r.assignedOperatorId === filters.operatorId);
+    if (filters?.priority) rows = rows.filter((r) => r.priority === filters.priority);
+    if (filters?.riskLevel) rows = rows.filter((r) => r.riskLevel === filters.riskLevel);
+    if (filters?.deadline) {
+      const now = Date.now();
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      const endToday = new Date(start);
+      endToday.setDate(endToday.getDate() + 1);
+      const endWeek = new Date(start);
+      endWeek.setDate(endWeek.getDate() + 7);
+      rows = rows.filter((r) => {
+        if (!r.dueAt) return false;
+        const due = new Date(r.dueAt).getTime();
+        if (filters.deadline === "overdue") return due < now && !deliveredStatuses().includes(r.status) && r.status !== "cancelled";
+        if (filters.deadline === "today") return due >= start.getTime() && due < endToday.getTime();
+        return due >= start.getTime() && due < endWeek.getTime();
+      });
+    }
     if (actor.role === "operator" && actor.operatorId) {
       rows = rows.filter((r) => !r.assignedOperatorId || r.assignedOperatorId === actor.operatorId);
     }
@@ -807,6 +1071,14 @@ export class MemoryStore {
 
   getRequestBundle(actor: Actor, id: string) {
     const request = this.getRequest(actor, id);
+    const playbook = request.playbookId
+      ? this.data.playbooks.find((p) => p.id === request.playbookId) ?? null
+      : null;
+    const playbookVersion = playbook
+      ? this.data.playbookVersions
+          .filter((v) => v.playbookId === playbook.id)
+          .sort((a, b) => b.version - a.version)[0] ?? null
+      : null;
     return {
       request,
       workstream: request.workstreamId
@@ -815,15 +1087,28 @@ export class MemoryStore {
       steps: this.data.steps.filter((s) => s.requestId === id).sort((a, b) => a.sortOrder - b.sortOrder),
       assignments: this.data.assignments.filter((a) => a.requestId === id),
       approvals: this.data.approvals.filter((a) => a.requestId === id),
-      comments: this.data.comments.filter((c) => c.requestId === id),
+      comments: this.data.comments.filter((c) => {
+        if (c.requestId !== id) return false;
+        if (isClientRole(actor.role) && c.visibility === "internal") return false;
+        return true;
+      }),
       attachments: this.data.attachments.filter((a) => a.requestId === id),
       timeEntries: this.data.timeEntries.filter((t) => t.requestId === id),
       qa: this.data.qaReviews.filter((q) => q.requestId === id),
       plan: this.data.plans[id] ?? null,
+      clarifications: this.data.clarifications.filter((c) => c.requestId === id),
+      delivery: this.data.deliveries.find((d) => d.requestId === id) ?? null,
+      internalNotes: isClientRole(actor.role) ? [] : this.data.internalNotes.filter((n) => n.requestId === id),
+      playbook,
+      playbookVersion,
       organization: this.data.organizations.find((o) => o.id === request.organizationId)!,
       operator: request.assignedOperatorId
         ? this.data.operators.find((o) => o.id === request.assignedOperatorId) ?? null
         : null,
+      memory: this.data.operatingMemory.find((m) => m.organizationId === request.organizationId) ?? null,
+      audits: this.data.audits.filter(
+        (a) => a.entityId === id || a.metadata.requestId === id || (a.entityType === "request" && a.entityId === id),
+      ),
     };
   }
 
@@ -831,14 +1116,35 @@ export class MemoryStore {
     if (!isClientRole(actor.role) && actor.role !== "platform_admin") throw new AuthzError();
     const organizationId = actor.organizationId;
     if (!organizationId) throw new AuthzError("No organization");
-    const triage = await mockAI.triageRequest({
-      title: input.title,
-      objective: input.objective,
-      description: input.description,
-      externalCommunication: input.externalCommunication,
-    });
+    const [triage, classified, risk, missingResult] = await Promise.all([
+      delegationAI.triageRequest({
+        title: input.title,
+        objective: input.objective,
+        description: input.description,
+        externalCommunication: input.externalCommunication,
+      }),
+      delegationAI.classifyWorkstream({
+        title: input.title,
+        objective: input.objective,
+        description: input.description,
+      }),
+      delegationAI.classifyRisk({
+        title: input.title,
+        description: input.description,
+        externalCommunication: input.externalCommunication,
+      }),
+      delegationAI.identifyMissingContext({
+        ...input,
+        playbookApplied: Boolean(input.playbookId),
+      }),
+    ]);
     const ws =
       (input.workstreamId && this.data.workstreams.find((w) => w.id === input.workstreamId)) ||
+      this.data.workstreams.find(
+        (w) =>
+          w.organizationId === organizationId &&
+          this.data.workstreamTemplates.find((t) => t.id === w.templateId)?.slug === classified.workstreamSlug,
+      ) ||
       this.data.workstreams.find(
         (w) =>
           w.organizationId === organizationId &&
@@ -847,21 +1153,34 @@ export class MemoryStore {
       this.data.workstreams.find((w) => w.organizationId === organizationId) ||
       null;
 
-    const actionClass = input.externalCommunication && triage.actionClass === "prepare_only"
-      ? "external_execution"
-      : triage.actionClass;
+    const actionClass =
+      input.externalCommunication && risk.actionClass === "prepare_only"
+        ? "external_execution"
+        : risk.actionClass;
+
+    const playbook = input.playbookId ? this.data.playbooks.find((p) => p.id === input.playbookId) : null;
+    if (playbook) assertOrgAccess(actor, playbook.organizationId);
+    const pbVersion = playbook
+      ? this.data.playbookVersions
+          .filter((v) => v.playbookId === playbook.id)
+          .sort((a, b) => b.version - a.version)[0]
+      : null;
+
+    const missingContext = pbVersion
+      ? []
+      : missingResult.missing;
 
     const request: RequestRecord = {
       id: uid("req"),
       organizationId,
-      workstreamId: ws?.id ?? null,
+      workstreamId: ws?.id ?? playbook?.workstreamId ?? null,
       title: input.title,
       objective: input.objective,
       description: input.description,
       deliverable: input.deliverable,
       priority: triage.priority,
-      status: "triage",
-      riskLevel: triage.riskLevel,
+      status: missingContext.length ? "needs_clarification" : "awaiting_plan_approval",
+      riskLevel: risk.riskLevel,
       approvalLevel: actionClass,
       dueAt: input.dueAt,
       createdBy: actor.id,
@@ -871,18 +1190,59 @@ export class MemoryStore {
       automationScore: triage.automationScore,
       recurring: input.recurring,
       externalCommunication: input.externalCommunication,
+      playbookId: playbook?.id ?? null,
+      missingContext,
+      customerInstructions: [
+        ...(pbVersion?.clientPreferences ?? []),
+        ...formatOperatingMemory(
+          this.data.operatingMemory.find((m) => m.organizationId === organizationId) ?? emptyOperatingMemory(organizationId),
+        ),
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      internalInstructions: pbVersion
+        ? [...pbVersion.warnings, ...pbVersion.authorityLimits].filter(Boolean).join("\n")
+        : (this.data.operatingMemory.find((m) => m.organizationId === organizationId)?.prohibitedActions ?? ""),
+      qaChecklist: pbVersion?.qaChecklist.length
+        ? pbVersion.qaChecklist
+        : ["Matches stated objective", "Authority limits respected", "Residual uncertainty disclosed"],
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
 
-    const plan = await mockAI.generateExecutionPlan({
-      title: request.title,
-      objective: request.objective,
-      description: request.description,
-      deliverable: request.deliverable,
-      workstreamName: ws?.name,
-      actionClass,
-    });
+    const [plan, approvalNeeds, routing, automation] = await Promise.all([
+      delegationAI.generateExecutionPlan({
+        title: request.title,
+        objective: request.objective,
+        description: request.description,
+        deliverable: request.deliverable,
+        workstreamName: ws?.name,
+        actionClass,
+      }),
+      delegationAI.determineApprovalRequirements({
+        title: request.title,
+        description: request.description,
+        actionClass,
+        externalCommunication: input.externalCommunication,
+      }),
+      delegationAI.suggestExecutor({
+        actionClass,
+        workstreamName: ws?.name,
+        title: request.title,
+      }),
+      delegationAI.identifyAutomationOpportunity({
+        title: request.title,
+        actionClass,
+        recurring: input.recurring,
+      }),
+    ]);
+    if (pbVersion) {
+      plan.steps = pbVersion.steps.map((title) => ({
+        title,
+        detail: "From the customer playbook",
+        owner: "operator" as const,
+      }));
+    }
     this.data.requests.unshift(request);
     this.data.plans[request.id] = plan;
     plan.steps.forEach((step, i) => {
@@ -911,17 +1271,74 @@ export class MemoryStore {
     }
     this.audit(actor, "request.created", "request", request.id, organizationId, { title: request.title });
     this.audit(actor, "ai.action", "request", request.id, organizationId, {
-      fn: "triageRequest+generateExecutionPlan",
+      fn: "triageRequest+classifyWorkstream+identifyMissingContext+generateExecutionPlan+classifyRisk+determineApprovalRequirements+suggestExecutor+identifyAutomationOpportunity",
       actionClass,
+      missingContext,
+      workstreamSlug: classified.workstreamSlug,
+      suggestedExecutor: routing.executor,
+      automation: automation.step,
+      approvalKinds: approvalNeeds.kinds,
     });
-    if (blocksWithoutApproval(actionClass)) {
-      request.status = "awaiting_approval";
-      this.createApproval(actor, request.id, actionClass, "Sensitive execution cannot begin without explicit approval.");
+    if (missingContext.length) {
+      for (const question of missingContext) {
+        this.data.clarifications.push({
+          id: uid("cl"),
+          organizationId,
+          requestId: request.id,
+          question,
+          askedBy: actor.id,
+          answer: null,
+          answeredBy: null,
+          createdAt: nowIso(),
+          answeredAt: null,
+        });
+      }
+    } else {
+      this.createApprovalRecord(actor, request, {
+        kind: "execution_plan",
+        action: "Approve execution plan",
+        description: plan.summary,
+        riskLevel: plan.riskLevel,
+        actionClass,
+      });
+    }
+    if (pbVersion) {
+      for (const point of pbVersion.approvalPoints) {
+        const kind = inferApprovalKind(point);
+        if (!kind || kind === "execution_plan") continue;
+        this.createApprovalRecord(
+          actor,
+          request,
+          {
+            kind,
+            action: point,
+            description: `Playbook approval point: ${point}`,
+            riskLevel: request.riskLevel,
+            actionClass,
+          },
+          { advanceStatus: false },
+        );
+      }
+    }
+    for (const kind of approvalNeeds.kinds) {
+      if (kind === "execution_plan") continue;
+      this.createApprovalRecord(
+        actor,
+        request,
+        {
+          kind,
+          action: kind.replaceAll("_", " "),
+          description: approvalNeeds.reasons.join(" "),
+          riskLevel: request.riskLevel,
+          actionClass,
+        },
+        { advanceStatus: false },
+      );
     }
     return this.getRequestBundle(actor, request.id);
   }
 
-  updateRequestScope(actor: Actor, id: string, patch: Partial<Pick<RequestRecord, "title" | "objective" | "description" | "deliverable" | "dueAt" | "priority" | "workstreamId">>) {
+  updateRequestScope(actor: Actor, id: string, patch: Partial<Pick<RequestRecord, "title" | "objective" | "description" | "deliverable" | "dueAt" | "priority" | "workstreamId" | "customerInstructions" | "internalInstructions" | "playbookId">>) {
     const req = this.getRequest(actor, id);
     if (!canMutateOpsQueue(actor) && actor.id !== req.createdBy && actor.role !== "client_admin") {
       throw new AuthzError();
@@ -940,25 +1357,40 @@ export class MemoryStore {
     if (!canTransition(req.status, to)) {
       throw new DomainError(`Cannot move ${req.status} → ${to}`);
     }
-    if (to === "in_progress" && blocksWithoutApproval(req.approvalLevel)) {
+    if (to === "queued" && req.status === "awaiting_plan_approval") {
       const approved = this.data.approvals.some(
-        (a) => a.requestId === req.id && a.actionClass === "sensitive_execution" && a.status === "approved",
+        (a) => a.requestId === req.id && a.kind === "execution_plan" && a.status === "approved",
       );
       if (!approved) {
+        throw new DomainError("Execution plan must be approved before the request enters the queue");
+      }
+    }
+    if (to === "delivered" && !this.data.deliveries.some((d) => d.requestId === req.id)) {
+      throw new DomainError("Deliver through a delivery package that records the outcome");
+    }
+    if (to === "in_progress" && blocksWithoutApproval(req.approvalLevel)) {
+      const approved = this.data.approvals.some(
+        (a) => a.requestId === req.id && a.kind === "sensitive_action" && a.status === "approved",
+      );
+      if (!approved) {
+        this.createApprovalRecord(actor, req, {
+          kind: "sensitive_action",
+          action: "Begin sensitive execution",
+          description: "Sensitive work cannot enter in progress without explicit approval.",
+          riskLevel: "critical",
+          actionClass: "sensitive_execution",
+        });
+        req.status = "awaiting_action_approval";
+        req.updatedAt = nowIso();
         throw new DomainError("Sensitive execution cannot proceed without explicit approval");
       }
     }
     if (to === "in_progress" && req.approvalLevel === "external_execution") {
-      const approved = this.data.approvals.some(
-        (a) => a.requestId === req.id && a.actionClass === "external_execution" && a.status === "approved",
-      );
-      if (!approved) {
-        req.status = "awaiting_approval";
-        req.updatedAt = nowIso();
-        this.createApproval(actor, req.id, "external_execution", "External execution requires approval before work proceeds.");
-        throw new DomainError("External execution requires customer approval first");
-      }
-      this.audit(actor, "execution.external", "request", req.id, req.organizationId, { note });
+      this.audit(actor, "execution.external", "request", req.id, req.organizationId, {
+        note,
+        phase: "prepare",
+        sent: false,
+      });
     }
     const from = req.status;
     req.status = to;
@@ -974,7 +1406,7 @@ export class MemoryStore {
     if (!op) throw new DomainError("Operator not found");
     req.assignedOperatorId = operatorId;
     req.updatedAt = nowIso();
-    if (req.status === "triage") req.status = "queued";
+    if (req.status === "triage" || req.status === "queued") req.status = "assigned";
     this.data.assignments.unshift({
       id: uid("as"),
       organizationId: req.organizationId,
@@ -1026,28 +1458,66 @@ export class MemoryStore {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  createApproval(actor: Actor, requestId: string, actionClass: ActionClass, reason: string) {
-    if (!canRequestCustomerApproval(actor) && !isClientRole(actor.role)) throw new AuthzError();
+  createApproval(actor: Actor, requestId: string, actionClass: ActionClass, reason: string, kind?: ApprovalKind) {
     const req = this.getRequest(actor, requestId);
+    const resolved: ApprovalKind =
+      kind ??
+      (actionClass === "sensitive_execution"
+        ? "sensitive_action"
+        : actionClass === "external_execution"
+          ? "external_email"
+          : "execution_plan");
+    return this.createApprovalRecord(actor, req, {
+      kind: resolved,
+      action: reason,
+      description: reason,
+      riskLevel: req.riskLevel,
+      actionClass,
+    });
+  }
+
+  createApprovalRecord(
+    actor: Actor,
+    req: RequestRecord,
+    input: { kind: ApprovalKind; action: string; description: string; riskLevel: RequestRecord["riskLevel"]; actionClass: ActionClass },
+    options?: { advanceStatus?: boolean },
+  ) {
+    if (!canRequestCustomerApproval(actor) && !isClientRole(actor.role)) throw new AuthzError();
+    const existing = this.data.approvals.find(
+      (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending",
+    );
+    if (existing) return existing;
     const approval: Approval = {
       id: uid("ap"),
       organizationId: req.organizationId,
-      requestId,
-      actionClass,
+      requestId: req.id,
+      kind: input.kind,
+      action: input.action,
+      description: input.description,
+      riskLevel: input.riskLevel,
+      actionClass: input.actionClass,
       status: "pending",
       requestedBy: actor.id,
       decidedBy: null,
-      reason,
+      reason: input.description,
       decisionNote: null,
       createdAt: nowIso(),
       decidedAt: null,
     };
     this.data.approvals.unshift(approval);
-    if (req.status !== "awaiting_approval" && req.status !== "cancelled") {
-      req.status = "awaiting_approval";
-      req.updatedAt = nowIso();
+    const advance = options?.advanceStatus !== false;
+    if (advance && req.status !== "cancelled") {
+      if (input.kind === "execution_plan") {
+        req.status = "awaiting_plan_approval";
+      } else {
+        req.status = "awaiting_action_approval";
+      }
     }
-    this.audit(actor, "approval.requested", "approval", approval.id, req.organizationId, { actionClass, requestId });
+    req.updatedAt = nowIso();
+    this.audit(actor, "approval.requested", "approval", approval.id, req.organizationId, {
+      kind: input.kind,
+      requestId: req.id,
+    });
     return approval;
   }
 
@@ -1063,15 +1533,273 @@ export class MemoryStore {
     approval.decidedAt = nowIso();
     const req = this.data.requests.find((r) => r.id === approval.requestId);
     if (req) {
-      req.status = decision === "approved" ? "queued" : "cancelled";
+      const from = req.status;
+      if (approval.kind === "execution_plan") {
+        req.status = decision === "approved" ? "queued" : "cancelled";
+      } else if (decision === "rejected") {
+        req.status = "blocked";
+      } else if (approval.kind === "sensitive_action") {
+        req.status = "in_progress";
+      } else if (this.data.qaReviews.some((q) => q.requestId === req.id && q.passed)) {
+        req.status = "ready_to_deliver";
+      } else if (req.status === "awaiting_action_approval") {
+        req.status = req.assignedOperatorId ? "in_progress" : "queued";
+      }
       req.updatedAt = nowIso();
       this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
-        from: "awaiting_approval",
+        from,
         to: req.status,
       });
     }
-    this.audit(actor, "approval.decided", "approval", approval.id, approval.organizationId, { decision });
+    this.audit(actor, "approval.decided", "approval", approval.id, approval.organizationId, { decision, kind: approval.kind });
     return approval;
+  }
+
+  modifyPlan(actor: Actor, requestId: string, steps: string[]) {
+    if (!canDecideApproval(actor)) throw new AuthzError();
+    const req = this.getRequest(actor, requestId);
+    if (req.status !== "awaiting_plan_approval") throw new DomainError("Plan can only be modified before it is approved");
+    this.data.steps = this.data.steps.filter((s) => s.requestId !== requestId);
+    steps.filter(Boolean).forEach((title, i) => {
+      this.data.steps.push({
+        id: uid("st"),
+        organizationId: req.organizationId,
+        requestId,
+        title,
+        detail: "Revised by customer",
+        owner: "operator",
+        status: "pending",
+        sortOrder: i + 1,
+      });
+    });
+    const plan = this.data.plans[requestId];
+    if (plan) {
+      plan.steps = steps.filter(Boolean).map((title) => ({ title, detail: "Revised by customer", owner: "operator" as const }));
+    }
+    this.audit(actor, "request.scope_updated", "request", requestId, req.organizationId, { plan: "modified" });
+    return this.getRequestBundle(actor, requestId);
+  }
+
+  askClarification(actor: Actor, requestId: string, question: string) {
+    if (!canMutateOpsQueue(actor)) throw new AuthzError();
+    const req = this.getRequest(actor, requestId);
+    const row: Clarification = {
+      id: uid("cl"),
+      organizationId: req.organizationId,
+      requestId,
+      question,
+      askedBy: actor.id,
+      answer: null,
+      answeredBy: null,
+      createdAt: nowIso(),
+      answeredAt: null,
+    };
+    this.data.clarifications.push(row);
+    req.status = "needs_clarification";
+    req.updatedAt = nowIso();
+    return row;
+  }
+
+  answerClarification(actor: Actor, clarificationId: string, answer: string) {
+    if (!canDecideApproval(actor)) throw new AuthzError();
+    const row = this.data.clarifications.find((c) => c.id === clarificationId);
+    if (!row) throw new DomainError("Clarification not found");
+    assertOrgAccess(actor, row.organizationId);
+    row.answer = answer;
+    row.answeredBy = actor.id;
+    row.answeredAt = nowIso();
+    const open = this.data.clarifications.filter((c) => c.requestId === row.requestId && !c.answer);
+    const req = this.data.requests.find((r) => r.id === row.requestId);
+    if (req && open.length === 0) {
+      req.missingContext = [];
+      req.status = "awaiting_plan_approval";
+      req.updatedAt = nowIso();
+      const plan = this.data.plans[req.id];
+      this.createApprovalRecord(actor, req, {
+        kind: "execution_plan",
+        action: "Approve execution plan",
+        description: plan?.summary ?? req.objective,
+        riskLevel: req.riskLevel,
+        actionClass: req.approvalLevel,
+      });
+    }
+    return row;
+  }
+
+  addInternalNote(actor: Actor, requestId: string, body: string) {
+    if (!canMutateOpsQueue(actor)) throw new AuthzError();
+    const req = this.getRequest(actor, requestId);
+    const note = {
+      id: uid("nt"),
+      organizationId: req.organizationId,
+      requestId,
+      authorId: actor.id,
+      body,
+      createdAt: nowIso(),
+    };
+    this.data.internalNotes.push(note);
+    return note;
+  }
+
+  deliverRequest(actor: Actor, requestId: string, pack: Omit<DeliveryPackage, "id" | "organizationId" | "requestId" | "createdBy" | "createdAt">) {
+    if (!canMutateOpsQueue(actor)) throw new AuthzError();
+    const req = this.getRequest(actor, requestId);
+    if (req.status !== "ready_to_deliver" && req.status !== "qa") {
+      throw new DomainError("Only checked work can be delivered");
+    }
+    const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
+    const outboundApproved = this.data.approvals.some(
+      (a) => a.requestId === req.id && a.kind === "external_email" && a.status === "approved",
+    );
+    if (needsOutbound && !outboundApproved) {
+      throw new DomainError("Outbound action requires customer approval before delivery");
+    }
+    const from = req.status;
+    const delivery: DeliveryPackage = {
+      id: uid("dl"),
+      organizationId: req.organizationId,
+      requestId,
+      createdBy: actor.id,
+      createdAt: nowIso(),
+      summary: pack.summary,
+      deliverables: pack.deliverables ?? [req.deliverable],
+      attachments: pack.attachments ?? this.data.attachments.filter((a) => a.requestId === requestId).map((a) => a.name),
+      actionsTaken: pack.actionsTaken ?? [],
+      exceptions: pack.exceptions ?? [],
+      unresolvedDecisions: pack.unresolvedDecisions ?? [],
+      nextStep: pack.nextStep ?? "",
+    };
+    this.data.deliveries.push(delivery);
+    if (needsOutbound) {
+      this.audit(actor, "execution.external", "request", req.id, req.organizationId, {
+        phase: "deliver",
+        approved: true,
+      });
+    }
+    req.status = "delivered";
+    req.updatedAt = nowIso();
+    this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
+      from,
+      to: "delivered",
+    });
+    return delivery;
+  }
+
+  generatePlaybookFromRequest(actor: Actor, requestId: string, name?: string) {
+    if (!canWritePlaybook(actor)) throw new AuthzError();
+    const req = this.getRequest(actor, requestId);
+    if (req.status !== "accepted" && req.status !== "delivered") {
+      throw new DomainError("Playbooks are captured after delivery");
+    }
+    const steps = this.data.steps.filter((s) => s.requestId === requestId).map((s) => s.title);
+    const pb: Playbook = {
+      id: uid("pb"),
+      organizationId: req.organizationId,
+      title: name || `${req.title} playbook`,
+      objective: req.objective,
+      workstreamId: req.workstreamId,
+      currentVersion: 1,
+      createdBy: actor.id,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    this.data.playbooks.unshift(pb);
+    this.data.playbookVersions.push({
+      id: uid("pv"),
+      organizationId: req.organizationId,
+      playbookId: pb.id,
+      version: 1,
+      steps: steps.length ? steps : ["Confirm outcome", "Assemble context", "Produce draft", "QA", "Deliver"],
+      clientPreferences: req.customerInstructions ? [req.customerInstructions] : [],
+      warnings: req.externalCommunication ? ["External action requires approval"] : [],
+      trigger: req.recurring ? "Recurring schedule" : "On request",
+      requiredInputs: req.missingContext.length ? req.missingContext : ["Source files", "Outcome statement"],
+      tools: [],
+      authorityLimits: [req.approvalLevel.replaceAll("_", " ")],
+      approvalPoints: this.data.approvals.filter((a) => a.requestId === requestId).map((a) => a.action),
+      qaChecklist: req.qaChecklist.length
+        ? req.qaChecklist
+        : ["Matches objective", "Authority respected", "Uncertainty disclosed"],
+      knownExceptions: this.data.deliveries.find((d) => d.requestId === requestId)?.exceptions ?? [],
+      templates: [],
+      createdBy: actor.id,
+      createdAt: nowIso(),
+    });
+    return pb;
+  }
+
+  setWorkstreamSchedule(actor: Actor, workstreamId: string, schedule: WorkstreamSchedule | null) {
+    if (!canMutateOpsQueue(actor) && actor.role !== "client_admin") throw new AuthzError();
+    const ws = this.getWorkstream(actor, workstreamId);
+    ws.schedule = schedule;
+    ws.nextRunAt = computeNextRunAt(schedule);
+    ws.updatedAt = nowIso();
+    return ws;
+  }
+
+  async runWorkstreamSchedule(actor: Actor, workstreamId: string) {
+    if (!canMutateOpsQueue(actor) && actor.role !== "client_admin") throw new AuthzError();
+    const ws = this.getWorkstream(actor, workstreamId);
+    if (!ws.schedule || ws.schedule.cadence === "none") throw new DomainError("No recurring schedule");
+    const founder = this.data.members.find((m) => m.organizationId === ws.organizationId && m.role === "client_admin");
+    const playbook = this.data.playbooks.find((p) => p.workstreamId === ws.id && p.organizationId === ws.organizationId);
+    const tasks = ws.schedule.tasks.join(". ");
+    const bundle = await this.createRequest(
+      {
+        id: founder?.userId ?? actor.id,
+        email: "",
+        name: "Schedule",
+        role: "client_admin",
+        organizationId: ws.organizationId,
+        operatorId: null,
+      },
+      {
+        title: `${ws.name}: scheduled run`,
+        objective: ws.objective,
+        description: `${ws.objective} Scheduled operating checklist: ${tasks}. Use the authorized systems and the customer playbook for this workstream.`,
+        deliverable: "Completed scheduled checklist",
+        dueAt: nowIso(),
+        workstreamId: ws.id,
+        playbookId: playbook?.id ?? null,
+        recurring: true,
+        externalCommunication: false,
+      },
+    );
+    ws.nextRunAt = computeNextRunAt(ws.schedule);
+    if (ws.nextRunAt && new Date(ws.nextRunAt).getTime() <= Date.now()) {
+      ws.nextRunAt = new Date(Date.now() + 86400000).toISOString();
+    }
+    ws.updatedAt = nowIso();
+    this.audit(actor, "schedule.generated", "workstream", ws.id, ws.organizationId, {
+      requestId: bundle.request.id,
+    });
+    return bundle;
+  }
+
+  async runDueSchedules(actor: Actor, now = new Date()) {
+    const workstreams = this.listWorkstreams(actor).filter(
+      (w) => w.schedule && w.schedule.cadence !== "none" && w.nextRunAt && new Date(w.nextRunAt).getTime() <= now.getTime(),
+    );
+    const created = [];
+    for (const ws of workstreams) {
+      const day = now.toISOString().slice(0, 10);
+      const already = this.data.requests.some(
+        (r) =>
+          r.workstreamId === ws.id &&
+          r.recurring &&
+          /scheduled run/i.test(r.title) &&
+          r.createdAt.slice(0, 10) === day,
+      );
+      if (already) {
+        ws.nextRunAt = computeNextRunAt(ws.schedule);
+        if (ws.nextRunAt && new Date(ws.nextRunAt).getTime() <= now.getTime()) {
+          ws.nextRunAt = new Date(now.getTime() + 86400000).toISOString();
+        }
+        continue;
+      }
+      created.push(await this.runWorkstreamSchedule(actor, ws.id));
+    }
+    return created;
   }
 
   listPlaybooks(actor: Actor, organizationId?: string) {
@@ -1092,14 +1820,31 @@ export class MemoryStore {
       .filter((v) => v.playbookId === id)
       .sort((a, b) => b.version - a.version);
     const linkedRequests = this.data.requests.filter(
-      (r) => r.organizationId === pb.organizationId && r.workstreamId === pb.workstreamId,
+      (r) =>
+        r.organizationId === pb.organizationId &&
+        (r.playbookId === pb.id || (pb.workstreamId && r.workstreamId === pb.workstreamId)),
     );
     return { playbook: pb, versions, current: versions[0] ?? null, linkedRequests };
   }
 
   createPlaybook(
     actor: Actor,
-    input: { title: string; objective: string; workstreamId: string | null; steps: string[]; preferences: string[]; warnings: string[] },
+    input: {
+      title: string;
+      objective: string;
+      workstreamId: string | null;
+      steps: string[];
+      preferences: string[];
+      warnings: string[];
+      trigger?: string;
+      requiredInputs?: string[];
+      tools?: string[];
+      authorityLimits?: string[];
+      approvalPoints?: string[];
+      qaChecklist?: string[];
+      knownExceptions?: string[];
+      templates?: string[];
+    },
   ) {
     if (!canWritePlaybook(actor)) throw new AuthzError();
     const fromWorkstream = input.workstreamId
@@ -1127,13 +1872,38 @@ export class MemoryStore {
       steps: input.steps,
       clientPreferences: input.preferences,
       warnings: input.warnings,
+      ...emptyPlaybookVersionFields(),
+      trigger: input.trigger ?? "",
+      requiredInputs: input.requiredInputs ?? [],
+      tools: input.tools ?? [],
+      authorityLimits: input.authorityLimits ?? [],
+      approvalPoints: input.approvalPoints ?? [],
+      qaChecklist: input.qaChecklist ?? [],
+      knownExceptions: input.knownExceptions ?? [],
+      templates: input.templates ?? [],
       createdBy: actor.id,
       createdAt: nowIso(),
     });
     return pb;
   }
 
-  addPlaybookVersion(actor: Actor, playbookId: string, input: { steps: string[]; preferences: string[]; warnings: string[] }) {
+  addPlaybookVersion(
+    actor: Actor,
+    playbookId: string,
+    input: {
+      steps: string[];
+      preferences: string[];
+      warnings: string[];
+      trigger?: string;
+      requiredInputs?: string[];
+      tools?: string[];
+      authorityLimits?: string[];
+      approvalPoints?: string[];
+      qaChecklist?: string[];
+      knownExceptions?: string[];
+      templates?: string[];
+    },
+  ) {
     if (!canWritePlaybook(actor)) throw new AuthzError();
     const pb = this.data.playbooks.find((p) => p.id === playbookId);
     if (!pb) throw new DomainError("Playbook not found");
@@ -1148,6 +1918,15 @@ export class MemoryStore {
       steps: input.steps,
       clientPreferences: input.preferences,
       warnings: input.warnings,
+      ...emptyPlaybookVersionFields(),
+      trigger: input.trigger ?? "",
+      requiredInputs: input.requiredInputs ?? [],
+      tools: input.tools ?? [],
+      authorityLimits: input.authorityLimits ?? [],
+      approvalPoints: input.approvalPoints ?? [],
+      qaChecklist: input.qaChecklist ?? [],
+      knownExceptions: input.knownExceptions ?? [],
+      templates: input.templates ?? [],
       createdBy: actor.id,
       createdAt: nowIso(),
     };
@@ -1155,14 +1934,16 @@ export class MemoryStore {
     return version;
   }
 
-  addComment(actor: Actor, requestId: string, body: string) {
+  addComment(actor: Actor, requestId: string, body: string, visibility: Comment["visibility"] = "customer") {
     const req = this.getRequest(actor, requestId);
+    const resolved = isClientRole(actor.role) ? "customer" : visibility;
     const comment: Comment = {
       id: uid("cm"),
       organizationId: req.organizationId,
       requestId,
       authorId: actor.id,
       body,
+      visibility: resolved,
       createdAt: nowIso(),
     };
     this.data.comments.push(comment);
@@ -1186,9 +1967,23 @@ export class MemoryStore {
     return entry;
   }
 
-  createQaReview(actor: Actor, requestId: string, input: { passed: boolean; score: number; notes: string }) {
+  createQaReview(
+    actor: Actor,
+    requestId: string,
+    input: {
+      passed: boolean;
+      score: number;
+      notes: string;
+      checklist?: Array<{ item: string; ok: boolean }>;
+      defects?: string[];
+    },
+  ) {
     if (!canMutateOpsQueue(actor)) throw new AuthzError();
     const req = this.getRequest(actor, requestId);
+    if (req.status !== "qa") throw new DomainError("QA reviews are recorded from the QA stage");
+    const checklist =
+      input.checklist ??
+      req.qaChecklist.map((item) => ({ item, ok: input.passed }));
     const review: QaReview = {
       id: uid("qa"),
       organizationId: req.organizationId,
@@ -1197,10 +1992,34 @@ export class MemoryStore {
       passed: input.passed,
       score: input.score,
       notes: input.notes,
+      checklist,
+      defects: input.defects ?? [],
       createdAt: nowIso(),
     };
     this.data.qaReviews.unshift(review);
-    req.status = input.passed ? "ready" : "in_progress";
+    if (input.notes) {
+      this.addComment(actor, requestId, input.notes, "internal");
+    }
+    if (!input.passed) {
+      req.status = "revision_required";
+    } else {
+      const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
+      const outboundApproved = this.data.approvals.some(
+        (a) => a.requestId === req.id && a.kind === "external_email" && a.status === "approved",
+      );
+      if (needsOutbound && !outboundApproved) {
+        this.createApprovalRecord(actor, req, {
+          kind: "external_email",
+          action: "Send prepared outbound follow-up",
+          description: "QA passed. Outbound communication still requires explicit customer approval before delivery.",
+          riskLevel: req.riskLevel,
+          actionClass: "external_execution",
+        });
+        req.status = "awaiting_action_approval";
+      } else {
+        req.status = "ready_to_deliver";
+      }
+    }
     req.updatedAt = nowIso();
     this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
       from: "qa",
@@ -1208,10 +2027,6 @@ export class MemoryStore {
       qa: input.passed,
     });
     return review;
-  }
-
-  deliverRequest(actor: Actor, requestId: string) {
-    return this.transitionRequest(actor, requestId, "delivered");
   }
 
   listIntegrations(actor: Actor) {

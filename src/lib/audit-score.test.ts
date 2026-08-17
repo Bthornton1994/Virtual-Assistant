@@ -25,7 +25,9 @@ describe("delegation audit", () => {
     const result = scoreDelegationAudit(base);
     expect(result.score).toBeGreaterThan(40);
     expect(result.delegatableHoursEstimate).toBeGreaterThan(0);
-    expect(result.recommendedWorkstreams).toContain("Inbox Operations");
+    expect(result.recommendedWorkstreams).toContain("Executive Operations");
+    expect(result.opportunities[0]?.name).toBeTruthy();
+    expect(["LOW", "MODERATE", "HIGH"]).toContain(result.readiness);
     expect(result.notes.some((n) => /estimate/i.test(n))).toBe(true);
   });
 });

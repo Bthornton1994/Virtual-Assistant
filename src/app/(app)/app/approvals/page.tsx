@@ -1,52 +1,65 @@
 import { decideApprovalAction } from "@/app/actions/requests";
-import { ActionClassBadge, EmptyState, PageHeader } from "@/components/product";
+import { ActionClassBadge, EmptyState, PageHeader, RiskBadge } from "@/components/product";
 import { Button, Input } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
+import { APPROVAL_KIND_COPY } from "@/lib/domain";
 import { getStore } from "@/lib/store";
 
 export const metadata = { title: "Approvals" };
 
 export default async function ApprovalsPage() {
   const actor = await requireClient();
-  const approvals = getStore().listApprovals(actor);
+  const store = getStore();
+  const approvals = store.listApprovals(actor);
   return (
     <div className="space-y-6">
       <PageHeader
         title="Approvals"
-        description="Sensitive execution never proceeds without an explicit decision here."
+        description="Explicit approval objects. Sensitive execution never proceeds without a record here."
       />
       {approvals.length === 0 ? (
         <EmptyState
           title="Nothing needs your signature"
-          body="External and sensitive work pauses here. When operations needs authority, the request and the action class will appear on this list."
+          body="Execution plans, external email, CRM changes, vendor communication, and sensitive actions pause here."
         />
       ) : (
-      <div className="space-y-4">
-        {approvals.map((a) => (
-          <article key={a.id} className="rounded-xl border border-line bg-surface p-5">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-medium">{a.request?.title ?? a.requestId}</h2>
-              <ActionClassBadge value={a.actionClass} />
-              <span className="text-xs uppercase text-muted">{a.status}</span>
-            </div>
-            <p className="mt-2 text-sm text-muted">{a.reason}</p>
-            {a.status === "pending" ? (
-              <form action={decideApprovalAction} className="mt-4 flex flex-col gap-2 sm:flex-row">
-                <input type="hidden" name="approvalId" value={a.id} />
-                <Input name="note" placeholder="Decision note" className="sm:max-w-sm" />
-                <Button name="decision" value="approved" type="submit">
-                  Approve
-                </Button>
-                <Button name="decision" value="rejected" type="submit" variant="secondary">
-                  Reject
-                </Button>
-              </form>
-            ) : (
-              <p className="mt-2 text-xs text-muted">{a.decisionNote}</p>
-            )}
-          </article>
-        ))}
-      </div>
+        <div className="space-y-4">
+          {approvals.map((a) => (
+            <article key={a.id} className="rounded-xl border border-line bg-surface p-5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-medium">{a.request?.title ?? a.requestId}</h2>
+                <span className="rounded-full border border-line px-2 py-0.5 text-xs">
+                  {APPROVAL_KIND_COPY[a.kind].label}
+                </span>
+                <ActionClassBadge value={a.actionClass} />
+                <RiskBadge risk={a.riskLevel} />
+                <span className="text-xs uppercase text-muted">{a.status}</span>
+              </div>
+              <p className="mt-2 text-sm">{a.action}</p>
+              <p className="mt-1 text-sm text-muted">{a.description || a.reason}</p>
+              <p className="mt-2 text-xs text-muted">
+                Requested by {store.userName(a.requestedBy)} at {new Date(a.createdAt).toLocaleString()}
+                {a.decidedBy
+                  ? ` · ${a.status} by ${store.userName(a.decidedBy)} at ${a.decidedAt ? new Date(a.decidedAt).toLocaleString() : "—"}`
+                  : ""}
+              </p>
+              {a.status === "pending" ? (
+                <form action={decideApprovalAction} className="mt-4 flex flex-col gap-2 sm:flex-row">
+                  <input type="hidden" name="approvalId" value={a.id} />
+                  <Input name="note" placeholder="Decision notes" className="sm:max-w-sm" />
+                  <Button name="decision" value="approved" type="submit">
+                    Approve
+                  </Button>
+                  <Button name="decision" value="rejected" type="submit" variant="secondary">
+                    Reject
+                  </Button>
+                </form>
+              ) : (
+                <p className="mt-2 text-xs text-muted">{a.decisionNote || "No decision notes."}</p>
+              )}
+            </article>
+          ))}
+        </div>
       )}
     </div>
   );
