@@ -1078,7 +1078,7 @@ export class MemoryStore {
     const fromWorkstream = input.workstreamId
       ? this.data.workstreams.find((w) => w.id === input.workstreamId)?.organizationId
       : null;
-    const orgId = actor.organizationId || fromWorkstream;
+    const orgId = actor.organizationId || fromWorkstream || this.visibleOrgIds(actor)[0];
     if (!orgId) throw new AuthzError("No organization");
     const pb: Playbook = {
       id: uid("pb"),
