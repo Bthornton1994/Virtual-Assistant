@@ -14,17 +14,53 @@ export const MANAGER_ROLES: Role[] = ["ops_manager", "platform_admin"];
 export const REQUEST_STATUSES = [
   "draft",
   "triage",
-  "awaiting_approval",
+  "needs_clarification",
+  "awaiting_plan_approval",
   "queued",
+  "assigned",
   "in_progress",
   "blocked",
   "qa",
-  "ready",
+  "revision_required",
+  "awaiting_action_approval",
+  "ready_to_deliver",
   "delivered",
   "accepted",
   "cancelled",
 ] as const;
 export type RequestStatus = (typeof REQUEST_STATUSES)[number];
+
+export const APPROVAL_KINDS = [
+  "execution_plan",
+  "external_email",
+  "crm_destructive_change",
+  "vendor_communication",
+  "sensitive_action",
+] as const;
+export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
+
+export const APPROVAL_KIND_COPY: Record<ApprovalKind, { label: string; description: string }> = {
+  execution_plan: {
+    label: "Execution plan",
+    description: "Approve the proposed path before work enters the operations queue.",
+  },
+  external_email: {
+    label: "External email",
+    description: "Send or act on outbound email outside the organization.",
+  },
+  crm_destructive_change: {
+    label: "CRM destructive change",
+    description: "Overwrite, merge, or delete CRM records.",
+  },
+  vendor_communication: {
+    label: "Vendor communication",
+    description: "Contact a vendor on the customer's behalf.",
+  },
+  sensitive_action: {
+    label: "Sensitive action",
+    description: "Consequential work. Never proceeds without explicit approval.",
+  },
+};
 
 export const ACTION_CLASSES = [
   "prepare_only",
@@ -59,6 +95,8 @@ export const AUDIT_ACTIONS = [
   "permission.changed",
   "integration.accessed",
   "ai.action",
+  "memory.updated",
+  "schedule.generated",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -88,6 +126,71 @@ export type Organization = {
   timezone: string;
   createdAt: string;
 };
+
+export const OPERATING_MEMORY_FIELDS = [
+  { key: "communicationTone", label: "Communication tone" },
+  { key: "preferredMeetingWindows", label: "Preferred meeting windows" },
+  { key: "crmRules", label: "CRM rules" },
+  { key: "escalationContacts", label: "Escalation contacts" },
+  { key: "preferredVendors", label: "Preferred vendors" },
+  { key: "prohibitedActions", label: "Prohibited actions" },
+  { key: "approvalThresholds", label: "Approval thresholds" },
+  { key: "formattingPreferences", label: "Formatting preferences" },
+] as const;
+
+export type OperatingMemoryFieldKey = (typeof OPERATING_MEMORY_FIELDS)[number]["key"];
+
+export type OperatingMemory = {
+  id: string;
+  organizationId: string;
+  communicationTone: string;
+  preferredMeetingWindows: string;
+  crmRules: string;
+  escalationContacts: string;
+  preferredVendors: string;
+  prohibitedActions: string;
+  approvalThresholds: string;
+  formattingPreferences: string;
+  updatedBy: string | null;
+  updatedAt: string;
+};
+
+export function emptyOperatingMemory(organizationId: string): OperatingMemory {
+  return {
+    id: uid("om"),
+    organizationId,
+    communicationTone: "",
+    preferredMeetingWindows: "",
+    crmRules: "",
+    escalationContacts: "",
+    preferredVendors: "",
+    prohibitedActions: "",
+    approvalThresholds: "",
+    formattingPreferences: "",
+    updatedBy: null,
+    updatedAt: nowIso(),
+  };
+}
+
+export function formatOperatingMemory(memory: OperatingMemory): string[] {
+  return OPERATING_MEMORY_FIELDS.map((field) => {
+    const value = memory[field.key].trim();
+    return value ? `${field.label}: ${value}` : "";
+  }).filter(Boolean);
+}
+
+export const QUEUE_SECTIONS: Array<{ id: string; label: string; statuses: RequestStatus[] }> = [
+  { id: "new", label: "New", statuses: ["draft"] },
+  { id: "needs_triage", label: "Needs triage", statuses: ["triage"] },
+  { id: "awaiting_customer", label: "Awaiting customer", statuses: ["needs_clarification", "awaiting_plan_approval"] },
+  { id: "ready", label: "Ready", statuses: ["queued"] },
+  { id: "assigned", label: "Assigned", statuses: ["assigned"] },
+  { id: "in_progress", label: "In progress", statuses: ["in_progress"] },
+  { id: "blocked", label: "Blocked", statuses: ["blocked"] },
+  { id: "qa", label: "QA", statuses: ["qa", "revision_required"] },
+  { id: "awaiting_approval", label: "Awaiting approval", statuses: ["awaiting_action_approval"] },
+  { id: "ready_to_deliver", label: "Ready to deliver", statuses: ["ready_to_deliver"] },
+];
 
 export type OrganizationMember = {
   id: string;
@@ -130,6 +233,12 @@ export type WorkstreamTemplate = {
   metrics: string[];
 };
 
+export type WorkstreamSchedule = {
+  cadence: "weekdays" | "weekly" | "none";
+  time: string;
+  tasks: string[];
+};
+
 export type Workstream = {
   id: string;
   organizationId: string;
@@ -143,6 +252,8 @@ export type Workstream = {
   status: WorkstreamStatus;
   healthScore: number;
   hoursReturned: number;
+  schedule: WorkstreamSchedule | null;
+  nextRunAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -167,6 +278,11 @@ export type RequestRecord = {
   automationScore: number;
   recurring: boolean;
   externalCommunication: boolean;
+  playbookId: string | null;
+  missingContext: string[];
+  customerInstructions: string;
+  internalInstructions: string;
+  qaChecklist: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -195,6 +311,10 @@ export type Approval = {
   id: string;
   organizationId: string;
   requestId: string;
+  kind: ApprovalKind;
+  action: string;
+  description: string;
+  riskLevel: RiskLevel;
   actionClass: ActionClass;
   status: "pending" | "approved" | "rejected";
   requestedBy: string;
@@ -203,6 +323,33 @@ export type Approval = {
   decisionNote: string | null;
   createdAt: string;
   decidedAt: string | null;
+};
+
+export type Clarification = {
+  id: string;
+  organizationId: string;
+  requestId: string;
+  question: string;
+  askedBy: string;
+  answer: string | null;
+  answeredBy: string | null;
+  createdAt: string;
+  answeredAt: string | null;
+};
+
+export type DeliveryPackage = {
+  id: string;
+  organizationId: string;
+  requestId: string;
+  summary: string;
+  deliverables: string[];
+  attachments: string[];
+  actionsTaken: string[];
+  exceptions: string[];
+  unresolvedDecisions: string[];
+  nextStep: string;
+  createdBy: string;
+  createdAt: string;
 };
 
 export type Playbook = {
@@ -225,6 +372,14 @@ export type PlaybookVersion = {
   steps: string[];
   clientPreferences: string[];
   warnings: string[];
+  trigger: string;
+  requiredInputs: string[];
+  tools: string[];
+  authorityLimits: string[];
+  approvalPoints: string[];
+  qaChecklist: string[];
+  knownExceptions: string[];
+  templates: string[];
   createdBy: string;
   createdAt: string;
 };
@@ -235,6 +390,7 @@ export type Comment = {
   requestId: string;
   authorId: string;
   body: string;
+  visibility: "customer" | "internal";
   createdAt: string;
 };
 
@@ -267,6 +423,8 @@ export type QaReview = {
   passed: boolean;
   score: number;
   notes: string;
+  checklist: Array<{ item: string; ok: boolean }>;
+  defects: string[];
   createdAt: string;
 };
 
@@ -327,6 +485,7 @@ export type CreateRequestInput = {
   deliverable: string;
   dueAt: string | null;
   workstreamId: string | null;
+  playbookId?: string | null;
   recurring: boolean;
   externalCommunication: boolean;
   files?: string[];
@@ -408,13 +567,17 @@ export function canExportData(actor: Actor) {
 
 export const STATUS_TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
   draft: ["triage", "cancelled"],
-  triage: ["awaiting_approval", "queued", "cancelled"],
-  awaiting_approval: ["queued", "cancelled", "triage"],
-  queued: ["in_progress", "awaiting_approval", "cancelled"],
-  in_progress: ["blocked", "qa", "awaiting_approval", "cancelled"],
-  blocked: ["in_progress", "queued", "cancelled"],
-  qa: ["ready", "in_progress", "cancelled"],
-  ready: ["delivered", "in_progress", "cancelled"],
+  triage: ["needs_clarification", "awaiting_plan_approval", "queued", "cancelled"],
+  needs_clarification: ["triage", "awaiting_plan_approval", "cancelled"],
+  awaiting_plan_approval: ["queued", "triage", "needs_clarification", "cancelled"],
+  queued: ["assigned", "in_progress", "cancelled", "awaiting_plan_approval"],
+  assigned: ["in_progress", "queued", "cancelled"],
+  in_progress: ["blocked", "qa", "awaiting_action_approval", "cancelled"],
+  blocked: ["in_progress", "assigned", "queued", "cancelled"],
+  qa: ["ready_to_deliver", "revision_required", "in_progress", "cancelled"],
+  revision_required: ["in_progress", "qa", "cancelled"],
+  awaiting_action_approval: ["in_progress", "qa", "cancelled"],
+  ready_to_deliver: ["delivered", "in_progress", "cancelled"],
   delivered: ["accepted", "in_progress"],
   accepted: [],
   cancelled: [],
@@ -433,7 +596,87 @@ export function blocksWithoutApproval(actionClass: ActionClass) {
 }
 
 export function activeWorkStatuses(): RequestStatus[] {
-  return ["triage", "awaiting_approval", "queued", "in_progress", "blocked", "qa", "ready"];
+  return [
+    "triage",
+    "needs_clarification",
+    "awaiting_plan_approval",
+    "queued",
+    "assigned",
+    "in_progress",
+    "blocked",
+    "qa",
+    "revision_required",
+    "awaiting_action_approval",
+    "ready_to_deliver",
+  ];
+}
+
+export function identifyMissingContext(input: {
+  title: string;
+  objective: string;
+  description: string;
+  deliverable: string;
+  files?: string[];
+  playbookApplied?: boolean;
+}) {
+  if (input.playbookApplied) return [];
+  const missing: string[] = [];
+  if (!input.deliverable.trim()) missing.push("What does done look like? Name the deliverable.");
+  if (input.description.trim().length < 40) missing.push("More context: systems, people, and source material.");
+  if (/crm|hubspot|salesforce/i.test(`${input.title} ${input.description}`) && !/hubspot|salesforce/i.test(input.description)) {
+    missing.push("Which CRM and which records or pipeline views should we use?");
+  }
+  if (!input.files?.length && /attach|file|sheet|export/i.test(`${input.title} ${input.description}`)) {
+    missing.push("Attach the source file or export this request refers to.");
+  }
+  return missing;
+}
+
+export function inferApprovalKind(text: string): ApprovalKind | null {
+  const t = text.toLowerCase();
+  if (/\b(email|send |outreach|follow-up mail)\b/.test(t)) return "external_email";
+  if (/\b(crm|hubspot|salesforce|overwrite|merge record|delete deal)\b/.test(t)) return "crm_destructive_change";
+  if (/\bvendor\b/.test(t)) return "vendor_communication";
+  if (/\b(sensitive|payment|wire|access|credential|fund)\b/.test(t)) return "sensitive_action";
+  if (/\b(plan|approv)\b/.test(t)) return "execution_plan";
+  return null;
+}
+
+export function emptyPlaybookVersionFields(): Pick<
+  PlaybookVersion,
+  | "trigger"
+  | "requiredInputs"
+  | "tools"
+  | "authorityLimits"
+  | "approvalPoints"
+  | "qaChecklist"
+  | "knownExceptions"
+  | "templates"
+> {
+  return {
+    trigger: "",
+    requiredInputs: [],
+    tools: [],
+    authorityLimits: [],
+    approvalPoints: [],
+    qaChecklist: [],
+    knownExceptions: [],
+    templates: [],
+  };
+}
+
+export function computeNextRunAt(schedule: WorkstreamSchedule | null): string | null {
+  if (!schedule || schedule.cadence === "none") return null;
+  const [hh, mm] = (schedule.time || "08:00").split(":").map((n) => Number(n) || 0);
+  const d = new Date();
+  d.setSeconds(0, 0);
+  d.setMilliseconds(0);
+  d.setHours(hh, mm, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+  if (schedule.cadence === "weekdays") {
+    while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  }
+  return d.toISOString();
 }
 
 export function deliveredStatuses(): RequestStatus[] {

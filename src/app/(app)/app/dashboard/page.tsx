@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { Button } from "@/components/ui";
-import { EmptyState, HealthBar, Metric, PageHeader, StatusBadge, formatHours } from "@/components/product";
+import { EmptyState, PageHeader, StatusBadge } from "@/components/product";
 import { requireClient } from "@/lib/auth";
-import { activeWorkStatuses, deliveredStatuses } from "@/lib/domain";
+import { formatOperatingMemory } from "@/lib/domain";
 import { getStore } from "@/lib/store";
 
 export const metadata = { title: "Dashboard" };
@@ -10,120 +10,184 @@ export const metadata = { title: "Dashboard" };
 export default async function DashboardPage() {
   const actor = await requireClient();
   const store = getStore();
+  if (actor.role === "client_admin" || actor.role === "platform_admin") {
+    await store.runDueSchedules(actor);
+  }
   const orgId = actor.organizationId ?? store.listOrganizations(actor)[0]?.id;
+  const org = orgId ? store.getOrganization(actor, orgId) : null;
   const workstreams = store.listWorkstreams(actor, orgId);
   const requests = store.listRequests(actor, { organizationId: orgId });
   const approvals = store.listApprovals(actor, orgId).filter((a) => a.status === "pending");
-  const hours = orgId ? store.hoursReturned(actor, orgId) : 0;
-  const recent = requests.filter((r) => deliveredStatuses().includes(r.status)).slice(0, 4);
-  const feed = store.activityFeed(actor, orgId);
-  const counts = Object.fromEntries(
-    ["triage", "awaiting_approval", "queued", "in_progress", "blocked", "qa", "ready"].map((s) => [
-      s,
-      requests.filter((r) => r.status === s).length,
-    ]),
+  const clarifications = store.data.clarifications.filter(
+    (c) => !c.answer && requests.some((r) => r.id === c.requestId),
   );
+  const handled = requests.filter((r) =>
+    ["queued", "assigned", "in_progress", "qa", "awaiting_plan_approval", "awaiting_action_approval", "ready_to_deliver", "needs_clarification"].includes(
+      r.status,
+    ),
+  );
+  const blocked = requests.filter((r) => r.status === "blocked" || r.status === "revision_required");
+  const completed = requests.filter((r) => r.status === "delivered" || r.status === "accepted");
+  const recurringRunning = workstreams.filter((w) => w.schedule && w.schedule.cadence !== "none");
+  const playbooks = store.listPlaybooks(actor, orgId);
+  const memory = orgId ? store.getOperatingMemory(actor, orgId) : null;
+  const walk = requests.find((r) => r.id === "req_conference" && r.status !== "accepted" && r.status !== "cancelled");
 
   return (
     <div className="space-y-8">
       <PageHeader
-        kicker={store.listOrganizations(actor)[0]?.name ?? "Workspace"}
-        title="Hours returned"
-        description="Capacity you got back — not hours we sold you."
+        kicker={org?.name ?? "Workspace"}
+        title="What is in motion"
+        description="Status, decisions, and what the system learned — not a vanity scoreboard."
         actions={
           <Link href="/app/requests/new">
-            <Button>What should we take off your plate?</Button>
+            <Button>Delegate an outcome</Button>
           </Link>
         }
       />
 
-      <Metric label="Hours returned" value={formatHours(hours)} hint="Across active workstreams this period" large />
-
-      <div className="grid gap-3 sm:grid-cols-4">
-        <Metric label="Active workstreams" value={String(workstreams.filter((w) => w.status === "active").length)} />
-        <Metric label="Decisions needed" value={String(approvals.length)} />
-        <Metric label="Completed outcomes" value={String(recent.length)} />
-        <Metric label="In motion" value={String(requests.filter((r) => activeWorkStatuses().includes(r.status)).length)} />
-      </div>
+      {walk ? (
+        <Link
+          href={`/app/requests/${walk.id}`}
+          className="block rounded-xl border border-line bg-surface px-5 py-4 hover:bg-bg-elevated"
+        >
+          <p className="text-xs uppercase tracking-wide text-muted">Walk this request</p>
+          <p className="mt-1 font-medium">{walk.title}</p>
+          <p className="mt-1 text-sm text-muted">
+            Approve the plan. Ops assigns Maya Chen. Then execution, QA, outbound approval, delivery, and playbook.
+          </p>
+        </Link>
+      ) : null}
 
       <section>
-        <h2 className="mb-3 text-sm font-semibold">Request status</h2>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
-          {Object.entries(counts).map(([status, n]) => (
-            <div key={status} className="rounded-lg border border-line bg-surface px-3 py-3">
-              <p className="text-[11px] uppercase tracking-wide text-muted">{status.replaceAll("_", " ")}</p>
-              <p className="mt-1 text-xl font-semibold tabular-nums">{n}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <section>
-          <h2 className="mb-3 text-sm font-semibold">Workstream health</h2>
+        <h2 className="mb-3 text-sm font-semibold">1. What is being handled for me?</h2>
+        {handled.length === 0 ? (
+          <p className="text-sm text-muted">Nothing is in motion. Delegate an outcome to start.</p>
+        ) : (
           <div className="divide-y divide-line rounded-xl border border-line bg-surface">
-            {workstreams.map((ws) => (
-              <Link key={ws.id} href={`/app/workstreams/${ws.id}`} className="flex items-center justify-between px-4 py-3 hover:bg-bg-elevated">
-                <div>
-                  <p className="text-sm font-medium">{ws.name}</p>
-                  <p className="text-xs text-muted">{ws.status}</p>
-                </div>
-                <HealthBar score={ws.healthScore} />
+            {handled.map((r) => (
+              <Link key={r.id} href={`/app/requests/${r.id}`} className="flex items-center justify-between px-4 py-3 text-sm hover:bg-bg-elevated">
+                <span>{r.title}</span>
+                <StatusBadge status={r.status} />
               </Link>
             ))}
           </div>
-        </section>
-        <section className="space-y-6">
-          <div>
-            <h2 className="mb-3 text-sm font-semibold">Decisions needed</h2>
-            <div className="space-y-2">
-              {approvals.length === 0 ? (
-                <p className="text-sm text-muted">No approvals waiting. External and sensitive work will pause here.</p>
-              ) : (
-                approvals.map((a) => (
-                  <Link key={a.id} href="/app/approvals" className="block rounded-lg border border-line bg-surface px-4 py-3 text-sm hover:bg-bg-elevated">
-                    <p className="font-medium">{a.request?.title}</p>
-                    <p className="text-xs text-muted">{a.actionClass.replaceAll("_", " ")}</p>
-                  </Link>
-                ))
-              )}
-            </div>
-          </div>
-          <div>
-            <h2 className="mb-3 text-sm font-semibold">Completed outcomes</h2>
-            <div className="space-y-2">
-              {recent.length === 0 ? (
-                <p className="text-sm text-muted">No deliveries yet. Accepted outcomes will land here with their status.</p>
-              ) : (
-                recent.map((r) => (
-                  <Link key={r.id} href={`/app/requests/${r.id}`} className="flex items-center justify-between rounded-lg border border-line bg-surface px-4 py-3 text-sm hover:bg-bg-elevated">
-                    <span>{r.title}</span>
-                    <StatusBadge status={r.status} />
-                  </Link>
-                ))
-              )}
-            </div>
-          </div>
-        </section>
-      </div>
+        )}
+      </section>
 
       <section>
-        <h2 className="mb-3 text-sm font-semibold">Activity</h2>
-        {feed.length === 0 ? (
-          <EmptyState
-            title="No activity recorded"
-            body="Logins, request changes, approvals, assignments, and AI actions write to this feed for this organization only."
-          />
+        <h2 className="mb-3 text-sm font-semibold">2. What needs my decision?</h2>
+        {approvals.length === 0 && clarifications.length === 0 ? (
+          <p className="text-sm text-muted">No approvals or clarification questions are waiting.</p>
         ) : (
-        <ul className="space-y-2">
-          {feed.map((e) => (
-            <li key={e.id} className="flex justify-between gap-4 rounded-lg border border-line bg-surface px-4 py-2 text-sm">
-              <span>{e.action.replaceAll(".", " · ").replaceAll("_", " ")}</span>
-              <span className="text-xs text-muted">{new Date(e.createdAt).toLocaleString()}</span>
-            </li>
-          ))}
-        </ul>
+          <div className="space-y-2">
+            {approvals.map((a) => (
+              <Link key={a.id} href="/app/approvals" className="block rounded-lg border border-line bg-surface px-4 py-3 text-sm hover:bg-bg-elevated">
+                <p className="font-medium">{a.request?.title}</p>
+                <p className="text-xs text-muted">
+                  {a.kind.replaceAll("_", " ")} · {a.action}
+                </p>
+              </Link>
+            ))}
+            {clarifications.map((c) => (
+              <Link key={c.id} href={`/app/requests/${c.requestId}`} className="block rounded-lg border border-line bg-surface px-4 py-3 text-sm hover:bg-bg-elevated">
+                <p className="font-medium">{c.question}</p>
+                <p className="text-xs text-muted">Needs an answer</p>
+              </Link>
+            ))}
+          </div>
         )}
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold">3. What has been completed?</h2>
+        {completed.length === 0 ? (
+          <p className="text-sm text-muted">No deliveries yet.</p>
+        ) : (
+          <div className="divide-y divide-line rounded-xl border border-line bg-surface">
+            {completed.map((r) => (
+              <Link key={r.id} href={`/app/requests/${r.id}`} className="flex items-center justify-between px-4 py-3 text-sm hover:bg-bg-elevated">
+                <span>{r.title}</span>
+                <StatusBadge status={r.status} />
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold">4. What is blocked?</h2>
+        {blocked.length === 0 ? (
+          <p className="text-sm text-muted">Nothing is blocked.</p>
+        ) : (
+          <div className="divide-y divide-line rounded-xl border border-line bg-surface">
+            {blocked.map((r) => (
+              <Link key={r.id} href={`/app/requests/${r.id}`} className="flex items-center justify-between px-4 py-3 text-sm hover:bg-bg-elevated">
+                <span>{r.title}</span>
+                <StatusBadge status={r.status} />
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold">5. What recurring work is running?</h2>
+        {recurringRunning.length === 0 ? (
+          <p className="text-sm text-muted">No operating schedules are set.</p>
+        ) : (
+          <div className="space-y-2">
+            {recurringRunning.map((ws) => (
+              <Link key={ws.id} href={`/app/workstreams/${ws.id}`} className="block rounded-lg border border-line bg-surface px-4 py-3 text-sm hover:bg-bg-elevated">
+                <p className="font-medium">{ws.name}</p>
+                <p className="text-xs text-muted">
+                  {ws.schedule?.cadence === "weekdays" ? "Every weekday" : "Weekly"} at {ws.schedule?.time} ·{" "}
+                  {ws.schedule?.tasks.join(" · ")}
+                </p>
+                <p className="mt-1 text-xs text-muted">
+                  Next instance {ws.nextRunAt ? new Date(ws.nextRunAt).toLocaleString() : "queued"}
+                </p>
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold">6. What did Delegation Cloud learn?</h2>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-line bg-surface p-5">
+            <p className="text-xs uppercase tracking-wide text-muted">Playbooks</p>
+            {playbooks.length === 0 ? (
+              <p className="mt-2 text-sm text-muted">No playbooks captured yet. After a path is accepted, write it down.</p>
+            ) : (
+              <ul className="mt-2 space-y-2 text-sm">
+                {playbooks.map((p) => (
+                  <li key={p.id}>
+                    <Link href={`/app/playbooks/${p.id}`} className="hover:underline">
+                      {p.title} · v{p.currentVersion}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="rounded-xl border border-line bg-surface p-5">
+            <p className="text-xs uppercase tracking-wide text-muted">Operating memory</p>
+            {memory && formatOperatingMemory(memory).length ? (
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink-soft">
+                {formatOperatingMemory(memory).map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            ) : (
+              <EmptyState title="No preferences stored" body="Operating memory lives in Settings and is reused on future work." />
+            )}
+            <Link href="/app/settings" className="mt-3 inline-block text-sm underline">
+              Edit operating memory
+            </Link>
+          </div>
+        </div>
       </section>
     </div>
   );

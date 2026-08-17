@@ -6,13 +6,16 @@ import { ACTION_CLASS_COPY } from "@/lib/domain";
 
 export function StatusBadge({ status }: { status: RequestStatus }) {
   const tone =
-    status === "accepted" || status === "delivered" || status === "ready"
+    status === "accepted" || status === "delivered" || status === "ready_to_deliver"
       ? "good"
-      : status === "blocked" || status === "cancelled"
+      : status === "blocked" || status === "cancelled" || status === "revision_required"
         ? "bad"
-        : status === "awaiting_approval" || status === "qa"
+        : status === "awaiting_plan_approval" ||
+            status === "awaiting_action_approval" ||
+            status === "needs_clarification" ||
+            status === "qa"
           ? "warn"
-          : status === "in_progress" || status === "queued"
+          : status === "in_progress" || status === "queued" || status === "assigned"
             ? "info"
             : "neutral";
   return <Badge tone={tone}>{status.replaceAll("_", " ")}</Badge>;

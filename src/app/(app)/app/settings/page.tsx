@@ -1,7 +1,7 @@
-import { updateOrganizationAction } from "@/app/actions/requests";
+import { updateOperatingMemoryAction, updateOrganizationAction } from "@/app/actions/requests";
 import { PageHeader } from "@/components/product";
-import { Button, Field, Input } from "@/components/ui";
-import { ACTION_CLASS_COPY } from "@/lib/domain";
+import { Button, Field, Input, Textarea } from "@/components/ui";
+import { ACTION_CLASS_COPY, OPERATING_MEMORY_FIELDS } from "@/lib/domain";
 import { requireClient } from "@/lib/auth";
 import { getStore } from "@/lib/store";
 
@@ -50,6 +50,25 @@ export default async function SettingsPage() {
           <p className="mt-4 text-muted">Only a client admin can change organization settings.</p>
         </section>
       )}
+
+      {org && canEdit ? (
+        <form action={updateOperatingMemoryAction} className="space-y-4 rounded-xl border border-line bg-surface p-6">
+          <h2 className="text-sm font-semibold">Customer operating memory</h2>
+          <p className="text-sm text-muted">
+            Stored on the organization, not on a single request. Operators see these preferences on every future
+            execution.
+          </p>
+          {(() => {
+            const memory = store.getOperatingMemory(actor, org.id);
+            return OPERATING_MEMORY_FIELDS.map((field) => (
+              <Field key={field.key} label={field.label}>
+                <Textarea name={field.key} defaultValue={memory[field.key]} />
+              </Field>
+            ));
+          })()}
+          <Button type="submit">Save operating memory</Button>
+        </form>
+      ) : null}
 
       <section className="rounded-xl border border-line bg-surface p-6">
         <h2 className="text-sm font-semibold">Authority defaults</h2>

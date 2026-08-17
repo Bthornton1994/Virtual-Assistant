@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const sql = readFileSync(resolve(process.cwd(), "supabase/migrations/0001_init.sql"), "utf8");
+const sql =
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0001_init.sql"), "utf8") +
+  "\n" +
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0002_lifecycle.sql"), "utf8") +
+  "\n" +
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0003_operating.sql"), "utf8");
 
 const tenantTables = [
   "organizations",
@@ -26,6 +31,10 @@ const tenantTables = [
   "subscriptions",
   "usage_records",
   "audit_events",
+  "clarifications",
+  "deliveries",
+  "internal_notes",
+  "operating_memory",
 ];
 
 describe("RLS schema (practical)", () => {
@@ -51,6 +60,10 @@ describe("RLS schema (practical)", () => {
       "integrations",
       "subscriptions",
       "usage_records",
+      "clarifications",
+      "deliveries",
+      "internal_notes",
+      "operating_memory",
     ];
     for (const table of owned) {
       expect(sql).toMatch(new RegExp(`create table if not exists public\\.${table}[\\s\\S]*?organization_id uuid not null`));

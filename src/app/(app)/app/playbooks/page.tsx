@@ -50,11 +50,35 @@ export default async function PlaybooksPage() {
               ))}
             </select>
           </Field>
+          <Field label="Trigger">
+            <Input name="trigger" placeholder="Every weekday at 8 AM" />
+          </Field>
           <Field label="Steps (one per line)">
             <Textarea name="steps" />
           </Field>
+          <Field label="Required inputs">
+            <Textarea name="requiredInputs" />
+          </Field>
+          <Field label="Tools / systems">
+            <Textarea name="tools" />
+          </Field>
           <Field label="Client preferences (one per line)">
             <Textarea name="preferences" />
+          </Field>
+          <Field label="Authority limits">
+            <Textarea name="authorityLimits" />
+          </Field>
+          <Field label="Approval points">
+            <Textarea name="approvalPoints" />
+          </Field>
+          <Field label="QA checklist">
+            <Textarea name="qaChecklist" />
+          </Field>
+          <Field label="Known exceptions">
+            <Textarea name="knownExceptions" />
+          </Field>
+          <Field label="Templates">
+            <Textarea name="templates" />
           </Field>
           <Field label="Warnings (one per line)">
             <Textarea name="warnings" defaultValue="Do not send, purchase, publish, or change access without approval." />

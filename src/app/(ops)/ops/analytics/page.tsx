@@ -15,7 +15,9 @@ export default async function OpsAnalyticsPage() {
   const pass = qa.filter((q) => q.passed).length;
   const orgs = store.listOrganizations(actor);
   const blocked = requests.filter((r) => r.status === "blocked").length;
-  const waiting = requests.filter((r) => r.status === "awaiting_approval").length;
+  const waiting = requests.filter((r) =>
+    ["awaiting_plan_approval", "awaiting_action_approval", "needs_clarification"].includes(r.status),
+  ).length;
   const overdue = countOverdue(requests, currentTimeMs());
 
   if (requests.length === 0) {

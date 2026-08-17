@@ -6,8 +6,12 @@ import { Button, Field, Input, Textarea } from "@/components/ui";
 
 export function NewRequestForm({
   workstreams,
+  playbooks,
+  defaultPlaybookId,
 }: {
   workstreams: Array<{ id: string; name: string }>;
+  playbooks?: Array<{ id: string; title: string }>;
+  defaultPlaybookId?: string;
 }) {
   const [what, setWhat] = useState("");
   return (
@@ -48,6 +52,22 @@ export function NewRequestForm({
             ))}
           </select>
         </Field>
+        {playbooks?.length ? (
+          <Field label="Playbook (optional)" hint="A matching playbook pre-fills steps, approvals, instructions, and QA.">
+            <select
+              name="playbookId"
+              defaultValue={defaultPlaybookId ?? ""}
+              className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm"
+            >
+              <option value="">None — classify from the outcome</option>
+              {playbooks.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.title}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : null}
         <Field label="Files (names, comma separated)" hint="Demo mode stores metadata. Connect Supabase Storage in production.">
           <Input name="files" placeholder="brief-notes.pdf, rate-card.pdf" />
         </Field>
