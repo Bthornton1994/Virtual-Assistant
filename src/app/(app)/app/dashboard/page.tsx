@@ -41,9 +41,9 @@ export default async function DashboardPage() {
 
       <div className="grid gap-3 sm:grid-cols-4">
         <Metric label="Active workstreams" value={String(workstreams.filter((w) => w.status === "active").length)} />
+        <Metric label="Decisions needed" value={String(approvals.length)} />
+        <Metric label="Completed outcomes" value={String(recent.length)} />
         <Metric label="In motion" value={String(requests.filter((r) => activeWorkStatuses().includes(r.status)).length)} />
-        <Metric label="Approvals waiting" value={String(approvals.length)} />
-        <Metric label="Delivered" value={String(recent.length)} />
       </div>
 
       <section>
@@ -75,7 +75,7 @@ export default async function DashboardPage() {
         </section>
         <section className="space-y-6">
           <div>
-            <h2 className="mb-3 text-sm font-semibold">Approval requests</h2>
+            <h2 className="mb-3 text-sm font-semibold">Decisions needed</h2>
             <div className="space-y-2">
               {approvals.length === 0 ? (
                 <p className="text-sm text-muted">No approvals waiting. External and sensitive work will pause here.</p>
@@ -90,7 +90,7 @@ export default async function DashboardPage() {
             </div>
           </div>
           <div>
-            <h2 className="mb-3 text-sm font-semibold">Recent deliveries</h2>
+            <h2 className="mb-3 text-sm font-semibold">Completed outcomes</h2>
             <div className="space-y-2">
               {recent.length === 0 ? (
                 <p className="text-sm text-muted">No deliveries yet. Accepted outcomes will land here with their status.</p>

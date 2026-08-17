@@ -1,16 +1,18 @@
 import { DelegationAuditForm } from "@/components/delegation-audit";
 
-export const metadata = { title: "Delegation audit" };
+export const metadata = { title: "Get your delegation plan" };
 
 export default function DelegationAuditPage() {
   return (
-    <div className="mx-auto max-w-6xl px-5 py-16">
-      <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted">Delegation audit</p>
-      <h1 className="mt-3 max-w-2xl text-4xl font-semibold tracking-tight">What should come off your plate first?</h1>
-      <p className="mt-4 max-w-2xl text-lg text-ink-soft">
-        A short assessment. We estimate delegatable load and recommend workstreams. Figures are estimates.
+    <div className="mx-auto max-w-3xl px-5 py-16">
+      <p className="text-[11px] uppercase tracking-[0.2em] text-muted">Delegation plan</p>
+      <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] sm:text-5xl">
+        Find what should come off your plate.
+      </h1>
+      <p className="mt-4 text-lg text-ink-soft">
+        Five short steps. The result is a ranked estimate — not a promise of hours saved.
       </p>
-      <div className="mt-10">
+      <div className="mt-12">
         <DelegationAuditForm />
       </div>
     </div>

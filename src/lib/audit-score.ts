@@ -17,8 +17,18 @@ export type AuditAnswers = {
   postponedTasks: string;
 };
 
+export type AuditOpportunity = {
+  name: string;
+  burden: "High" | "Moderate" | "Low";
+  potential: number;
+  system: string;
+};
+
 export type AuditResult = {
   score: number;
+  readiness: "LOW" | "MODERATE" | "HIGH";
+  workflowCount: number;
+  opportunities: AuditOpportunity[];
   delegatableHoursEstimate: number;
   recommendedWorkstreams: string[];
   automationCandidates: string[];
@@ -29,6 +39,7 @@ export type AuditResult = {
 
 const BURDEN_TO_WORKSTREAM: Array<{
   key: keyof AuditAnswers;
+  label: string;
   workstream: string;
   automation?: string;
   ai?: string;
@@ -36,20 +47,23 @@ const BURDEN_TO_WORKSTREAM: Array<{
 }> = [
   {
     key: "inboxBurden",
-    workstream: "Inbox Operations",
+    label: "Inbox",
+    workstream: "Executive Operations",
     automation: "Labeling and filing rules",
     ai: "Draft replies and triage buckets",
     human: "Relationship-sensitive replies",
   },
   {
     key: "meetingBurden",
-    workstream: "Meeting Operations",
+    label: "Meetings",
+    workstream: "Executive Operations",
     automation: "Scheduling links and reminders",
     ai: "Agenda and notes drafts",
     human: "Decision capture and owner assignment",
   },
   {
     key: "salesAdministration",
+    label: "Sales Follow-Up",
     workstream: "Sales Operations",
     automation: "Stage hygiene reminders",
     ai: "Proposal assembly from approved language",
@@ -57,6 +71,7 @@ const BURDEN_TO_WORKSTREAM: Array<{
   },
   {
     key: "crmUsage",
+    label: "CRM",
     workstream: "Sales Operations",
     automation: "Field completeness checks",
     ai: "Activity summaries",
@@ -64,13 +79,15 @@ const BURDEN_TO_WORKSTREAM: Array<{
   },
   {
     key: "researchWorkload",
-    workstream: "Research Desk",
+    label: "Research",
+    workstream: "Executive Operations",
     automation: "Source collection jobs",
     ai: "Sourced briefing drafts",
     human: "Recommendation quality",
   },
   {
     key: "reportingWorkload",
+    label: "Reporting",
     workstream: "Back Office Operations",
     automation: "Weekly report compilation",
     ai: "Narrative highlights",
@@ -78,6 +95,7 @@ const BURDEN_TO_WORKSTREAM: Array<{
   },
   {
     key: "customerOnboarding",
+    label: "Client Onboarding",
     workstream: "Customer Operations",
     automation: "Checklist progression",
     ai: "Kickoff pack drafts",
@@ -85,6 +103,7 @@ const BURDEN_TO_WORKSTREAM: Array<{
   },
   {
     key: "billingAdministration",
+    label: "Billing",
     workstream: "Back Office Operations",
     automation: "Invoice generation from approved rates",
     ai: "Collections draft notes",
@@ -92,6 +111,7 @@ const BURDEN_TO_WORKSTREAM: Array<{
   },
   {
     key: "contentAdministration",
+    label: "Content",
     workstream: "Content Operations",
     automation: "Editorial calendar reminders",
     ai: "First drafts from an approved POV",
@@ -139,8 +159,22 @@ export function scoreDelegationAudit(answers: AuditAnswers): AuditResult {
     .map((b) => b.human!)
     .slice(0, 4);
 
+  const opportunities: AuditOpportunity[] = ranked
+    .filter((b) => b.value > 0)
+    .map((b) => ({
+      name: b.label,
+      burden: b.value >= 4 ? "High" : b.value >= 3 ? "Moderate" : "Low",
+      potential: Math.min(95, 55 + b.value * 8),
+      system: b.workstream,
+    }));
+
+  const readiness: AuditResult["readiness"] = score >= 70 ? "HIGH" : score >= 40 ? "MODERATE" : "LOW";
+
   return {
     score,
+    readiness,
+    workflowCount: Math.max(opportunities.filter((o) => o.burden !== "Low").length, opportunities.length ? 1 : 0),
+    opportunities,
     delegatableHoursEstimate,
     recommendedWorkstreams,
     automationCandidates,
@@ -148,7 +182,7 @@ export function scoreDelegationAudit(answers: AuditAnswers): AuditResult {
     humanOperatedCandidates,
     notes: [
       "All workload figures are estimates, not a time-and-motion study.",
-      "High scores mean more of the week is coordinative work that a managed team can absorb.",
+      "Readiness is scored from the categories you marked, how often they interrupt you, hours in the week, and postponed work. It is not a measured time study.",
       "Sensitive billing, access, and external commitments still require explicit approval.",
     ],
   };
