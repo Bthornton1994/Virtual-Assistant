@@ -2,7 +2,10 @@
 
 Date: 2026-08-18  
 Branch: `agent/p0b-supabase-workspace`  
+SHA: `9e8a0dd96c7d7d6df7991a57f0998d0e13b06776`  
 Base: `646cef0` (PR #6 merged)  
+Preview: https://virtual-assistant-git-agent-p0b-supabase-workspace-bryant4.vercel.app  
+Preview deployment: `dpl_5uqYgcDhimvjm5YBeTUWNEMt6KXb` (READY)  
 Gate complete: **no**
 
 The product code now routes production actors to `SupabaseWorkspace` and keeps `MemoryStore` exclusive to `/demo` and tests. The gate is **not** complete because no dedicated Delegation Cloud Supabase project was available in this environment, so migrations, live RLS, real Auth identities, and the persistent multi-role golden path were not executed against Postgres.
@@ -33,7 +36,7 @@ The product code now routes production actors to `SupabaseWorkspace` and keeps `
 6. **Full multi-role lifecycle on Supabase** including refresh, re-auth, and restart survival.
 7. **Unauthorized object access** proven against live RLS, not only application `assertOrgAccess`.
 8. **External / sensitive actions blocked without approval** on live DB (SQL triggers exist in 0001/0002/0006; unapplied).
-9. **Vercel Preview deploy + production-like smoke** against Preview env with real keys. Not done: branch changes are local until pushed, and Preview has no Supabase env.
+9. **Production-like smoke against Preview + Supabase**. Preview URL is live and public `/login`, `/demo`, and `/login/forgot` render. There is no Preview Supabase project, so a real client/ops login and persistent request cannot be smoked.
 
 ## Migrations in repo (not applied)
 
