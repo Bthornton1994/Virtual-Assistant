@@ -67,6 +67,17 @@ export class SupabaseWorkspaceRepository {
     return client;
   }
 
+  private async advanceRequestForApproval(
+    db: SupabaseClient,
+    req: RequestRecord,
+    kind: ApprovalKind,
+    options?: { advanceStatus?: boolean },
+  ) {
+    if (options?.advanceStatus === false || req.status === "cancelled") return;
+    const next = kind === "execution_plan" ? "awaiting_plan_approval" : "awaiting_action_approval";
+    await db.from("requests").update({ status: next, updated_at: nowIso() }).eq("id", req.id);
+  }
+
   private mapOrg(row: Record<string, unknown>): Organization {
     return {
       id: String(row.id),
@@ -863,7 +874,10 @@ export class SupabaseWorkspaceRepository {
       .eq("kind", input.kind)
       .eq("status", "pending")
       .maybeSingle();
-    if (existing) return this.mapApproval(existing);
+    if (existing) {
+      await this.advanceRequestForApproval(db, req, input.kind, options);
+      return this.mapApproval(existing);
+    }
     const { data, error } = await db
       .from("approvals")
       .insert({
@@ -881,10 +895,7 @@ export class SupabaseWorkspaceRepository {
       .select("*")
       .single();
     if (error) dbFail(error);
-    if (options?.advanceStatus !== false && req.status !== "cancelled") {
-      const next = input.kind === "execution_plan" ? "awaiting_plan_approval" : "awaiting_action_approval";
-      await db.from("requests").update({ status: next, updated_at: nowIso() }).eq("id", req.id);
-    }
+    await this.advanceRequestForApproval(db, req, input.kind, options);
     await this.audit(actor, "approval.requested", "approval", data.id, req.organizationId, { kind: input.kind, requestId: req.id });
     return this.mapApproval(data);
   }
@@ -1084,7 +1095,12 @@ export class SupabaseWorkspaceRepository {
         await db.from("requests").update({ status: "ready_to_deliver", updated_at: nowIso() }).eq("id", requestId);
       }
     }
-    await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, { from: "qa", qa: input.passed });
+    const after = await this.getRequest(actor, requestId);
+    await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, {
+      from: req.status,
+      to: after.status,
+      qaPassed: input.passed,
+    });
     return data;
   }
 

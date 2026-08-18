@@ -1487,7 +1487,14 @@ export class MemoryStore {
     const existing = this.data.approvals.find(
       (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending",
     );
-    if (existing) return existing;
+    const advance = options?.advanceStatus !== false;
+    if (existing) {
+      if (advance && req.status !== "cancelled") {
+        req.status = input.kind === "execution_plan" ? "awaiting_plan_approval" : "awaiting_action_approval";
+        req.updatedAt = nowIso();
+      }
+      return existing;
+    }
     const approval: Approval = {
       id: uid("ap"),
       organizationId: req.organizationId,
@@ -1506,7 +1513,6 @@ export class MemoryStore {
       decidedAt: null,
     };
     this.data.approvals.unshift(approval);
-    const advance = options?.advanceStatus !== false;
     if (advance && req.status !== "cancelled") {
       if (input.kind === "execution_plan") {
         req.status = "awaiting_plan_approval";
@@ -2026,7 +2032,7 @@ export class MemoryStore {
     this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
       from: "qa",
       to: req.status,
-      qa: input.passed,
+      qaPassed: input.passed,
     });
     return review;
   }
