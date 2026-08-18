@@ -1,9 +1,10 @@
 import type { Actor } from "@/lib/domain";
 import { DomainError } from "@/lib/domain";
 import { getStore, type MemoryStore } from "@/lib/store";
-import { SupabaseWorkspace } from "@/lib/data/supabase-workspace";
+import { supabaseConfigured } from "@/lib/supabase/env";
+import { SupabaseWorkspaceRepository } from "@/lib/data/supabase-workspace";
 
-export type Workspace = MemoryStore | SupabaseWorkspace;
+export type Workspace = MemoryStore | SupabaseWorkspaceRepository;
 
 /**
  * Demo actors use MemoryStore.
@@ -12,8 +13,8 @@ export type Workspace = MemoryStore | SupabaseWorkspace;
  */
 export function getWorkspace(actor: Actor): Workspace {
   if (actor.source === "demo") return getStore();
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+  if (!supabaseConfigured()) {
     throw new DomainError("Database access failed. Production workspaces require Supabase.");
   }
-  return new SupabaseWorkspace();
+  return new SupabaseWorkspaceRepository();
 }

@@ -13,7 +13,9 @@ const sql =
   "\n" +
   readFileSync(resolve(process.cwd(), "supabase/migrations/0005_invites_storage.sql"), "utf8") +
   "\n" +
-  readFileSync(resolve(process.cwd(), "supabase/migrations/0006_lifecycle_authz.sql"), "utf8");
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0006_lifecycle_authz.sql"), "utf8") +
+  "\n" +
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0007_schema_alignment.sql"), "utf8");
 
 const tenantTables = [
   "organizations",

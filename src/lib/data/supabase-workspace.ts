@@ -60,7 +60,7 @@ function id() {
   return crypto.randomUUID();
 }
 
-export class SupabaseWorkspace {
+export class SupabaseWorkspaceRepository {
   private async client(): Promise<SupabaseClient> {
     const client = await supabaseServer();
     if (!client) throw new DomainError("Database access failed. Production workspaces require Supabase.");
@@ -1612,3 +1612,5 @@ export class SupabaseWorkspace {
     return data.signedUrl;
   }
 }
+
+export { SupabaseWorkspaceRepository as SupabaseWorkspace };

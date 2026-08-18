@@ -6,7 +6,12 @@ SHA: `9e8a0dd96c7d7d6df7991a57f0998d0e13b06776`
 Base: `646cef0` (PR #6 merged)  
 Preview: https://virtual-assistant-git-agent-p0b-supabase-workspace-bryant4.vercel.app  
 Preview deployment: `dpl_5uqYgcDhimvjm5YBeTUWNEMt6KXb` (READY)  
+Dedicated project: `qbvmtgaphvpwpwemplje` (us-east-2, ACTIVE_HEALTHY)  
 Gate complete: **no**
+
+Exact current blocker: **credentials**, not the project.
+
+This environment does not have `SUPABASE_ACCESS_TOKEN`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, or `SUPABASE_SERVICE_ROLE_KEY`. Migrations are ready and have not been applied yet.
 
 The product code now routes production actors to `SupabaseWorkspace` and keeps `MemoryStore` exclusive to `/demo` and tests. The gate is **not** complete because no dedicated Delegation Cloud Supabase project was available in this environment, so migrations, live RLS, real Auth identities, and the persistent multi-role golden path were not executed against Postgres.
 
