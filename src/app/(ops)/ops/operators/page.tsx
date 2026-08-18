@@ -6,7 +6,7 @@ export const metadata = { title: "Operators" };
 
 export default async function OperatorsPage() {
   const actor = await requireOps();
-  const operators = getWorkspace(actor).listOperators(actor);
+  const operators = await getWorkspace(actor).listOperators(actor);
   return (
     <div className="space-y-6">
       <PageHeader

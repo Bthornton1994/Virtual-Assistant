@@ -9,7 +9,11 @@ const sql =
   "\n" +
   readFileSync(resolve(process.cwd(), "supabase/migrations/0003_operating.sql"), "utf8") +
   "\n" +
-  readFileSync(resolve(process.cwd(), "supabase/migrations/0004_production_auth.sql"), "utf8");
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0004_production_auth.sql"), "utf8") +
+  "\n" +
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0005_invites_storage.sql"), "utf8") +
+  "\n" +
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0006_lifecycle_authz.sql"), "utf8");
 
 const tenantTables = [
   "organizations",
@@ -40,6 +44,7 @@ const tenantTables = [
   "profiles",
   "leads",
   "execution_plans",
+  "invitations",
 ];
 
 describe("RLS schema (practical)", () => {
@@ -69,6 +74,7 @@ describe("RLS schema (practical)", () => {
       "deliveries",
       "internal_notes",
       "operating_memory",
+      "invitations",
     ];
     for (const table of owned) {
       expect(sql).toMatch(new RegExp(`create table if not exists public\\.${table}[\\s\\S]*?organization_id uuid not null`));
@@ -80,6 +86,9 @@ describe("RLS schema (practical)", () => {
     expect(sql).toMatch(/Sensitive execution cannot proceed without explicit approval/);
     expect(sql).toMatch(/my_org_ids/);
     expect(sql).toMatch(/platform_role/);
+    expect(sql).toMatch(/enforce_external_delivery/);
+    expect(sql).toMatch(/Outbound action requires customer approval before delivery/);
+    expect(sql).toMatch(/mem_self_activate/);
   });
 
   it("does not publish the service role to the browser client helper", () => {

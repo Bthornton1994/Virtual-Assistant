@@ -7,7 +7,7 @@ export const metadata = { title: "Workstreams" };
 
 export default async function WorkstreamsPage() {
   const actor = await requireClient();
-  const workstreams = getWorkspace(actor).listWorkstreams(actor);
+  const workstreams = await getWorkspace(actor).listWorkstreams(actor);
   return (
     <div className="space-y-6">
       <PageHeader title="Workstreams" description="Recurring operational systems, not a list of people." />

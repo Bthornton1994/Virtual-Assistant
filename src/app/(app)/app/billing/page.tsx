@@ -10,8 +10,8 @@ export const metadata = { title: "Billing" };
 export default async function BillingPage() {
   const actor = await requireClient();
   const store = getWorkspace(actor);
-  const sub = store.getSubscription(actor);
-  const usage = store.listUsage(actor)[0];
+  const sub = await store.getSubscription(actor);
+  const usage = (await store.listUsage(actor))[0];
   return (
     <div className="space-y-8">
       <PageHeader

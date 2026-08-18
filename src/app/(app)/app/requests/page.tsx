@@ -9,7 +9,7 @@ export const metadata = { title: "Requests" };
 export default async function RequestsPage() {
   const actor = await requireClient();
   const store = getWorkspace(actor);
-  const requests = store.listRequests(actor);
+  const requests = await store.listRequests(actor);
   return (
     <div className="space-y-6">
       <PageHeader

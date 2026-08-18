@@ -13,14 +13,13 @@ export default async function DashboardPage() {
   if (actor.role === "client_admin" || actor.role === "platform_admin") {
     await store.runDueSchedules(actor);
   }
-  const orgId = actor.organizationId ?? store.listOrganizations(actor)[0]?.id;
-  const org = orgId ? store.getOrganization(actor, orgId) : null;
-  const workstreams = store.listWorkstreams(actor, orgId);
-  const requests = store.listRequests(actor, { organizationId: orgId });
-  const approvals = store.listApprovals(actor, orgId).filter((a) => a.status === "pending");
-  const clarifications = store.data.clarifications.filter(
-    (c) => !c.answer && requests.some((r) => r.id === c.requestId),
-  );
+  const organizations = await store.listOrganizations(actor);
+  const orgId = actor.organizationId ?? organizations[0]?.id;
+  const org = orgId ? await store.getOrganization(actor, orgId) : null;
+  const workstreams = await store.listWorkstreams(actor, orgId);
+  const requests = await store.listRequests(actor, { organizationId: orgId });
+  const approvals = (await store.listApprovals(actor, orgId)).filter((a) => a.status === "pending");
+  const clarifications = await store.listOpenClarifications(actor);
   const handled = requests.filter((r) =>
     ["queued", "assigned", "in_progress", "qa", "awaiting_plan_approval", "awaiting_action_approval", "ready_to_deliver", "needs_clarification"].includes(
       r.status,
@@ -29,8 +28,8 @@ export default async function DashboardPage() {
   const blocked = requests.filter((r) => r.status === "blocked" || r.status === "revision_required");
   const completed = requests.filter((r) => r.status === "delivered" || r.status === "accepted");
   const recurringRunning = workstreams.filter((w) => w.schedule && w.schedule.cadence !== "none");
-  const playbooks = store.listPlaybooks(actor, orgId);
-  const memory = orgId ? store.getOperatingMemory(actor, orgId) : null;
+  const playbooks = await store.listPlaybooks(actor, orgId);
+  const memory = orgId ? await store.getOperatingMemory(actor, orgId) : null;
   const walk = requests.find((r) => r.id === "req_conference" && r.status !== "accepted" && r.status !== "cancelled");
 
   return (

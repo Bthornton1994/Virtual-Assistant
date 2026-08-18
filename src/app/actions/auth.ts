@@ -47,10 +47,22 @@ export async function requestPasswordResetAction(formData: FormData) {
   if (!supabase) redirect("/login/forgot?error=unavailable");
   const origin = process.env.NEXT_PUBLIC_SITE_URL || "https://virtual-assistant-bryant4.vercel.app";
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${origin}/login/reset`,
+    redirectTo: `${origin}/auth/callback?next=/login/reset`,
   });
   if (error) redirect("/login/forgot?sent=1");
   redirect("/login/forgot?sent=1");
+}
+
+export async function updatePasswordAction(formData: FormData) {
+  const password = String(formData.get("password") || "");
+  const confirm = String(formData.get("confirm") || "");
+  if (password.length < 10) redirect("/login/reset?error=short");
+  if (password !== confirm) redirect("/login/reset?error=mismatch");
+  const supabase = await supabaseServer();
+  if (!supabase) redirect("/login/reset?error=unavailable");
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) redirect("/login/reset?error=failed");
+  redirect("/app/dashboard");
 }
 
 export async function logoutAction() {

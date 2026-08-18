@@ -47,7 +47,9 @@ export async function createRequestAction(formData: FormData) {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const bundle = await store.createRequest(actor, {
+  let bundle;
+  try {
+    bundle = await store.createRequest(actor, {
     title: String(formData.get("title") || "").trim() || String(formData.get("what") || "Untitled request"),
     objective: String(formData.get("objective") || "").trim(),
     description: String(formData.get("description") || formData.get("what") || "").trim(),
@@ -60,6 +62,10 @@ export async function createRequestAction(formData: FormData) {
       formData.get("externalCommunication") === "on" || formData.get("externalCommunication") === "true",
     files,
   });
+  } catch (error) {
+    rethrowAction(error);
+  }
+  if (!bundle) throw new Error("The request could not be created.");
   revalidatePath("/app");
   redirect(`/app/requests/${bundle.request.id}`);
 }
@@ -68,21 +74,21 @@ export async function addCommentAction(formData: FormData) {
   const actor = await requireSession();
   const requestId = String(formData.get("requestId") || "");
   const visibility = formData.get("visibility") === "internal" ? "internal" : "customer";
-  getWorkspace(actor).addComment(actor, requestId, String(formData.get("body") || "").trim(), visibility);
+  await getWorkspace(actor).addComment(actor, requestId, String(formData.get("body") || "").trim(), visibility);
   revalidateRequest(requestId);
 }
 
 export async function acceptRequestAction(formData: FormData) {
   const actor = await requireClient();
   const id = String(formData.get("requestId") || "");
-  getWorkspace(actor).transitionRequest(actor, id, "accepted");
+  await getWorkspace(actor).transitionRequest(actor, id, "accepted");
   revalidatePath("/app");
 }
 
 export async function cancelRequestAction(formData: FormData) {
   const actor = await requireSession();
   const id = String(formData.get("requestId") || "");
-  getWorkspace(actor).transitionRequest(actor, id, "cancelled");
+  await getWorkspace(actor).transitionRequest(actor, id, "cancelled");
   revalidatePath("/app");
   revalidatePath("/ops");
 }
@@ -92,7 +98,7 @@ export async function decideApprovalAction(formData: FormData) {
   const id = String(formData.get("approvalId") || "");
   const decision = String(formData.get("decision") || "") as "approved" | "rejected";
   try {
-    getWorkspace(actor).decideApproval(actor, id, decision, String(formData.get("note") || ""));
+    await getWorkspace(actor).decideApproval(actor, id, decision, String(formData.get("note") || ""));
   } catch (error) {
     rethrowAction(error);
   }
@@ -105,7 +111,7 @@ export async function opsTransitionAction(formData: FormData) {
   const id = String(formData.get("requestId") || "");
   const to = String(formData.get("status") || "") as RequestStatus;
   try {
-    getWorkspace(actor).transitionRequest(actor, id, to, String(formData.get("note") || ""));
+    await getWorkspace(actor).transitionRequest(actor, id, to, String(formData.get("note") || ""));
   } catch (error) {
     rethrowAction(error);
   }
@@ -117,7 +123,7 @@ export async function opsAssignAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
   try {
-    getWorkspace(actor).assignOperator(actor, id, String(formData.get("operatorId") || ""));
+    await getWorkspace(actor).assignOperator(actor, id, String(formData.get("operatorId") || ""));
   } catch (error) {
     rethrowAction(error);
   }
@@ -127,7 +133,7 @@ export async function opsAssignAction(formData: FormData) {
 export async function opsScopeAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
-  getWorkspace(actor).updateRequestScope(actor, id, {
+  await getWorkspace(actor).updateRequestScope(actor, id, {
     title: String(formData.get("title") || ""),
     objective: String(formData.get("objective") || ""),
     description: String(formData.get("description") || ""),
@@ -140,17 +146,17 @@ export async function opsScopeAction(formData: FormData) {
 export async function opsSplitStepAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
-  getWorkspace(actor).splitStep(actor, id, String(formData.get("title") || "New step"), String(formData.get("detail") || ""));
+  await getWorkspace(actor).splitStep(actor, id, String(formData.get("title") || "New step"), String(formData.get("detail") || ""));
   revalidatePath(`/ops/requests/${id}`);
 }
 
 export async function opsRequestApprovalAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
-  const request = getWorkspace(actor).getRequest(actor, id);
+  const request = await getWorkspace(actor).getRequest(actor, id);
   const rawKind = String(formData.get("kind") || "");
   const kind = (APPROVAL_KINDS as readonly string[]).includes(rawKind) ? (rawKind as ApprovalKind) : undefined;
-  getWorkspace(actor).createApproval(
+  await getWorkspace(actor).createApproval(
     actor,
     id,
     request.approvalLevel,
@@ -168,7 +174,7 @@ export async function opsQaAction(formData: FormData) {
     ? items.map((item) => ({ item: item.replace(/^ok:\s*/i, "").replace(/^fail:\s*/i, ""), ok: !item.toLowerCase().startsWith("fail:") }))
     : undefined;
   try {
-    getWorkspace(actor).createQaReview(actor, id, {
+    await getWorkspace(actor).createQaReview(actor, id, {
       passed: formData.get("passed") === "true",
       score: Number(formData.get("score") || 80),
       notes: String(formData.get("notes") || ""),
@@ -185,23 +191,27 @@ export async function opsQaAction(formData: FormData) {
 export async function opsTimeAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
-  getWorkspace(actor).addTimeEntry(actor, id, Number(formData.get("hours") || 0), String(formData.get("note") || ""));
+  await getWorkspace(actor).addTimeEntry(actor, id, Number(formData.get("hours") || 0), String(formData.get("note") || ""));
   revalidatePath(`/ops/requests/${id}`);
 }
 
 export async function inviteMemberAction(formData: FormData) {
   const actor = await requireClient();
-  getWorkspace(actor).inviteMember(actor, {
-    email: String(formData.get("email") || ""),
-    name: String(formData.get("name") || ""),
-    role: formData.get("role") === "client_admin" ? "client_admin" : "client_member",
-  });
+  try {
+    await getWorkspace(actor).inviteMember(actor, {
+      email: String(formData.get("email") || ""),
+      name: String(formData.get("name") || ""),
+      role: formData.get("role") === "client_admin" ? "client_admin" : "client_member",
+    });
+  } catch (error) {
+    rethrowAction(error);
+  }
   revalidatePath("/app/team");
 }
 
 export async function requestIntegrationAction(formData: FormData) {
   const actor = await requireClient();
-  getWorkspace(actor).requestIntegrationAccess(actor, String(formData.get("integrationId") || ""));
+  await getWorkspace(actor).requestIntegrationAccess(actor, String(formData.get("integrationId") || ""));
   revalidatePath("/app/integrations");
 }
 
@@ -209,14 +219,14 @@ export async function activatePlanAction(formData: FormData) {
   const actor = await requireClient();
   const plan = String(formData.get("plan") || "growth") as "starter" | "growth" | "firm";
   const hours = plan === "starter" ? 20 : plan === "firm" ? 80 : 40;
-  getWorkspace(actor).setMockSubscription(actor, plan, hours);
+  await getWorkspace(actor).setMockSubscription(actor, plan, hours);
   revalidatePath("/app/billing");
 }
 
 export async function updateOperatingMemoryAction(formData: FormData) {
   const actor = await requireClient();
   if (!actor.organizationId) return;
-  getWorkspace(actor).updateOperatingMemory(actor, actor.organizationId, {
+  await getWorkspace(actor).updateOperatingMemory(actor, actor.organizationId, {
     communicationTone: String(formData.get("communicationTone") || ""),
     preferredMeetingWindows: String(formData.get("preferredMeetingWindows") || ""),
     crmRules: String(formData.get("crmRules") || ""),
@@ -233,7 +243,7 @@ export async function updateOperatingMemoryAction(formData: FormData) {
 export async function updateOrganizationAction(formData: FormData) {
   const actor = await requireClient();
   if (!actor.organizationId) return;
-  getWorkspace(actor).updateOrganization(actor, actor.organizationId, {
+  await getWorkspace(actor).updateOrganization(actor, actor.organizationId, {
     name: String(formData.get("name") || "").trim(),
     industry: String(formData.get("industry") || "").trim(),
     companySize: String(formData.get("companySize") || "").trim(),
@@ -244,7 +254,7 @@ export async function updateOrganizationAction(formData: FormData) {
 
 export async function createPlaybookAction(formData: FormData) {
   const actor = await requireSession();
-  const pb = getWorkspace(actor).createPlaybook(actor, {
+  const pb = await getWorkspace(actor).createPlaybook(actor, {
     title: String(formData.get("title") || "Untitled playbook"),
     objective: String(formData.get("objective") || ""),
     workstreamId: String(formData.get("workstreamId") || "") || null,
@@ -271,7 +281,7 @@ export async function createPlaybookAction(formData: FormData) {
 export async function addPlaybookVersionAction(formData: FormData) {
   const actor = await requireSession();
   const id = String(formData.get("playbookId") || "");
-  getWorkspace(actor).addPlaybookVersion(actor, id, {
+  await getWorkspace(actor).addPlaybookVersion(actor, id, {
     steps: lines(formData, "steps"),
     preferences: lines(formData, "preferences"),
     warnings: lines(formData, "warnings"),
@@ -291,7 +301,7 @@ export async function modifyPlanAction(formData: FormData) {
   const actor = await requireClient();
   const id = String(formData.get("requestId") || "");
   try {
-    getWorkspace(actor).modifyPlan(actor, id, lines(formData, "steps"));
+    await getWorkspace(actor).modifyPlan(actor, id, lines(formData, "steps"));
   } catch (error) {
     rethrowAction(error);
   }
@@ -303,7 +313,7 @@ export async function answerClarificationAction(formData: FormData) {
   const id = String(formData.get("clarificationId") || "");
   const requestId = String(formData.get("requestId") || "");
   try {
-    getWorkspace(actor).answerClarification(actor, id, String(formData.get("answer") || "").trim());
+    await getWorkspace(actor).answerClarification(actor, id, String(formData.get("answer") || "").trim());
   } catch (error) {
     rethrowAction(error);
   }
@@ -314,7 +324,7 @@ export async function askClarificationAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
   try {
-    getWorkspace(actor).askClarification(actor, id, String(formData.get("question") || "").trim());
+    await getWorkspace(actor).askClarification(actor, id, String(formData.get("question") || "").trim());
   } catch (error) {
     rethrowAction(error);
   }
@@ -324,7 +334,7 @@ export async function askClarificationAction(formData: FormData) {
 export async function addInternalNoteAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
-  getWorkspace(actor).addInternalNote(actor, id, String(formData.get("body") || "").trim());
+  await getWorkspace(actor).addInternalNote(actor, id, String(formData.get("body") || "").trim());
   revalidatePath(`/ops/requests/${id}`);
 }
 
@@ -333,7 +343,7 @@ export async function updateStepAction(formData: FormData) {
   const requestId = String(formData.get("requestId") || "");
   const status = String(formData.get("status") || "done") as "pending" | "in_progress" | "blocked" | "done";
   try {
-    getWorkspace(actor).updateStep(actor, String(formData.get("stepId") || ""), { status });
+    await getWorkspace(actor).updateStep(actor, String(formData.get("stepId") || ""), { status });
   } catch (error) {
     rethrowAction(error);
   }
@@ -344,7 +354,7 @@ export async function deliverRequestAction(formData: FormData) {
   const actor = await requireOps();
   const id = String(formData.get("requestId") || "");
   try {
-    getWorkspace(actor).deliverRequest(actor, id, {
+    await getWorkspace(actor).deliverRequest(actor, id, {
       summary: String(formData.get("summary") || "").trim(),
       deliverables: lines(formData, "deliverables"),
       attachments: lines(formData, "attachments"),
@@ -364,7 +374,7 @@ export async function generatePlaybookFromRequestAction(formData: FormData) {
   const id = String(formData.get("requestId") || "");
   let pbId = "";
   try {
-    const pb = getWorkspace(actor).generatePlaybookFromRequest(actor, id, String(formData.get("name") || "") || undefined);
+    const pb = await getWorkspace(actor).generatePlaybookFromRequest(actor, id, String(formData.get("name") || "") || undefined);
     pbId = pb.id;
   } catch (error) {
     rethrowAction(error);
@@ -388,7 +398,7 @@ export async function setWorkstreamScheduleAction(formData: FormData) {
           tasks: lines(formData, "tasks"),
         };
   try {
-    getWorkspace(actor).setWorkstreamSchedule(actor, id, schedule);
+    await getWorkspace(actor).setWorkstreamSchedule(actor, id, schedule);
   } catch (error) {
     rethrowAction(error);
   }

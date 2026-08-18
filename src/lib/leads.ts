@@ -1,4 +1,4 @@
-import { uid, nowIso } from "@/lib/domain";
+import { DomainError, nowIso, uid } from "@/lib/domain";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export type LeadRecord = {
@@ -11,8 +11,6 @@ export type LeadRecord = {
   utm: Record<string, string>;
   createdAt: string;
 };
-
-const memoryLeads: LeadRecord[] = [];
 
 export async function persistLead(input: {
   name: string;
@@ -33,24 +31,19 @@ export async function persistLead(input: {
     createdAt: nowIso(),
   };
   const admin = supabaseAdmin();
-  if (admin) {
-    const { error } = await admin.from("leads").insert({
-      id: lead.id,
-      name: lead.name,
-      email: lead.email,
-      company: lead.company,
-      outcome: lead.outcome,
-      source: lead.source,
-      utm: lead.utm,
-      status: "new",
-    });
-    if (error) throw new Error("We could not save that request. Try again or email us directly.");
-    return { ...lead, persisted: "postgres" as const };
+  if (!admin) {
+    throw new DomainError("Lead capture requires a configured database. Nothing was stored in memory.");
   }
-  memoryLeads.unshift(lead);
-  return { ...lead, persisted: "ephemeral" as const };
-}
-
-export function listMemoryLeads() {
-  return [...memoryLeads];
+  const { error } = await admin.from("leads").insert({
+    id: lead.id,
+    name: lead.name,
+    email: lead.email,
+    company: lead.company,
+    outcome: lead.outcome,
+    source: lead.source,
+    utm: lead.utm,
+    status: "new",
+  });
+  if (error) throw new DomainError("We could not save that request. Try again or email us directly.");
+  return { ...lead, persisted: "postgres" as const };
 }

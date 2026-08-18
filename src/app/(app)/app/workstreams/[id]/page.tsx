@@ -15,13 +15,13 @@ export default async function WorkstreamDetailPage({ params }: { params: Promise
   const store = getWorkspace(actor);
   let ws;
   try {
-    ws = store.getWorkstream(actor, id);
+    ws = await store.getWorkstream(actor, id);
   } catch (e) {
     if (e instanceof AuthzError || e instanceof DomainError) notFound();
     throw e;
   }
-  const requests = store.listRequests(actor, { workstreamId: ws.id });
-  const owner = store.userName(ws.ownerUserId);
+  const requests = await store.listRequests(actor, { workstreamId: ws.id });
+  const owner = await store.userName(ws.ownerUserId);
   return (
     <div className="space-y-8">
       <PageHeader kicker="Workstream" title={ws.name} description={ws.objective} />

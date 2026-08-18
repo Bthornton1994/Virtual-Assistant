@@ -8,11 +8,11 @@ export const metadata = { title: "Analytics" };
 export default async function AnalyticsPage() {
   const actor = await requireClient();
   const store = getWorkspace(actor);
-  const requests = store.listRequests(actor);
-  const workstreams = store.listWorkstreams(actor);
-  const hours = store.hoursReturned(actor);
+  const requests = await store.listRequests(actor);
+  const workstreams = await store.listWorkstreams(actor);
+  const hours = await store.hoursReturned(actor);
   const delivered = requests.filter((r) => deliveredStatuses().includes(r.status));
-  const usage = store.listUsage(actor)[0];
+  const usage = (await store.listUsage(actor))[0];
 
   if (requests.length === 0 && workstreams.length === 0) {
     return (

@@ -2131,6 +2131,21 @@ export class MemoryStore {
   userName(id: string) {
     return this.data.users.find((u) => u.id === id)?.name ?? "Unknown";
   }
+
+  listOpenClarifications(actor: Actor) {
+    const requests = this.listRequests(actor);
+    return this.data.clarifications.filter((c) => !c.answer && requests.some((r) => r.id === c.requestId));
+  }
+
+  listQaReviews(actor: Actor) {
+    const requests = this.listRequests(actor);
+    return this.data.qaReviews.filter((q) => requests.some((r) => r.id === q.requestId));
+  }
+
+  listTimeEntries(actor: Actor) {
+    const requests = this.listRequests(actor);
+    return this.data.timeEntries.filter((t) => requests.some((r) => r.id === t.requestId));
+  }
 }
 
 const g = globalThis as typeof globalThis & { __dcStore?: MemoryStore };

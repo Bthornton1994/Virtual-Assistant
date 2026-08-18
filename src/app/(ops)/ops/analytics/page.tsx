@@ -9,11 +9,15 @@ export const metadata = { title: "Ops analytics" };
 export default async function OpsAnalyticsPage() {
   const actor = await requireOps();
   const store = getWorkspace(actor);
-  const requests = store.listRequests(actor);
+  const requests = await store.listRequests(actor);
   const delivered = requests.filter((r) => deliveredStatuses().includes(r.status));
-  const qa = store.data.qaReviews;
+  const qa = await store.listQaReviews(actor);
   const pass = qa.filter((q) => q.passed).length;
-  const orgs = store.listOrganizations(actor);
+  const orgs = await store.listOrganizations(actor);
+  const hoursLogged = (await store.listTimeEntries(actor)).reduce((s, t) => s + t.hours, 0);
+  const hoursByOrg = Object.fromEntries(
+    await Promise.all(orgs.map(async (org) => [org.id, await store.hoursReturned(actor, org.id)] as const)),
+  );
   const blocked = requests.filter((r) => r.status === "blocked").length;
   const waiting = requests.filter((r) =>
     ["awaiting_plan_approval", "awaiting_action_approval", "needs_clarification"].includes(r.status),
@@ -44,7 +48,7 @@ export default async function OpsAnalyticsPage() {
         <Metric label="QA pass rate" value={qa.length ? `${Math.round((pass / qa.length) * 100)}%` : "—"} hint={qa.length ? `${pass} of ${qa.length} reviews` : "No reviews yet"} />
         <Metric
           label="Hours logged"
-          value={String(store.data.timeEntries.reduce((s, t) => s + t.hours, 0))}
+          value={String(hoursLogged)}
         />
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
@@ -60,7 +64,7 @@ export default async function OpsAnalyticsPage() {
             return (
               <div key={org.id} className="flex items-center justify-between px-4 py-3 text-sm">
                 <span>{org.name}</span>
-                <span className="text-muted">{rows.length} requests · {store.hoursReturned(actor, org.id)}h returned</span>
+                <span className="text-muted">{rows.length} requests · {hoursByOrg[org.id]}h returned</span>
               </div>
             );
           })}

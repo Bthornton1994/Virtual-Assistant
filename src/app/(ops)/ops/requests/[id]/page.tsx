@@ -27,12 +27,12 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
   const store = getWorkspace(actor);
   let bundle;
   try {
-    bundle = store.getRequestBundle(actor, id);
+    bundle = await store.getRequestBundle(actor, id);
   } catch (e) {
     if (e instanceof AuthzError || e instanceof DomainError) notFound();
     throw e;
   }
-  const operators = store.listOperators(actor);
+  const operators = await store.listOperators(actor);
   const {
     request,
     steps,
@@ -54,11 +54,18 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
   const canManage = actor.role !== "operator";
   const assignedToSelf = actor.operatorId && request.assignedOperatorId === actor.operatorId;
   const canWork = canManage || assignedToSelf;
+  const orgName = organization?.name ?? "Organization";
+  const noteNames = Object.fromEntries(
+    await Promise.all(internalNotes.map(async (n: { id: string; authorId: string }) => [n.id, await store.userName(n.authorId)] as const)),
+  );
+  const preferenceLines = ((playbookVersion?.clientPreferences ?? []) as string[]).length
+    ? ((playbookVersion?.clientPreferences ?? []) as string[])
+    : ["No playbook preferences"];
 
   return (
     <div className="space-y-8">
       <PageHeader
-        kicker={`${organization.name} · ${bundle.workstream?.name ?? "Unscoped"}`}
+        kicker={`${orgName} · ${bundle.workstream?.name ?? "Unscoped"}`}
         title={request.title}
         description={request.objective}
       />
@@ -99,7 +106,7 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
       <section className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-xl border border-line bg-surface p-5 text-sm">
           <p className="text-xs uppercase tracking-wide text-muted">Customer · outcome · description</p>
-          <p className="mt-2 font-medium">{organization.name}</p>
+          <p className="mt-2 font-medium">{orgName}</p>
           <p className="mt-2">{request.objective}</p>
           <p className="mt-2 text-ink-soft">{request.description}</p>
           <p className="mt-3 text-xs text-muted">Workstream · {bundle.workstream?.name ?? "Unscoped"}</p>
@@ -132,7 +139,7 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
         <section className="rounded-xl border border-line bg-surface p-5 text-sm">
           <p className="text-xs uppercase tracking-wide text-muted">Customer preferences</p>
           <ul className="mt-2 list-disc pl-5">
-            {(playbookVersion?.clientPreferences.length ? playbookVersion.clientPreferences : ["No playbook preferences"]).map((p) => (
+            {preferenceLines.map((p) => (
               <li key={p}>{p}</li>
             ))}
           </ul>
@@ -336,7 +343,7 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
             {internalNotes.map((n) => (
               <li key={n.id} className="rounded-lg border border-line bg-surface px-4 py-2">
                 {n.body}
-                <span className="ml-2 text-xs text-muted">{store.userName(n.authorId)}</span>
+                <span className="ml-2 text-xs text-muted">{noteNames[n.id]}</span>
               </li>
             ))}
           </ul>

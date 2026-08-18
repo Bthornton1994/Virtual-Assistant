@@ -11,10 +11,11 @@ export default async function OpsDashboardPage() {
   const actor = await requireOps();
   const store = getWorkspace(actor);
   await store.runDueSchedules(actor);
-  const queue = store.listRequests(actor);
+  const queue = await store.listRequests(actor);
   const pendingQa = queue.filter((r) => r.status === "qa");
-  const approvals = store.listApprovals(actor).filter((a) => a.status === "pending");
-  const scheduled = store.listWorkstreams(actor).filter((w) => w.schedule && w.schedule.cadence !== "none");
+  const approvals = (await store.listApprovals(actor)).filter((a) => a.status === "pending");
+  const scheduled = (await store.listWorkstreams(actor)).filter((w) => w.schedule && w.schedule.cadence !== "none");
+  const clients = await store.listOrganizations(actor);
   return (
     <div className="space-y-8">
       <PageHeader kicker="Operations" title="Delivery console" description="Queue health across every tenant." />
@@ -35,7 +36,7 @@ export default async function OpsDashboardPage() {
         <Metric label="Open requests" value={String(queue.filter((r) => !["accepted", "cancelled", "delivered"].includes(r.status)).length)} />
         <Metric label="In QA" value={String(pendingQa.length)} />
         <Metric label="Waiting on customer" value={String(approvals.length)} />
-        <Metric label="Clients" value={String(store.listOrganizations(actor).length)} />
+        <Metric label="Clients" value={String(clients.length)} />
       </div>
       <section>
         <h2 className="mb-3 text-sm font-semibold">Needs attention</h2>

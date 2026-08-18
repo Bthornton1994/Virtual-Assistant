@@ -10,8 +10,8 @@ export const metadata = { title: "Playbooks" };
 export default async function PlaybooksPage() {
   const actor = await requireClient();
   const store = getWorkspace(actor);
-  const playbooks = store.listPlaybooks(actor);
-  const workstreams = store.listWorkstreams(actor);
+  const playbooks = await store.listPlaybooks(actor);
+  const workstreams = await store.listWorkstreams(actor);
   return (
     <div className="space-y-8">
       <PageHeader title="Playbooks" description="Reusable SOPs for this organization. Inspectable and versioned." />

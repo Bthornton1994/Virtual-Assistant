@@ -10,8 +10,8 @@ export const metadata = { title: "Ops playbooks" };
 export default async function OpsPlaybooksPage() {
   const actor = await requireOps();
   const store = getWorkspace(actor);
-  const playbooks = store.listPlaybooks(actor);
-  const orgs = Object.fromEntries(store.listOrganizations(actor).map((o) => [o.id, o.name]));
+  const playbooks = await store.listPlaybooks(actor);
+  const orgs = Object.fromEntries((await store.listOrganizations(actor)).map((o) => [o.id, o.name]));
   return (
     <div className="space-y-8">
       <PageHeader title="Playbooks" description="Organization-owned SOPs. Confidentiality does not cross tenants." />
