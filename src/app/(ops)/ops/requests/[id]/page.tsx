@@ -17,14 +17,14 @@ import { ActionClassBadge, PageHeader, PriorityBadge, RiskBadge, StatusBadge } f
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
 import { APPROVAL_KINDS, APPROVAL_KIND_COPY, AuthzError, DomainError, REQUEST_STATUSES } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Ops request" };
 
 export default async function OpsRequestPage({ params }: { params: Promise<{ id: string }> }) {
   const actor = await requireOps();
   const { id } = await params;
-  const store = getStore();
+  const store = getWorkspace(actor);
   let bundle;
   try {
     bundle = store.getRequestBundle(actor, id);

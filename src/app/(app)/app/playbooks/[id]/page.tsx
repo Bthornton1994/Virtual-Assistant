@@ -5,7 +5,7 @@ import { PageHeader, StatusBadge } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { AuthzError, DomainError } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Playbook" };
 
@@ -31,7 +31,7 @@ export default async function PlaybookDetailPage({ params }: { params: Promise<{
   const { id } = await params;
   let bundle;
   try {
-    bundle = getStore().getPlaybook(actor, id);
+    bundle = getWorkspace(actor).getPlaybook(actor, id);
   } catch (e) {
     if (e instanceof AuthzError || e instanceof DomainError) notFound();
     throw e;

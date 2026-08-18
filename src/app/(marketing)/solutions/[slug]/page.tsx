@@ -80,8 +80,8 @@ export default async function SolutionDetailPage({ params }: { params: Promise<{
       </section>
 
       <div className="mt-16 flex flex-wrap gap-3">
-        <Link href="/delegation-audit">
-          <Button size="lg">Get My Delegation Plan</Button>
+        <Link href="/book">
+          <Button size="lg">Start Delegating</Button>
         </Link>
         <Link href="/pricing">
           <Button size="lg" variant="secondary">

@@ -67,20 +67,34 @@ const opsNav = [
   { href: "/ops/analytics", label: "Analytics" },
 ];
 
+function DemoBanner() {
+  return (
+    <div className="border-b border-gold/40 bg-warn-bg px-5 py-2 text-center text-xs text-warn">
+      Sample workspace. Seeded data only — not a customer account, and not persisted across production servers.
+    </div>
+  );
+}
+
 export function AppShell({ actor, children }: { actor: Actor; children: ReactNode }) {
   return (
-    <div className="flex min-h-screen flex-col md:flex-row">
-      <SideNav items={appNav} actor={actor} home="/app/dashboard" />
-      <main className="min-w-0 flex-1 px-5 py-6 sm:px-8">{children}</main>
+    <div className="flex min-h-screen flex-col">
+      {actor.source === "demo" ? <DemoBanner /> : null}
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <SideNav items={appNav} actor={actor} home="/app/dashboard" />
+        <main className="min-w-0 flex-1 px-5 py-6 sm:px-8">{children}</main>
+      </div>
     </div>
   );
 }
 
 export function OpsShell({ actor, children }: { actor: Actor; children: ReactNode }) {
   return (
-    <div className="flex min-h-screen flex-col md:flex-row">
-      <SideNav items={opsNav} actor={actor} home="/ops/dashboard" />
-      <main className="min-w-0 flex-1 px-5 py-6 sm:px-8">{children}</main>
+    <div className="flex min-h-screen flex-col">
+      {actor.source === "demo" ? <DemoBanner /> : null}
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <SideNav items={opsNav} actor={actor} home="/ops/dashboard" />
+        <main className="min-w-0 flex-1 px-5 py-6 sm:px-8">{children}</main>
+      </div>
     </div>
   );
 }

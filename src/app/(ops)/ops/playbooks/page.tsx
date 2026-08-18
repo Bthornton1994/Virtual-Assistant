@@ -3,13 +3,13 @@ import { createPlaybookAction } from "@/app/actions/requests";
 import { EmptyState, PageHeader } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Ops playbooks" };
 
 export default async function OpsPlaybooksPage() {
   const actor = await requireOps();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const playbooks = store.listPlaybooks(actor);
   const orgs = Object.fromEntries(store.listOrganizations(actor).map((o) => [o.id, o.name]));
   return (

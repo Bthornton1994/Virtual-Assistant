@@ -3,13 +3,13 @@ import { addCommentAction, opsQaAction } from "@/app/actions/requests";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/product";
 import { Button, Textarea, Input } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "QA" };
 
 export default async function QaPage() {
   const actor = await requireOps();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const inQa = store.listRequests(actor, { status: "qa" });
   const reviews = store.data.qaReviews.slice(0, 8);
   return (

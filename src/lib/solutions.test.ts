@@ -17,7 +17,7 @@ describe("solutions catalog", () => {
 
   it("builds a sample plan without touching external systems", () => {
     const plan = planForPrompt("Clean up HubSpot and make sure every open lead has a next step.");
-    expect(plan.steps[0]).toMatch(/audit/i);
+    expect(plan.steps[0]).toMatch(/inspect/i);
     expect(plan.objective.length).toBeGreaterThan(10);
   });
 });
@@ -28,6 +28,16 @@ describe("public login vs demo", () => {
     expect(login).not.toMatch(/founder@northline\.demo/);
     expect(login).not.toMatch(/Password for every/);
     expect(login).not.toMatch(/demo password/i);
+    expect(login).not.toMatch(/defaultValue="demo"/);
+    expect(login).toMatch(/Forgot password/);
+    expect(login).toMatch(/Start Delegating/);
+  });
+
+  it("removes the assessment funnel from marketing chrome", () => {
+    const chrome = readFileSync(resolve(process.cwd(), "src/components/marketing/chrome.tsx"), "utf8");
+    expect(chrome).not.toMatch(/delegation-audit/);
+    expect(chrome).not.toMatch(/Delegation plan/);
+    expect(chrome).toMatch(/Start Delegating/);
   });
 
   it("keeps seeded jump-in on /demo", () => {

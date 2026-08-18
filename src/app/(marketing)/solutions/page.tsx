@@ -29,8 +29,8 @@ export default function SolutionsPage() {
         ))}
       </div>
       <div className="mt-12">
-        <Link href="/delegation-audit">
-          <Button size="lg">Get My Delegation Plan</Button>
+        <Link href="/book">
+          <Button size="lg">Start Delegating</Button>
         </Link>
       </div>
     </div>

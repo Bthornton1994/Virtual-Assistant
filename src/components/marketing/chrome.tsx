@@ -10,7 +10,7 @@ const links = [
   { href: "/how-it-works", label: "How it works" },
   { href: "/solutions", label: "What we take on" },
   { href: "/pricing", label: "Membership" },
-  { href: "/delegation-audit", label: "Delegation plan" },
+  { href: "/security", label: "Security" },
 ];
 
 export function MarketingHeader() {
@@ -38,8 +38,8 @@ export function MarketingHeader() {
           <Link href="/login" className="text-sm text-ink-soft hover:text-ink">
             Log in
           </Link>
-          <Link href="/delegation-audit">
-            <Button size="sm">Get My Delegation Plan</Button>
+          <Link href="/book">
+            <Button size="sm">Start Delegating</Button>
           </Link>
         </div>
         <button
@@ -74,9 +74,9 @@ export function MarketingHeader() {
             <Link href="/login" className="rounded-lg px-2 py-3 text-lg" onClick={() => setOpen(false)}>
               Log in
             </Link>
-            <Link href="/delegation-audit" className="mt-4" onClick={() => setOpen(false)}>
+            <Link href="/book" className="mt-4" onClick={() => setOpen(false)}>
               <Button className="w-full" size="lg">
-                Get My Delegation Plan
+                Start Delegating
               </Button>
             </Link>
           </nav>
@@ -108,8 +108,8 @@ export function MarketingFooter() {
             <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/pricing">
               Membership
             </Link>
-            <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/delegation-audit">
-              Delegation plan
+            <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/book">
+              Start Delegating
             </Link>
           </div>
           <div className="space-y-2">

@@ -1,12 +1,12 @@
 import { PageHeader } from "@/components/product";
 import { requireOps } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Operators" };
 
 export default async function OperatorsPage() {
   const actor = await requireOps();
-  const operators = getStore().listOperators(actor);
+  const operators = getWorkspace(actor).listOperators(actor);
   return (
     <div className="space-y-6">
       <PageHeader

@@ -3,13 +3,13 @@ import { ActionClassBadge, EmptyState, PageHeader, RiskBadge } from "@/component
 import { Button, Input } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { APPROVAL_KIND_COPY } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Approvals" };
 
 export default async function ApprovalsPage() {
   const actor = await requireClient();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const approvals = store.listApprovals(actor);
   return (
     <div className="space-y-6">

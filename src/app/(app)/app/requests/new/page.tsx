@@ -1,7 +1,7 @@
 import { NewRequestForm } from "@/components/new-request-form";
 import { PageHeader } from "@/components/product";
 import { requireClient } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "New request" };
 
@@ -12,7 +12,7 @@ export default async function NewRequestPage({
 }) {
   const actor = await requireClient();
   const { playbookId } = await searchParams;
-  const store = getStore();
+  const store = getWorkspace(actor);
   const workstreams = store.listWorkstreams(actor);
   const playbooks = store.listPlaybooks(actor);
   return (

@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
-export default function DeprecatedAuditPage() {
+export default function ContactPage() {
   redirect("/book");
 }

@@ -2,13 +2,13 @@ import Link from "next/link";
 import { Button } from "@/components/ui";
 import { ActionClassBadge, EmptyState, PageHeader, PriorityBadge, StatusBadge, formatDate } from "@/components/product";
 import { requireClient } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Requests" };
 
 export default async function RequestsPage() {
   const actor = await requireClient();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const requests = store.listRequests(actor);
   return (
     <div className="space-y-6">

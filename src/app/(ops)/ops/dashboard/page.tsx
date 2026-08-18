@@ -3,13 +3,13 @@ import { runWorkstreamScheduleAction } from "@/app/actions/requests";
 import { Metric, PageHeader, StatusBadge } from "@/components/product";
 import { Button } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Ops dashboard" };
 
 export default async function OpsDashboardPage() {
   const actor = await requireOps();
-  const store = getStore();
+  const store = getWorkspace(actor);
   await store.runDueSchedules(actor);
   const queue = store.listRequests(actor);
   const pendingQa = queue.filter((r) => r.status === "qa");

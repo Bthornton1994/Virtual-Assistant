@@ -16,15 +16,15 @@ export default function HomePage() {
             <h1 className="mt-4 text-4xl font-semibold leading-[1.02] tracking-[-0.04em] sm:text-6xl">
               Give us the work.
               <br />
-              Get your time back.
+              Get back to running your company.
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft">
               Your managed operations team for the work that keeps pulling you out of your real job. Inbox, scheduling,
               CRM, research, follow-up, customer operations, reporting, and the hundred little things in between.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Link href="/delegation-audit">
-                <Button size="lg">Get My Delegation Plan</Button>
+              <Link href="/book">
+                <Button size="lg">Start Delegating</Button>
               </Link>
               <Link href="/how-it-works">
                 <Button size="lg" variant="secondary">
@@ -179,7 +179,7 @@ export default function HomePage() {
           </div>
           <p className="mt-8 text-lg">And the things that require your judgment are waiting in one place.</p>
           <p className="mt-10 text-2xl font-semibold">That’s Delegation Cloud.</p>
-          <Link href="/delegation-audit" className="mt-8 inline-block">
+          <Link href="/book" className="mt-8 inline-block">
             <Button size="lg" className="bg-[#c5a46e] text-[#111410] hover:bg-[#d4b56a]">
               Find What I Should Delegate
             </Button>

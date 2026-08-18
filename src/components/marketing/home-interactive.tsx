@@ -171,7 +171,7 @@ export function LiveDemo() {
             <div className="rounded-xl bg-white/5 p-5">
               <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">Your input</p>
               <p className="mt-2 text-sm text-accent-fg/85">{plan.input}</p>
-              <Link href="/delegation-audit" className="mt-6 block">
+              <Link href="/book" className="mt-6 block">
                 <Button className="w-full bg-[#c5a46e] text-[#111410] hover:bg-[#d4b56a]">
                   Take this off my plate
                 </Button>

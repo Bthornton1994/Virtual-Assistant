@@ -41,7 +41,7 @@ export default function PricingPage() {
             checked result.
           </p>
           <div className="mt-10">
-            <Link href="/signup">
+            <Link href="/book">
               <Button size="lg">Apply for Founding Membership</Button>
             </Link>
             <p className="mt-4 text-sm text-muted">

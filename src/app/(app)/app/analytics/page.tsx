@@ -1,13 +1,13 @@
 import { EmptyState, HealthBar, Metric, PageHeader, formatHours } from "@/components/product";
 import { requireClient } from "@/lib/auth";
 import { deliveredStatuses } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Analytics" };
 
 export default async function AnalyticsPage() {
   const actor = await requireClient();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const requests = store.listRequests(actor);
   const workstreams = store.listWorkstreams(actor);
   const hours = store.hoursReturned(actor);

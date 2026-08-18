@@ -1,34 +1,83 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import type { Actor } from "@/lib/domain";
+import type { Actor, Role } from "@/lib/domain";
 import { isClientRole, isOpsRole } from "@/lib/domain";
+import { DEMO_SESSION_COOKIE, LEGACY_SESSION_COOKIE } from "@/lib/auth-cookie";
 import { getStore } from "@/lib/store";
 import { supabaseServer } from "@/lib/supabase/server";
-import { SESSION_COOKIE } from "@/lib/auth-cookie";
 
-export { SESSION_COOKIE };
+export { DEMO_SESSION_COOKIE, LEGACY_SESSION_COOKIE };
+export { SESSION_COOKIE } from "@/lib/auth-cookie";
+
+export async function clearLegacySessionCookie() {
+  const jar = await cookies();
+  if (jar.get(LEGACY_SESSION_COOKIE)?.value) {
+    jar.set(LEGACY_SESSION_COOKIE, "", { path: "/", maxAge: 0 });
+  }
+}
 
 export async function getSession(): Promise<Actor | null> {
-  const store = getStore();
-  const jar = await cookies();
-  const demoId = jar.get(SESSION_COOKIE)?.value;
-  if (demoId) {
-    return store.actorFromUser(demoId);
-  }
+  await clearLegacySessionCookie();
 
   const supabase = await supabaseServer();
-  if (!supabase) return null;
-  const { data } = await supabase.auth.getUser();
-  if (!data.user) return null;
-  const mapped = store.actorFromUser(data.user.id);
-  if (mapped) return mapped;
+  if (supabase) {
+    const { data, error } = await supabase.auth.getUser();
+    if (!error && data.user) {
+      return loadSupabaseActor({
+        id: data.user.id,
+        email: data.user.email ?? "",
+        name: (data.user.user_metadata?.name as string) || data.user.email || "Member",
+        supabase,
+      });
+    }
+  }
+
+  const jar = await cookies();
+  const demoId = jar.get(DEMO_SESSION_COOKIE)?.value;
+  if (!demoId) return null;
+  const actor = getStore().actorFromUser(demoId);
+  return actor ? { ...actor, source: "demo" } : null;
+}
+
+async function loadSupabaseActor(input: {
+  id: string;
+  email: string;
+  name: string;
+  supabase: NonNullable<Awaited<ReturnType<typeof supabaseServer>>>;
+}): Promise<Actor> {
+  const { data: operator } = await input.supabase
+    .from("operators")
+    .select("id, name, platform_role")
+    .eq("user_id", input.id)
+    .maybeSingle();
+
+  if (operator) {
+    return {
+      id: input.id,
+      email: input.email,
+      name: operator.name || input.name,
+      role: operator.platform_role as Role,
+      organizationId: null,
+      operatorId: operator.id,
+      source: "supabase",
+    };
+  }
+
+  const { data: membership } = await input.supabase
+    .from("organization_members")
+    .select("organization_id, role, status")
+    .eq("user_id", input.id)
+    .eq("status", "active")
+    .maybeSingle();
+
   return {
-    id: data.user.id,
-    email: data.user.email ?? "",
-    name: (data.user.user_metadata?.name as string) || data.user.email || "User",
-    role: "client_member",
-    organizationId: null,
+    id: input.id,
+    email: input.email,
+    name: input.name,
+    role: (membership?.role as Role) ?? "client_member",
+    organizationId: membership?.organization_id ?? null,
     operatorId: null,
+    source: "supabase",
   };
 }
 
@@ -40,6 +89,9 @@ export async function requireSession(): Promise<Actor> {
 
 export async function requireClient(): Promise<Actor> {
   const session = await requireSession();
+  if (session.source === "supabase" && !session.organizationId && !isOpsRole(session.role)) {
+    redirect("/login?error=no_org");
+  }
   if (!isClientRole(session.role) && session.role !== "platform_admin") {
     redirect("/ops/dashboard");
   }

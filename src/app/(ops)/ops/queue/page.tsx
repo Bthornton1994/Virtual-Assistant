@@ -4,7 +4,7 @@ import { EmptyState, PageHeader, PriorityBadge, RiskBadge, StatusBadge, formatDa
 import { Button } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
 import { PRIORITIES, QUEUE_SECTIONS, REQUEST_STATUSES, RISK_LEVELS } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Queue" };
 
@@ -23,7 +23,7 @@ export default async function QueuePage({
 }) {
   const actor = await requireOps();
   const filters = await searchParams;
-  const store = getStore();
+  const store = getWorkspace(actor);
   await store.runDueSchedules(actor);
   const operators = store.listOperators(actor);
   const orgs = store.listOrganizations(actor);

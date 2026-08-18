@@ -46,8 +46,8 @@ export default function HowItWorksPage() {
         ))}
       </ol>
       <div className="mx-auto max-w-6xl px-5 py-16">
-        <Link href="/delegation-audit">
-          <Button size="lg">Get My Delegation Plan</Button>
+        <Link href="/book">
+          <Button size="lg">Start Delegating</Button>
         </Link>
       </div>
     </div>
