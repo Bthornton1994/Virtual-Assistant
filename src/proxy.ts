@@ -21,6 +21,7 @@ export async function proxy(request: NextRequest) {
     hasSupabaseUser: Boolean(supabaseUser),
     hasDemoSession: hasDemo,
     nextParam: request.nextUrl.searchParams.get("next"),
+    loginError: request.nextUrl.searchParams.get("error"),
   });
 
   if (decision.type === "redirect") {

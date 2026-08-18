@@ -3,7 +3,17 @@
  * Requires NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY.
  * These are NOT /demo identities.
  */
+import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+
+try {
+  for (const line of readFileSync(".env.local", "utf8").split(/\r?\n/)) {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (match && !process.env[match[1]]) process.env[match[1]] = match[2];
+  }
+} catch {
+  // optional local env
+}
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://qbvmtgaphvpwpwemplje.supabase.co";
 const service = process.env.SUPABASE_SERVICE_ROLE_KEY;

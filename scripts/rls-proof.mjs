@@ -2,7 +2,17 @@
  * Live RLS proof: org A cannot read/write org B.
  * Requires two provisioned client users and the dedicated DC project.
  */
+import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+
+try {
+  for (const line of readFileSync(".env.local", "utf8").split(/\r?\n/)) {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (match && !process.env[match[1]]) process.env[match[1]] = match[2];
+  }
+} catch {
+  // optional local env
+}
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;

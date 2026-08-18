@@ -3,7 +3,17 @@
  * Requires NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or ANON),
  * SUPABASE_SERVICE_ROLE_KEY, and provisioned test users.
  */
+import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+
+try {
+  for (const line of readFileSync(".env.local", "utf8").split(/\r?\n/)) {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (match && !process.env[match[1]]) process.env[match[1]] = match[2];
+  }
+} catch {
+  // optional local env
+}
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://qbvmtgaphvpwpwemplje.supabase.co";
 const publishable =

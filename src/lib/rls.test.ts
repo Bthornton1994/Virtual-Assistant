@@ -15,7 +15,9 @@ const sql =
   "\n" +
   readFileSync(resolve(process.cwd(), "supabase/migrations/0006_lifecycle_authz.sql"), "utf8") +
   "\n" +
-  readFileSync(resolve(process.cwd(), "supabase/migrations/0007_schema_alignment.sql"), "utf8");
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0007_schema_alignment.sql"), "utf8") +
+  "\n" +
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0008_member_rls.sql"), "utf8");
 
 const tenantTables = [
   "organizations",
@@ -91,6 +93,8 @@ describe("RLS schema (practical)", () => {
     expect(sql).toMatch(/enforce_external_delivery/);
     expect(sql).toMatch(/Outbound action requires customer approval before delivery/);
     expect(sql).toMatch(/mem_self_activate/);
+    expect(sql).toMatch(/is_org_admin/);
+    expect(sql).toMatch(/Break organization_members RLS recursion/);
   });
 
   it("does not publish the service role to the browser client helper", () => {

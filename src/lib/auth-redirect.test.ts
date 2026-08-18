@@ -54,6 +54,17 @@ describe("auth redirect loop protection", () => {
     expect(withLegacy).toEqual({ type: "next" });
   });
 
+  it("does not bounce a signed-in user off /login when they have no organization", () => {
+    expect(
+      resolveAuthRedirect({
+        pathname: "/login",
+        hasSupabaseUser: true,
+        hasDemoSession: false,
+        loginError: "no_org",
+      }),
+    ).toEqual({ type: "next" });
+  });
+
   it("leaves public routes alone", () => {
     for (const pathname of ["/", "/book", "/demo", "/pricing", "/how-it-works", "/security"]) {
       expect(resolveAuthRedirect({ pathname, hasSupabaseUser: false, hasDemoSession: false })).toEqual({

@@ -17,12 +17,18 @@ export function resolveAuthRedirect(input: {
   hasSupabaseUser: boolean;
   hasDemoSession: boolean;
   nextParam?: string | null;
+  loginError?: string | null;
 }): AuthRedirectDecision {
   const isProtected = PROTECTED_PREFIXES.some((p) => input.pathname === p || input.pathname.startsWith(`${p}/`));
   const isLogin = input.pathname === "/login";
 
   if (isProtected && !input.hasSupabaseUser && !input.hasDemoSession) {
     return { type: "redirect", pathname: "/login", next: sanitizeNext(input.pathname) ?? undefined };
+  }
+
+  // Stay on /login when the authenticated user has no organization.
+  if (isLogin && input.loginError === "no_org") {
+    return { type: "next" };
   }
 
   // Production identity only. A demo cookie must never bounce /login into /app.

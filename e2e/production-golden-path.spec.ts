@@ -10,7 +10,13 @@ const otherClientEmail = process.env.E2E_OTHER_CLIENT_EMAIL;
 const otherClientPassword = process.env.E2E_OTHER_CLIENT_PASSWORD;
 
 const configured = Boolean(
-  clientEmail && clientPassword && managerEmail && managerPassword && operatorEmail && operatorPassword,
+  process.env.E2E_RUN_UI === "1" &&
+    clientEmail &&
+    clientPassword &&
+    managerEmail &&
+    managerPassword &&
+    operatorEmail &&
+    operatorPassword,
 );
 
 test.describe("production multi-role golden path", () => {

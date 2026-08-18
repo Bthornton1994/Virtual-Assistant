@@ -1,5 +1,16 @@
 import { defineConfig, devices } from "@playwright/test";
 
+import { readFileSync } from "node:fs";
+
+try {
+  for (const line of readFileSync(".env.local", "utf8").split(/\r?\n/)) {
+    const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
+    if (match && !process.env[match[1]]) process.env[match[1]] = match[2];
+  }
+} catch {
+  // optional
+}
+
 const baseURL = process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:3010";
 
 export default defineConfig({
