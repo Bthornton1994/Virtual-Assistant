@@ -2,9 +2,10 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { SESSION_COOKIE } from "@/lib/auth-cookie";
+import { DEMO_SESSION_COOKIE, LEGACY_SESSION_COOKIE } from "@/lib/auth-cookie";
 import { isOpsRole } from "@/lib/domain";
 import { getStore } from "@/lib/store";
+import { supabaseServer } from "@/lib/supabase/server";
 
 function cookieOptions() {
   return {
@@ -16,7 +17,52 @@ function cookieOptions() {
   };
 }
 
+function loginError(code: string, next = "") {
+  const qs = new URLSearchParams();
+  qs.set("error", code);
+  if (next) qs.set("next", next);
+  redirect(`/login?${qs.toString()}`);
+}
+
 export async function loginAction(formData: FormData) {
+  const email = String(formData.get("email") || "").trim();
+  const password = String(formData.get("password") || "");
+  const next = String(formData.get("next") || "");
+  const supabase = await supabaseServer();
+  if (!supabase) loginError("unavailable", next);
+  const client = supabase!;
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
+  if (error || !data.user) {
+    loginError("invalid", next);
+  }
+  const jar = await cookies();
+  jar.set(LEGACY_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
+  if (next.startsWith("/") && !next.startsWith("/login")) redirect(next);
+  redirect("/app/dashboard");
+}
+
+export async function requestPasswordResetAction(formData: FormData) {
+  const email = String(formData.get("email") || "").trim();
+  const supabase = await supabaseServer();
+  if (!supabase) redirect("/login/forgot?error=unavailable");
+  const origin = process.env.NEXT_PUBLIC_SITE_URL || "https://virtual-assistant-bryant4.vercel.app";
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${origin}/login/reset`,
+  });
+  if (error) redirect("/login/forgot?sent=1");
+  redirect("/login/forgot?sent=1");
+}
+
+export async function logoutAction() {
+  const supabase = await supabaseServer();
+  if (supabase) await supabase.auth.signOut();
+  const jar = await cookies();
+  jar.set(DEMO_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
+  jar.set(LEGACY_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
+  redirect("/");
+}
+
+export async function demoPasswordLoginAction(formData: FormData) {
   const email = String(formData.get("email") || "").trim();
   const password = String(formData.get("password") || "");
   const next = String(formData.get("next") || "");
@@ -25,55 +71,13 @@ export async function loginAction(formData: FormData) {
   try {
     actor = store.authenticate(email, password);
   } catch {
-    const qs = new URLSearchParams();
-    qs.set("error", "invalid");
-    if (next) qs.set("next", next);
-    redirect(`/login?${qs.toString()}`);
+    redirect("/demo?error=invalid");
   }
   const jar = await cookies();
-  jar.set(SESSION_COOKIE, actor.id, cookieOptions());
-  if (next.startsWith("/")) redirect(next);
+  jar.set(DEMO_SESSION_COOKIE, actor.id, cookieOptions());
+  jar.set(LEGACY_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
+  if (next.startsWith("/") && !next.startsWith("/login")) redirect(next);
   redirect(isOpsRole(actor.role) ? "/ops/dashboard" : "/app/dashboard");
-}
-
-export async function signupAction(formData: FormData) {
-  const store = getStore();
-  let actor;
-  try {
-    actor = store.signup({
-      name: String(formData.get("name") || "").trim(),
-      email: String(formData.get("email") || "").trim(),
-      password: String(formData.get("password") || "demo"),
-      organization: String(formData.get("organization") || "").trim(),
-      industry: String(formData.get("industry") || "").trim(),
-    });
-  } catch {
-    redirect("/signup?error=exists");
-  }
-  const jar = await cookies();
-  jar.set(SESSION_COOKIE, actor.id, cookieOptions());
-  redirect("/app/dashboard");
-}
-
-export async function logoutAction() {
-  const store = getStore();
-  const jar = await cookies();
-  const id = jar.get(SESSION_COOKIE)?.value;
-  const actor = id ? store.actorFromUser(id) : null;
-  if (actor) {
-    store.data.audits.unshift({
-      id: `au_${Date.now()}`,
-      organizationId: actor.organizationId,
-      actorId: actor.id,
-      action: "auth.logout",
-      entityType: "user",
-      entityId: actor.id,
-      metadata: {},
-      createdAt: new Date().toISOString(),
-    });
-  }
-  jar.set(SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
-  redirect("/");
 }
 
 export async function demoLoginAction(userId: string, next = "") {
@@ -81,7 +85,8 @@ export async function demoLoginAction(userId: string, next = "") {
   const actor = store.actorFromUser(userId);
   if (!actor) throw new Error("Unknown demo account");
   const jar = await cookies();
-  jar.set(SESSION_COOKIE, actor.id, cookieOptions());
-  if (next.startsWith("/")) redirect(next);
+  jar.set(DEMO_SESSION_COOKIE, actor.id, cookieOptions());
+  jar.set(LEGACY_SESSION_COOKIE, "", { ...cookieOptions(), maxAge: 0 });
+  if (next.startsWith("/") && !next.startsWith("/login")) redirect(next);
   redirect(isOpsRole(actor.role) ? "/ops/dashboard" : "/app/dashboard");
 }

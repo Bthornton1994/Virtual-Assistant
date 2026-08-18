@@ -107,6 +107,7 @@ export type Actor = {
   role: Role;
   organizationId: string | null;
   operatorId: string | null;
+  source: "demo" | "supabase";
 };
 
 export type UserRecord = {

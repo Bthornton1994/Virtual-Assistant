@@ -208,7 +208,7 @@ export const DEMO_PLANS: Record<
     system: "Grow revenue",
     objective: "Every active opportunity has accurate data and a documented next action.",
     steps: [
-      "Audit open opportunities",
+      "Inspect open opportunities",
       "Identify missing owner, stage, contact, or next activity",
       "Research missing information",
       "Flag ambiguous opportunities",

@@ -3,14 +3,14 @@ import { notFound } from "next/navigation";
 import { HealthBar, PageHeader, StatusBadge } from "@/components/product";
 import { requireOps } from "@/lib/auth";
 import { AuthzError, DomainError } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Client" };
 
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const actor = await requireOps();
   const { id } = await params;
-  const store = getStore();
+  const store = getWorkspace(actor);
   let org;
   try {
     org = store.getOrganization(actor, id);

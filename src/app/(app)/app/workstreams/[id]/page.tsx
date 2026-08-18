@@ -5,14 +5,14 @@ import { HealthBar, PageHeader, StatusBadge } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { AuthzError, DomainError } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Workstream" };
 
 export default async function WorkstreamDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const actor = await requireClient();
   const { id } = await params;
-  const store = getStore();
+  const store = getWorkspace(actor);
   let ws;
   try {
     ws = store.getWorkstream(actor, id);

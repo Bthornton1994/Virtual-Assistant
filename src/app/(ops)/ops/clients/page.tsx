@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/product";
 import { requireOps } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Clients" };
 
 export default async function ClientsPage() {
   const actor = await requireOps();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const orgs = store.listOrganizations(actor);
   return (
     <div className="space-y-6">

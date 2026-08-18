@@ -3,13 +3,13 @@ import { PageHeader } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { ACTION_CLASS_COPY, OPERATING_MEMORY_FIELDS } from "@/lib/domain";
 import { requireClient } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
   const actor = await requireClient();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const org = actor.organizationId ? store.getOrganization(actor, actor.organizationId) : null;
   const canEdit = actor.role === "client_admin" || actor.role === "platform_admin";
 

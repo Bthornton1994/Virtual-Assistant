@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { EmptyState, HealthBar, PageHeader, formatHours } from "@/components/product";
 import { requireClient } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Workstreams" };
 
 export default async function WorkstreamsPage() {
   const actor = await requireClient();
-  const workstreams = getStore().listWorkstreams(actor);
+  const workstreams = getWorkspace(actor).listWorkstreams(actor);
   return (
     <div className="space-y-6">
       <PageHeader title="Workstreams" description="Recurring operational systems, not a list of people." />

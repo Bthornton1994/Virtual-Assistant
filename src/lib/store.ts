@@ -795,6 +795,7 @@ export class MemoryStore {
       role,
       organizationId: isClientRole(role) ? membership?.organizationId ?? null : null,
       operatorId: op?.id ?? null,
+      source: "demo",
     };
   }
 
@@ -1752,6 +1753,7 @@ export class MemoryStore {
         role: "client_admin",
         organizationId: ws.organizationId,
         operatorId: null,
+        source: "demo",
       },
       {
         title: `${ws.name}: scheduled run`,

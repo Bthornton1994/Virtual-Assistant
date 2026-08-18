@@ -2,13 +2,13 @@ import { requestIntegrationAction } from "@/app/actions/requests";
 import { EmptyState, PageHeader } from "@/components/product";
 import { Badge, Button } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Integrations" };
 
 export default async function IntegrationsPage() {
   const actor = await requireClient();
-  const rows = getStore().listIntegrations(actor);
+  const rows = getWorkspace(actor).listIntegrations(actor);
   return (
     <div className="space-y-6">
       <PageHeader

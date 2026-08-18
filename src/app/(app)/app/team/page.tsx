@@ -2,13 +2,13 @@ import { inviteMemberAction } from "@/app/actions/requests";
 import { EmptyState, PageHeader } from "@/components/product";
 import { Button, Field, Input } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Team" };
 
 export default async function TeamPage() {
   const actor = await requireClient();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const orgId = actor.organizationId;
   const members = orgId ? store.listMembers(actor, orgId) : [];
   return (

@@ -12,14 +12,14 @@ import { ActionClassBadge, PageHeader, RiskBadge, StatusBadge, formatDate } from
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { APPROVAL_KIND_COPY, AuthzError, DomainError } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Request" };
 
 export default async function RequestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const actor = await requireClient();
   const { id } = await params;
-  const store = getStore();
+  const store = getWorkspace(actor);
   let bundle;
   try {
     bundle = store.getRequestBundle(actor, id);

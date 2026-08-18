@@ -2,13 +2,13 @@ import { EmptyState, Metric, PageHeader } from "@/components/product";
 import { requireOps } from "@/lib/auth";
 import { deliveredStatuses } from "@/lib/domain";
 import { countOverdue, currentTimeMs } from "@/lib/ops-metrics";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Ops analytics" };
 
 export default async function OpsAnalyticsPage() {
   const actor = await requireOps();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const requests = store.listRequests(actor);
   const delivered = requests.filter((r) => deliveredStatuses().includes(r.status));
   const qa = store.data.qaReviews;

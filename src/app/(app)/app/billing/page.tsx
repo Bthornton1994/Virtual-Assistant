@@ -2,14 +2,14 @@ import { activatePlanAction } from "@/app/actions/requests";
 import { Metric, PageHeader } from "@/components/product";
 import { Button } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 import { BILLING_PLANS } from "@/lib/stripe";
 
 export const metadata = { title: "Billing" };
 
 export default async function BillingPage() {
   const actor = await requireClient();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const sub = store.getSubscription(actor);
   const usage = store.listUsage(actor)[0];
   return (

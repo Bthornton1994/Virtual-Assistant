@@ -3,13 +3,13 @@ import { createPlaybookAction } from "@/app/actions/requests";
 import { EmptyState, PageHeader } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Playbooks" };
 
 export default async function PlaybooksPage() {
   const actor = await requireClient();
-  const store = getStore();
+  const store = getWorkspace(actor);
   const playbooks = store.listPlaybooks(actor);
   const workstreams = store.listWorkstreams(actor);
   return (

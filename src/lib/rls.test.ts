@@ -7,7 +7,9 @@ const sql =
   "\n" +
   readFileSync(resolve(process.cwd(), "supabase/migrations/0002_lifecycle.sql"), "utf8") +
   "\n" +
-  readFileSync(resolve(process.cwd(), "supabase/migrations/0003_operating.sql"), "utf8");
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0003_operating.sql"), "utf8") +
+  "\n" +
+  readFileSync(resolve(process.cwd(), "supabase/migrations/0004_production_auth.sql"), "utf8");
 
 const tenantTables = [
   "organizations",
@@ -35,6 +37,9 @@ const tenantTables = [
   "deliveries",
   "internal_notes",
   "operating_memory",
+  "profiles",
+  "leads",
+  "execution_plans",
 ];
 
 describe("RLS schema (practical)", () => {

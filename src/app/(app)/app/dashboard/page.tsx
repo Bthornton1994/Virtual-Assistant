@@ -3,13 +3,13 @@ import { Button } from "@/components/ui";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/product";
 import { requireClient } from "@/lib/auth";
 import { formatOperatingMemory } from "@/lib/domain";
-import { getStore } from "@/lib/store";
+import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
   const actor = await requireClient();
-  const store = getStore();
+  const store = getWorkspace(actor);
   if (actor.role === "client_admin" || actor.role === "platform_admin") {
     await store.runDueSchedules(actor);
   }
