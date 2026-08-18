@@ -105,13 +105,13 @@ Playwright: Harbor admin sees Harbor plants and **zero** “Conference follow-up
 
 ## Remaining (exact)
 
-1. **Vercel Preview secrets** — set Preview (not Production unless intended):
+1. **Vercel Preview secrets** — this session cannot write them (Vercel CLI logged out; MCP has no env-write tool). Set Preview only:
    - `NEXT_PUBLIC_SUPABASE_URL=https://qbvmtgaphvpwpwemplje.supabase.co`
-   - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_Tl55fEkqLrElRf2O4j_Z6g_Vpi6qi6y`
-   - `SUPABASE_SERVICE_ROLE_KEY` = service_role secret (dashboard; never `NEXT_PUBLIC_`)
+   - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (publishable, not service)
+   - `SUPABASE_SERVICE_ROLE_KEY` (server-only)
    - `NEXT_PUBLIC_SITE_URL` = preview URL
-2. **Auth email** — configure SMTP or use addresses Supabase accepts so `/login/forgot` can send mail.
-3. Do not promote to production until Preview smoke with those env vars is done.
+2. **Auth email / password recovery** is a **production blocker** until SMTP/transactional email and a real mailbox are configured. `resetPasswordForEmail` currently rejects `*.delegation.cloud`.
+3. Do not promote to production until the deployed-browser golden path on Preview passes.
 
 ## Intentionally out of scope
 
