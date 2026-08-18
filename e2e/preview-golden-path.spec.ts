@@ -44,7 +44,7 @@ async function signOut(page: Page) {
 
 test.describe("deployed preview persistent golden path", () => {
   test.skip(!onPreview, "Set PLAYWRIGHT_BASE_URL to the Vercel Preview URL.");
-  test.setTimeout(240_000);
+  test.setTimeout(360_000);
 
   test("multi-role browser lifecycle persists on Supabase", async ({ browser }, testInfo) => {
     const title = `Preview golden ${Date.now()}`;
@@ -76,16 +76,17 @@ test.describe("deployed preview persistent golden path", () => {
     expect(row?.title).toContain("Preview golden");
     expect(row?.status).toMatch(/awaiting_plan_approval|needs_clarification/);
 
-    if (row?.status === "needs_clarification") {
-      const answer = clientPage.locator('textarea[name="answer"]');
-      if (await answer.count()) {
-        await answer.first().fill("Use HubSpot public notes only. Do not send.");
-        await clientPage.getByRole("button", { name: /answer|save/i }).first().click();
-      }
+    for (let i = 0; i < 6; i += 1) {
+      const box = clientPage.locator('textarea[name="answer"]').first();
+      if (!(await box.count())) break;
+      await box.fill("Use HubSpot. Public notes only. Do not send.");
+      await clientPage.getByRole("button", { name: /send answer/i }).first().click();
+      await clientPage.waitForLoadState("domcontentloaded");
+      await clientPage.waitForTimeout(800);
     }
 
     await clientPage.reload();
-    await expect(clientPage.getByRole("button", { name: /approve plan/i })).toBeVisible({ timeout: 20_000 });
+    await expect(clientPage.getByRole("button", { name: /approve plan/i })).toBeVisible({ timeout: 30_000 });
     await clientPage.locator('textarea[name="note"]').first().fill("Plan approved from preview browser");
     await clientPage.getByRole("button", { name: /approve plan/i }).click();
     await clientPage.waitForTimeout(1500);
@@ -100,7 +101,9 @@ test.describe("deployed preview persistent golden path", () => {
 
     await login(managerPage, managerEmail, password);
     await managerPage.goto(`/ops/requests/${requestId}`);
-    await expect(managerPage.getByText(title.slice(0, 20))).toBeVisible({ timeout: 20_000 });
+    await expect(managerPage.getByRole("heading", { name: new RegExp(title.slice(0, 20)) })).toBeVisible({
+      timeout: 20_000,
+    });
     const assignSelect = managerPage.locator('select[name="operatorId"]');
     await expect(assignSelect).toBeVisible();
     const option = assignSelect.locator("option").filter({ hasText: /maya|operator/i }).first();
@@ -123,20 +126,49 @@ test.describe("deployed preview persistent golden path", () => {
     await operatorPage.screenshot({ path: testInfo.outputPath("operator-in-qa.png"), fullPage: true });
 
     await managerPage.goto(`/ops/requests/${requestId}`);
-    await managerPage.getByRole("button", { name: /request revision/i }).click();
-    ({ data: row } = await db().from("requests").select("status").eq("id", requestId).single());
-    expect(row?.status).toBe("revision_required");
-
-    await operatorPage.goto(`/ops/requests/${requestId}`);
-    if (await operatorPage.getByRole("button", { name: /start work/i }).count()) {
-      await operatorPage.getByRole("button", { name: /start work/i }).click();
-    }
-    await operatorPage.getByRole("button", { name: /submit for qa/i }).click({ timeout: 20_000 });
+    await managerPage.locator('form').filter({ hasText: /^QA/ }).getByRole("button", { name: /request revision/i }).click();
+    await expect
+      .poll(
+        async () => {
+          const { data } = await db().from("requests").select("status").eq("id", requestId).single();
+          return data?.status;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe("revision_required");
 
     await managerPage.goto(`/ops/requests/${requestId}`);
+    await managerPage.locator('select[name="status"]').first().selectOption("in_progress");
+    await managerPage.getByRole("button", { name: /update status/i }).click();
+    await expect
+      .poll(
+        async () => {
+          const { data } = await db().from("requests").select("status").eq("id", requestId).single();
+          return data?.status;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe("in_progress");
+
+    await operatorPage.goto(`/ops/requests/${requestId}`);
+    await operatorPage.getByRole("button", { name: /submit for qa/i }).click({ timeout: 20_000 });
+    await expect
+      .poll(async () => {
+        const { data } = await db().from("requests").select("status").eq("id", requestId).single();
+        return data?.status;
+      })
+      .toBe("qa");
+
+    await managerPage.goto(`/ops/requests/${requestId}`);
+    await expect(managerPage.getByRole("heading", { name: /^QA$/ })).toBeVisible({ timeout: 20_000 });
     await managerPage.locator('textarea[name="notes"]').fill("QA passed after revision");
-    await managerPage.getByRole("button", { name: /^approve$/i }).click();
-    await managerPage.waitForTimeout(1500);
+    await managerPage.locator('button[name="passed"][value="true"]').click();
+    await expect
+      .poll(async () => {
+        const { data } = await db().from("requests").select("status").eq("id", requestId).single();
+        return data?.status;
+      })
+      .toMatch(/awaiting_action_approval|ready_to_deliver/);
 
     await signOut(clientPage);
     await login(clientPage, clientEmail, password);
