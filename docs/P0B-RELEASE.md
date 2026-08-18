@@ -10,7 +10,16 @@ Did **not** touch the other listed project `cvpypxzqcsdhabiejyxh`.
 
 **Persistent database lifecycle: passed on the dedicated project.**
 
-**Vercel Preview env vars: not written from this session** (Vercel CLI is logged out). Local `.env.local` is configured. Preview login will work after Preview env is set and the branch is redeployed.
+**Deployed-browser gate: not passed.**
+
+Playwright against Preview returned `/login?error=unavailable` for every production identity. That means the running Preview deployment does not have `NEXT_PUBLIC_SUPABASE_URL` + publishable key (and/or the server cannot construct a Supabase client).
+
+PR: https://github.com/Bthornton1994/Virtual-Assistant/pull/7  
+SHA: `3116de6d577fa24193efbe8af28d1300c03e9b65`  
+Preview: https://virtual-assistant-git-agent-p0b-supabase-workspace-bryant4.vercel.app  
+Deployment: `dpl_JnWJCs1KdNH9LX2CDRenVYtWB4rK`  
+
+Production was not deployed. Shared preview password was **not** rotated because browser validation did not pass.
 
 ## What was applied
 
@@ -77,12 +86,17 @@ Playwright: Harbor admin sees Harbor plants and **zero** “Conference follow-up
 
 ## Playwright
 
+Local (localhost + `.env.local`): 4 passed.
+
+Deployed Preview (`PLAYWRIGHT_BASE_URL=https://virtual-assistant-git-agent-p0b-supabase-workspace-bryant4.vercel.app`):
+
 | Spec | Result |
 |---|---|
-| demo lifecycle | 2 passed |
-| persistent production login + reload | passed |
-| Harbor cannot see Northline titles | passed |
-| full UI multi-role walk | skipped unless `E2E_RUN_UI=1` (API golden path already executed) |
+| persistent production login | **failed** — `/login?error=unavailable` |
+| Harbor isolation (browser) | **failed** — same unavailable login |
+| preview multi-role golden path | **failed** — same unavailable login |
+
+Screenshots: `docs/evidence/preview-login-unavailable.png`, `docs/evidence/preview-golden-login-unavailable.png`.
 
 ## Password recovery
 
