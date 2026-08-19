@@ -554,6 +554,10 @@ export function canDeliverRequest(actor: Actor, request: Pick<RequestRecord, "as
   return false;
 }
 
+export function canProvisionCustomer(actor: Actor) {
+  return actor.role === "platform_admin" || actor.role === "ops_manager";
+}
+
 export function canWritePlaybook(actor: Actor) {
   return (
     actor.role === "client_admin" ||

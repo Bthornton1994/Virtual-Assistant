@@ -6,6 +6,7 @@ import { DEMO_SESSION_COOKIE, LEGACY_SESSION_COOKIE } from "@/lib/auth-cookie";
 import { isOpsRole } from "@/lib/domain";
 import { getStore } from "@/lib/store";
 import { supabaseServer } from "@/lib/supabase/server";
+import { observe } from "@/lib/observe";
 
 function cookieOptions() {
   return {
@@ -33,6 +34,7 @@ export async function loginAction(formData: FormData) {
   const client = supabase!;
   const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error || !data.user) {
+    observe({ level: "warn", area: "auth", message: "Password login failed", error });
     loginError("invalid", next);
   }
   const jar = await cookies();

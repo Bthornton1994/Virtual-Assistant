@@ -2,24 +2,28 @@
 
 import { useState } from "react";
 import { createRequestAction } from "@/app/actions/requests";
+import { ActionError } from "@/components/action-error";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 
 export function NewRequestForm({
   workstreams,
   playbooks,
   defaultPlaybookId,
+  error,
 }: {
   workstreams: Array<{ id: string; name: string }>;
   playbooks?: Array<{ id: string; title: string }>;
   defaultPlaybookId?: string;
+  error?: string;
 }) {
   const [what, setWhat] = useState("");
   return (
-    <form action={createRequestAction} className="space-y-8">
+    <form action={createRequestAction} className="space-y-8" encType="multipart/form-data">
       <section className="rounded-xl border border-line bg-surface p-6">
         <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">Delegation Cloud</p>
         <h2 className="mt-3 text-2xl font-semibold tracking-tight">What needs to happen?</h2>
         <p className="mt-1 text-sm text-muted">Describe the result, not the task list. We will propose the path.</p>
+        {error ? <div className="mt-4"><ActionError error={error} /></div> : null}
         <Textarea
           name="what"
           required
@@ -68,8 +72,8 @@ export function NewRequestForm({
             </select>
           </Field>
         ) : null}
-        <Field label="Files (names, comma separated)" hint="Demo mode stores metadata. Connect Supabase Storage in production.">
-          <Input name="files" placeholder="brief-notes.pdf, rate-card.pdf" />
+        <Field label="Private files" hint="PDF, CSV, TXT, PNG, JPG, DOCX, or XLSX. 10 MB each. Stored only for your organization.">
+          <Input name="attachments" type="file" multiple />
         </Field>
         <div className="space-y-3 pt-6">
           <label className="flex items-center gap-2 text-sm">

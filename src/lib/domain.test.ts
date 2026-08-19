@@ -6,6 +6,7 @@ import {
   REQUEST_STATUSES,
   blocksWithoutApproval,
   canDeliverRequest,
+  canProvisionCustomer,
   canTransition,
   identifyMissingContext,
   inferApprovalKind,
@@ -107,5 +108,13 @@ describe("domain contracts", () => {
     expect(canDeliverRequest(actor({ role: "operator", operatorId: null }), assigned)).toBe(false);
     expect(canDeliverRequest(actor({ role: "client_admin", organizationId: "org_northline" }), assigned)).toBe(false);
     expect(canDeliverRequest(actor({ role: "client_member", organizationId: "org_northline" }), assigned)).toBe(false);
+  });
+
+  it("lets only ops managers and platform admins provision customers", () => {
+    expect(canProvisionCustomer(actor({ role: "platform_admin" }))).toBe(true);
+    expect(canProvisionCustomer(actor({ role: "ops_manager" }))).toBe(true);
+    expect(canProvisionCustomer(actor({ role: "operator", operatorId: "op_maya" }))).toBe(false);
+    expect(canProvisionCustomer(actor({ role: "client_admin", organizationId: "org_northline" }))).toBe(false);
+    expect(canProvisionCustomer(actor({ role: "client_member", organizationId: "org_northline" }))).toBe(false);
   });
 });

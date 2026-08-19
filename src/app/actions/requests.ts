@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getSession, requireClient, requireOps, requireSession } from "@/lib/auth";
+import { getSession, requireClient, requireManager, requireOps, requireSession } from "@/lib/auth";
+import { observeError } from "@/lib/observe";
 import {
   APPROVAL_KINDS,
   AuthzError,
@@ -14,10 +15,17 @@ import {
 import { getWorkspace } from "@/lib/workspace";
 
 function rethrowAction(error: unknown): never {
+  observeError("lifecycle", error instanceof Error ? error.message : "Action failed", error);
   if (error instanceof DomainError || error instanceof AuthzError) {
     throw new Error(error.message);
   }
   throw error;
+}
+
+function failTo(path: string, message: string): never {
+  const qs = new URLSearchParams({ error: message.slice(0, 280) });
+  const join = path.includes("?") ? "&" : "?";
+  redirect(`${path}${join}${qs.toString()}`);
 }
 
 function parseDue(raw: string) {
@@ -43,10 +51,11 @@ function revalidateRequest(id: string) {
 export async function createRequestAction(formData: FormData) {
   const actor = await requireClient();
   const store = getWorkspace(actor);
-  const files = String(formData.get("files") || "")
+  const named = String(formData.get("files") || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const uploads = formData.getAll("attachments").filter((value): value is File => value instanceof File && value.size > 0);
   let bundle;
   try {
     bundle = await store.createRequest(actor, {
@@ -60,14 +69,57 @@ export async function createRequestAction(formData: FormData) {
     recurring: formData.get("recurring") === "on" || formData.get("recurring") === "true",
     externalCommunication:
       formData.get("externalCommunication") === "on" || formData.get("externalCommunication") === "true",
-    files,
+    files: named,
   });
+    if (uploads.length) {
+      const payload = await Promise.all(
+        uploads.map(async (file) => ({
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          data: await file.arrayBuffer(),
+        })),
+      );
+      await store.uploadRequestFiles(actor, bundle.request.id, payload);
+    }
   } catch (error) {
-    rethrowAction(error);
+    const message = error instanceof Error ? error.message : "The request could not be created.";
+    observeError("lifecycle", message, error, { actorId: actor.id });
+    failTo("/app/requests/new", message);
   }
-  if (!bundle) throw new Error("The request could not be created.");
+  if (!bundle) failTo("/app/requests/new", "The request could not be created.");
   revalidatePath("/app");
   redirect(`/app/requests/${bundle.request.id}`);
+}
+
+export async function provisionCustomerAction(formData: FormData) {
+  const actor = await requireManager();
+  try {
+    const org = await getWorkspace(actor).provisionCustomer(actor, {
+      name: String(formData.get("name") || "").trim(),
+      industry: String(formData.get("industry") || "").trim(),
+      adminName: String(formData.get("adminName") || "").trim(),
+      adminEmail: String(formData.get("adminEmail") || "").trim(),
+    });
+    revalidatePath("/ops/clients");
+    redirect(`/ops/clients/${org.id}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Provisioning failed.";
+    observeError("provision", message, error, { actorId: actor.id });
+    failTo("/ops/clients", message);
+  }
+}
+
+export async function openAttachmentAction(formData: FormData) {
+  const actor = await requireSession();
+  const path = String(formData.get("path") || "");
+  try {
+    const url = await getWorkspace(actor).signedAttachmentUrl(actor, path);
+    redirect(url);
+  } catch (error) {
+    observeError("storage", "Signed download failed", error, { actorId: actor.id });
+    failTo("/app/requests", "That file is not available.");
+  }
 }
 
 export async function addCommentAction(formData: FormData) {

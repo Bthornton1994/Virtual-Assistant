@@ -24,10 +24,12 @@ Live RLS proof: `node scripts/rls-proof.mjs`.
 
 ## Required mapping
 
+See `docs/PRODUCTION-BETA.md` before any Production write.
+
 | Environment | Purpose | Vercel env | Notes |
 |---|---|---|---|
-| Preview / testing | Apply migrations, provision test users, run Playwright | Preview | Dedicated DC project. Safe to reset. |
-| Production | Paying customers only | Production | Separate project. No Northline seed. |
+| Preview / testing | Apply migrations, provision test users, run Playwright | Preview (branch-scoped) | `qbvmtgaphvpwpwemplje`. Safe to reset. **Not production.** |
+| Production | Paying customers only | Production | **New project, not yet created.** No Northline/Harbor fixtures. Do not write Production env until that project exists and this mapping is reviewed. |
 
 Required variables (Preview first):
 

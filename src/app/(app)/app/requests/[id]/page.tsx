@@ -7,6 +7,7 @@ import {
   decideApprovalAction,
   generatePlaybookFromRequestAction,
   modifyPlanAction,
+  openAttachmentAction,
 } from "@/app/actions/requests";
 import { ActionClassBadge, PageHeader, RiskBadge, StatusBadge, formatDate } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
@@ -249,7 +250,14 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
           <h2 className="mb-3 text-sm font-semibold">Files</h2>
           <ul className="text-sm text-ink-soft">
             {attachments.map((a) => (
-              <li key={a.id}>{a.name}</li>
+              <li key={a.id}>
+                <form action={openAttachmentAction}>
+                  <input type="hidden" name="path" value={a.path} />
+                  <button type="submit" className="underline">
+                    {a.name}
+                  </button>
+                </form>
+              </li>
             ))}
           </ul>
         </section>

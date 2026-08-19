@@ -8,10 +8,10 @@ export const metadata = { title: "New request" };
 export default async function NewRequestPage({
   searchParams,
 }: {
-  searchParams: Promise<{ playbookId?: string }>;
+  searchParams: Promise<{ playbookId?: string; error?: string }>;
 }) {
   const actor = await requireClient();
-  const { playbookId } = await searchParams;
+  const { playbookId, error } = await searchParams;
   const store = getWorkspace(actor);
   const workstreams = await store.listWorkstreams(actor);
   const playbooks = await store.listPlaybooks(actor);
@@ -26,6 +26,7 @@ export default async function NewRequestPage({
         workstreams={workstreams.map((w) => ({ id: w.id, name: w.name }))}
         playbooks={playbooks.map((p) => ({ id: p.id, title: p.title }))}
         defaultPlaybookId={playbookId}
+        error={error}
       />
     </div>
   );

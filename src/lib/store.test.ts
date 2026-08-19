@@ -623,6 +623,49 @@ describe("delivery authorization", () => {
   });
 });
 
+describe("customer provisioning", () => {
+  it("lets an ops manager provision an isolated customer org", () => {
+    const store = new MemoryStore(seedData());
+    const { manager, founder, operator } = actors(store);
+    expect(() =>
+      store.provisionCustomer(founder, {
+        name: "Founding Co",
+        industry: "Legal",
+        adminEmail: "owner@founding.example",
+        adminName: "Owner",
+      }),
+    ).toThrow(AuthzError);
+    expect(() =>
+      store.provisionCustomer(operator, {
+        name: "Founding Co",
+        industry: "Legal",
+        adminEmail: "owner@founding.example",
+        adminName: "Owner",
+      }),
+    ).toThrow(AuthzError);
+    const org = store.provisionCustomer(manager, {
+      name: "Founding Co",
+      industry: "Legal",
+      adminEmail: "owner@founding.example",
+      adminName: "Owner",
+    });
+    expect(org.name).toBe("Founding Co");
+    expect(store.listOrganizations(founder).some((o) => o.id === org.id)).toBe(false);
+    const member = store.listMembers(manager, org.id).find((m) => m.user?.email === "owner@founding.example");
+    expect(member?.role).toBe("client_admin");
+    expect(member?.status).toBe("invited");
+  });
+
+  it("stores tenant-prefixed attachments for the owning org only", async () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    const files = [{ name: "notes.pdf", type: "application/pdf", size: 24, data: new ArrayBuffer(24) }];
+    const saved = store.uploadRequestFiles(founder, "req_inbox", files);
+    expect(saved[0].path.startsWith("org_northline/req_inbox/")).toBe(true);
+    await expect(store.signedAttachmentUrl(founder, "org_harbor/secret.pdf")).rejects.toThrow();
+  });
+});
+
 describe("organization settings", () => {
   it("lets client_admin rename the org and blocks members", () => {
     const store = new MemoryStore(seedData());

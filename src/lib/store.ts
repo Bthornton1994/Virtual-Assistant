@@ -45,6 +45,7 @@ import {
   canDeliverRequest,
   canManageTeam,
   canMutateOpsQueue,
+  canProvisionCustomer,
   canRequestCustomerApproval,
   canTransition,
   canWritePlaybook,
@@ -59,6 +60,7 @@ import {
   uid,
 } from "@/lib/domain";
 import { delegationAI } from "@/lib/ai";
+import { attachmentObjectPath, validateAttachment } from "@/lib/attachments";
 
 export type StoreData = {
   users: UserRecord[];
@@ -945,7 +947,20 @@ export class MemoryStore {
   }
 
   inviteMember(actor: Actor, input: { email: string; name: string; role: Role }) {
-    if (!canManageTeam(actor) || !actor.organizationId) throw new AuthzError();
+    if (!actor.organizationId) throw new AuthzError();
+    return this.inviteToOrganization(actor, actor.organizationId, input);
+  }
+
+  inviteToOrganization(
+    actor: Actor,
+    organizationId: string,
+    input: { email: string; name: string; role: Role },
+  ) {
+    if (!canManageTeam(actor) && !canMutateOpsQueue(actor)) throw new AuthzError();
+    if (!canProvisionCustomer(actor) && actor.organizationId !== organizationId && !canManageTeam(actor)) {
+      throw new AuthzError();
+    }
+    if (isClientRole(actor.role) && actor.organizationId !== organizationId) throw new AuthzError();
     let user = this.data.users.find((u) => u.email.toLowerCase() === input.email.toLowerCase());
     if (!user) {
       user = {
@@ -958,26 +973,117 @@ export class MemoryStore {
       this.data.users.push(user);
     }
     const existing = this.data.members.find(
-      (m) => m.organizationId === actor.organizationId && m.userId === user!.id,
+      (m) => m.organizationId === organizationId && m.userId === user!.id,
     );
     if (existing) {
-      existing.status = "active";
+      existing.status = "invited";
       existing.role = input.role;
     } else {
       this.data.members.push({
         id: uid("mem"),
-        organizationId: actor.organizationId,
+        organizationId,
         userId: user.id,
         role: input.role,
-        status: "active",
+        status: "invited",
         createdAt: nowIso(),
       });
     }
-    this.audit(actor, "permission.changed", "member", user.id, actor.organizationId, {
+    this.audit(actor, "permission.changed", "member", user.id, organizationId, {
       email: input.email,
       role: input.role,
     });
     return user;
+  }
+
+  provisionCustomer(
+    actor: Actor,
+    input: { name: string; industry: string; adminEmail: string; adminName: string },
+  ) {
+    if (!canProvisionCustomer(actor)) throw new AuthzError("Only operations can provision a customer");
+    const email = input.adminEmail.trim().toLowerCase();
+    if (!email || !input.name.trim() || !input.adminName.trim()) {
+      throw new DomainError("Organization name and client admin details are required");
+    }
+    const base = input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "customer";
+    let slug = base;
+    let n = 2;
+    while (this.data.organizations.some((o) => o.slug === slug)) {
+      slug = `${base}-${n}`;
+      n += 1;
+    }
+    const org: Organization = {
+      id: uid("org"),
+      name: input.name.trim(),
+      slug,
+      industry: input.industry.trim() || "Professional services",
+      companySize: "",
+      timezone: "America/Chicago",
+      createdAt: nowIso(),
+    };
+    this.data.organizations.push(org);
+    this.data.operatingMemory.push(emptyOperatingMemory(org.id));
+    for (const tpl of WORKSTREAM_TEMPLATES) {
+      this.data.workstreams.push({
+        id: uid("ws"),
+        organizationId: org.id,
+        templateId: tpl.id,
+        name: tpl.name,
+        objective: tpl.objective,
+        sla: tpl.sla,
+        recurringTasks: tpl.recurringTasks,
+        metrics: tpl.metrics,
+        ownerUserId: actor.id,
+        status: "scoping",
+        healthScore: 70,
+        hoursReturned: 0,
+        schedule: null,
+        nextRunAt: null,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      });
+    }
+    this.inviteToOrganization(actor, org.id, {
+      email,
+      name: input.adminName.trim(),
+      role: "client_admin",
+    });
+    this.audit(actor, "permission.changed", "organization", org.id, org.id, { provisioned: true, adminEmail: email });
+    return org;
+  }
+
+  uploadRequestFiles(
+    actor: Actor,
+    requestId: string,
+    files: Array<{ name: string; type: string; size: number; data: ArrayBuffer }>,
+  ) {
+    const req = this.getRequest(actor, requestId);
+    if (actor.role !== "client_admin" && actor.role !== "client_member" && !canMutateOpsQueue(actor)) {
+      throw new AuthzError();
+    }
+    const stored = [];
+    for (const file of files) {
+      const filename = validateAttachment(file);
+      const path = attachmentObjectPath(req.organizationId, req.id, filename);
+      const row = {
+        id: uid("at"),
+        organizationId: req.organizationId,
+        requestId: req.id,
+        playbookId: null as string | null,
+        name: filename,
+        path,
+        uploadedBy: actor.id,
+        createdAt: nowIso(),
+      };
+      this.data.attachments.push(row);
+      stored.push(row);
+    }
+    return stored;
+  }
+
+  async signedAttachmentUrl(actor: Actor, path: string): Promise<string> {
+    const orgId = path.split("/")[0];
+    assertOrgAccess(actor, orgId);
+    throw new DomainError("Demo files are not stored as private objects");
   }
 
   listOperators(actor: Actor) {

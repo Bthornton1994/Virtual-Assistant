@@ -29,6 +29,7 @@ import {
   canDeliverRequest,
   canManageTeam,
   canMutateOpsQueue,
+  canProvisionCustomer,
   canRequestCustomerApproval,
   canTransition,
   canWritePlaybook,
@@ -52,8 +53,11 @@ import {
 } from "@/lib/ai-validate";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { observeError } from "@/lib/observe";
+import { assertAttachmentPathAccess, attachmentObjectPath, validateAttachment } from "@/lib/attachments";
 
 function dbFail(error: { message?: string } | null, fallback = "Database request failed") {
+  observeError("db", error?.message || fallback, error);
   throw new DomainError(error?.message || fallback);
 }
 
@@ -286,6 +290,108 @@ export class SupabaseWorkspaceRepository {
       role: input.role,
     });
     return invited.user;
+  }
+
+  async provisionCustomer(
+    actor: Actor,
+    input: { name: string; industry: string; adminEmail: string; adminName: string },
+  ) {
+    if (!canProvisionCustomer(actor)) throw new AuthzError("Only operations can provision a customer");
+    const email = input.adminEmail.trim().toLowerCase();
+    const name = input.name.trim();
+    const adminName = input.adminName.trim();
+    if (!email || !name || !adminName) throw new DomainError("Organization name and client admin details are required");
+    const admin = supabaseAdmin();
+    if (!admin) throw new DomainError("Provisioning requires a server database key");
+    const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "customer";
+    let slug = base;
+    for (let n = 2; n < 50; n += 1) {
+      const { data: clash } = await admin.from("organizations").select("id").eq("slug", slug).maybeSingle();
+      if (!clash) break;
+      slug = `${base}-${n}`;
+    }
+    const { data: org, error } = await admin
+      .from("organizations")
+      .insert({
+        name,
+        slug,
+        industry: input.industry.trim() || "Professional services",
+        company_size: "",
+        timezone: "America/Chicago",
+      })
+      .select("*")
+      .single();
+    if (error) dbFail(error, "Could not create the organization");
+    try {
+      await admin.from("operating_memory").upsert({
+        organization_id: org.id,
+        prohibited_actions: "Do not send, purchase, publish, or change access without approval.",
+      });
+      const { data: templates } = await admin.from("workstream_templates").select("*");
+      for (const tpl of templates ?? []) {
+        await admin.from("workstreams").insert({
+          organization_id: org.id,
+          template_id: tpl.id,
+          name: tpl.name,
+          objective: tpl.objective,
+          sla: tpl.sla,
+          recurring_tasks: tpl.recurring_tasks,
+          metrics: tpl.metrics,
+          status: "scoping",
+        });
+      }
+      await this.inviteToOrganization(actor, org.id, { email, name: adminName, role: "client_admin" });
+    } catch (cause) {
+      await admin.from("organizations").delete().eq("id", org.id);
+      observeError("provision", "Provisioning rolled back after invitation or seed failure", cause, {
+        organizationId: org.id,
+        actorId: actor.id,
+      });
+      throw cause instanceof DomainError || cause instanceof AuthzError ? cause : new DomainError("Provisioning failed. The organization was not kept.");
+    }
+    await this.audit(actor, "permission.changed", "organization", org.id, org.id, { provisioned: true, adminEmail: email });
+    return this.mapOrg(org);
+  }
+
+  async uploadRequestFiles(
+    actor: Actor,
+    requestId: string,
+    files: Array<{ name: string; type: string; size: number; data: ArrayBuffer }>,
+  ) {
+    const req = await this.getRequest(actor, requestId);
+    if (actor.role !== "client_admin" && actor.role !== "client_member" && !canMutateOpsQueue(actor)) {
+      throw new AuthzError();
+    }
+    const admin = supabaseAdmin();
+    if (!admin) throw new DomainError("File storage is not configured");
+    const db = await this.client();
+    const stored = [];
+    for (const file of files) {
+      const filename = validateAttachment(file);
+      const path = attachmentObjectPath(req.organizationId, req.id, filename);
+      const { error: upError } = await admin.storage.from("attachments").upload(path, file.data, {
+        contentType: file.type || "application/octet-stream",
+        upsert: false,
+      });
+      if (upError) {
+        observeError("storage", upError.message, upError, { organizationId: req.organizationId, requestId: req.id });
+        throw new DomainError("The file could not be stored");
+      }
+      const { data, error } = await db
+        .from("attachments")
+        .insert({
+          organization_id: req.organizationId,
+          request_id: req.id,
+          name: filename,
+          path,
+          uploaded_by: actor.id,
+        })
+        .select("*")
+        .single();
+      if (error) dbFail(error, "The file metadata could not be saved");
+      stored.push(data);
+    }
+    return stored;
   }
 
   async listOperators(actor: Actor) {
@@ -1645,6 +1751,7 @@ export class SupabaseWorkspaceRepository {
   async signedAttachmentUrl(actor: Actor, path: string) {
     const org = path.split("/")[0];
     assertOrgAccess(actor, org);
+    assertAttachmentPathAccess(org, path);
     const admin = supabaseAdmin();
     if (!admin) throw new DomainError("File access requires storage configuration");
     const { data, error } = await admin.storage.from("attachments").createSignedUrl(path, 60);
