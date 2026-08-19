@@ -1,3 +1,4 @@
+import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import {
   addCommentAction,
@@ -13,6 +14,7 @@ import {
   opsTransitionAction,
   updateStepAction,
 } from "@/app/actions/requests";
+import { LiveRequestStatus } from "@/components/live-request-status";
 import { ActionClassBadge, PageHeader, PriorityBadge, RiskBadge, StatusBadge } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
@@ -24,6 +26,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function OpsRequestPage({ params }: { params: Promise<{ id: string }> }) {
+  await connection();
   const actor = await requireOps();
   const { id } = await params;
   const store = getWorkspace(actor);
@@ -67,6 +70,7 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
 
   return (
     <div className="space-y-8">
+      <LiveRequestStatus status={request.status} />
       <PageHeader
         kicker={`${orgName} · ${bundle.workstream?.name ?? "Unscoped"}`}
         title={request.title}
