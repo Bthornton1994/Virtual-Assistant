@@ -546,6 +546,14 @@ export function canMutateOpsQueue(actor: Actor) {
   return isOpsRole(actor.role);
 }
 
+export function canDeliverRequest(actor: Actor, request: Pick<RequestRecord, "assignedOperatorId">) {
+  if (actor.role === "platform_admin" || actor.role === "ops_manager") return true;
+  if (actor.role === "operator") {
+    return Boolean(actor.operatorId) && request.assignedOperatorId === actor.operatorId;
+  }
+  return false;
+}
+
 export function canWritePlaybook(actor: Actor) {
   return (
     actor.role === "client_admin" ||

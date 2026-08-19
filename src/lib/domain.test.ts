@@ -5,11 +5,25 @@ import {
   ROLES,
   REQUEST_STATUSES,
   blocksWithoutApproval,
+  canDeliverRequest,
   canTransition,
   identifyMissingContext,
   inferApprovalKind,
   requiresExplicitApproval,
+  type Actor,
 } from "@/lib/domain";
+
+function actor(partial: Partial<Actor> & Pick<Actor, "role">): Actor {
+  return {
+    id: "usr_x",
+    email: "x@example.com",
+    name: "X",
+    organizationId: null,
+    operatorId: null,
+    source: "demo",
+    ...partial,
+  };
+}
 
 describe("domain contracts", () => {
   it("includes every product role", () => {
@@ -79,5 +93,19 @@ describe("domain contracts", () => {
     ).toEqual([]);
     expect(inferApprovalKind("Send follow-up email to the champion")).toBe("external_email");
     expect(inferApprovalKind("CRM overwrite of closed deals")).toBe("crm_destructive_change");
+  });
+
+  it("authorizes delivery only for managers, platform admins, and the assigned operator", () => {
+    const assigned = { assignedOperatorId: "op_maya" };
+    const unassigned = { assignedOperatorId: null };
+    expect(canDeliverRequest(actor({ role: "platform_admin" }), assigned)).toBe(true);
+    expect(canDeliverRequest(actor({ role: "ops_manager" }), assigned)).toBe(true);
+    expect(canDeliverRequest(actor({ role: "ops_manager" }), unassigned)).toBe(true);
+    expect(canDeliverRequest(actor({ role: "operator", operatorId: "op_maya" }), assigned)).toBe(true);
+    expect(canDeliverRequest(actor({ role: "operator", operatorId: "op_julian" }), assigned)).toBe(false);
+    expect(canDeliverRequest(actor({ role: "operator", operatorId: "op_maya" }), unassigned)).toBe(false);
+    expect(canDeliverRequest(actor({ role: "operator", operatorId: null }), assigned)).toBe(false);
+    expect(canDeliverRequest(actor({ role: "client_admin", organizationId: "org_northline" }), assigned)).toBe(false);
+    expect(canDeliverRequest(actor({ role: "client_member", organizationId: "org_northline" }), assigned)).toBe(false);
   });
 });

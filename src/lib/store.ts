@@ -42,6 +42,7 @@ import {
   blocksWithoutApproval,
   canAssignOperators,
   canDecideApproval,
+  canDeliverRequest,
   canManageTeam,
   canMutateOpsQueue,
   canRequestCustomerApproval,
@@ -1649,10 +1650,23 @@ export class MemoryStore {
   }
 
   deliverRequest(actor: Actor, requestId: string, pack: Omit<DeliveryPackage, "id" | "organizationId" | "requestId" | "createdBy" | "createdAt">) {
-    if (!canMutateOpsQueue(actor)) throw new AuthzError();
     const req = this.getRequest(actor, requestId);
+    if (!canDeliverRequest(actor, req)) throw new AuthzError();
+    const existing = this.data.deliveries.find((d) => d.requestId === requestId);
+    if (existing) {
+      if (req.status !== "delivered") {
+        const from = req.status;
+        req.status = "delivered";
+        req.updatedAt = nowIso();
+        this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, { from, to: "delivered" });
+      }
+      return existing;
+    }
     if (req.status !== "ready_to_deliver" && req.status !== "qa") {
       throw new DomainError("Only checked work can be delivered");
+    }
+    if (!this.data.qaReviews.some((q) => q.requestId === req.id && q.passed)) {
+      throw new DomainError("QA must pass before delivery");
     }
     const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
     const outboundApproved = this.data.approvals.some(
@@ -1660,6 +1674,14 @@ export class MemoryStore {
     );
     if (needsOutbound && !outboundApproved) {
       throw new DomainError("Outbound action requires customer approval before delivery");
+    }
+    if (req.approvalLevel === "sensitive_execution") {
+      const sensitiveApproved = this.data.approvals.some(
+        (a) => a.requestId === req.id && a.kind === "sensitive_action" && a.status === "approved",
+      );
+      if (!sensitiveApproved) {
+        throw new DomainError("Sensitive action requires customer approval before delivery");
+      }
     }
     const from = req.status;
     const delivery: DeliveryPackage = {

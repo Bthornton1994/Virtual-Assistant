@@ -26,6 +26,7 @@ import {
   blocksWithoutApproval,
   canAssignOperators,
   canDecideApproval,
+  canDeliverRequest,
   canManageTeam,
   canMutateOpsQueue,
   canRequestCustomerApproval,
@@ -1109,13 +1110,30 @@ export class SupabaseWorkspaceRepository {
     requestId: string,
     pack: Omit<DeliveryPackage, "id" | "organizationId" | "requestId" | "createdBy" | "createdAt">,
   ) {
-    if (!canMutateOpsQueue(actor)) throw new AuthzError();
     const req = await this.getRequest(actor, requestId);
-    if (req.status !== "ready_to_deliver" && req.status !== "qa") throw new DomainError("Only checked work can be delivered");
+    if (!canDeliverRequest(actor, req)) throw new AuthzError();
     const db = await this.client();
+    const { data: existing } = await db.from("deliveries").select("*").eq("request_id", requestId).maybeSingle();
+    if (existing) {
+      if (req.status !== "delivered") {
+        await db.from("requests").update({ status: "delivered", updated_at: nowIso() }).eq("id", requestId);
+        await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, {
+          from: req.status,
+          to: "delivered",
+        });
+      }
+      return existing;
+    }
+    if (req.status !== "ready_to_deliver" && req.status !== "qa") throw new DomainError("Only checked work can be delivered");
+    const { data: passedQa } = await db.from("qa_reviews").select("id").eq("request_id", requestId).eq("passed", true).limit(1);
+    if (!passedQa?.length) throw new DomainError("QA must pass before delivery");
     if (req.approvalLevel === "external_execution" || req.externalCommunication) {
       const { data } = await db.from("approvals").select("id").eq("request_id", requestId).eq("kind", "external_email").eq("status", "approved");
       if (!data?.length) throw new DomainError("Outbound action requires customer approval before delivery");
+    }
+    if (req.approvalLevel === "sensitive_execution") {
+      const { data } = await db.from("approvals").select("id").eq("request_id", requestId).eq("kind", "sensitive_action").eq("status", "approved");
+      if (!data?.length) throw new DomainError("Sensitive action requires customer approval before delivery");
     }
     const { data, error } = await db
       .from("deliveries")
@@ -1133,7 +1151,13 @@ export class SupabaseWorkspaceRepository {
       })
       .select("*")
       .single();
-    if (error) dbFail(error);
+    if (error) {
+      if (String(error.message || "").toLowerCase().includes("duplicate") || error.code === "23505") {
+        const { data: raced } = await db.from("deliveries").select("*").eq("request_id", requestId).maybeSingle();
+        if (raced) return raced;
+      }
+      dbFail(error);
+    }
     await db.from("requests").update({ status: "delivered", updated_at: nowIso() }).eq("id", requestId);
     await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, { from: req.status, to: "delivered" });
     return data;

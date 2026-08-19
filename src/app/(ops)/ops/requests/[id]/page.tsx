@@ -16,7 +16,7 @@ import {
 import { ActionClassBadge, PageHeader, PriorityBadge, RiskBadge, StatusBadge } from "@/components/product";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
-import { APPROVAL_KINDS, APPROVAL_KIND_COPY, AuthzError, DomainError, REQUEST_STATUSES } from "@/lib/domain";
+import { APPROVAL_KINDS, APPROVAL_KIND_COPY, AuthzError, DomainError, REQUEST_STATUSES, canDeliverRequest } from "@/lib/domain";
 import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Ops request" };
@@ -54,6 +54,7 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
   const canManage = actor.role !== "operator";
   const assignedToSelf = actor.operatorId && request.assignedOperatorId === actor.operatorId;
   const canWork = canManage || assignedToSelf;
+  const canDeliver = canDeliverRequest(actor, request);
   const orgName = organization?.name ?? "Organization";
   const noteNames = Object.fromEntries(
     await Promise.all(internalNotes.map(async (n: { id: string; authorId: string }) => [n.id, await store.userName(n.authorId)] as const)),
@@ -396,37 +397,37 @@ export default async function OpsRequestPage({ params }: { params: Promise<{ id:
               </Button>
             </form>
           )}
-          {(request.status === "ready_to_deliver" || request.status === "qa") && !delivery ? (
-            <form action={deliverRequestAction} className="space-y-3 rounded-xl border border-line bg-surface p-5">
-              <h2 className="text-sm font-semibold">Deliver</h2>
-              <input type="hidden" name="requestId" value={request.id} />
-              <Textarea name="summary" required placeholder="Outcome summary" />
-              <Textarea name="deliverables" defaultValue={request.deliverable} />
-              <Textarea name="attachments" defaultValue={attachments.map((a) => a.name).join("\n")} />
-              <Textarea name="actionsTaken" placeholder="Actions taken, one per line" />
-              <Textarea name="exceptions" placeholder="Exceptions" />
-              <Textarea name="unresolvedDecisions" placeholder="Unresolved decisions" />
-              <Input name="nextStep" placeholder="Recommended next step" />
-              <Button type="submit">Deliver package</Button>
-            </form>
-          ) : (
-            <div className="rounded-xl border border-line bg-surface p-5 text-sm">
-              <h2 className="text-sm font-semibold">Hours logged</h2>
-              <ul className="mt-2 space-y-1 text-muted">
-                {timeEntries.map((t) => (
-                  <li key={t.id}>
-                    {t.hours}h · {t.note}
-                  </li>
-                ))}
-                {qa.map((q) => (
-                  <li key={q.id}>
-                    QA {q.passed ? "passed" : "revision"} · {q.score}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <div className="rounded-xl border border-line bg-surface p-5 text-sm">
+            <h2 className="text-sm font-semibold">Hours logged</h2>
+            <ul className="mt-2 space-y-1 text-muted">
+              {timeEntries.map((t) => (
+                <li key={t.id}>
+                  {t.hours}h · {t.note}
+                </li>
+              ))}
+              {qa.map((q) => (
+                <li key={q.id}>
+                  QA {q.passed ? "passed" : "revision"} · {q.score}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
+      ) : null}
+
+      {canDeliver && (request.status === "ready_to_deliver" || request.status === "qa") && !delivery ? (
+        <form action={deliverRequestAction} className="space-y-3 rounded-xl border border-line bg-surface p-5">
+          <h2 className="text-sm font-semibold">Deliver</h2>
+          <input type="hidden" name="requestId" value={request.id} />
+          <Textarea name="summary" required placeholder="Outcome summary" />
+          <Textarea name="deliverables" defaultValue={request.deliverable} />
+          <Textarea name="attachments" defaultValue={attachments.map((a) => a.name).join("\n")} />
+          <Textarea name="actionsTaken" placeholder="Actions taken, one per line" />
+          <Textarea name="exceptions" placeholder="Exceptions" />
+          <Textarea name="unresolvedDecisions" placeholder="Unresolved decisions" />
+          <Input name="nextStep" placeholder="Recommended next step" />
+          <Button type="submit">Deliver package</Button>
+        </form>
       ) : null}
 
       {delivery ? (
