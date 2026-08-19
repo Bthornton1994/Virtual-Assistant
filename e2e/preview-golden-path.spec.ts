@@ -15,7 +15,8 @@ const clientEmail = process.env.E2E_CLIENT_EMAIL || "client.admin@northline-test
 const harborEmail = process.env.E2E_OTHER_CLIENT_EMAIL || "client.admin@harbor-test.delegation.cloud";
 const managerEmail = process.env.E2E_MANAGER_EMAIL || "ops.manager@delegation-test.cloud";
 const operatorEmail = process.env.E2E_OPERATOR_EMAIL || "operator@delegation-test.cloud";
-const password = process.env.E2E_PASSWORD || "Preview-Gate-2026!";
+const password = process.env.E2E_PASSWORD;
+if (!password) throw new Error("E2E_PASSWORD is required");
 const onPreview = Boolean(process.env.PLAYWRIGHT_BASE_URL?.includes("vercel.app"));
 
 function db() {

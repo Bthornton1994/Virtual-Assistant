@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 const email = process.env.E2E_CLIENT_EMAIL || "client.admin@northline-test.delegation.cloud";
-const password = process.env.E2E_PASSWORD || "Preview-Gate-2026!";
+const password = process.env.E2E_PASSWORD;
+if (!password) throw new Error("E2E_PASSWORD is required");
 const harbor = process.env.E2E_OTHER_CLIENT_EMAIL || "client.admin@harbor-test.delegation.cloud";
 
 test.describe("persistent preview identities", () => {

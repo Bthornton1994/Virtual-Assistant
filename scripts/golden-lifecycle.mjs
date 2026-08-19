@@ -19,7 +19,11 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://qbvmtgaphvpwpwemplj
 const publishable =
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const password = process.env.E2E_PASSWORD || "Preview-Gate-2026!";
+const password = process.env.E2E_PASSWORD;
+if (!password) {
+  console.error("CREDENTIAL BLOCKER: E2E_PASSWORD is not set.");
+  process.exit(2);
+}
 
 if (!publishable) {
   console.error("CREDENTIAL BLOCKER: NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or ANON) is not set.");

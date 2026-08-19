@@ -17,7 +17,11 @@ try {
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://qbvmtgaphvpwpwemplje.supabase.co";
 const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const password = process.env.E2E_PASSWORD || "Preview-Gate-2026!";
+const password = process.env.E2E_PASSWORD;
+if (!password) {
+  console.error("CREDENTIAL BLOCKER: E2E_PASSWORD is not set.");
+  process.exit(2);
+}
 
 if (!service) {
   console.error("CREDENTIAL BLOCKER: SUPABASE_SERVICE_ROLE_KEY is not set.");
@@ -105,7 +109,7 @@ console.log(
       project: url,
       orgs: orgIds,
       users: created,
-      passwordEnv: "E2E_PASSWORD or default Preview-Gate-2026!",
+      passwordEnv: "E2E_PASSWORD",
     },
     null,
     2,
