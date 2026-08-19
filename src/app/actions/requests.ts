@@ -97,13 +97,16 @@ export async function decideApprovalAction(formData: FormData) {
   const actor = await requireClient();
   const id = String(formData.get("approvalId") || "");
   const decision = String(formData.get("decision") || "") as "approved" | "rejected";
+  let requestId = "";
   try {
-    await getWorkspace(actor).decideApproval(actor, id, decision, String(formData.get("note") || ""));
+    const approval = await getWorkspace(actor).decideApproval(actor, id, decision, String(formData.get("note") || ""));
+    requestId = approval.requestId;
   } catch (error) {
     rethrowAction(error);
   }
   revalidatePath("/app/approvals");
   revalidatePath("/app");
+  if (requestId) revalidateRequest(requestId);
 }
 
 export async function opsTransitionAction(formData: FormData) {

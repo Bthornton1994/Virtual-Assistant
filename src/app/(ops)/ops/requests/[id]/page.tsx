@@ -20,6 +20,8 @@ import { APPROVAL_KINDS, APPROVAL_KIND_COPY, AuthzError, DomainError, REQUEST_ST
 import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Ops request" };
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export default async function OpsRequestPage({ params }: { params: Promise<{ id: string }> }) {
   const actor = await requireOps();
