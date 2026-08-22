@@ -127,6 +127,37 @@ export function defaultRetryDecision(
   return "retry_same_executor";
 }
 
+export function validateAutonomyPolicy(policy: AutonomyPolicy): string[] {
+  const errors: string[] = [];
+  if (
+    policy.minimumVerifiedRunsForPromotion !== null &&
+    (!Number.isInteger(policy.minimumVerifiedRunsForPromotion) || policy.minimumVerifiedRunsForPromotion < 1)
+  ) {
+    errors.push("Minimum verified runs must be an integer of at least 1.");
+  }
+  if (policy.minimumQaScore !== null && (policy.minimumQaScore < 0 || policy.minimumQaScore > 100)) {
+    errors.push("Minimum QA score must be between 0 and 100.");
+  }
+  if (policy.maximumFailureRate !== null && (policy.maximumFailureRate < 0 || policy.maximumFailureRate > 1)) {
+    errors.push("Maximum failure rate must be between 0 and 1.");
+  }
+  if (policy.maximumExceptionRate !== null && (policy.maximumExceptionRate < 0 || policy.maximumExceptionRate > 1)) {
+    errors.push("Maximum exception rate must be between 0 and 1.");
+  }
+  if (policy.maximumOwnerMinutesPerRun !== null && policy.maximumOwnerMinutesPerRun < 0) {
+    errors.push("Maximum owner minutes per run must be zero or greater.");
+  }
+  if (policy.allowAutomaticPromotion && policy.promotionRequiresApproval) {
+    errors.push("Automatic promotion cannot be enabled while promotion still requires approval.");
+  }
+  return errors;
+}
+
+export function assertAutonomyPolicy(policy: AutonomyPolicy) {
+  const errors = validateAutonomyPolicy(policy);
+  if (errors.length) throw new Error(errors.join(" "));
+}
+
 function boundedLevel(value: number): AutonomyLevel {
   return Math.max(0, Math.min(4, Math.round(value))) as AutonomyLevel;
 }

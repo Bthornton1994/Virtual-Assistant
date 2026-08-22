@@ -4,6 +4,7 @@ import {
   canTransitionGauntletStage,
   defaultRetryDecision,
   evaluateAutonomy,
+  validateAutonomyPolicy,
   type AutonomyMetrics,
   type AutonomyPolicy,
 } from "@/lib/gauntlet-policy";
@@ -59,6 +60,34 @@ describe("failure retry policy", () => {
 
   it("requires input correction before retrying bad inputs", () => {
     expect(defaultRetryDecision("bad_input", "medium")).toBe("correct_inputs_then_retry");
+  });
+});
+
+describe("autonomy policy validation", () => {
+  it("accepts conservative unconfigured defaults", () => {
+    expect(validateAutonomyPolicy(DEFAULT_AUTONOMY_POLICY)).toEqual([]);
+  });
+
+  it("rejects invalid threshold ranges", () => {
+    expect(
+      validateAutonomyPolicy({
+        ...configuredPolicy,
+        minimumVerifiedRunsForPromotion: 0,
+        minimumQaScore: 101,
+        maximumFailureRate: 1.1,
+        maximumExceptionRate: -0.1,
+        maximumOwnerMinutesPerRun: -1,
+      }),
+    ).toHaveLength(5);
+  });
+
+  it("rejects contradictory automatic-promotion settings", () => {
+    const errors = validateAutonomyPolicy({
+      ...configuredPolicy,
+      allowAutomaticPromotion: true,
+      promotionRequiresApproval: true,
+    });
+    expect(errors.join(" ")).toContain("Automatic promotion");
   });
 });
 
