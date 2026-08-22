@@ -59,6 +59,7 @@ const appNav = [
 
 const opsNav = [
   { href: "/ops/dashboard", label: "Dashboard" },
+  { href: "/ops/execution", label: "Execution Lab" },
   { href: "/ops/queue", label: "Queue" },
   { href: "/ops/clients", label: "Clients" },
   { href: "/ops/operators", label: "Operators" },
