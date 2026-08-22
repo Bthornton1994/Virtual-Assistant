@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { createGauntletCycleAction } from "@/app/actions/gauntlet";
+import { recoverAutonomyProfileAction } from "@/app/actions/gauntlet-recovery";
 import { Metric, PageHeader } from "@/components/product";
-import { Badge, Button, Card, Field, Input } from "@/components/ui";
+import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
 import { listDelegationSpecs } from "@/lib/execution-primitives";
 import { listAutonomyProfiles, listGauntletCycles } from "@/lib/gauntlet";
@@ -177,6 +178,27 @@ export default async function GauntletPage() {
                   <p className="mt-3 text-xs text-muted">
                     Promotion: {profile.policy.minimumVerifiedRunsForPromotion === null ? "thresholds not configured" : "configured"} · policy v{profile.policyVersion}
                   </p>
+
+                  {manager && profile.state === "suspended" ? (
+                    <form action={recoverAutonomyProfileAction} className="mt-5 space-y-4 border-t border-line pt-5">
+                      <input type="hidden" name="profileId" value={profile.id} />
+                      <div>
+                        <p className="text-sm font-medium">Explicit recovery</p>
+                        <p className="mt-1 text-xs text-muted">
+                          Recovery does not reopen the suspended incident cycle. It records a reason and returns this workstream to active Level 0 so the next cycle must earn autonomy again.
+                        </p>
+                      </div>
+                      <Field label="Recovery reason" hint="Required and written to the immutable recovery record and audit trail.">
+                        <Textarea
+                          name="reason"
+                          required
+                          rows={3}
+                          placeholder="Describe what changed, what risk was addressed, and why Level-0 re-entry is appropriate."
+                        />
+                      </Field>
+                      <Button type="submit">Recover at Level 0</Button>
+                    </form>
+                  ) : null}
                 </Card>
               );
             })
