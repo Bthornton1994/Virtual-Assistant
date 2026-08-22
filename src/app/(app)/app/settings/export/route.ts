@@ -11,7 +11,7 @@ export async function GET() {
     return NextResponse.json({ error: "No organization on this session" }, { status: 400 });
   }
   try {
-    const events = getWorkspace(actor).exportAudit(actor, actor.organizationId);
+    const events = await getWorkspace(actor).exportAudit(actor, actor.organizationId);
     return new NextResponse(JSON.stringify(events, null, 2), {
       headers: {
         "content-type": "application/json; charset=utf-8",

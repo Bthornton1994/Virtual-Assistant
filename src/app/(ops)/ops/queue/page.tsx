@@ -25,10 +25,10 @@ export default async function QueuePage({
   const filters = await searchParams;
   const store = getWorkspace(actor);
   await store.runDueSchedules(actor);
-  const operators = store.listOperators(actor);
-  const orgs = store.listOrganizations(actor);
-  const workstreams = store.listWorkstreams(actor);
-  const requests = store.listRequests(actor, {
+  const operators = await store.listOperators(actor);
+  const orgs = await store.listOrganizations(actor);
+  const workstreams = await store.listWorkstreams(actor);
+  const requests = await store.listRequests(actor, {
     organizationId: filters.client || undefined,
     operatorId: filters.operator || undefined,
     workstreamId: filters.workstream || undefined,

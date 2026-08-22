@@ -5,11 +5,16 @@ import { supabaseServer } from "@/lib/supabase/server";
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
-  const next = url.searchParams.get("next") || "/app/dashboard";
+  const type = url.searchParams.get("type");
+  const nextParam = url.searchParams.get("next") || "";
+  const next = type === "recovery" ? "/login/reset" : nextParam || "/app/dashboard";
   const supabase = await supabaseServer();
   if (supabase && code) {
-    await supabase.auth.exchangeCodeForSession(code);
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) {
+      return NextResponse.redirect(new URL("/login?error=unavailable", url.origin));
+    }
   }
-  const dest = new URL(next.startsWith("/") ? next : "/app/dashboard", url.origin);
+  const dest = new URL(next.startsWith("/") && !next.startsWith("//") ? next : "/app/dashboard", url.origin);
   return NextResponse.redirect(dest);
 }

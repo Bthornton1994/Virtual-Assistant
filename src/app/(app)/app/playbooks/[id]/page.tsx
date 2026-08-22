@@ -31,7 +31,7 @@ export default async function PlaybookDetailPage({ params }: { params: Promise<{
   const { id } = await params;
   let bundle;
   try {
-    bundle = getWorkspace(actor).getPlaybook(actor, id);
+    bundle = await getWorkspace(actor).getPlaybook(actor, id);
   } catch (e) {
     if (e instanceof AuthzError || e instanceof DomainError) notFound();
     throw e;

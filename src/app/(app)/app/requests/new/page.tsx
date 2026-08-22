@@ -13,8 +13,8 @@ export default async function NewRequestPage({
   const actor = await requireClient();
   const { playbookId } = await searchParams;
   const store = getWorkspace(actor);
-  const workstreams = store.listWorkstreams(actor);
-  const playbooks = store.listPlaybooks(actor);
+  const workstreams = await store.listWorkstreams(actor);
+  const playbooks = await store.listPlaybooks(actor);
   return (
     <div className="mx-auto max-w-3xl space-y-8">
       <PageHeader

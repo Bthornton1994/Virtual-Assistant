@@ -22,7 +22,7 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
   const store = getWorkspace(actor);
   let bundle;
   try {
-    bundle = store.getRequestBundle(actor, id);
+    bundle = await store.getRequestBundle(actor, id);
   } catch (e) {
     if (e instanceof AuthzError || e instanceof DomainError) notFound();
     throw e;
@@ -31,6 +31,9 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
   const planApproval = approvals.find((a) => a.kind === "execution_plan" && a.status === "pending");
   const pendingApprovals = approvals.filter((a) => a.status === "pending");
   const openClarifications = clarifications.filter((c) => !c.answer);
+  const commentNames = Object.fromEntries(
+    await Promise.all(comments.map(async (c) => [c.id, await store.userName(c.authorId)] as const)),
+  );
 
   return (
     <div className="space-y-8">
@@ -190,7 +193,7 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
             <div>
               <p className="font-medium">Deliverables</p>
               <ul className="mt-1 list-disc pl-5 text-ink-soft">
-                {delivery.deliverables.map((d) => (
+                {delivery.deliverables.map((d: string) => (
                   <li key={d}>{d}</li>
                 ))}
               </ul>
@@ -198,7 +201,7 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
             <div>
               <p className="font-medium">Actions taken</p>
               <ul className="mt-1 list-disc pl-5 text-ink-soft">
-                {delivery.actionsTaken.map((d) => (
+                {delivery.actionsTaken.map((d: string) => (
                   <li key={d}>{d}</li>
                 ))}
               </ul>
@@ -206,7 +209,7 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
             <div>
               <p className="font-medium">Exceptions</p>
               <ul className="mt-1 list-disc pl-5 text-ink-soft">
-                {(delivery.exceptions.length ? delivery.exceptions : ["None recorded"]).map((d) => (
+                {(delivery.exceptions.length ? delivery.exceptions : ["None recorded"]).map((d: string) => (
                   <li key={d}>{d}</li>
                 ))}
               </ul>
@@ -214,7 +217,7 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
             <div>
               <p className="font-medium">Unresolved decisions</p>
               <ul className="mt-1 list-disc pl-5 text-ink-soft">
-                {(delivery.unresolvedDecisions.length ? delivery.unresolvedDecisions : ["None"]).map((d) => (
+                {(delivery.unresolvedDecisions.length ? delivery.unresolvedDecisions : ["None"]).map((d: string) => (
                   <li key={d}>{d}</li>
                 ))}
               </ul>
@@ -284,7 +287,7 @@ export default async function RequestDetailPage({ params }: { params: Promise<{ 
           {comments.map((c) => (
             <li key={c.id} className="rounded-lg border border-line bg-surface px-4 py-3 text-sm">
               <p>{c.body}</p>
-              <p className="mt-1 text-xs text-muted">{store.userName(c.authorId)}</p>
+              <p className="mt-1 text-xs text-muted">{commentNames[c.id]}</p>
             </li>
           ))}
         </ul>

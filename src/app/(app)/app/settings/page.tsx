@@ -10,8 +10,9 @@ export const metadata = { title: "Settings" };
 export default async function SettingsPage() {
   const actor = await requireClient();
   const store = getWorkspace(actor);
-  const org = actor.organizationId ? store.getOrganization(actor, actor.organizationId) : null;
+  const org = actor.organizationId ? await store.getOrganization(actor, actor.organizationId) : null;
   const canEdit = actor.role === "client_admin" || actor.role === "platform_admin";
+  const memory = org ? await store.getOperatingMemory(actor, org.id) : null;
 
   return (
     <div className="space-y-8">
@@ -58,14 +59,13 @@ export default async function SettingsPage() {
             Stored on the organization, not on a single request. Operators see these preferences on every future
             execution.
           </p>
-          {(() => {
-            const memory = store.getOperatingMemory(actor, org.id);
-            return OPERATING_MEMORY_FIELDS.map((field) => (
-              <Field key={field.key} label={field.label}>
-                <Textarea name={field.key} defaultValue={memory[field.key]} />
-              </Field>
-            ));
-          })()}
+          {memory
+            ? OPERATING_MEMORY_FIELDS.map((field) => (
+                <Field key={field.key} label={field.label}>
+                  <Textarea name={field.key} defaultValue={memory[field.key]} />
+                </Field>
+              ))
+            : null}
           <Button type="submit">Save operating memory</Button>
         </form>
       ) : null}

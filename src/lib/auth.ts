@@ -63,12 +63,28 @@ async function loadSupabaseActor(input: {
     };
   }
 
-  const { data: membership } = await input.supabase
+  const { data: memberships } = await input.supabase
     .from("organization_members")
-    .select("organization_id, role, status")
-    .eq("user_id", input.id)
-    .eq("status", "active")
-    .maybeSingle();
+    .select("id, organization_id, role, status")
+    .eq("user_id", input.id);
+
+  let membership = (memberships ?? []).find((row) => row.status === "active");
+  const invited = (memberships ?? []).find((row) => row.status === "invited");
+  if (!membership && invited) {
+    const { error } = await input.supabase
+      .from("organization_members")
+      .update({ status: "active" })
+      .eq("id", invited.id)
+      .eq("user_id", input.id);
+    if (!error) {
+      membership = { ...invited, status: "active" };
+      await input.supabase
+        .from("invitations")
+        .update({ status: "active", accepted_at: new Date().toISOString() })
+        .eq("organization_id", invited.organization_id)
+        .eq("email", input.email.toLowerCase());
+    }
+  }
 
   return {
     id: input.id,

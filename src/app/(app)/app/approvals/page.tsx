@@ -10,7 +10,15 @@ export const metadata = { title: "Approvals" };
 export default async function ApprovalsPage() {
   const actor = await requireClient();
   const store = getWorkspace(actor);
-  const approvals = store.listApprovals(actor);
+  const approvals = await store.listApprovals(actor);
+  const names = Object.fromEntries(
+    await Promise.all(
+      [...new Set(approvals.flatMap((a) => [a.requestedBy, a.decidedBy].filter(Boolean) as string[]))].map(async (id) => [
+        id,
+        await store.userName(id),
+      ]),
+    ),
+  );
   return (
     <div className="space-y-6">
       <PageHeader
@@ -38,9 +46,9 @@ export default async function ApprovalsPage() {
               <p className="mt-2 text-sm">{a.action}</p>
               <p className="mt-1 text-sm text-muted">{a.description || a.reason}</p>
               <p className="mt-2 text-xs text-muted">
-                Requested by {store.userName(a.requestedBy)} at {new Date(a.createdAt).toLocaleString()}
+                Requested by {names[a.requestedBy] ?? "Unknown"} at {new Date(a.createdAt).toLocaleString()}
                 {a.decidedBy
-                  ? ` · ${a.status} by ${store.userName(a.decidedBy)} at ${a.decidedAt ? new Date(a.decidedAt).toLocaleString() : "—"}`
+                  ? ` · ${a.status} by ${names[a.decidedBy] ?? "Unknown"} at ${a.decidedAt ? new Date(a.decidedAt).toLocaleString() : "—"}`
                   : ""}
               </p>
               {a.status === "pending" ? (

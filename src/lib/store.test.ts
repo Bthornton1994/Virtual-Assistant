@@ -7,9 +7,32 @@ function actors(store: MemoryStore) {
     founder: store.actorFromUser("usr_founder")!,
     teammate: store.actorFromUser("usr_teammate")!,
     operator: store.actorFromUser("usr_op")!,
+    otherOperator: store.actorFromUser("usr_julian")!,
     manager: store.actorFromUser("usr_manager")!,
     admin: store.actorFromUser("usr_admin")!,
   };
+}
+
+const deliveryPack = {
+  summary: "Prepared pack. Nothing sent.",
+  deliverables: ["Draft pack"],
+  attachments: [] as string[],
+  actionsTaken: ["Drafted"],
+  exceptions: [] as string[],
+  unresolvedDecisions: [] as string[],
+  nextStep: "Customer reviews",
+};
+
+function readyInbox(store: MemoryStore) {
+  const { manager } = actors(store);
+  store.transitionRequest(manager, "req_inbox", "in_progress");
+  store.transitionRequest(manager, "req_inbox", "qa");
+  store.createQaReview(manager, "req_inbox", {
+    passed: true,
+    score: 90,
+    notes: "Draft pack is complete and send is blocked.",
+  });
+  return store.getRequest(manager, "req_inbox");
 }
 
 describe("tenant isolation", () => {
@@ -439,6 +462,164 @@ describe("Northline conference follow-up lifecycle", () => {
     expect(store.data.audits.some((a) => a.entityId === "req_conference" && a.action === "request.created")).toBe(true);
     expect(store.data.audits.some((a) => a.action === "approval.decided")).toBe(true);
     expect(store.data.audits.some((a) => a.action === "schedule.generated")).toBe(true);
+  });
+});
+
+describe("QA pass with pending outbound approval", () => {
+  const outboundInput = {
+    kind: "external_email" as const,
+    action: "Send prepared outbound follow-up",
+    description: "Outbound communication requires explicit customer approval before delivery.",
+    riskLevel: "high" as const,
+    actionClass: "external_execution" as const,
+  };
+
+  it("leaves QA as awaiting_action_approval when external_email is already pending", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, manager, operator } = actors(store);
+    const req = store.getRequest(founder, "req_conference");
+    store.createApprovalRecord(manager, req, outboundInput, { advanceStatus: false });
+    expect(store.getRequest(founder, "req_conference").status).toBe("awaiting_plan_approval");
+
+    const planAp = store
+      .listApprovals(founder)
+      .find((a) => a.requestId === "req_conference" && a.kind === "execution_plan");
+    store.decideApproval(founder, planAp!.id, "approved", "Follow every lead. Do not send until I approve copy.");
+    store.assignOperator(manager, "req_conference", "op_maya");
+    expect(store.getRequest(operator, "req_conference").assignedOperatorId).toBe("op_maya");
+    store.transitionRequest(manager, "req_conference", "in_progress");
+    store.transitionRequest(manager, "req_conference", "qa");
+
+    const pendingBefore = store
+      .listApprovals(founder)
+      .filter((a) => a.requestId === "req_conference" && a.kind === "external_email");
+    expect(pendingBefore).toHaveLength(1);
+    expect(pendingBefore[0].status).toBe("pending");
+
+    store.createQaReview(manager, "req_conference", {
+      passed: true,
+      score: 94,
+      notes: "Owners present. Drafts ready. Approval required before send.",
+    });
+
+    const after = store.getRequest(manager, "req_conference");
+    expect(after.status).toBe("awaiting_action_approval");
+    const outbound = store
+      .listApprovals(founder)
+      .filter((a) => a.requestId === "req_conference" && a.kind === "external_email");
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0].status).toBe("pending");
+
+    const qaAudit = store.data.audits.find(
+      (a) => a.entityId === "req_conference" && a.action === "request.status_changed" && a.metadata.qaPassed === true,
+    );
+    expect(qaAudit?.metadata).toMatchObject({ from: "qa", to: "awaiting_action_approval", qaPassed: true });
+  });
+
+  it("does not duplicate pending approvals when create/ensure is repeated", () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    const req = store.getRequest(manager, "req_conference");
+    req.status = "qa";
+
+    const first = store.createApprovalRecord(manager, req, outboundInput);
+    const second = store.createApprovalRecord(manager, req, outboundInput);
+    const third = store.createApprovalRecord(manager, req, outboundInput, { advanceStatus: false });
+
+    expect(first.id).toBe(second.id);
+    expect(second.id).toBe(third.id);
+    expect(store.getRequest(manager, "req_conference").status).toBe("awaiting_action_approval");
+    const outbound = store.data.approvals.filter(
+      (a) => a.requestId === "req_conference" && a.kind === "external_email",
+    );
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0].status).toBe("pending");
+  });
+
+  it("does not advance request status when advanceStatus is false", () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    const req = store.getRequest(manager, "req_conference");
+    expect(req.status).toBe("awaiting_plan_approval");
+    store.createApprovalRecord(manager, req, outboundInput, { advanceStatus: false });
+    expect(store.getRequest(manager, "req_conference").status).toBe("awaiting_plan_approval");
+    expect(
+      store.data.approvals.filter((a) => a.requestId === "req_conference" && a.kind === "external_email"),
+    ).toHaveLength(1);
+
+    store.createApprovalRecord(manager, req, outboundInput, { advanceStatus: false });
+    expect(store.getRequest(manager, "req_conference").status).toBe("awaiting_plan_approval");
+    expect(
+      store.data.approvals.filter((a) => a.requestId === "req_conference" && a.kind === "external_email"),
+    ).toHaveLength(1);
+  });
+});
+
+describe("delivery authorization", () => {
+  it("lets the assigned operator deliver a ready request and is idempotent", () => {
+    const store = new MemoryStore(seedData());
+    const { operator } = actors(store);
+    expect(readyInbox(store).status).toBe("ready_to_deliver");
+    expect(store.getRequest(operator, "req_inbox").assignedOperatorId).toBe("op_maya");
+
+    const first = store.deliverRequest(operator, "req_inbox", deliveryPack);
+    const second = store.deliverRequest(operator, "req_inbox", { ...deliveryPack, summary: "Second click" });
+    expect(first.id).toBe(second.id);
+    expect(second.summary).toBe("Prepared pack. Nothing sent.");
+    expect(store.getRequest(operator, "req_inbox").status).toBe("delivered");
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_inbox")).toHaveLength(1);
+    expect(
+      store.data.audits.some(
+        (a) => a.entityId === "req_inbox" && a.action === "request.status_changed" && a.metadata.to === "delivered",
+      ),
+    ).toBe(true);
+  });
+
+  it("denies a different operator and leaves no delivery row", () => {
+    const store = new MemoryStore(seedData());
+    const { otherOperator, manager } = actors(store);
+    readyInbox(store);
+    expect(() => store.deliverRequest(otherOperator, "req_inbox", deliveryPack)).toThrow(AuthzError);
+    expect(store.getRequest(manager, "req_inbox").status).toBe("ready_to_deliver");
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_inbox")).toHaveLength(0);
+  });
+
+  it("denies an ordinary operator when the request is unassigned", () => {
+    const store = new MemoryStore(seedData());
+    const { operator, manager } = actors(store);
+    readyInbox(store);
+    store.data.requests.find((r) => r.id === "req_inbox")!.assignedOperatorId = null;
+    expect(() => store.deliverRequest(operator, "req_inbox", deliveryPack)).toThrow(AuthzError);
+    expect(store.getRequest(manager, "req_inbox").status).toBe("ready_to_deliver");
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_inbox")).toHaveLength(0);
+  });
+
+  it("lets an ops manager deliver", () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    readyInbox(store);
+    store.deliverRequest(manager, "req_inbox", deliveryPack);
+    expect(store.getRequest(manager, "req_inbox").status).toBe("delivered");
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_inbox")).toHaveLength(1);
+  });
+
+  it("lets a platform admin deliver", () => {
+    const store = new MemoryStore(seedData());
+    const { admin, manager } = actors(store);
+    readyInbox(store);
+    store.deliverRequest(admin, "req_inbox", deliveryPack);
+    expect(store.getRequest(manager, "req_inbox").status).toBe("delivered");
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_inbox")).toHaveLength(1);
+  });
+
+  it("denies client admin and client member delivery", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate, manager } = actors(store);
+    readyInbox(store);
+    expect(() => store.deliverRequest(founder, "req_inbox", deliveryPack)).toThrow(AuthzError);
+    expect(() => store.deliverRequest(teammate, "req_inbox", deliveryPack)).toThrow(AuthzError);
+    expect(store.getRequest(manager, "req_inbox").status).toBe("ready_to_deliver");
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_inbox")).toHaveLength(0);
   });
 });
 

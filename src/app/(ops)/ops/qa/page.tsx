@@ -10,8 +10,9 @@ export const metadata = { title: "QA" };
 export default async function QaPage() {
   const actor = await requireOps();
   const store = getWorkspace(actor);
-  const inQa = store.listRequests(actor, { status: "qa" });
-  const reviews = store.data.qaReviews.slice(0, 8);
+  const inQa = await store.listRequests(actor, { status: "qa" });
+  const reviews = (await store.listQaReviews(actor)).slice(0, 8);
+  const qaBundles = await Promise.all(inQa.map(async (r) => ({ request: r, bundle: await store.getRequestBundle(actor, r.id) })));
   return (
     <div className="space-y-8">
       <PageHeader
@@ -19,8 +20,7 @@ export default async function QaPage() {
         description="Inspect the deliverable, execution notes, and checklist. A completed task is not a completed outcome."
       />
       <div className="space-y-4">
-        {inQa.map((r) => {
-          const bundle = store.getRequestBundle(actor, r.id);
+        {qaBundles.map(({ request: r, bundle }) => {
           return (
             <article key={r.id} className="rounded-xl border border-line bg-surface p-5">
               <div className="flex items-center justify-between gap-3">

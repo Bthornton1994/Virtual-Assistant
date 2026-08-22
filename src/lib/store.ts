@@ -42,6 +42,7 @@ import {
   blocksWithoutApproval,
   canAssignOperators,
   canDecideApproval,
+  canDeliverRequest,
   canManageTeam,
   canMutateOpsQueue,
   canRequestCustomerApproval,
@@ -1487,7 +1488,14 @@ export class MemoryStore {
     const existing = this.data.approvals.find(
       (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending",
     );
-    if (existing) return existing;
+    const advance = options?.advanceStatus !== false;
+    if (existing) {
+      if (advance && req.status !== "cancelled") {
+        req.status = input.kind === "execution_plan" ? "awaiting_plan_approval" : "awaiting_action_approval";
+        req.updatedAt = nowIso();
+      }
+      return existing;
+    }
     const approval: Approval = {
       id: uid("ap"),
       organizationId: req.organizationId,
@@ -1506,7 +1514,6 @@ export class MemoryStore {
       decidedAt: null,
     };
     this.data.approvals.unshift(approval);
-    const advance = options?.advanceStatus !== false;
     if (advance && req.status !== "cancelled") {
       if (input.kind === "execution_plan") {
         req.status = "awaiting_plan_approval";
@@ -1643,10 +1650,23 @@ export class MemoryStore {
   }
 
   deliverRequest(actor: Actor, requestId: string, pack: Omit<DeliveryPackage, "id" | "organizationId" | "requestId" | "createdBy" | "createdAt">) {
-    if (!canMutateOpsQueue(actor)) throw new AuthzError();
     const req = this.getRequest(actor, requestId);
+    if (!canDeliverRequest(actor, req)) throw new AuthzError();
+    const existing = this.data.deliveries.find((d) => d.requestId === requestId);
+    if (existing) {
+      if (req.status !== "delivered") {
+        const from = req.status;
+        req.status = "delivered";
+        req.updatedAt = nowIso();
+        this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, { from, to: "delivered" });
+      }
+      return existing;
+    }
     if (req.status !== "ready_to_deliver" && req.status !== "qa") {
       throw new DomainError("Only checked work can be delivered");
+    }
+    if (!this.data.qaReviews.some((q) => q.requestId === req.id && q.passed)) {
+      throw new DomainError("QA must pass before delivery");
     }
     const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
     const outboundApproved = this.data.approvals.some(
@@ -1654,6 +1674,14 @@ export class MemoryStore {
     );
     if (needsOutbound && !outboundApproved) {
       throw new DomainError("Outbound action requires customer approval before delivery");
+    }
+    if (req.approvalLevel === "sensitive_execution") {
+      const sensitiveApproved = this.data.approvals.some(
+        (a) => a.requestId === req.id && a.kind === "sensitive_action" && a.status === "approved",
+      );
+      if (!sensitiveApproved) {
+        throw new DomainError("Sensitive action requires customer approval before delivery");
+      }
     }
     const from = req.status;
     const delivery: DeliveryPackage = {
@@ -2026,7 +2054,7 @@ export class MemoryStore {
     this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
       from: "qa",
       to: req.status,
-      qa: input.passed,
+      qaPassed: input.passed,
     });
     return review;
   }
@@ -2130,6 +2158,21 @@ export class MemoryStore {
 
   userName(id: string) {
     return this.data.users.find((u) => u.id === id)?.name ?? "Unknown";
+  }
+
+  listOpenClarifications(actor: Actor) {
+    const requests = this.listRequests(actor);
+    return this.data.clarifications.filter((c) => !c.answer && requests.some((r) => r.id === c.requestId));
+  }
+
+  listQaReviews(actor: Actor) {
+    const requests = this.listRequests(actor);
+    return this.data.qaReviews.filter((q) => requests.some((r) => r.id === q.requestId));
+  }
+
+  listTimeEntries(actor: Actor) {
+    const requests = this.listRequests(actor);
+    return this.data.timeEntries.filter((t) => requests.some((r) => r.id === t.requestId));
   }
 }
 

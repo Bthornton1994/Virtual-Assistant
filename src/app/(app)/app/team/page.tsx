@@ -10,7 +10,7 @@ export default async function TeamPage() {
   const actor = await requireClient();
   const store = getWorkspace(actor);
   const orgId = actor.organizationId;
-  const members = orgId ? store.listMembers(actor, orgId) : [];
+  const members = orgId ? await store.listMembers(actor, orgId) : [];
   return (
     <div className="space-y-8">
       <PageHeader title="Team" description="People in your organization. Operators are not listed here." />

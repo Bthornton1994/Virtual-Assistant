@@ -1,12 +1,11 @@
 import { createBrowserClient } from "@supabase/ssr";
+import { supabasePublishableKey, supabaseUrl } from "@/lib/supabase/env";
 
 export function supabaseBrowser() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const url = supabaseUrl();
+  const key = supabasePublishableKey();
   if (!url || !key) return null;
   return createBrowserClient(url, key);
 }
 
-export function supabaseConfigured() {
-  return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
-}
+export { supabaseConfigured } from "@/lib/supabase/env";

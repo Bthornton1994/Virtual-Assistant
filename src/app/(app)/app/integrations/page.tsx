@@ -8,7 +8,7 @@ export const metadata = { title: "Integrations" };
 
 export default async function IntegrationsPage() {
   const actor = await requireClient();
-  const rows = getWorkspace(actor).listIntegrations(actor);
+  const rows = await getWorkspace(actor).listIntegrations(actor);
   return (
     <div className="space-y-6">
       <PageHeader

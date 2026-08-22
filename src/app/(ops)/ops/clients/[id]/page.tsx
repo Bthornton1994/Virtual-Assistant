@@ -13,14 +13,14 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   const store = getWorkspace(actor);
   let org;
   try {
-    org = store.getOrganization(actor, id);
+    org = await store.getOrganization(actor, id);
   } catch (e) {
     if (e instanceof AuthzError || e instanceof DomainError) notFound();
     throw e;
   }
-  const requests = store.listRequests(actor, { organizationId: id });
-  const workstreams = store.listWorkstreams(actor, id);
-  const members = store.listMembers(actor, id);
+  const requests = await store.listRequests(actor, { organizationId: id });
+  const workstreams = await store.listWorkstreams(actor, id);
+  const members = await store.listMembers(actor, id);
   return (
     <div className="space-y-8">
       <PageHeader kicker={org.industry} title={org.name} description={`${org.companySize} people · ${org.timezone}`} />
