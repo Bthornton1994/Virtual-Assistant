@@ -23,6 +23,9 @@ The database lifecycle gate exercised the loop as an actual state machine rather
 - `retry_success`
 - `authority_incident_auto_suspend`
 - `explicit_level0_recovery`
+- `recovery_audit_atomic`
+- `direct_recovery_delete_blocked`
+- `parent_cascade_preserved`
 
 ## Path A: successful recurring cycle
 
@@ -63,7 +66,7 @@ The gate verified:
 6. recovery returns the workstream to `active` at Level 0;
 7. the incident cycle remains suspended and is not silently reopened.
 
-## Defect found by the gate
+## Defect found by the receipt gate
 
 The initial receipt guard contained an ambiguous PL/pgSQL identifier. The negative gate exposed it because the database rejected the pre-review receipt for the wrong reason. The guard was corrected to use unambiguous local variables and the same negative test was rerun.
 
@@ -75,12 +78,21 @@ The corrected guard now meets that requirement.
 
 ## Recovery audit hardening
 
-Recovery is now intended to be operable through the manager surface, but the database remains the authority boundary. A recovery insert triggers both:
+Recovery is operable through a manager-only server action and control-center form, while the database remains the authority boundary. A recovery insert triggers both:
 
 - the Level-0 profile reset; and
 - an `audit_events` record with recovery identity, workstream, prior level, resulting level, and explicit reason.
 
 The audit write participates in the same database statement so an audit failure rolls back the recovery.
+
+The recovery-surface QA gate also found and corrected a schema contradiction. Recovery records use parent `ON DELETE CASCADE` foreign keys, while the first immutability trigger blocked every delete, including the database's own parent cascade. The hardened invariant now:
+
+- rejects direct recovery-row deletion;
+- continues to reject updates;
+- permits only nested parent-driven cascade deletion;
+- preserves normal organization/workstream deletion semantics.
+
+The corrected gate verified both the negative direct-delete case and successful parent cascade cleanup.
 
 ## Advisor scope
 
