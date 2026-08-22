@@ -4,6 +4,13 @@
 
 Read `VISION.md` and `README.md` before planning substantial changes to request intake, workstreams, routing, AI behavior, automation, operator tools, approvals, quality assurance, customer data, security, monetization, architecture, or scope.
 
+For substantial work involving Delegation Cloud autonomy, portfolio operation, outcome execution, workstream certification, executor routing, or the long-term business model, also read:
+
+- `docs/DELEGATION-CLOUD-STRATEGIC-THESIS.md`
+- `docs/AUTONOMOUS-PORTFOLIO-EXECUTION-PLAYBOOK.md`
+
+`VISION.md` remains the governing product constitution. The strategic thesis is an owner-approved direction to test, not authority to bypass the vision. The execution playbook is an implementation sequence, not evidence that autonomy, product-market fit, or software-like economics have already been achieved.
+
 For each substantial proposal, classify it as:
 
 - **Aligns**
