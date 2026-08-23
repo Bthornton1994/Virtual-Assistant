@@ -7,8 +7,10 @@ import {
 } from "@/app/actions/execution";
 import { ActionClassBadge, PageHeader } from "@/components/product";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
+import { WorkCellSection } from "@/components/work-cell";
 import { requireOps } from "@/lib/auth";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
+import { getRunWorkCell } from "@/lib/work-cell";
 
 export const metadata = { title: "Execution run" };
 
@@ -39,6 +41,7 @@ export default async function ExecutionRunPage({ params }: { params: Promise<{ i
   }
 
   const { run, spec, evidence, receipt } = await getWorkstreamRunBundle(actor, id);
+  const workCell = await getRunWorkCell(actor, id);
 
   return (
     <div className="space-y-8">
@@ -109,6 +112,14 @@ export default async function ExecutionRunPage({ params }: { params: Promise<{ i
           </form>
         </Card>
       ) : null}
+
+      <WorkCellSection
+        bundle={workCell}
+        runId={run.id}
+        cycleId={run.gauntletCycleId}
+        runStatus={run.status}
+        manager={manager}
+      />
 
       <section className="space-y-3">
         <div>
