@@ -58,6 +58,7 @@ export type WorkstreamRun = {
   workstreamId: string | null;
   requestId: string | null;
   delegationSpecId: string;
+  gauntletCycleId: string | null;
   status: WorkstreamRunStatus;
   initiatedBy: string | null;
   executorSummary: Record<string, unknown>;
@@ -146,6 +147,7 @@ function mapRun(row: Record<string, unknown>): WorkstreamRun {
     workstreamId: (row.workstream_id as string) ?? null,
     requestId: (row.request_id as string) ?? null,
     delegationSpecId: String(row.delegation_spec_id),
+    gauntletCycleId: (row.gauntlet_cycle_id as string) ?? null,
     status: row.status as WorkstreamRunStatus,
     initiatedBy: (row.initiated_by as string) ?? null,
     executorSummary: asObject(row.executor_summary),

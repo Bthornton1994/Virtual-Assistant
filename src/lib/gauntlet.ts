@@ -706,6 +706,19 @@ export async function getGauntletCycleBundle(actor: Actor, cycleId: string) {
   for (const result of [observations, diagnosis, runs, reviews, failures, impact, profile, decisions]) {
     if (result.error) throw new DomainError(result.error.message);
   }
+
+  const runIds = (runs.data ?? []).map((row) => String((row as Record<string, unknown>).id));
+  let assignments: Array<Record<string, unknown>> = [];
+  if (runIds.length) {
+    const { data, error } = await db
+      .from("run_executor_assignments")
+      .select("run_id, phase, status, executor_profile_id, output_artifact_id, executor_profiles(key, display_name, executor_kind, status)")
+      .in("run_id", runIds)
+      .order("created_at", { ascending: true });
+    if (error) throw new DomainError(error.message);
+    assignments = (data ?? []) as Array<Record<string, unknown>>;
+  }
+
   return {
     cycle,
     observations: observations.data ?? [],
@@ -716,5 +729,6 @@ export async function getGauntletCycleBundle(actor: Actor, cycleId: string) {
     impact: impact.data ?? null,
     profile: profile.data ? mapProfile(profile.data as Record<string, unknown>) : null,
     decisions: decisions.data ?? [],
+    executorAssignments: assignments,
   };
 }
