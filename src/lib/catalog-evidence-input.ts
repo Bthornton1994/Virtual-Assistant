@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isoDateTimeSchema, nonEmptyString } from "@/lib/catalog-evidence-shared";
+import { identifierString, isoDateTimeSchema, nonEmptyString } from "@/lib/catalog-evidence-shared";
 
 // CatalogEvidenceInputManifestV1 — the frozen provenance of what an attempt was
 // actually asked to cover.
@@ -20,16 +20,16 @@ export const CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION = "catalog-evidence-input/v1"
 export const catalogEvidenceInputManifestV1Schema = z
   .object({
     schemaVersion: z.literal(CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION),
-    runId: nonEmptyString,
+    runId: identifierString,
     market: nonEmptyString,
-    expectedProductIds: z.array(nonEmptyString).min(1),
+    expectedProductIds: z.array(identifierString).min(1),
     // Which executor is expected to fill each phase, chosen before any evidence
     // exists. Ingestion requires the artifact's own declared key to match, so an
     // operator cannot relabel one executor's output as another's after the fact.
     // Keeping these here rather than hardcoded also keeps the work cell generic:
     // a non-Loadout domain freezes its own executors with no code change.
-    prepareExecutorKey: nonEmptyString,
-    reviewExecutorKey: nonEmptyString,
+    prepareExecutorKey: identifierString,
+    reviewExecutorKey: identifierString,
     createdAt: isoDateTimeSchema,
     inputHash: z
       .string()

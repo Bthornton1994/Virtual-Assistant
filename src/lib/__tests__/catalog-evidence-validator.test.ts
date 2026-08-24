@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hashCatalogEvidencePacket, canonicalJsonStringify } from "@/lib/catalog-evidence-hash";
+import { catalogEvidencePacketV1Schema } from "@/lib/catalog-evidence-packet";
 import {
   collectClaimIds,
   collectHighSeverityClaimIds,
@@ -1023,5 +1024,65 @@ describe("evidence-gap claim mentions", () => {
       reviewContext(hermes, hash),
     );
     expect(result.hardFailures).toEqual([]);
+  });
+});
+
+describe("identifier normalization", () => {
+  // nonEmptyString's .trim() is a transform, so a padded identifier used to parse
+  // to a trimmed value while the stored artifact kept the padding. Since the
+  // packet is stored and hashed verbatim, that made a padded claim ID
+  // unmatchable: the review context read " ks:ipf " from the raw payload while
+  // the reviewer's own " ks:ipf " parsed to "ks:ipf". The claim could never be
+  // reviewed, so the attempt could never be verified — and the error said the
+  // claim "does not exist" while sitting plainly in the packet.
+  it("rejects a padded claim ID at the packet boundary", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            claimFindings: [
+              { claimId: " ks:ipf ", field: "ipfApproved", catalogValue: true, finding: "contradicted", evidenceSupportedValue: false, severity: "high", sourceUrls: [MANUFACTURER_URL] },
+            ],
+            escalation: { required: true, reason: "Conflicting evidence." },
+          }),
+        ],
+      }),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /must not have leading or trailing whitespace/)).not.toHaveLength(0);
+  });
+
+  it("rejects padded product IDs, run IDs, and executor keys", () => {
+    expect(validateCatalogEvidencePacket(packet({ products: [product({ productId: " ks-sbd-7mm " })] })).hardGatePass).toBe(false);
+    expect(validateCatalogEvidencePacket(packet({ runId: " run-3d-0001 " })).hardGatePass).toBe(false);
+    expect(validateCatalogEvidencePacket(packet({ executorKey: " hermes-loadout-researcher-v1 " })).hardGatePass).toBe(false);
+  });
+
+  it("rejects a padded claim ID in a review", () => {
+    const frozen = packet();
+    const hash = hashCatalogEvidencePacket(frozen);
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: hash,
+        claimReviews: [
+          { claimId: " ks-sbd-7mm:thickness ", verdict: "accept", independentVerificationPerformed: true, reason: "Confirmed.", independentSourceUrls: [MANUFACTURER_URL], severity: "low" },
+        ],
+      }),
+      reviewContext(frozen, hash),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /must not have leading or trailing whitespace/)).not.toHaveLength(0);
+  });
+
+  it("keeps raw and parsed identifiers identical so claim matching is stable", () => {
+    // The property the fix protects: what an executor sends is what is stored,
+    // hashed, and matched on — no silent normalization in between.
+    const raw = JSON.parse(JSON.stringify(packet())) as unknown;
+    const parsed = catalogEvidencePacketV1Schema.safeParse(raw);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(hashCatalogEvidencePacket(parsed.data)).toBe(hashCatalogEvidencePacket(raw as never));
+      expect(collectPacketClaims(raw as never)).toEqual(collectPacketClaims(parsed.data));
+    }
   });
 });

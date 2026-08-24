@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   authorityReportSchema,
+  identifierString,
   isoDateTimeSchema,
   nonEmptyString,
   severityLevelSchema,
@@ -26,7 +27,7 @@ export const sha256HexSchema = z
 
 const claimReviewSchema = z
   .object({
-    claimId: nonEmptyString,
+    claimId: identifierString,
     verdict: z.enum(CLAIM_VERDICTS),
     independentVerificationPerformed: z.boolean(),
     reason: nonEmptyString,
@@ -49,9 +50,9 @@ export type NewFinding = z.infer<typeof newFindingSchema>;
 export const catalogEvidenceReviewV1Schema = z
   .object({
     schemaVersion: z.literal(CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION),
-    runId: nonEmptyString,
+    runId: identifierString,
     evidencePacketHash: sha256HexSchema,
-    reviewerExecutorKey: nonEmptyString,
+    reviewerExecutorKey: identifierString,
     reviewedAt: isoDateTimeSchema,
     claimReviews: z.array(claimReviewSchema),
     newFindings: z.array(newFindingSchema),

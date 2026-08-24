@@ -18,8 +18,29 @@ export const confidenceLevelSchema = z.enum(CONFIDENCE_LEVELS);
 export const claimValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 export type ClaimValue = z.infer<typeof claimValueSchema>;
 
-// Non-empty, non-whitespace-only string. Used for anything that must carry real content.
+// Non-empty, non-whitespace-only string. Used for prose fields, where trimming is
+// harmless because nothing matches on the value.
 export const nonEmptyString = z.string().trim().min(1);
+
+// An identifier that other artifacts match against by value: product IDs, claim
+// IDs, run IDs, executor keys.
+//
+// Deliberately does NOT trim. `nonEmptyString`'s `.trim()` is a transform, so a
+// padded value parses to a trimmed one while the stored artifact keeps the
+// padding — and the packet is stored and hashed verbatim. That divergence made a
+// padded claim ID unmatchable: the review context read " ks:ipf " from the raw
+// payload while the reviewer's own " ks:ipf " parsed to "ks:ipf", so the claim
+// could never be reviewed and the packet could never be verified, reporting the
+// nonsensical "claimId does not exist" for an ID plainly present in the packet.
+//
+// Rejecting padding outright keeps raw and parsed identical for anything that is
+// matched on, and follows the same doctrine as the rest of this contract: a
+// malformed identifier is executor output worth surfacing, not worth repairing.
+export const identifierString = z
+  .string()
+  .min(1)
+  .refine((value) => value === value.trim(), "must not have leading or trailing whitespace")
+  .refine((value) => value.trim().length > 0, "must not be blank");
 
 // A URL field as authored by an executor. This intentionally accepts any non-empty
 // string rather than z.string().url(): the deterministic validator (not the schema)

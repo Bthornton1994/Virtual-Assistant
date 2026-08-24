@@ -3,6 +3,7 @@ import {
   authorityReportSchema,
   claimValueSchema,
   confidenceLevelSchema,
+  identifierString,
   isoDateTimeSchema,
   nonEmptyString,
   severityLevelSchema,
@@ -107,7 +108,7 @@ export type PriceEvidence = z.infer<typeof priceEvidenceSchema>;
 
 const claimFindingSchema = z
   .object({
-    claimId: nonEmptyString,
+    claimId: identifierString,
     field: nonEmptyString,
     catalogValue: claimValueSchema,
     finding: z.enum(CLAIM_FINDING_VALUES),
@@ -148,7 +149,7 @@ const escalationSchema = z
 
 const catalogProductSchema = z
   .object({
-    productId: nonEmptyString,
+    productId: identifierString,
     identity: identitySchema,
     primarySources: z.array(primarySourceSchema),
     secondarySources: z.array(secondarySourceSchema),
@@ -164,8 +165,8 @@ export type CatalogEvidenceProduct = z.infer<typeof catalogProductSchema>;
 export const catalogEvidencePacketV1Schema = z
   .object({
     schemaVersion: z.literal(CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION),
-    runId: nonEmptyString,
-    executorKey: nonEmptyString,
+    runId: identifierString,
+    executorKey: identifierString,
     generatedAt: isoDateTimeSchema,
     market: nonEmptyString,
     products: z.array(catalogProductSchema),
