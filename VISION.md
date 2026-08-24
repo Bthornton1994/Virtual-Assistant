@@ -48,6 +48,18 @@ No single labor model should own every task. Deterministic automation handles re
 
 Routing should reflect risk, complexity, data sensitivity, and the strength of the playbook. The product should not use AI merely because it is cheaper or use a human merely because the existing process is familiar.
 
+## Capability sovereignty
+
+Delegation Cloud must own the abstractions that define delegated work: intent, authority, execution contracts, evidence requirements, verification, lifecycle state, economics, operational learning, and autonomy policy.
+
+External models, agents, context engines, orchestration tools, browser runtimes, provider gateways, memory systems, and specialist software may supply useful execution capacity. They must enter through Delegation Cloud-owned interfaces and remain replaceable implementations rather than becoming the product architecture or source of truth.
+
+The system should reason in terms of capabilities such as evidence research, independent review, software engineering, retrieval, reconciliation, communication, or deterministic validation. Vendor, model, and runtime names belong in implementation metadata and execution provenance, not in durable workstream semantics except when a controlled experiment deliberately freezes an implementation for repeatability.
+
+When an external project demonstrates a superior execution pattern, Delegation Cloud should first identify the capability or principle that creates the value. It may benchmark the external implementation, use it behind an adapter, internalize the capability when strategically justified, or reject it. The goal is not to rebuild commodity infrastructure. The goal is to prevent authority, verification, operational knowledge, Skills, and routing intelligence from becoming dependent on another product's architecture.
+
+A healthy architecture remains coherent if a particular model, agent framework, provider, memory system, or executor disappears. Better external technology should improve Delegation Cloud without redefining it.
+
 ## Authority is explicit and bounded
 
 Every workstream should make the allowed action class clear:
@@ -85,13 +97,13 @@ Exit evidence: customers can see status, authority, and deliveries without manag
 
 ### 2. Workflow intelligence
 
-Repeated, accepted work is captured as organization-owned playbooks: steps, preferences, warnings, examples, and escalation points. The system distinguishes this tenant’s knowledge from generalized methods. Confidential material never crosses organizations.
+Repeated, accepted work is captured as organization-owned playbooks: steps, preferences, warnings, examples, and escalation points. The system distinguishes this tenant's knowledge from generalized methods. Confidential material never crosses organizations.
 
-Exit evidence: a second occurrence of the same outcome starts from an inspectable playbook, not from an operator’s memory.
+Exit evidence: a second occurrence of the same outcome starts from an inspectable playbook, not from an operator's memory.
 
 ### 3. Automation
 
-Deterministic automation is introduced only where a playbook’s rules are understood, exceptions are mapped, quality can be checked, and the action class is explicit. Automation executes prepare-only and other pre-authorized low-risk steps. It does not inherit authority the customer did not grant.
+Deterministic automation is introduced only where a playbook's rules are understood, exceptions are mapped, quality can be checked, and the action class is explicit. Automation executes prepare-only and other pre-authorized low-risk steps. It does not inherit authority the customer did not grant.
 
 Exit evidence: a named step runs without an operator and still appears in the audit log with the same authority checks.
 
@@ -142,6 +154,8 @@ A change fits this vision when it:
 - Makes authority, ownership, risk, or current status more visible.
 - Turns proven recurring work into an inspectable playbook or safely bounded automation.
 - Preserves human accountability and organizational data boundaries.
+- Adds a capability behind a Delegation Cloud-owned contract without making a provider, model, agent framework, or runtime the source of authority or product truth.
+- Makes executor implementations more replaceable while preserving evidence, verification, and historical accountability.
 
 We resist a change when it:
 
@@ -150,3 +164,4 @@ We resist a change when it:
 - Uses opaque autonomy for external, sensitive, financial, contractual, or regulated actions.
 - Optimizes cost or speed by hiding quality loss, uncertainty, or unauthorized execution.
 - Automates an unproven workflow before its rules, exceptions, checks, and authority are understood.
+- Makes an external model, agent, framework, context system, provider, or specialist tool architecturally indispensable where a Delegation Cloud-owned capability interface should exist.
