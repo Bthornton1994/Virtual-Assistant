@@ -58,6 +58,7 @@ export type WorkstreamRun = {
   workstreamId: string | null;
   requestId: string | null;
   delegationSpecId: string;
+  gauntletCycleId: string | null;
   status: WorkstreamRunStatus;
   initiatedBy: string | null;
   executorSummary: Record<string, unknown>;
@@ -146,6 +147,7 @@ function mapRun(row: Record<string, unknown>): WorkstreamRun {
     workstreamId: (row.workstream_id as string) ?? null,
     requestId: (row.request_id as string) ?? null,
     delegationSpecId: String(row.delegation_spec_id),
+    gauntletCycleId: (row.gauntlet_cycle_id as string) ?? null,
     status: row.status as WorkstreamRunStatus,
     initiatedBy: (row.initiated_by as string) ?? null,
     executorSummary: asObject(row.executor_summary),
@@ -195,6 +197,30 @@ function mapReceipt(row: Record<string, unknown>): OutcomeReceipt {
     verifiedAt: String(row.verified_at),
     createdAt: String(row.created_at),
   };
+}
+
+/**
+ * Whether a run is carried by a work cell.
+ *
+ * Keyed on the frozen input manifest and the evidence packet as well as the
+ * assignment rows: assignments are written only when an executor SUCCEEDS, so a
+ * run whose manifest is frozen but whose ingest was rejected has none, and
+ * keying on that table alone made every guard answer "not a work-cell run".
+ * Mirrors public.run_has_work_cell in SQL.
+ */
+export async function runHasWorkCell(db: SupabaseClient, runId: string): Promise<boolean> {
+  const [assignments, artifacts] = await Promise.all([
+    db.from("run_executor_assignments").select("id").eq("run_id", runId).limit(1),
+    db
+      .from("evidence_artifacts")
+      .select("id")
+      .eq("run_id", runId)
+      .in("payload->>schemaVersion", ["catalog-evidence-input/v1", "catalog-evidence-packet/v1"])
+      .limit(1),
+  ]);
+  if (assignments.error) throw new DomainError(assignments.error.message);
+  if (artifacts.error) throw new DomainError(artifacts.error.message);
+  return (assignments.data ?? []).length > 0 || (artifacts.data ?? []).length > 0;
 }
 
 async function persistentDb(actor: Actor): Promise<SupabaseClient> {
@@ -448,6 +474,27 @@ export async function transitionWorkstreamRun(
   const run = mapRun(row as Record<string, unknown>);
   assertOrgAccess(actor, run.organizationId);
   if (!canTransitionWorkstreamRun(run.status, to)) throw new DomainError(`Cannot move workstream run ${run.status} → ${to}`);
+
+  // A work-cell run reserves its single Gauntlet review slot for the deterministic
+  // verdict, and that verdict needs a completed validation artifact. Validation
+  // can only run while the run is 'running', so submitting a half-built work cell
+  // would strand it permanently. Mirrors the database trigger of the same name.
+  if (to === "awaiting_verification" && (await runHasWorkCell(db, run.id))) {
+    const { data: validated, error: validatedError } = await db
+      .from("run_executor_assignments")
+      .select("id, output_artifact_id")
+      .eq("run_id", run.id)
+      .eq("phase", "validate")
+      .eq("status", "completed")
+      .not("output_artifact_id", "is", null)
+      .limit(1);
+    if (validatedError) throw new DomainError(validatedError.message);
+    if (!(validated ?? []).length) {
+      throw new DomainError(
+        "This run is executed by a work cell. Run deterministic work-cell validation before submitting it for verification, otherwise its Gauntlet review slot cannot be filled.",
+      );
+    }
+  }
 
   for (const [name, value] of Object.entries({
     humanMinutes: patch?.humanMinutes,

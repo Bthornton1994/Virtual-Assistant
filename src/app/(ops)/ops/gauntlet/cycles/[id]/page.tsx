@@ -61,10 +61,12 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
   const failures = bundle.failures as Row[];
   const impact = bundle.impact as Row | null;
   const decisions = bundle.decisions as Row[];
+  const executorAssignments = bundle.executorAssignments as Row[];
   const latestRun = runs.at(-1);
   const latestRunId = text(latestRun, "id");
   const latestRunStatus = text(latestRun, "status");
   const latestReview = reviews.filter((review) => text(review, "run_id") === latestRunId).at(-1);
+  const latestRunHasWorkCell = executorAssignments.some((assignment) => text(assignment, "run_id") === latestRunId);
   const openFailure = failures.find((failure) => text(failure, "status") === "open");
   const proposedDecision = decisions.find((decision) => text(decision, "status") === "proposed");
 
@@ -164,15 +166,33 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
         </div>
         <Card className="p-5">
           <div className="space-y-3">
-            {runs.length ? runs.map((run) => (
-              <Link key={text(run, "id")} href={`/ops/execution/runs/${text(run, "id")}`} className="flex items-center justify-between gap-4 rounded-lg border border-line px-4 py-3 hover:bg-bg-elevated">
-                <div>
-                  <p className="text-sm font-medium">Attempt {text(run, "attempt_number")}</p>
-                  <p className="mt-1 text-xs text-muted">Run {text(run, "id")} {text(run, "retry_of_run_id") ? `· retry of ${text(run, "retry_of_run_id")}` : ""}</p>
-                </div>
-                <Badge tone={tone(text(run, "status"))}>{text(run, "status").replaceAll("_", " ")}</Badge>
-              </Link>
-            )) : <p className="text-sm text-muted">No execution attempt yet.</p>}
+            {runs.length ? runs.map((run) => {
+              const cell = executorAssignments.filter((assignment) => text(assignment, "run_id") === text(run, "id"));
+              return (
+                <Link key={text(run, "id")} href={`/ops/execution/runs/${text(run, "id")}`} className="block rounded-lg border border-line px-4 py-3 hover:bg-bg-elevated">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium">Attempt {text(run, "attempt_number")}</p>
+                      <p className="mt-1 text-xs text-muted">Run {text(run, "id")} {text(run, "retry_of_run_id") ? `· retry of ${text(run, "retry_of_run_id")}` : ""}</p>
+                    </div>
+                    <Badge tone={tone(text(run, "status"))}>{text(run, "status").replaceAll("_", " ")}</Badge>
+                  </div>
+                  {cell.length ? (
+                    <div className="mt-3 flex flex-wrap gap-2 border-t border-line pt-3">
+                      <span className="text-xs uppercase tracking-wide text-muted">Work cell</span>
+                      {cell.map((assignment) => {
+                        const profile = assignment.executor_profiles as Row | null;
+                        return (
+                          <Badge key={`${text(assignment, "run_id")}-${text(assignment, "phase")}`} tone={tone(text(assignment, "status"))}>
+                            {text(assignment, "phase")}: {profile ? text(profile, "key") : text(assignment, "executor_profile_id")}
+                          </Badge>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </Link>
+              );
+            }) : <p className="text-sm text-muted">No execution attempt yet.</p>}
           </div>
           {cycle.status === "executing" ? (
             <form action={createGauntletAttemptAction} className="mt-4">
@@ -203,7 +223,15 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
                 </div>
               )) : <p className="text-sm text-muted">No adversarial review recorded.</p>}
             </div>
-            {cycle.status === "verification" && latestRunStatus === "awaiting_verification" ? (
+            {cycle.status === "verification" && latestRunStatus === "awaiting_verification" && latestRunHasWorkCell ? (
+              <p className="mt-5 border-t border-line pt-4 text-sm text-muted">
+                This attempt is executed by a work cell. A run holds exactly one Gauntlet review, and on a work-cell run
+                that slot belongs to the deterministic verdict — recording a separate review here would take it and leave
+                the attempt unverifiable. Record findings in the Work Cell on the run page instead.
+              </p>
+            ) : null}
+
+            {cycle.status === "verification" && latestRunStatus === "awaiting_verification" && !latestRunHasWorkCell ? (
               <form action={addGauntletReviewAction} className="mt-5 space-y-4 border-t border-line pt-4">
                 <input type="hidden" name="cycleId" value={cycle.id} />
                 <input type="hidden" name="runId" value={latestRunId} />

@@ -1,0 +1,304 @@
+-- Step 3D hardening: two control-plane defects found by adversarial review of the
+-- work-cell implementation. Both are in pre-existing objects, so they are corrected
+-- here rather than by editing an already-applied migration.
+
+-- 1. Stop the evidence-artifact trigger from discarding a caller-supplied hash.
+--
+-- enforce_evidence_artifact_invariants (20260822182149) ended with an
+-- unconditional `new.content_hash := digest(kind|summary|source_uri|payload)`.
+-- That silently overwrote whatever the application supplied.
+--
+-- For Step 3D this was fatal rather than cosmetic. The work cell binds a review
+-- to a packet by the packet's canonical hash — sha256 over deterministically
+-- canonicalized JSON — and re-derives that hash from the stored payload at
+-- verdict time to prove the artifact has not been tampered with. With the
+-- overwrite in place the stored hash was a different digest over a different
+-- preimage, so the re-derivation could never match and EVERY work cell would
+-- have hard-failed the moment it ran for real.
+--
+-- The digest now applies only when the caller supplied no usable hash, which
+-- preserves the original guarantee (every artifact carries a 64-hex hash) while
+-- letting a canonical, reproducible hash survive.
+create or replace function public.enforce_evidence_artifact_invariants()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  run_record record;
+  request_org uuid;
+begin
+  if tg_op <> 'INSERT' then
+    raise exception 'Evidence artifacts are immutable';
+  end if;
+
+  select organization_id, status into run_record
+    from public.workstream_runs where id = new.run_id;
+  if run_record.organization_id is null then
+    raise exception 'Evidence must belong to an existing workstream run';
+  end if;
+  if run_record.organization_id is distinct from new.organization_id then
+    raise exception 'Evidence organization must match its workstream run';
+  end if;
+  if run_record.status <> 'running' then
+    raise exception 'Evidence may only be appended while a run is running';
+  end if;
+
+  if new.request_id is not null then
+    select organization_id into request_org from public.requests where id = new.request_id;
+    if request_org is distinct from new.organization_id then
+      raise exception 'Evidence request must belong to the same organization';
+    end if;
+  end if;
+
+  -- Fallback only. A caller that computed a real content hash keeps it.
+  if new.content_hash is null or new.content_hash !~ '^[0-9a-f]{64}$' then
+    new.content_hash := encode(
+      extensions.digest(
+        concat_ws('|', new.kind, new.summary, coalesce(new.source_uri, ''), coalesce(new.payload, '{}'::jsonb)::text),
+        'sha256'
+      ),
+      'hex'
+    );
+  end if;
+
+  return new;
+end;
+$$;
+
+-- A single definition of "this run is executed by a work cell", used by every
+-- guard below so they cannot drift apart.
+--
+-- Keyed on the frozen input manifest and the evidence packet as well as the
+-- assignment rows, because assignments are written only on executor SUCCESS.
+-- A run whose manifest is frozen but whose ingest was rejected has no
+-- assignments at all, and keying solely on that table made every guard answer
+-- "not a work-cell run" for it — which let a hand-entered review through and
+-- sent the receipt guard down its permissive branch.
+create or replace function public.run_has_work_cell(p_run_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.run_executor_assignments rea where rea.run_id = p_run_id)
+      or exists (
+        select 1 from public.evidence_artifacts ea
+        where ea.run_id = p_run_id
+          and ea.payload->>'schemaVersion' in ('catalog-evidence-input/v1', 'catalog-evidence-packet/v1')
+      );
+$$;
+
+-- 2. Close the manual-review route around the work-cell gate.
+--
+-- The receipt guard passes a run as soon as ANY independent review row reads
+-- verdict='passed' with a clean hard gate. The ops UI still offers the original
+-- manual adversarial-review form for a run awaiting verification, and it is
+-- available in exactly the same window as the work-cell verdict button. A
+-- manager could therefore record a manual passing review on a work-cell run and
+-- obtain a passing Outcome Receipt without the deterministic gate ever running —
+-- the same class of hole as writing two disagreeing review rows.
+--
+-- When a run has a work cell, only the work cell's own authoritative row may
+-- satisfy the guard. Runs with no work cell are unaffected.
+create or replace function public.require_gauntlet_review_for_receipt()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_cycle_id uuid;
+  v_review_count bigint;
+  v_has_work_cell boolean;
+begin
+  if new.verification_status <> 'passed' or not new.definition_of_done_met then return new; end if;
+
+  select wr.gauntlet_cycle_id into v_cycle_id
+    from public.workstream_runs wr
+    where wr.id = new.run_id and wr.organization_id = new.organization_id;
+  if v_cycle_id is null then return new; end if;
+
+  v_has_work_cell := public.run_has_work_cell(new.run_id);
+
+  select count(*) into v_review_count
+    from public.gauntlet_reviews gr
+    where gr.run_id = new.run_id
+      and gr.cycle_id = v_cycle_id
+      and gr.independent
+      and gr.verdict = 'passed'
+      and gr.hard_gate_pass
+      and jsonb_array_length(coalesce(gr.authority_incidents, '[]'::jsonb)) = 0
+      and (
+        not v_has_work_cell
+        or (gr.reviewer_kind = 'deterministic' and gr.reviewer_ref = 'delegation-cloud-work-cell-v1')
+      );
+
+  if v_review_count = 0 then
+    if v_has_work_cell then
+      raise exception 'A work-cell run cannot pass without the deterministic work-cell hard-gate review';
+    end if;
+    raise exception 'A Gauntlet run cannot pass without an independent adversarial hard-gate review';
+  end if;
+  return new;
+end;
+$$;
+
+-- 3. Reserve the single review slot on a work-cell run.
+--
+-- gauntlet_one_final_review_per_run_idx allows exactly ONE gauntlet_reviews row
+-- per run, so whoever writes first owns it permanently: reviews are immutable,
+-- the table grants only select and insert, and there is no delete path.
+--
+-- Two failure modes follow, and rule 2 above only closes the first:
+--
+--   * Impersonation — a hand-entered review claiming the work cell's reviewer_ref.
+--
+--   * Squatting — and this one needs no malice. The manual adversarial-review
+--     form is open to any ops role, while the work-cell verdict is manager-only.
+--     An operator recording an ordinary human review before the manager records
+--     the work-cell verdict takes the slot; the work cell's insert then dies on a
+--     unique violation, and because rule 2 requires the work cell's own row to
+--     pass a work-cell run, that run becomes permanently unverifiable.
+--
+-- On a work-cell run the slot therefore belongs to the work cell alone. Runs with
+-- no work cell keep the original manual-review behavior untouched.
+create or replace function public.reserve_work_cell_reviewer_ref()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_has_work_cell boolean;
+  v_validated boolean;
+begin
+  v_has_work_cell := public.run_has_work_cell(new.run_id);
+
+  if new.reviewer_ref = 'delegation-cloud-work-cell-v1' then
+    -- Bind the reserved reference to the validator's ACTUAL output, not merely to
+    -- the existence of a validate assignment. A bare existence test was forgeable:
+    -- insert a validate assignment, then write a passing review under the reserved
+    -- ref, and the receipt guard counts it as the deterministic verdict.
+    select exists (
+      select 1
+        from public.run_executor_assignments rea
+        join public.evidence_artifacts ea on ea.id = rea.output_artifact_id
+       where rea.run_id = new.run_id
+         and rea.phase = 'validate'
+         and rea.status = 'completed'
+         and ea.payload->>'schemaVersion' = 'catalog-evidence-validation/v1'
+    ) into v_validated;
+
+    if new.reviewer_kind <> 'deterministic' or not public.is_ops_manager() or not v_validated then
+      raise exception 'The reviewer reference delegation-cloud-work-cell-v1 is reserved for the deterministic work-cell verdict over a completed validation artifact';
+    end if;
+    return new;
+  end if;
+
+  if v_has_work_cell then
+    raise exception 'This run is executed by a work cell; its single Gauntlet review is written by the deterministic work-cell verdict. Record findings in the work cell rather than as a separate review.';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger trg_reserve_work_cell_reviewer_ref
+  before insert on public.gauntlet_reviews
+  for each row execute function public.reserve_work_cell_reviewer_ref();
+
+-- 4. Close the generic-evidence-form route around the work cell.
+--
+-- The work-cell functions are manager-only and enforce ordering: freeze the
+-- input manifest first, then the packet, then the review, one of each. But
+-- addEvidenceArtifact (execution-primitives) is open to ANY ops role and writes
+-- the same table, so a plain operator could hand-write an artifact carrying a
+-- Step 3D schemaVersion and bypass all of it.
+--
+-- That matters most for the input manifest, which exists precisely to be
+-- authoritative run provenance. loadTypedArtifact takes the FIRST matching row
+-- by created_at, so a planted manifest inserted before the real one would govern
+-- the whole run — and freezeWorkCellInputManifest would then refuse to create
+-- the genuine one, reporting that a manifest already exists.
+--
+-- 4a. Only one of each singleton typed artifact per run. Rejection records are
+--     deliberately excluded: multiple rejected executor attempts are expected.
+create unique index step3d_one_typed_artifact_per_run_idx
+  on public.evidence_artifacts (run_id, (payload->>'schemaVersion'))
+  where payload->>'schemaVersion' in (
+    'catalog-evidence-input/v1',
+    'catalog-evidence-packet/v1',
+    'catalog-evidence-review/v1',
+    'catalog-evidence-validation/v1'
+  );
+
+-- 4b. Writing any Step 3D typed artifact requires manager authority, whichever
+--     code path performs the insert.
+create or replace function public.enforce_step3d_artifact_authority()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare declared_version text;
+begin
+  declared_version := new.payload->>'schemaVersion';
+  if declared_version is null then return new; end if;
+  if declared_version in (
+    'catalog-evidence-input/v1',
+    'catalog-evidence-packet/v1',
+    'catalog-evidence-review/v1',
+    'catalog-evidence-validation/v1',
+    'catalog-evidence-rejection/v1'
+  ) and not public.is_ops_manager() then
+    raise exception 'Work-cell evidence artifacts may only be written by an operations manager';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_step3d_artifact_authority
+  before insert on public.evidence_artifacts
+  for each row execute function public.enforce_step3d_artifact_authority();
+
+-- 5. Do not let a work-cell run be submitted for verification before the
+--    deterministic validation has run.
+--
+-- Rule 3 reserves the single review slot for the work cell's own verdict, and
+-- that verdict requires a completed validation artifact. But the validate phase
+-- can only run while the run is 'running', and 'awaiting_verification' is
+-- terminal in that direction. So freezing a half-built work cell used to strand
+-- it: the manual review is refused because the run has a work cell, the work
+-- cell's verdict is refused because validation never completed, and nothing can
+-- free the slot. Good work would be recordable only as a failed receipt.
+--
+-- No malice or race is needed — one premature press of "Freeze and submit for
+-- verification", which is open to any ops role, reaches it. The right fix is to
+-- make the state unreachable rather than to loosen the verdict's evidence bar.
+create or replace function public.require_work_cell_validation_before_submit()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if old.status <> 'running' or new.status <> 'awaiting_verification' then return new; end if;
+  if not public.run_has_work_cell(new.id) then return new; end if;
+
+  if not exists (
+    select 1
+      from public.run_executor_assignments rea
+      join public.evidence_artifacts ea on ea.id = rea.output_artifact_id
+     where rea.run_id = new.id
+       and rea.phase = 'validate'
+       and rea.status = 'completed'
+       and ea.payload->>'schemaVersion' = 'catalog-evidence-validation/v1'
+  ) then
+    raise exception 'This run is executed by a work cell. Run deterministic work-cell validation before submitting it for verification, otherwise its Gauntlet review slot cannot be filled.';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger trg_require_work_cell_validation_before_submit
+  before update on public.workstream_runs
+  for each row execute function public.require_work_cell_validation_before_submit();

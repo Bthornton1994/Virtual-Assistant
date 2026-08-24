@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { AuthzError, DomainError, assertOrgAccess, isOpsRole, type Actor } from "@/lib/domain";
 import { supabaseServer } from "@/lib/supabase/server";
+import { runHasWorkCell } from "@/lib/execution-primitives";
 import {
   DEFAULT_AUTONOMY_POLICY,
   defaultRetryDecision,
@@ -365,6 +366,11 @@ export async function addGauntletReview(
     evidenceGaps: string[];
     authorityIncidents: unknown[];
     notes?: string;
+    /**
+     * Set only by the work cell's own verdict recorder. A work-cell run holds a
+     * single review slot that belongs to the deterministic verdict; see below.
+     */
+    workCellVerdict?: boolean;
   },
 ) {
   opsOnly(actor);
@@ -382,6 +388,22 @@ export async function addGauntletReview(
     throw new AuthzError("A human executor cannot independently review their own Gauntlet attempt.");
   }
   if (input.verdict === "passed" && !input.hardGatePass) throw new DomainError("A passing review requires the hard gate to pass.");
+
+  // A run may hold exactly one Gauntlet review, and reviews are immutable. On a
+  // work-cell run that slot belongs to the deterministic work-cell verdict: an
+  // ordinary human review recorded first would take it permanently and leave the
+  // run unverifiable, since the receipt guard requires the work cell's own row.
+  if (!input.workCellVerdict) {
+    // Uses the shared predicate so this cannot drift from the database trigger.
+    // It keys on the manifest and packet too, because assignment rows exist only
+    // when an executor succeeded — a rejected work cell would otherwise read as
+    // "not a work-cell run" and fall through to the manual path.
+    if (await runHasWorkCell(db, runId)) {
+      throw new DomainError(
+        "This run is executed by a work cell; its single Gauntlet review is written by the deterministic work-cell verdict. Record findings in the work cell rather than as a separate review.",
+      );
+    }
+  }
 
   const { data, error } = await db
     .from("gauntlet_reviews")
@@ -706,6 +728,19 @@ export async function getGauntletCycleBundle(actor: Actor, cycleId: string) {
   for (const result of [observations, diagnosis, runs, reviews, failures, impact, profile, decisions]) {
     if (result.error) throw new DomainError(result.error.message);
   }
+
+  const runIds = (runs.data ?? []).map((row) => String((row as Record<string, unknown>).id));
+  let assignments: Array<Record<string, unknown>> = [];
+  if (runIds.length) {
+    const { data, error } = await db
+      .from("run_executor_assignments")
+      .select("run_id, phase, status, executor_profile_id, output_artifact_id, executor_profiles(key, display_name, executor_kind, status)")
+      .in("run_id", runIds)
+      .order("created_at", { ascending: true });
+    if (error) throw new DomainError(error.message);
+    assignments = (data ?? []) as Array<Record<string, unknown>>;
+  }
+
   return {
     cycle,
     observations: observations.data ?? [],
@@ -716,5 +751,6 @@ export async function getGauntletCycleBundle(actor: Actor, cycleId: string) {
     impact: impact.data ?? null,
     profile: profile.data ? mapProfile(profile.data as Record<string, unknown>) : null,
     decisions: decisions.data ?? [],
+    executorAssignments: assignments,
   };
 }
