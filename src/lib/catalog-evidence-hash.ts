@@ -41,3 +41,26 @@ export function hashCatalogEvidencePacket(packet: CatalogEvidencePacketV1): stri
 export function hashCatalogEvidenceReview(review: CatalogEvidenceReviewV1): string {
   return sha256Hex(review);
 }
+
+export type PayloadHashCheck = { tampered: false } | { tampered: true; recomputedHash: string; failure: string };
+
+/**
+ * Re-derives a payload's canonical hash and compares it to the hash stored
+ * alongside it. Used at final verdict time so a stored artifact whose bytes
+ * were altered after freezing cannot ride a stale pass: the packet and review
+ * hashes are the only thing binding a review to the exact frozen packet it
+ * challenged, so a silent mismatch here would break that guarantee.
+ *
+ * Pure and DB-free by design, so the tampering check itself is unit-testable
+ * without mocking a Supabase client — this codebase tests its validators and
+ * policy logic directly rather than through a database-mocking layer.
+ */
+export function checkPayloadHash(payload: unknown, storedHash: string, label: string): PayloadHashCheck {
+  const recomputedHash = sha256Hex(payload);
+  if (recomputedHash === storedHash) return { tampered: false };
+  return {
+    tampered: true,
+    recomputedHash,
+    failure: `Stored ${label} hash "${storedHash}" does not match the hash recomputed from its payload ("${recomputedHash}").`,
+  };
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hashCatalogEvidencePacket, canonicalJsonStringify } from "@/lib/catalog-evidence-hash";
+import { checkPayloadHash, hashCatalogEvidencePacket, canonicalJsonStringify, sha256Hex } from "@/lib/catalog-evidence-hash";
 import { catalogEvidencePacketV1Schema } from "@/lib/catalog-evidence-packet";
 import {
   collectClaimIds,
@@ -1084,5 +1084,48 @@ describe("identifier normalization", () => {
       expect(hashCatalogEvidencePacket(parsed.data)).toBe(hashCatalogEvidencePacket(raw as never));
       expect(collectPacketClaims(raw as never)).toEqual(collectPacketClaims(parsed.data));
     }
+  });
+});
+
+describe("payload hash tampering detection", () => {
+  it("passes when the recomputed hash matches the stored hash", () => {
+    const p = packet();
+    const stored = hashCatalogEvidencePacket(p);
+    const result = checkPayloadHash(p, stored, "packet");
+    expect(result.tampered).toBe(false);
+  });
+
+  it("detects a packet whose stored bytes were altered after freezing", () => {
+    const p = packet();
+    const stored = hashCatalogEvidencePacket(p);
+    // Simulates a row whose payload was mutated after the hash was recorded —
+    // exactly what computeValidationReport must catch at final verdict time.
+    const tampered = { ...p, market: "UK" };
+    const result = checkPayloadHash(tampered, stored, "packet");
+    expect(result.tampered).toBe(true);
+    if (result.tampered) {
+      expect(result.failure).toMatch(/Stored packet hash ".+" does not match the hash recomputed from its payload/);
+      expect(result.recomputedHash).not.toBe(stored);
+    }
+  });
+
+  it("detects a review whose stored bytes were altered after freezing", () => {
+    const frozen = packet();
+    const frozenHash = hashCatalogEvidencePacket(frozen);
+    const r = review({ evidencePacketHash: frozenHash });
+    const stored = sha256Hex(r);
+    const tampered = { ...r, claimReviews: [] };
+    const result = checkPayloadHash(tampered, stored, "review");
+    expect(result.tampered).toBe(true);
+    if (result.tampered) expect(result.failure).toMatch(/Stored review hash/);
+  });
+
+  it("is order-independent, matching the canonical hash it guards", () => {
+    const p = packet();
+    const stored = hashCatalogEvidencePacket(p);
+    const reordered = JSON.parse(
+      JSON.stringify({ authorityReport: p.authorityReport, products: p.products, market: p.market, generatedAt: p.generatedAt, executorKey: p.executorKey, runId: p.runId, schemaVersion: p.schemaVersion }),
+    );
+    expect(checkPayloadHash(reordered, stored, "packet").tampered).toBe(false);
   });
 });

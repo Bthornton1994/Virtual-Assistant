@@ -16,7 +16,7 @@ import {
   validateInputManifest,
   type CatalogEvidenceInputManifestV1,
 } from "@/lib/catalog-evidence-input";
-import { hashCatalogEvidencePacket, sha256Hex, sha256Text } from "@/lib/catalog-evidence-hash";
+import { checkPayloadHash, hashCatalogEvidencePacket, sha256Hex, sha256Text } from "@/lib/catalog-evidence-hash";
 import {
   collectPacketClaims,
   validateCatalogEvidencePacket,
@@ -714,11 +714,9 @@ async function computeValidationReport(
     expectedMarket: manifest.market,
   });
 
-  const recomputedPacketHash = hashCatalogEvidencePacket(packet);
-  if (recomputedPacketHash !== storedPacketHash) {
-    packetResult.hardFailures.push(
-      `Stored packet hash "${storedPacketHash}" does not match the hash recomputed from its payload ("${recomputedPacketHash}").`,
-    );
+  const packetHashCheck = checkPayloadHash(packet, storedPacketHash, "packet");
+  if (packetHashCheck.tampered) {
+    packetResult.hardFailures.push(packetHashCheck.failure);
     packetResult.hardGatePass = false;
   }
 
@@ -735,11 +733,9 @@ async function computeValidationReport(
     });
 
     const storedReviewHash = String(reviewRow.content_hash ?? "");
-    const recomputedReviewHash = sha256Hex(reviewRow.payload);
-    if (recomputedReviewHash !== storedReviewHash) {
-      reviewResult.hardFailures.push(
-        `Stored review hash "${storedReviewHash}" does not match the hash recomputed from its payload ("${recomputedReviewHash}").`,
-      );
+    const reviewHashCheck = checkPayloadHash(reviewRow.payload, storedReviewHash, "review");
+    if (reviewHashCheck.tampered) {
+      reviewResult.hardFailures.push(reviewHashCheck.failure);
       reviewResult.hardGatePass = false;
     }
   }
