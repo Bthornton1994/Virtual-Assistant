@@ -3,6 +3,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { DEMO_SESSION_COOKIE, LEGACY_SESSION_COOKIE } from "@/lib/auth-cookie";
+import { deploymentOrigin } from "@/lib/deployment-origin";
 import { isOpsRole } from "@/lib/domain";
 import { getStore } from "@/lib/store";
 import { supabaseServer } from "@/lib/supabase/server";
@@ -67,7 +68,7 @@ export async function loginAction(formData: FormData) {
     return null;
   });
 
-  if (!result) loginError("unavailable", next);
+  if (!result) loginError("service_unavailable", next);
 
   const { data, error } = result;
   if (error || !data.user) {
@@ -94,16 +95,26 @@ export async function requestPasswordResetAction(formData: FormData) {
     redirect("/login/forgot?error=unavailable");
   }
 
-  const origin = process.env.NEXT_PUBLIC_SITE_URL || "https://virtual-assistant-bryant4.vercel.app";
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${origin}/auth/callback?next=/login/reset`,
-  });
+  const origin = deploymentOrigin();
+  const result = await supabase.auth
+    .resetPasswordForEmail(email, {
+      redirectTo: `${origin}/auth/callback?next=/login/reset`,
+    })
+    .catch((error: unknown) => {
+      console.error("[auth.reset] Supabase request failed", {
+        ...authConfigState(),
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      return null;
+    });
 
-  if (error) {
+  if (!result) redirect("/login/forgot?error=service_unavailable");
+
+  if (result.error) {
     console.warn("[auth.reset] request rejected", {
       ...authConfigState(),
-      errorCode: error.code || "auth-error",
-      status: error.status || null,
+      errorCode: result.error.code || "auth-error",
+      status: result.error.status || null,
     });
   }
 
