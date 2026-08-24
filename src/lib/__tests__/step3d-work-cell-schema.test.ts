@@ -278,6 +278,18 @@ describe("Step 3D app-layer guards match the database", () => {
     expect(gauntlet).toMatch(/Record findings in the work cell rather than as a separate review/);
   });
 
+  it("does not let the refusal guard fail open on a null count", () => {
+    // `if (count)` would read a null exact-count as "no work cell" and skip the
+    // check. A guard whose job is to refuse must not fail in the allow direction.
+    const guard = gauntlet.slice(
+      gauntlet.indexOf("if (!input.workCellVerdict)"),
+      gauntlet.indexOf("Record findings in the work cell rather than as a separate review"),
+    );
+    expect(guard).not.toMatch(/count: "exact"/);
+    expect(guard).toMatch(/\.limit\(1\)/);
+    expect(guard).toMatch(/\.length > 0/);
+  });
+
   it("marks the work cell's own verdict as exempt", () => {
     expect(workCell).toMatch(/workCellVerdict: true/);
   });
