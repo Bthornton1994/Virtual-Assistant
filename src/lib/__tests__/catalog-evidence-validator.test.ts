@@ -832,3 +832,196 @@ describe("claim collection helpers", () => {
     expect(collectHighSeverityClaimIds(packet())).toEqual([]);
   });
 });
+
+// Regression coverage for holes found by adversarial review of the Step 3D fixes.
+describe("adversarial-review regressions", () => {
+  it("does not let a claimFinding URL launder correction provenance", () => {
+    // A blog URL parked in claimFindings used to count as "declared evidence",
+    // so a high-confidence correction could cite it with no source declaration.
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [manufacturerSource()],
+            claimFindings: [
+              { claimId: "c1", field: "weight", catalogValue: "500g", finding: "contradicted", evidenceSupportedValue: "480g", severity: "low", sourceUrls: ["https://liftingblog.example.com/post"] },
+            ],
+            candidateCorrections: [
+              { field: "weight", proposedValue: "480g", confidence: "high", sourceUrls: ["https://liftingblog.example.com/post"] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /cites a source not otherwise declared in the packet/)).toHaveLength(1);
+  });
+
+  it("does not let a correction assert federation compliance around the binding rules", () => {
+    // Asserting ipfApproved=true via candidateCorrections must clear the same
+    // bar as asserting it via federationEvidence.
+    const smuggled = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [manufacturerSource()],
+            secondarySources: [
+              { url: "https://liftingblog.example.com/ipf-legal", organization: "Blog", sourceType: "blog", factsSupported: ["approval"], reasonUsed: "No primary page found." },
+            ],
+            candidateCorrections: [
+              { field: "ipfApproved", proposedValue: true, confidence: "high", sourceUrls: ["https://liftingblog.example.com/ipf-legal"] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(smuggled.hardGatePass).toBe(false);
+    expect(failuresMatching(smuggled, /asserts IPF compliance, without a IPF federation evidence entry/)).toHaveLength(1);
+
+    // The same correction is fine once a properly bound federation entry exists.
+    const backed = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [manufacturerSource(), approvedListSource()],
+            federationEvidence: [
+              { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "Listed.", sourceUrls: [APPROVED_LIST_URL] },
+            ],
+            candidateCorrections: [
+              { field: "ipfApproved", proposedValue: true, confidence: "high", sourceUrls: [APPROVED_LIST_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(backed.hardFailures).toEqual([]);
+  });
+
+  it("still allows removing an unsupported federation claim", () => {
+    // Nullifying or negating a compliance claim needs no federation backing:
+    // withdrawing an unsupported assertion is always permitted.
+    for (const proposedValue of [null, false]) {
+      const result = validateCatalogEvidencePacket(
+        packet({
+          products: [
+            product({
+              primarySources: [manufacturerSource()],
+              candidateCorrections: [{ field: "ipfApproved", proposedValue, confidence: "high", sourceUrls: [MANUFACTURER_URL] }],
+            }),
+          ],
+        }),
+      );
+      expect(result.hardFailures, `proposedValue ${String(proposedValue)} should be allowed`).toEqual([]);
+    }
+  });
+
+  it("does not let an unsourced decoy entry silence the family-scope warning", () => {
+    // "unknown" skips every binding rule, so it must not count as exact-configuration backing.
+    const withDecoy = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [approvedListSource()],
+            federationEvidence: [
+              { federation: "IPF", status: "approved-list", scope: "category", basis: "Category listed.", sourceUrls: [APPROVED_LIST_URL] },
+              { federation: "IPF", status: "unknown", scope: "exact-configuration", basis: "Not researched.", sourceUrls: [] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(withDecoy.warnings.some((w) => /does not by itself establish exact-configuration compliance/.test(w))).toBe(true);
+  });
+
+  it("matches federation names case- and whitespace-insensitively", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [rulebookSource({ federation: " ipf " })],
+            federationEvidence: [
+              { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "Within limit.", sourceUrls: [RULEBOOK_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.hardFailures).toEqual([]);
+  });
+
+  it("does not lose a source role when one URL is declared twice", () => {
+    // primaryByUrl once kept only the last declaration, so a URL legitimately
+    // declared as both a rulebook and an approved list lost one of its roles.
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [
+              rulebookSource({ url: APPROVED_LIST_URL, federation: "IPF" }),
+              approvedListSource({ url: APPROVED_LIST_URL, federation: "IPF" }),
+            ],
+            federationEvidence: [
+              { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "Rulebook role.", sourceUrls: [APPROVED_LIST_URL] },
+              { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "List role.", sourceUrls: [APPROVED_LIST_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.hardFailures).toEqual([]);
+  });
+});
+
+describe("evidence-gap claim mentions", () => {
+  it("does not let a gap about a longer claim ID excuse a prefix claim", () => {
+    const hermes = packet({
+      products: [
+        product({
+          claimFindings: [
+            { claimId: "ks:thickness", field: "thickness", catalogValue: "7mm", finding: "supported", evidenceSupportedValue: "7mm", severity: "low", sourceUrls: [MANUFACTURER_URL] },
+            { claimId: "ks:thickness-liner", field: "material", catalogValue: "neoprene", finding: "supported", evidenceSupportedValue: "neoprene", severity: "low", sourceUrls: [MANUFACTURER_URL] },
+          ],
+        }),
+      ],
+    });
+    const hash = hashCatalogEvidencePacket(hermes);
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: hash,
+        claimReviews: [
+          { claimId: "ks:thickness", verdict: "inconclusive", independentVerificationPerformed: true, reason: "Unreachable.", independentSourceUrls: [], severity: "low" },
+        ],
+        // Names only the OTHER claim; must not excuse ks:thickness.
+        evidenceGaps: ["ks:thickness-liner could not be checked."],
+      }),
+      reviewContext(hermes, hash),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /no matching entry in evidenceGaps naming that claim/)).toHaveLength(1);
+  });
+
+  it("accepts a gap that names the claim as a whole token", () => {
+    const hermes = packet({
+      products: [
+        product({
+          claimFindings: [
+            { claimId: "ks:thickness", field: "thickness", catalogValue: "7mm", finding: "supported", evidenceSupportedValue: "7mm", severity: "low", sourceUrls: [MANUFACTURER_URL] },
+            { claimId: "ks:thickness-liner", field: "material", catalogValue: "neoprene", finding: "supported", evidenceSupportedValue: "neoprene", severity: "low", sourceUrls: [MANUFACTURER_URL] },
+          ],
+        }),
+      ],
+    });
+    const hash = hashCatalogEvidencePacket(hermes);
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: hash,
+        claimReviews: [
+          { claimId: "ks:thickness", verdict: "inconclusive", independentVerificationPerformed: true, reason: "Unreachable.", independentSourceUrls: [], severity: "low" },
+        ],
+        evidenceGaps: ["ks:thickness could not be independently checked; the page was unreachable."],
+      }),
+      reviewContext(hermes, hash),
+    );
+    expect(result.hardFailures).toEqual([]);
+  });
+});

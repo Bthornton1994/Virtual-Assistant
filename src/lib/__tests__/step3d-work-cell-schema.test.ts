@@ -143,3 +143,52 @@ describe("Step 3D executor profile fixture", () => {
     expect(fixture.split("status = excluded.status").length - 1).toBe(3);
   });
 });
+
+const hardening = readFileSync(
+  resolve(process.cwd(), "supabase/migrations/20260824090000_step3d_work_cell_hardening.sql"),
+  "utf8",
+);
+
+describe("Step 3D hardening migration", () => {
+  it("stops the evidence trigger from discarding a caller-supplied content hash", () => {
+    // The original trigger unconditionally overwrote content_hash, which would
+    // have made the canonical packet hash unreproducible and failed every cell.
+    expect(hardening).toMatch(/create or replace function public\.enforce_evidence_artifact_invariants/);
+    expect(hardening).toMatch(/if new\.content_hash is null or new\.content_hash !~ '\^\[0-9a-f\]\{64\}\$' then/);
+    // The digest must now sit inside that guard, not after it.
+    const fn = hardening.slice(
+      hardening.indexOf("create or replace function public.enforce_evidence_artifact_invariants"),
+      hardening.indexOf("create or replace function public.require_gauntlet_review_for_receipt"),
+    );
+    const guardIndex = fn.indexOf("if new.content_hash is null");
+    const digestIndex = fn.indexOf("extensions.digest");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(digestIndex).toBeGreaterThan(guardIndex);
+  });
+
+  it("preserves the rest of the original evidence invariants", () => {
+    expect(hardening).toMatch(/Evidence artifacts are immutable/);
+    expect(hardening).toMatch(/Evidence may only be appended while a run is running/);
+    expect(hardening).toMatch(/Evidence organization must match its workstream run/);
+    expect(hardening).toMatch(/Evidence request must belong to the same organization/);
+  });
+
+  it("requires the work cell's own review to pass a work-cell run", () => {
+    // Otherwise the pre-existing manual review form could mint a passing row and
+    // satisfy the receipt guard without the deterministic gate ever running.
+    expect(hardening).toMatch(/run_executor_assignments rea where rea\.run_id = new\.run_id/);
+    expect(hardening).toMatch(/gr\.reviewer_kind = 'deterministic' and gr\.reviewer_ref = 'delegation-cloud-work-cell-v1'/);
+    expect(hardening).toMatch(/A work-cell run cannot pass without the deterministic work-cell hard-gate review/);
+  });
+
+  it("leaves non-work-cell runs on the original guard", () => {
+    expect(hardening).toMatch(/not v_has_work_cell/);
+    expect(hardening).toMatch(/A Gauntlet run cannot pass without an independent adversarial hard-gate review/);
+  });
+
+  it("reserves the work-cell reviewer reference against hand-entered reviews", () => {
+    expect(hardening).toMatch(/reserve_work_cell_reviewer_ref/);
+    expect(hardening).toMatch(/is reserved for the deterministic work-cell verdict/);
+    expect(hardening).toMatch(/create trigger trg_reserve_work_cell_reviewer_ref/);
+  });
+});

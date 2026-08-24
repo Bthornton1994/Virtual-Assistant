@@ -113,15 +113,39 @@ function collectProductUrls(product: CatalogEvidenceProduct): UrlOccurrence[] {
   return out;
 }
 
-// Evidence URLs a candidate correction may cite: everything the product itself
-// already declares, excluding other corrections.
+// Evidence URLs a candidate correction may cite.
+//
+// Deliberately built from declared SOURCES only. Earlier this also folded in
+// every URL mentioned by claimFindings and federationEvidence, which let an
+// executor launder provenance: park an arbitrary blog URL in a claimFinding,
+// then cite that URL as the evidence for a high-confidence correction. Those
+// arrays are assertions about evidence; only primarySources and secondarySources
+// actually declare a source with an organization and provenance metadata.
 function declaredEvidenceUrls(product: CatalogEvidenceProduct): Set<string> {
   const urls = new Set<string>();
   product.primarySources.forEach((source) => urls.add(source.url));
   product.secondarySources.forEach((source) => urls.add(source.url));
-  product.claimFindings.forEach((finding) => finding.sourceUrls.forEach((url) => urls.add(url)));
-  product.federationEvidence.forEach((evidence) => evidence.sourceUrls.forEach((url) => urls.add(url)));
   return urls;
+}
+
+// Catalog fields whose value asserts federation compliance. A correction to one
+// of these is a federation conclusion and must clear the same binding rules as a
+// federationEvidence entry, otherwise candidateCorrections becomes a side door
+// around them.
+//
+// This list is domain configuration: a new catalog must extend it with its own
+// compliance-bearing field names. Matching is case-insensitive and exact.
+export const FEDERATION_BEARING_FIELDS: Record<string, string> = {
+  ipfapproved: "IPF",
+  usaplapproved: "USAPL",
+  cpuapproved: "CPU",
+  uspaapproved: "USPA",
+  ipfapproval: "IPF",
+  usaplapproval: "USAPL",
+};
+
+export function federationForField(field: string): string | null {
+  return FEDERATION_BEARING_FIELDS[field.trim().toLowerCase()] ?? null;
 }
 
 // Which primary-source type can carry which federation conclusion. A status not
@@ -137,6 +161,42 @@ const FEDERATION_SCOPED_SOURCE_TYPES: ReadonlyArray<PrimarySource["sourceType"]>
   "federation-rulebook",
   "federation-approved-list",
 ];
+
+// Only a positively asserting conclusion can act as exact-configuration backing
+// for a narrower-scoped entry. "unknown" and "not-applicable" assert nothing and
+// skip every binding rule, so without this an executor could silence the
+// family-scope warning with a free, unsourced decoy entry.
+const FEDERATION_ASSERTING_STATUSES: ReadonlyArray<string> = [
+  "approved-list",
+  "rule-compliant",
+  "manufacturer-claimed-compliant",
+];
+
+function sameFederation(a: string | undefined, b: string | undefined) {
+  return (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
+}
+
+// Characters that can appear inside a claim ID. A match flanked by one of these
+// is part of a longer identifier, not a mention of this claim.
+const CLAIM_ID_CHAR = /[A-Za-z0-9:._-]/;
+
+/**
+ * Whether an evidence-gap entry actually names this claim.
+ *
+ * A bare substring test is not enough: claim IDs commonly share prefixes, so a
+ * gap about "ks:thickness-liner" would otherwise also excuse "ks:thickness".
+ */
+export function mentionsClaimId(text: string, claimId: string): boolean {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(claimId, from);
+    if (at === -1) return false;
+    const before = at > 0 ? text[at - 1] : "";
+    const after = at + claimId.length < text.length ? text[at + claimId.length] : "";
+    if (!CLAIM_ID_CHAR.test(before) && !CLAIM_ID_CHAR.test(after)) return true;
+    from = at + 1;
+  }
+}
 
 export type PacketClaimDescriptor = { claimId: string; productId: string; field: string; severity: SeverityLevel };
 
@@ -263,7 +323,7 @@ export function validateCatalogEvidencePacket(
       }
     });
 
-    validateFederationEvidence(product, hardFailures, warnings);
+    const boundFederationClaims = validateFederationEvidence(product, hardFailures, warnings);
     validatePriceEvidence(product, packet.market, hardFailures, warnings);
 
     // A candidate correction must cite evidence already declared in the packet.
@@ -285,6 +345,20 @@ export function validateCatalogEvidencePacket(
         hardFailures.push(
           `Product "${product.productId}" has identity status "${product.identity.status}" and cannot carry a high-confidence, non-null correction for field "${correction.field}".`,
         );
+      }
+
+      // A correction that asserts federation compliance IS a federation
+      // conclusion. Without this, candidateCorrections would be a side door
+      // around every federation binding rule: propose ipfApproved=true citing a
+      // blog, and none of the primary-source, document-type, accessed-during-run,
+      // or federation-attribution checks would ever run.
+      const assertedFederation = federationForField(correction.field);
+      if (assertedFederation !== null && correction.proposedValue !== null && correction.proposedValue !== false) {
+        if (!boundFederationClaims.has(assertedFederation.toLowerCase())) {
+          hardFailures.push(
+            `Product "${product.productId}" proposes correcting "${correction.field}", which asserts ${assertedFederation} compliance, without a ${assertedFederation} federation evidence entry that passed source binding.`,
+          );
+        }
       }
     }
 
@@ -325,10 +399,22 @@ export function validateCatalogEvidencePacket(
  * IPF list, that must be its own federationEvidence entry citing a USAPL source
  * that says so.
  */
-function validateFederationEvidence(product: CatalogEvidenceProduct, hardFailures: string[], warnings: string[]) {
-  const primaryByUrl = new Map<string, PrimarySource>();
-  for (const source of product.primarySources) primaryByUrl.set(source.url, source);
+function validateFederationEvidence(
+  product: CatalogEvidenceProduct,
+  hardFailures: string[],
+  warnings: string[],
+): Set<string> {
+  // Keyed by URL but holding EVERY declaration, so a URL declared twice under
+  // different source types or federations does not lose a role to last-wins.
+  const primaryByUrl = new Map<string, PrimarySource[]>();
+  for (const source of product.primarySources) {
+    const existing = primaryByUrl.get(source.url);
+    if (existing) existing.push(source);
+    else primaryByUrl.set(source.url, [source]);
+  }
   const secondaryUrls = new Set(product.secondarySources.map((source) => source.url));
+  // Federations whose conclusion actually cleared every binding rule.
+  const bound = new Set<string>();
 
   for (const evidence of product.federationEvidence) {
     const requiredType = FEDERATION_STATUS_REQUIRED_SOURCE[evidence.status];
@@ -356,7 +442,7 @@ function validateFederationEvidence(product: CatalogEvidenceProduct, hardFailure
       }
     }
 
-    const cited = evidence.sourceUrls.map((url) => primaryByUrl.get(url)).filter((s): s is PrimarySource => Boolean(s));
+    const cited = evidence.sourceUrls.flatMap((url) => primaryByUrl.get(url) ?? []);
     const rightType = cited.filter((source) => source.sourceType === requiredType);
     if (!rightType.length) {
       hardFailures.push(
@@ -375,15 +461,19 @@ function validateFederationEvidence(product: CatalogEvidenceProduct, hardFailure
 
     // Manufacturer evidence is not federation-scoped; federation documents are.
     if (FEDERATION_SCOPED_SOURCE_TYPES.includes(requiredType)) {
-      const attributable = accessed.filter(
-        (source) => (source.federation ?? "").trim().toLowerCase() === evidence.federation.trim().toLowerCase(),
-      );
+      const attributable = accessed.filter((source) => sameFederation(source.federation, evidence.federation));
       if (!attributable.length) {
         const offered = accessed.map((s) => s.federation || "unattributed").join(", ");
         hardFailures.push(
           `Product "${product.productId}" claims ${evidence.federation} status "${evidence.status}" using ${requiredType} evidence belonging to ${offered}. Evidence from one federation cannot establish another federation's conclusion; cite a ${evidence.federation} source, or record the recognition relationship as its own ${evidence.federation} evidence entry.`,
         );
+        continue;
       }
+    }
+
+    // Reached only when every binding rule for this entry passed.
+    if (FEDERATION_ASSERTING_STATUSES.includes(evidence.status)) {
+      bound.add(evidence.federation.trim().toLowerCase());
     }
 
     // Family- or category-scoped approval is real but narrower than it looks.
@@ -392,7 +482,10 @@ function validateFederationEvidence(product: CatalogEvidenceProduct, hardFailure
       (evidence.status === "approved-list" || evidence.status === "rule-compliant" || evidence.status === "manufacturer-claimed-compliant")
     ) {
       const hasExactScopeBacking = product.federationEvidence.some(
-        (other) => other.federation === evidence.federation && other.scope === "exact-configuration",
+        (other) =>
+          sameFederation(other.federation, evidence.federation) &&
+          other.scope === "exact-configuration" &&
+          FEDERATION_ASSERTING_STATUSES.includes(other.status),
       );
       if (!hasExactScopeBacking) {
         warnings.push(
@@ -401,6 +494,8 @@ function validateFederationEvidence(product: CatalogEvidenceProduct, hardFailure
       }
     }
   }
+
+  return bound;
 }
 
 function validatePriceEvidence(
@@ -577,7 +672,7 @@ export function validateCatalogEvidenceReview(
     // An inconclusive verdict may legitimately have no source, but only when the
     // reviewer says why. It still blocks verification (see work-cell-policy).
     if (claimReview.verdict === "inconclusive" && validSources.length === 0) {
-      const gapRecorded = review.evidenceGaps.some((gap) => gap.includes(claimReview.claimId));
+      const gapRecorded = review.evidenceGaps.some((gap) => mentionsClaimId(gap, claimReview.claimId));
       if (!gapRecorded) {
         hardFailures.push(
           `Review returns "inconclusive" for claim "${claimReview.claimId}" with no independent source and no matching entry in evidenceGaps naming that claim.`,

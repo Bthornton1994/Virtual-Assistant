@@ -192,6 +192,20 @@ The pre-existing receipt guard passes a run as soon as **any** independent revie
 
 The work cell now writes **one** authoritative row whose verdict already incorporates the complete reviewer semantics. There is deliberately no second row that could satisfy the guard on its own. This also makes the operation atomic and idempotent: a single insert, guarded by an existence check on `reviewer_ref`.
 
+Two further routes around the gate were found by adversarial review of that fix and closed in `supabase/migrations/20260824090000_step3d_work_cell_hardening.sql`:
+
+- **The manual review form.** The original hand-entered adversarial-review form is available in exactly the same window as the work-cell verdict button, and a manual `passed` row satisfied the guard just as well. The guard now requires that, when a run has a work cell, the passing review be the work cell's own deterministic row. Runs with no work cell are unaffected. A trigger also reserves the `delegation-cloud-work-cell-v1` reviewer reference so a hand-entered row cannot impersonate the deterministic verdict — which matters because `gauntlet_one_final_review_per_run_idx` allows exactly one review row per run, so whoever writes first occupies the slot.
+
+- **The content-hash overwrite.** `enforce_evidence_artifact_invariants` ended with an unconditional `new.content_hash := digest(...)`, silently discarding whatever the application supplied. For Step 3D this was fatal rather than cosmetic: the work cell binds a review to a packet by the packet's *canonical* hash and re-derives that hash from the stored payload at verdict time, so the stored value being a different digest over a different preimage meant the re-derivation could never match and **every work cell would have hard-failed on first real use**. The digest is now a fallback for when no usable hash was supplied.
+
+### Side doors around the federation rules
+
+Adversarial review also found that the federation binding could be sidestepped by asserting compliance somewhere other than `federationEvidence`. Three fixes:
+
+- `candidateCorrections` is no longer a side door. A correction to a field that asserts federation compliance (`FEDERATION_BEARING_FIELDS` — domain configuration a new catalog must extend) now requires a `federationEvidence` entry for that federation that actually passed source binding. Withdrawing a claim (`null` or `false`) is always allowed.
+- `declaredEvidenceUrls` is built from declared **sources** only. Folding in `claimFindings` URLs let an executor park an arbitrary URL in a finding and then cite it as the evidence for a high-confidence correction.
+- A `status: "unknown"` entry can no longer act as exact-configuration backing. Because `unknown` skips every binding rule, a free unsourced decoy entry could silence the family-scope warning. Only positively asserting statuses count, and federation names are compared case- and whitespace-insensitively.
+
 ## Authority boundaries
 
 | Executor | Kind | Status | May | May not |
@@ -223,8 +237,10 @@ Run 4 is the first work-cell execution. It is manual on purpose: Delegation Clou
 Prerequisites, in order:
 
 1. Apply `supabase/migrations/20260823120000_step3d_work_cell.sql` to the **QA** environment only, after review and explicit authorization.
-2. Apply `supabase/qa/step3d_executor_profiles.sql` to the same QA environment.
-3. Confirm the three profiles exist and that both agents are `shadow`.
+2. Apply `supabase/migrations/20260824090000_step3d_work_cell_hardening.sql` to the same QA environment. **Both are required.** Without the second, the content-hash overwrite makes every work cell hard-fail and the manual review form can bypass the gate.
+3. Apply `supabase/qa/step3d_executor_profiles.sql` to the same QA environment.
+4. Confirm the three profiles exist and that both agents are `shadow`.
+5. Sanity-check the hash fix before trusting any run: insert an evidence artifact with a known 64-hex `content_hash` and confirm the stored value is the one supplied, not a digest of the row.
 
 Then:
 
@@ -258,6 +274,7 @@ What does **not** generalize is the specific gate list. Rules 7–9 and 15–16 
 
 ## What Step 3D does not prove
 
+- **It has never run against a live database.** Every invariant above is enforced in code and in SQL that has been reviewed and unit-tested as text, not executed. The adversarial review that produced the hardening migration found a defect — the content-hash overwrite — that no amount of TypeScript testing could have surfaced, because it lived in a trigger. Assume more of that class remains until QA runs.
 - It does not prove Hermes or Grok produce good evidence. It proves their output can be typed, frozen, independently challenged, and deterministically gated.
 - It does not prove the Loadout catalog is accurate.
 - It does not establish unit economics. Per-assignment cost fields exist; they are only meaningful once measured.
