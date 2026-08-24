@@ -365,6 +365,11 @@ export async function addGauntletReview(
     evidenceGaps: string[];
     authorityIncidents: unknown[];
     notes?: string;
+    /**
+     * Set only by the work cell's own verdict recorder. A work-cell run holds a
+     * single review slot that belongs to the deterministic verdict; see below.
+     */
+    workCellVerdict?: boolean;
   },
 ) {
   opsOnly(actor);
@@ -382,6 +387,23 @@ export async function addGauntletReview(
     throw new AuthzError("A human executor cannot independently review their own Gauntlet attempt.");
   }
   if (input.verdict === "passed" && !input.hardGatePass) throw new DomainError("A passing review requires the hard gate to pass.");
+
+  // A run may hold exactly one Gauntlet review, and reviews are immutable. On a
+  // work-cell run that slot belongs to the deterministic work-cell verdict: an
+  // ordinary human review recorded first would take it permanently and leave the
+  // run unverifiable, since the receipt guard requires the work cell's own row.
+  if (!input.workCellVerdict) {
+    const { count, error: workCellError } = await db
+      .from("run_executor_assignments")
+      .select("id", { count: "exact", head: true })
+      .eq("run_id", runId);
+    if (workCellError) throw new DomainError(workCellError.message);
+    if (count) {
+      throw new DomainError(
+        "This run is executed by a work cell; its single Gauntlet review is written by the deterministic work-cell verdict. Record findings in the work cell rather than as a separate review.",
+      );
+    }
+  }
 
   const { data, error } = await db
     .from("gauntlet_reviews")

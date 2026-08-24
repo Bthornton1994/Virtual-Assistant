@@ -821,16 +821,25 @@ export async function recordWorkCellGauntletReviews(actor: Actor, runId: string)
     throw new DomainError("Work-cell verdicts are recorded once the run has been submitted for verification.");
   }
 
+  // Probe by run_id ALONE, matching gauntlet_one_final_review_per_run_idx.
+  // Filtering by reviewer_ref here would disagree with the constraint: a review
+  // row written by any other path would be invisible to this check, so execution
+  // would fall through and die on a raw unique violation instead of reporting
+  // what actually happened.
   const { data: existing, error: existingError } = await db
     .from("gauntlet_reviews")
-    .select("id")
+    .select("id, reviewer_ref, verdict")
     .eq("run_id", runId)
-    .eq("reviewer_ref", WORK_CELL_REVIEWER_REF)
     .maybeSingle();
   if (existingError) throw new DomainError(existingError.message);
 
   const { report } = await computeValidationReport(db, runId);
-  if (existing) return report;
+  if (existing) {
+    if (String(existing.reviewer_ref) === WORK_CELL_REVIEWER_REF) return report;
+    throw new DomainError(
+      `This run already carries a Gauntlet review from "${existing.reviewer_ref}" (verdict ${existing.verdict}), and a run may hold only one. The deterministic work-cell verdict cannot be recorded, so this attempt cannot be verified; retry the work under a new attempt.`,
+    );
+  }
 
   const { gate, benchmark } = report;
   const reviewArtifact = await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION);
@@ -860,6 +869,7 @@ export async function recordWorkCellGauntletReviews(actor: Actor, runId: string)
     defects,
     evidenceGaps: [...report.packet.warnings, ...(reviewPayload?.evidenceGaps ?? [])],
     authorityIncidents: gate.authorityIncidents,
+    workCellVerdict: true,
     notes: [
       `Work-cell verdict over frozen input ${report.inputHash}, packet ${report.packetHash}, review ${report.reviewHash ?? "none"}.`,
       `The hard gate reflects deterministic validation plus the independent reviewer's conclusions, never the reviewer's own gate claim.`,

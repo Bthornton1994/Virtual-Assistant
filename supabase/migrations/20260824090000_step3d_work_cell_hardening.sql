@@ -122,15 +122,36 @@ begin
 end;
 $$;
 
--- 3. Reserve the work cell's reviewer_ref so a hand-entered review cannot
---    impersonate the deterministic verdict and occupy the one review slot
---    (gauntlet_one_final_review_per_run_idx allows exactly one row per run).
+-- 3. Reserve the single review slot on a work-cell run.
+--
+-- gauntlet_one_final_review_per_run_idx allows exactly ONE gauntlet_reviews row
+-- per run, so whoever writes first owns it permanently: reviews are immutable,
+-- the table grants only select and insert, and there is no delete path.
+--
+-- Two failure modes follow, and rule 2 above only closes the first:
+--
+--   * Impersonation — a hand-entered review claiming the work cell's reviewer_ref.
+--
+--   * Squatting — and this one needs no malice. The manual adversarial-review
+--     form is open to any ops role, while the work-cell verdict is manager-only.
+--     An operator recording an ordinary human review before the manager records
+--     the work-cell verdict takes the slot; the work cell's insert then dies on a
+--     unique violation, and because rule 2 requires the work cell's own row to
+--     pass a work-cell run, that run becomes permanently unverifiable.
+--
+-- On a work-cell run the slot therefore belongs to the work cell alone. Runs with
+-- no work cell keep the original manual-review behavior untouched.
 create or replace function public.reserve_work_cell_reviewer_ref()
 returns trigger
 language plpgsql
 set search_path = public
 as $$
+declare v_has_work_cell boolean;
 begin
+  select exists (
+    select 1 from public.run_executor_assignments rea where rea.run_id = new.run_id
+  ) into v_has_work_cell;
+
   if new.reviewer_ref = 'delegation-cloud-work-cell-v1'
      and (new.reviewer_kind <> 'deterministic' or not exists (
        select 1 from public.run_executor_assignments rea
@@ -138,6 +159,11 @@ begin
      )) then
     raise exception 'The reviewer reference delegation-cloud-work-cell-v1 is reserved for the deterministic work-cell verdict';
   end if;
+
+  if v_has_work_cell and new.reviewer_ref <> 'delegation-cloud-work-cell-v1' then
+    raise exception 'This run is executed by a work cell; its single Gauntlet review is written by the deterministic work-cell verdict. Record findings in the work cell rather than as a separate review.';
+  end if;
+
   return new;
 end;
 $$;

@@ -66,6 +66,7 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
   const latestRunId = text(latestRun, "id");
   const latestRunStatus = text(latestRun, "status");
   const latestReview = reviews.filter((review) => text(review, "run_id") === latestRunId).at(-1);
+  const latestRunHasWorkCell = executorAssignments.some((assignment) => text(assignment, "run_id") === latestRunId);
   const openFailure = failures.find((failure) => text(failure, "status") === "open");
   const proposedDecision = decisions.find((decision) => text(decision, "status") === "proposed");
 
@@ -222,7 +223,15 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
                 </div>
               )) : <p className="text-sm text-muted">No adversarial review recorded.</p>}
             </div>
-            {cycle.status === "verification" && latestRunStatus === "awaiting_verification" ? (
+            {cycle.status === "verification" && latestRunStatus === "awaiting_verification" && latestRunHasWorkCell ? (
+              <p className="mt-5 border-t border-line pt-4 text-sm text-muted">
+                This attempt is executed by a work cell. A run holds exactly one Gauntlet review, and on a work-cell run
+                that slot belongs to the deterministic verdict — recording a separate review here would take it and leave
+                the attempt unverifiable. Record findings in the Work Cell on the run page instead.
+              </p>
+            ) : null}
+
+            {cycle.status === "verification" && latestRunStatus === "awaiting_verification" && !latestRunHasWorkCell ? (
               <form action={addGauntletReviewAction} className="mt-5 space-y-4 border-t border-line pt-4">
                 <input type="hidden" name="cycleId" value={cycle.id} />
                 <input type="hidden" name="runId" value={latestRunId} />

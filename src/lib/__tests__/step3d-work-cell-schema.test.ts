@@ -226,3 +226,59 @@ describe("Step 3D generic-evidence-form route", () => {
     expect(hardening).toMatch(/create trigger trg_step3d_artifact_authority/);
   });
 });
+
+describe("Step 3D single review slot", () => {
+  // gauntlet_one_final_review_per_run_idx allows exactly ONE review row per run,
+  // and reviews are immutable with no delete path. So the slot must be reserved:
+  // an ordinary human review recorded first would take it permanently, and since
+  // rule 2 requires the work cell's own row to pass a work-cell run, that run
+  // would become unverifiable. No malice required.
+  it("reserves the single review slot on a work-cell run", () => {
+    expect(hardening).toMatch(/its single Gauntlet review is written by the deterministic work-cell verdict/);
+    expect(hardening).toMatch(/v_has_work_cell and new\.reviewer_ref <> 'delegation-cloud-work-cell-v1'/);
+  });
+
+  it("still reserves the work-cell reference against impersonation", () => {
+    expect(hardening).toMatch(/is reserved for the deterministic work-cell verdict/);
+  });
+
+  it("leaves runs without a work cell on the original manual-review behavior", () => {
+    const fn = hardening.slice(hardening.indexOf("function public.reserve_work_cell_reviewer_ref"));
+    expect(fn).toMatch(/v_has_work_cell/);
+    // The squat guard is conditional on the run actually having a work cell.
+    expect(fn).toMatch(/if v_has_work_cell and/);
+  });
+});
+
+describe("Step 3D app-layer guards match the database", () => {
+  const workCell = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
+  const gauntlet = readFileSync(resolve(process.cwd(), "src/lib/gauntlet.ts"), "utf8");
+
+  it("probes for an existing review by run_id alone, matching the unique index", () => {
+    // Filtering the probe by reviewer_ref would disagree with a constraint keyed
+    // on run_id alone: a foreign row would be invisible and the insert would die
+    // on a raw unique violation instead of reporting what happened.
+    const probe = workCell.slice(
+      workCell.indexOf('.from("gauntlet_reviews")'),
+      workCell.indexOf("const { report } = await computeValidationReport(db, runId);"),
+    );
+    expect(probe).toMatch(/\.eq\("run_id", runId\)/);
+    expect(probe).not.toMatch(/\.eq\("reviewer_ref"/);
+  });
+
+  it("reports a foreign review row instead of failing on a unique violation", () => {
+    expect(workCell).toMatch(/already carries a Gauntlet review from/);
+    expect(workCell).toMatch(/retry the work under a new attempt/);
+  });
+
+  it("refuses a manual review on a work-cell run unless it is the work cell's own", () => {
+    expect(gauntlet).toMatch(/workCellVerdict\?: boolean/);
+    expect(gauntlet).toMatch(/if \(!input\.workCellVerdict\)/);
+    expect(gauntlet).toMatch(/from\("run_executor_assignments"\)/);
+    expect(gauntlet).toMatch(/Record findings in the work cell rather than as a separate review/);
+  });
+
+  it("marks the work cell's own verdict as exempt", () => {
+    expect(workCell).toMatch(/workCellVerdict: true/);
+  });
+});
