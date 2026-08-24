@@ -497,6 +497,11 @@ export async function ingestCatalogEvidencePacket(
   // input at ingest time: an operator must not be able to relabel one executor's
   // output as another's after seeing it.
   const profile = await getProfileByKey(db, manifest.prepareExecutorKey);
+  // Checked before any write. The artifact insert and the assignment insert are
+  // separate transactions, so a profile rejected at assignment time would leave a
+  // durable packet with no assignment — a run that looks like it has evidence but
+  // reads as "not a work-cell run" to every guard.
+  assertProfileFitsPhase(profile, "prepare");
 
   const parsed = parseRawExecutorJson(input.raw);
   if (!parsed.ok) {
@@ -599,6 +604,7 @@ export async function ingestCatalogEvidenceReview(
   const packet = packetRow.payload as CatalogEvidencePacketV1;
   const expectedPacketHash = String(packetRow.content_hash ?? "");
   const profile = await getProfileByKey(db, manifest.reviewExecutorKey);
+  assertProfileFitsPhase(profile, "review");
   const context = {
     expectedPacketHash,
     claims: collectPacketClaims(packet),
@@ -832,6 +838,13 @@ export async function recordWorkCellGauntletReviews(actor: Actor, runId: string)
     .eq("run_id", runId)
     .maybeSingle();
   if (existingError) throw new DomainError(existingError.message);
+
+  const validateAssignment = await getAssignment(db, runId, "validate");
+  if (!validateAssignment || validateAssignment.status !== "completed" || !validateAssignment.outputArtifactId) {
+    throw new DomainError(
+      "Deterministic work-cell validation has not completed for this run, so its verdict cannot be recorded. Validation runs while the run is in progress.",
+    );
+  }
 
   const { report } = await computeValidationReport(db, runId);
   if (existing) {

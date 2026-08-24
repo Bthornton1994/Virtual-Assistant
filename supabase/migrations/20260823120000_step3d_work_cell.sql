@@ -98,10 +98,14 @@ create policy executor_profiles_update on public.executor_profiles for update to
 -- sanitized customer-safe projection instead of widening this policy.
 create policy run_executor_assignments_select on public.run_executor_assignments for select to authenticated
   using (public.is_platform_staff());
+-- Manager authority, not merely platform staff. is_platform_staff() admits a
+-- plain 'operator', and every work-cell function that creates an assignment is
+-- manager-only; leaving the row-level grant wider would let an operator reach
+-- past the application and stage a work cell directly through PostgREST.
 create policy run_executor_assignments_insert on public.run_executor_assignments for insert to authenticated
-  with check (public.is_platform_staff());
+  with check (public.is_ops_manager());
 create policy run_executor_assignments_update on public.run_executor_assignments for update to authenticated
-  using (public.is_platform_staff()) with check (public.is_platform_staff());
+  using (public.is_ops_manager()) with check (public.is_ops_manager());
 
 create or replace function public.enforce_run_executor_assignment_invariants()
 returns trigger
@@ -109,14 +113,20 @@ language plpgsql
 set search_path = public
 as $$
 declare
-  run_org uuid;
+  run_record record;
   profile record;
   artifact_run uuid;
 begin
   if tg_op = 'INSERT' then
-    select organization_id into run_org from public.workstream_runs where id = new.run_id;
-    if run_org is null or run_org is distinct from new.organization_id then
+    select organization_id, status into run_record from public.workstream_runs where id = new.run_id;
+    if run_record.organization_id is null or run_record.organization_id is distinct from new.organization_id then
       raise exception 'Executor assignment must belong to the same organization as its workstream run';
+    end if;
+    -- Mirrors the evidence-artifact rule: a work cell is staffed while the run is
+    -- in progress. Without this an assignment could be created against a frozen
+    -- run, which is how a forged "work cell" could be attached after the fact.
+    if run_record.status <> 'running' then
+      raise exception 'Executor assignments may only be created while a run is running';
     end if;
 
     select status, executor_kind into profile from public.executor_profiles where id = new.executor_profile_id;

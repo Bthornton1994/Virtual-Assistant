@@ -42,6 +42,14 @@ export default async function ExecutionRunPage({ params }: { params: Promise<{ i
 
   const { run, spec, evidence, receipt } = await getWorkstreamRunBundle(actor, id);
   const workCell = await getRunWorkCell(actor, id);
+  // A work-cell run reserves its single Gauntlet review slot for the deterministic
+  // verdict, which needs a completed validation. Submitting before that strands
+  // the run, so the submit card is withheld until validation has run.
+  const runHasWorkCell = workCell.assignments.length > 0 || workCell.packet !== null || workCell.manifest !== null;
+  const workCellValidated = workCell.assignments.some(
+    (assignment) => assignment.phase === "validate" && assignment.status === "completed" && assignment.outputArtifactId,
+  );
+  const submitBlockedByWorkCell = runHasWorkCell && !workCellValidated;
 
   return (
     <div className="space-y-8">
@@ -174,7 +182,18 @@ export default async function ExecutionRunPage({ params }: { params: Promise<{ i
         </div>
       </section>
 
-      {run.status === "running" ? (
+      {run.status === "running" && submitBlockedByWorkCell ? (
+        <Card className="p-6">
+          <h2 className="font-semibold">Submit for independent verification</h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted">
+            This run is executed by a work cell. Run deterministic work-cell validation above before submitting it —
+            a work-cell run&apos;s single Gauntlet review slot is reserved for the deterministic verdict, and submitting
+            before validation completes would leave the attempt with no way to fill it.
+          </p>
+        </Card>
+      ) : null}
+
+      {run.status === "running" && !submitBlockedByWorkCell ? (
         <Card className="p-6">
           <h2 className="font-semibold">Submit for independent verification</h2>
           <p className="mt-1 text-sm text-muted">Record actual delivery economics before freezing the run for review.</p>

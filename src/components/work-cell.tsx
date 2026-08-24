@@ -76,7 +76,12 @@ export function WorkCellSection({
   const { manifest, assignments, packet, review, validation, rejections } = bundle;
   const running = runStatus === "running";
   const awaitingVerification = runStatus === "awaiting_verification";
-  const hasWorkCell = assignments.length > 0 || packet !== null || manifest !== null;
+  // Gate the verdict control on validation having actually completed. Gating on
+  // "has a work cell" would offer a button the database refuses, and surface a
+  // trigger message about impersonation rather than the real precondition.
+  const validationComplete = assignments.some(
+    (assignment) => assignment.phase === "validate" && assignment.status === "completed" && assignment.outputArtifactId,
+  );
 
   return (
     <section className="space-y-4">
@@ -383,7 +388,7 @@ export function WorkCellSection({
           </p>
         ) : null}
 
-        {awaitingVerification && manager && cycleId && hasWorkCell ? (
+        {awaitingVerification && manager && cycleId && validationComplete ? (
           <form action={recordWorkCellGauntletReviewsAction} className="mt-5 space-y-3 border-t border-line pt-4">
             <input type="hidden" name="runId" value={runId} />
             <input type="hidden" name="cycleId" value={cycleId} />

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { AuthzError, DomainError, assertOrgAccess, isOpsRole, type Actor } from "@/lib/domain";
 import { supabaseServer } from "@/lib/supabase/server";
+import { runHasWorkCell } from "@/lib/execution-primitives";
 import {
   DEFAULT_AUTONOMY_POLICY,
   defaultRetryDecision,
@@ -393,17 +394,11 @@ export async function addGauntletReview(
   // ordinary human review recorded first would take it permanently and leave the
   // run unverifiable, since the receipt guard requires the work cell's own row.
   if (!input.workCellVerdict) {
-    // Fetch a row rather than an exact count: a null count would read as falsy
-    // and silently skip this guard, which is the wrong failure direction for a
-    // check whose job is to refuse. The database trigger is the real backstop,
-    // but this layer should not be the one that fails open.
-    const { data: workCellRows, error: workCellError } = await db
-      .from("run_executor_assignments")
-      .select("id")
-      .eq("run_id", runId)
-      .limit(1);
-    if (workCellError) throw new DomainError(workCellError.message);
-    if ((workCellRows ?? []).length > 0) {
+    // Uses the shared predicate so this cannot drift from the database trigger.
+    // It keys on the manifest and packet too, because assignment rows exist only
+    // when an executor succeeded — a rejected work cell would otherwise read as
+    // "not a work-cell run" and fall through to the manual path.
+    if (await runHasWorkCell(db, runId)) {
       throw new DomainError(
         "This run is executed by a work cell; its single Gauntlet review is written by the deterministic work-cell verdict. Record findings in the work cell rather than as a separate review.",
       );

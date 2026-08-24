@@ -24,7 +24,10 @@ describe("Step 3D work-cell schema", () => {
 
   it("scopes run assignments to the organization like the rest of execution", () => {
     expect(migration).toMatch(/create table public\.run_executor_assignments[\s\S]*?organization_id uuid not null references public\.organizations\(id\)/);
-    expect(migration).toMatch(/create policy run_executor_assignments_insert[\s\S]*?with check \(public\.is_platform_staff\(\)\)/);
+    // Manager authority: is_platform_staff() admits a plain operator, and every
+    // work-cell function that stages a cell is manager-only.
+    expect(migration).toMatch(/create policy run_executor_assignments_insert[\s\S]*?with check \(public\.is_ops_manager\(\)\)/);
+    expect(migration).toMatch(/create policy run_executor_assignments_update[\s\S]*?using \(public\.is_ops_manager\(\)\)/);
   });
 
   it("keeps raw executor assignments staff-only at the database boundary", () => {
@@ -176,9 +179,16 @@ describe("Step 3D hardening migration", () => {
   it("requires the work cell's own review to pass a work-cell run", () => {
     // Otherwise the pre-existing manual review form could mint a passing row and
     // satisfy the receipt guard without the deterministic gate ever running.
-    expect(hardening).toMatch(/run_executor_assignments rea where rea\.run_id = new\.run_id/);
+    expect(hardening).toMatch(/v_has_work_cell := public\.run_has_work_cell\(new\.run_id\)/);
     expect(hardening).toMatch(/gr\.reviewer_kind = 'deterministic' and gr\.reviewer_ref = 'delegation-cloud-work-cell-v1'/);
     expect(hardening).toMatch(/A work-cell run cannot pass without the deterministic work-cell hard-gate review/);
+  });
+
+  it("defines one shared work-cell predicate keyed beyond success-only rows", () => {
+    // Assignment rows exist only when an executor SUCCEEDED. Keying solely on
+    // them made every guard read a rejected work cell as "not a work-cell run".
+    expect(hardening).toMatch(/create or replace function public\.run_has_work_cell/);
+    expect(hardening).toMatch(/'catalog-evidence-input\/v1', 'catalog-evidence-packet\/v1'/);
   });
 
   it("leaves non-work-cell runs on the original guard", () => {
@@ -235,7 +245,7 @@ describe("Step 3D single review slot", () => {
   // would become unverifiable. No malice required.
   it("reserves the single review slot on a work-cell run", () => {
     expect(hardening).toMatch(/its single Gauntlet review is written by the deterministic work-cell verdict/);
-    expect(hardening).toMatch(/v_has_work_cell and new\.reviewer_ref <> 'delegation-cloud-work-cell-v1'/);
+    expect(hardening).toMatch(/if v_has_work_cell then/);
   });
 
   it("still reserves the work-cell reference against impersonation", () => {
@@ -246,7 +256,7 @@ describe("Step 3D single review slot", () => {
     const fn = hardening.slice(hardening.indexOf("function public.reserve_work_cell_reviewer_ref"));
     expect(fn).toMatch(/v_has_work_cell/);
     // The squat guard is conditional on the run actually having a work cell.
-    expect(fn).toMatch(/if v_has_work_cell and/);
+    expect(fn).toMatch(/if v_has_work_cell then/);
   });
 });
 
@@ -286,11 +296,86 @@ describe("Step 3D app-layer guards match the database", () => {
       gauntlet.indexOf("Record findings in the work cell rather than as a separate review"),
     );
     expect(guard).not.toMatch(/count: "exact"/);
-    expect(guard).toMatch(/\.limit\(1\)/);
-    expect(guard).toMatch(/\.length > 0/);
+    expect(guard).toMatch(/await runHasWorkCell\(db, runId\)/);
+  });
+
+  it("uses one shared predicate in app and database so they cannot drift", () => {
+    const primitives = readFileSync(resolve(process.cwd(), "src/lib/execution-primitives.ts"), "utf8");
+    expect(primitives).toMatch(/export async function runHasWorkCell/);
+    expect(primitives).toMatch(/catalog-evidence-input\/v1", "catalog-evidence-packet\/v1/);
+    expect(primitives).toMatch(/Mirrors public\.run_has_work_cell in SQL/);
   });
 
   it("marks the work cell's own verdict as exempt", () => {
     expect(workCell).toMatch(/workCellVerdict: true/);
+  });
+});
+
+describe("Step 3D submit-before-validate guard", () => {
+  const primitives = readFileSync(resolve(process.cwd(), "src/lib/execution-primitives.ts"), "utf8");
+  const workCell = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
+  const runPage = readFileSync(resolve(process.cwd(), "src/app/(ops)/ops/execution/runs/[id]/page.tsx"), "utf8");
+  const component = readFileSync(resolve(process.cwd(), "src/components/work-cell.tsx"), "utf8");
+
+  // Reserving the slot for the deterministic verdict creates a trap unless the
+  // half-built state is unreachable: validation only runs while the run is
+  // 'running', and awaiting_verification is terminal in that direction. One
+  // premature submit would otherwise strand the attempt with no way to fill it.
+  it("blocks running -> awaiting_verification on an unvalidated work cell in the database", () => {
+    expect(hardening).toMatch(/create or replace function public\.require_work_cell_validation_before_submit/);
+    expect(hardening).toMatch(/create trigger trg_require_work_cell_validation_before_submit/);
+    expect(hardening).toMatch(/Run deterministic work-cell validation before submitting it for verification/);
+  });
+
+  it("requires the validation artifact, not merely a validate assignment", () => {
+    const fn = hardening.slice(hardening.indexOf("function public.require_work_cell_validation_before_submit"));
+    expect(fn).toMatch(/rea\.phase = 'validate'/);
+    expect(fn).toMatch(/rea\.status = 'completed'/);
+    expect(fn).toMatch(/catalog-evidence-validation\/v1/);
+  });
+
+  it("mirrors the guard in transitionWorkstreamRun", () => {
+    expect(primitives).toMatch(/to === "awaiting_verification" && \(await runHasWorkCell\(db, run\.id\)\)/);
+    expect(primitives).toMatch(/Run deterministic work-cell validation before submitting it for verification/);
+  });
+
+  it("withholds the submit card until validation has run", () => {
+    expect(runPage).toMatch(/submitBlockedByWorkCell/);
+    expect(runPage).toMatch(/run\.status === "running" && !submitBlockedByWorkCell/);
+  });
+
+  it("gates the verdict control on completed validation, not on merely having a work cell", () => {
+    expect(component).toMatch(/const validationComplete = assignments\.some/);
+    expect(component).toMatch(/awaitingVerification && manager && cycleId && validationComplete/);
+    expect(component).not.toMatch(/cycleId && hasWorkCell/);
+  });
+
+  it("reports the real precondition instead of letting the impersonation message surface", () => {
+    expect(workCell).toMatch(/Deterministic work-cell validation has not completed for this run/);
+  });
+
+  it("binds the reserved reviewer reference to the validator's actual output", () => {
+    // A bare "a validate assignment exists" test was forgeable: insert the
+    // assignment, then write a passing review under the reserved ref.
+    const fn = hardening.slice(
+      hardening.indexOf("function public.reserve_work_cell_reviewer_ref"),
+      hardening.indexOf("create trigger trg_reserve_work_cell_reviewer_ref"),
+    );
+    expect(fn).toMatch(/catalog-evidence-validation\/v1/);
+    expect(fn).toMatch(/not public\.is_ops_manager\(\)/);
+    expect(fn).toMatch(/rea\.status = 'completed'/);
+  });
+
+  it("rejects an unfit executor before writing any artifact", () => {
+    // The artifact insert and the assignment insert are separate transactions,
+    // so checking fitness only at assignment time left a durable orphan packet.
+    const ingest = workCell.slice(
+      workCell.indexOf("export async function ingestCatalogEvidencePacket"),
+      workCell.indexOf("export type ReviewIngestResult"),
+    );
+    const fitnessAt = ingest.indexOf('assertProfileFitsPhase(profile, "prepare")');
+    const writeAt = ingest.indexOf("insertEvidenceArtifact");
+    expect(fitnessAt).toBeGreaterThan(-1);
+    expect(writeAt).toBeGreaterThan(fitnessAt);
   });
 });

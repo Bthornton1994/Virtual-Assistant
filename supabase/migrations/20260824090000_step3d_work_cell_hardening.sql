@@ -66,6 +66,30 @@ begin
 end;
 $$;
 
+-- A single definition of "this run is executed by a work cell", used by every
+-- guard below so they cannot drift apart.
+--
+-- Keyed on the frozen input manifest and the evidence packet as well as the
+-- assignment rows, because assignments are written only on executor SUCCESS.
+-- A run whose manifest is frozen but whose ingest was rejected has no
+-- assignments at all, and keying solely on that table made every guard answer
+-- "not a work-cell run" for it — which let a hand-entered review through and
+-- sent the receipt guard down its permissive branch.
+create or replace function public.run_has_work_cell(p_run_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.run_executor_assignments rea where rea.run_id = p_run_id)
+      or exists (
+        select 1 from public.evidence_artifacts ea
+        where ea.run_id = p_run_id
+          and ea.payload->>'schemaVersion' in ('catalog-evidence-input/v1', 'catalog-evidence-packet/v1')
+      );
+$$;
+
 -- 2. Close the manual-review route around the work-cell gate.
 --
 -- The receipt guard passes a run as soon as ANY independent review row reads
@@ -95,9 +119,7 @@ begin
     where wr.id = new.run_id and wr.organization_id = new.organization_id;
   if v_cycle_id is null then return new; end if;
 
-  select exists (
-    select 1 from public.run_executor_assignments rea where rea.run_id = new.run_id
-  ) into v_has_work_cell;
+  v_has_work_cell := public.run_has_work_cell(new.run_id);
 
   select count(*) into v_review_count
     from public.gauntlet_reviews gr
@@ -146,21 +168,34 @@ returns trigger
 language plpgsql
 set search_path = public
 as $$
-declare v_has_work_cell boolean;
+declare
+  v_has_work_cell boolean;
+  v_validated boolean;
 begin
-  select exists (
-    select 1 from public.run_executor_assignments rea where rea.run_id = new.run_id
-  ) into v_has_work_cell;
+  v_has_work_cell := public.run_has_work_cell(new.run_id);
 
-  if new.reviewer_ref = 'delegation-cloud-work-cell-v1'
-     and (new.reviewer_kind <> 'deterministic' or not exists (
-       select 1 from public.run_executor_assignments rea
-       where rea.run_id = new.run_id and rea.phase = 'validate'
-     )) then
-    raise exception 'The reviewer reference delegation-cloud-work-cell-v1 is reserved for the deterministic work-cell verdict';
+  if new.reviewer_ref = 'delegation-cloud-work-cell-v1' then
+    -- Bind the reserved reference to the validator's ACTUAL output, not merely to
+    -- the existence of a validate assignment. A bare existence test was forgeable:
+    -- insert a validate assignment, then write a passing review under the reserved
+    -- ref, and the receipt guard counts it as the deterministic verdict.
+    select exists (
+      select 1
+        from public.run_executor_assignments rea
+        join public.evidence_artifacts ea on ea.id = rea.output_artifact_id
+       where rea.run_id = new.run_id
+         and rea.phase = 'validate'
+         and rea.status = 'completed'
+         and ea.payload->>'schemaVersion' = 'catalog-evidence-validation/v1'
+    ) into v_validated;
+
+    if new.reviewer_kind <> 'deterministic' or not public.is_ops_manager() or not v_validated then
+      raise exception 'The reviewer reference delegation-cloud-work-cell-v1 is reserved for the deterministic work-cell verdict over a completed validation artifact';
+    end if;
+    return new;
   end if;
 
-  if v_has_work_cell and new.reviewer_ref <> 'delegation-cloud-work-cell-v1' then
+  if v_has_work_cell then
     raise exception 'This run is executed by a work cell; its single Gauntlet review is written by the deterministic work-cell verdict. Record findings in the work cell rather than as a separate review.';
   end if;
 
@@ -224,3 +259,46 @@ $$;
 create trigger trg_step3d_artifact_authority
   before insert on public.evidence_artifacts
   for each row execute function public.enforce_step3d_artifact_authority();
+
+-- 5. Do not let a work-cell run be submitted for verification before the
+--    deterministic validation has run.
+--
+-- Rule 3 reserves the single review slot for the work cell's own verdict, and
+-- that verdict requires a completed validation artifact. But the validate phase
+-- can only run while the run is 'running', and 'awaiting_verification' is
+-- terminal in that direction. So freezing a half-built work cell used to strand
+-- it: the manual review is refused because the run has a work cell, the work
+-- cell's verdict is refused because validation never completed, and nothing can
+-- free the slot. Good work would be recordable only as a failed receipt.
+--
+-- No malice or race is needed — one premature press of "Freeze and submit for
+-- verification", which is open to any ops role, reaches it. The right fix is to
+-- make the state unreachable rather than to loosen the verdict's evidence bar.
+create or replace function public.require_work_cell_validation_before_submit()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if old.status <> 'running' or new.status <> 'awaiting_verification' then return new; end if;
+  if not public.run_has_work_cell(new.id) then return new; end if;
+
+  if not exists (
+    select 1
+      from public.run_executor_assignments rea
+      join public.evidence_artifacts ea on ea.id = rea.output_artifact_id
+     where rea.run_id = new.id
+       and rea.phase = 'validate'
+       and rea.status = 'completed'
+       and ea.payload->>'schemaVersion' = 'catalog-evidence-validation/v1'
+  ) then
+    raise exception 'This run is executed by a work cell. Run deterministic work-cell validation before submitting it for verification, otherwise its Gauntlet review slot cannot be filled.';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger trg_require_work_cell_validation_before_submit
+  before update on public.workstream_runs
+  for each row execute function public.require_work_cell_validation_before_submit();
