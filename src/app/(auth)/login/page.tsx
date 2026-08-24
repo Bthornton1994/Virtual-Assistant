@@ -9,7 +9,7 @@ const ERRORS: Record<string, string> = {
   invalid: "Incorrect email or password.",
   no_org: "Your account does not belong to an active organization.",
   expired: "Your invitation has expired.",
-  unavailable: "We couldn't sign you in. Try again or contact support.",
+  unavailable: "This deployment is not connected to Delegation Cloud authentication.",
 };
 
 export default async function LoginPage({
