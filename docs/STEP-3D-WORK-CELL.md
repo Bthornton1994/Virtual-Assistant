@@ -29,11 +29,15 @@ Delegation Spec  (authority ceiling — unchanged)
   └─ Gauntlet Cycle
       └─ Workstream Run  ← one attempt
           └─ WORK CELL
-              ├─ prepare   executor: Hermes (agent, shadow)
+              ├─ manifest  frozen BEFORE any evidence exists
+              │              Evidence Artifact  payload.schemaVersion = catalog-evidence-input/v1
+              │              expected product batch + market + both executor keys, by inputHash
+              │
+              ├─ prepare   executor named by the manifest (agent, shadow)
               │              output → Evidence Artifact  payload.schemaVersion = catalog-evidence-packet/v1
               │              frozen by sha256 content hash
               │
-              ├─ review    executor: Grok (agent, shadow)
+              ├─ review    executor named by the manifest (agent, shadow)
               │              input  ← the frozen packet artifact
               │              output → Evidence Artifact  payload.schemaVersion = catalog-evidence-review/v1
               │              bound to the packet by evidencePacketHash — never edits it
@@ -43,13 +47,17 @@ Delegation Spec  (authority ceiling — unchanged)
                              owns: hardGatePass, hardFailures, warnings, every metric count
                                     │
                                     ▼
-                        Gauntlet Reviews (existing model)
-                          reviewer_kind 'deterministic'  ← validator verdict
-                          reviewer_kind 'agent'          ← Grok verdict, hard gate from the validator
+                        ONE Gauntlet review row (reviewer_kind 'deterministic')
+                          verdict incorporates the reviewer's conclusions
                                     │
                                     ▼
                         Outcome Receipt (existing DB guard: blocked without a clean hard gate)
 ```
+
+A rejected executor output produces a fifth artifact type,
+`catalog-evidence-rejection/v1`. It is explicitly untrusted — it never becomes a
+packet or a review — but it preserves the attempt, its raw-output hash, and the
+hard failures, so a failed executor run can still be classified and costed.
 
 ### Reused, not duplicated
 
@@ -63,7 +71,9 @@ No `catalog_evidence_packets` table exists. Both typed artifacts are ordinary ro
 
 **`executor_profiles`** — the generic executor registry. Keyed by a stable `key`, typed by `executor_kind` (`agent` / `deterministic` / `human`), gated by `status` (`shadow` / `active` / `suspended` / `retired`), and carrying `capabilities`, `authority_envelope`, `forbidden_actions`, and `configuration_metadata` as JSONB. It stores **no API keys, tokens, or credentials**. Not org-scoped: it is internal staffing detail, readable only by platform staff and writable only by operations managers.
 
-**`run_executor_assignments`** — one row per (run, phase). Org-scoped and RLS'd consistently with the rest of execution. Carries `authority_snapshot` (the profile's envelope frozen at assignment time, so a later profile edit cannot rewrite what governed a past run), `input_artifact_id`, `output_artifact_id`, and per-executor economics (`human_minutes`, `ai_cost_micros`, `tool_cost_micros`).
+**`run_executor_assignments`** — one row per (run, phase). Carries `authority_snapshot` (the profile's envelope frozen at assignment time, so a later profile edit cannot rewrite what governed a past run), `input_artifact_id`, `output_artifact_id`, and per-executor economics (`human_minutes`, `ai_cost_micros`, `tool_cost_micros`).
+
+Both tables are **staff-only for SELECT at the database boundary**, not merely hidden by the ops UI. Assignment rows expose which agent ran, under what authority, at what internal AI and tool cost — the AI workforce the customer is explicitly not supposed to manage (`VISION.md`; strategic thesis §13). If customers ever need work-cell status, the answer is a separate sanitized projection, not widening these policies.
 
 Database-enforced invariants:
 
@@ -132,9 +142,55 @@ Packet hard rules:
 | 15 | Market-mismatched price evidence raises a **warning**, not a failure. |
 | 16 | Family- or category-scoped approval raises a **warning** that it does not establish exact-configuration compliance. |
 
-Review hard rules: `evidencePacketHash` must match the frozen artifact; every referenced `claimId` must exist; fabricated claim IDs are rejected; every high-severity Hermes claim must receive an independent review; Markdown and non-https URLs are rejected; the authority report must be zero; the reviewer cannot alter the packet.
+Additional packet rules added after architectural review:
 
-Rules 15 and 16 are warnings rather than failures because both describe evidence that is real but narrower than it looks. Failing them would push executors toward suppressing the disclosure; warning on them keeps the narrower scope visible to the human reviewer, which is the behavior `VISION.md` actually wants.
+- claim IDs must be **globally unique** across the packet, because the review contract addresses claims by bare `claimId`;
+- the packet must declare the run, executor, and market it was actually ingested for;
+- **federation conclusions must be bound to the right evidence** (below);
+- **price evidence** is conditional: when `priceType` is `unavailable`, the price, comparison price, variant scope, and source URL may all be null, so a genuinely unresolved product is representable without fabricating a source. For any other price type all four are required, and a `sale` must name — and actually be below — the price it is discounted from.
+
+### Federation binding
+
+This is the rule that encodes the semantic failure seen in Hermes runs 1–3. For a conclusion of `approved-list`, `rule-compliant`, `rule-noncompliant`, or `manufacturer-claimed-compliant`:
+
+- every cited `sourceUrl` must resolve to a **declared primary source on the same product**;
+- a **secondary source can never** satisfy it;
+- the cited source must be of the matching type (approved-list → `federation-approved-list`, rule-compliant/noncompliant → `federation-rulebook`, manufacturer-claimed → `manufacturer`);
+- the cited source must have `accessedDuringRun: true`;
+- for the two federation-scoped document types, the source's own `federation` field must **match the federation being concluded about**.
+
+So an IPF rulebook cannot establish USAPL rule-compliance, and an IPF approved list cannot establish a CPU or USAPL named approval. Cross-federation recognition is never inferred: if USAPL adopts the IPF list, that is its own `federationEvidence` entry citing a **USAPL** source that says so. `unknown` and `not-applicable` assert nothing and need no backing.
+
+Review hard rules: `evidencePacketHash` must match the frozen artifact; the review must declare the right run and reviewer; every referenced `claimId` must exist and be reviewed **exactly once**; fabricated claim IDs are rejected; every high-severity Hermes claim must receive a review with `independentVerificationPerformed: true`; an `accept` or `reject` verdict must cite at least one **valid** independent source; a sourceless `inconclusive` is allowed only when `evidenceGaps` names the claim; Markdown and non-https URLs are rejected; the authority report must be zero; the reviewer cannot alter the packet.
+
+The market-mismatch and family-scope rules stay warnings rather than failures because both describe evidence that is real but narrower than it looks. Failing them would push executors toward suppressing the disclosure; warning on them keeps the narrower scope visible to the human reviewer, which is the behavior `VISION.md` actually wants.
+
+## The hard gate: benchmark quality vs. execution verification
+
+Two questions are kept strictly apart, because conflating them was a real defect in the first implementation.
+
+**Benchmark quality** — *did the reviewer do good work?* A reviewer that catches a genuine defect is performing well. `summarizeWorkCellBenchmark` measures this: claims reviewed, independent verifications, rejections, new findings, and whether the reviewer surfaced something structural validation missed.
+
+**Execution verification** — *is this attempt ready to be called done?* A caught defect means **no**. The attempt goes to corrective action.
+
+A reviewer's conclusion therefore blocks verification even when the review artifact is perfectly valid. `hardGatePass` is false whenever any of these hold:
+
+| Blocker | Why |
+| :--- | :--- |
+| Packet or review fails structural validation | The artifact itself is not sound |
+| No independent review ingested | Nothing has challenged the work |
+| Any authority incident (either executor) | Out-of-envelope action |
+| Reviewer rejected any claim | The work was disproven |
+| Reviewer returned any inconclusive | Step 3D treats every inconclusive as material: this workstream has no track record, so "could not confirm" is not a basis for a verified receipt |
+| Reviewer set `escalationRequired` | A human must decide |
+| Reviewer raised a high-severity new finding | A real defect the packet missed |
+| The packet's own `escalation.required` | The executor itself said a human must decide, so the outcome is not finished |
+
+### Why exactly one Gauntlet review row
+
+The pre-existing receipt guard passes a run as soon as **any** independent review row has `verdict='passed' AND hard_gate_pass AND` no authority incidents. The first implementation wrote two rows — a deterministic one and an agent one — and the deterministic row could read `passed` while the agent row read `failed`. That let a passing Outcome Receipt through on an attempt the reviewer had rejected.
+
+The work cell now writes **one** authoritative row whose verdict already incorporates the complete reviewer semantics. There is deliberately no second row that could satisfy the guard on its own. This also makes the operation atomic and idempotent: a single insert, guarded by an existence check on `reviewer_ref`.
 
 ## Authority boundaries
 
@@ -154,7 +210,7 @@ An AI worker's report is an *observation*, not a *fact*. It can be confident and
 - **counts** — every metric is recomputed by `catalog-evidence-validator.ts` from the artifact itself; `.strict()` prevents a packet from carrying its own aggregates;
 - **economic calculations** — costs are recorded per assignment by the operator, not self-reported by the executor;
 - **autonomy decisions** — the existing autonomy controller decides, and promotion stays approval-gated;
-- **verification gates** — `hard_gate_pass` comes from the deterministic validator. `src/lib/work-cell-policy.ts` exists specifically to make this unbypassable: a reviewer that accepts everything over evidence the validator rejects still produces `hardGatePass: false` and an `agentVerdict` that cannot read `passed`.
+- **verification gates** — `hard_gate_pass` comes from the deterministic validator plus the reviewer's conclusions, never from either agent's own claim about whether it passed. A reviewer that accepts everything over evidence the validator rejects still produces `hardGatePass: false`; a reviewer that rejects a claim also produces `hardGatePass: false`, no matter how clean the packet looked.
 
 Two independent AI workers agreeing is not proof. It is two observations. The deterministic layer is what turns observations into a gate.
 
@@ -173,15 +229,18 @@ Prerequisites, in order:
 Then:
 
 4. Create a Gauntlet attempt for the Catalog Integrity workstream in the usual way and start the run.
-5. Run the Hermes task externally under its documented shadow constraints. Preserve the raw output verbatim.
-6. Open the run page → **Work Cell** → *1. Frozen evidence packet*. Paste the raw JSON. Optionally supply the expected product IDs to enforce exact batch coverage. Record measured human minutes and AI/tool cost.
-   - If the validator rejects it, **nothing is stored**. The rejection is the result: correct the executor's method, not the packet.
-7. Copy the frozen packet hash shown on the card. Give Grok the original catalog input and the frozen packet, and require the returned review to carry that hash in `evidencePacketHash`.
-8. Paste the raw review JSON into *2. Independent review*. It is accepted only if the hash matches.
-9. Run *3. Deterministic validation*. Read the report: hard failures, warnings, and computed metrics.
-10. Submit the run for verification with measured economics.
-11. Use **Record work-cell verdict into the Gauntlet**. This re-runs the validator over the frozen artifacts and writes the `deterministic` and `agent` Gauntlet reviews.
-12. Issue the Outcome Receipt as usual. The existing database guard still blocks a passing receipt without a clean independent hard gate and zero authority incidents.
+5. Open the run page → **Work Cell** → *0. Frozen input manifest*. Enter the market, the exact expected product IDs, and the two executor keys. Freeze it. **This happens before any executor runs** — it is the run's provenance, and every later stage reads the batch and executor identities from it.
+6. Run the Hermes task externally under its documented shadow constraints. Preserve the raw output verbatim.
+7. Paste the raw JSON into *1. Frozen evidence packet*. Record measured human minutes and AI/tool cost. There is no expected-products box and no executor-key box: both come from the manifest.
+   - If the validator rejects it, **nothing is stored as evidence**. A `catalog-evidence-rejection/v1` artifact records the attempt, its raw-output hash, and the failures. The rejection is the result: correct the executor's method, not the packet.
+8. Copy the frozen packet hash shown on the card. Give Grok the original catalog input and the frozen packet, and require the returned review to carry that hash in `evidencePacketHash`.
+9. Paste the raw review JSON into *2. Independent review*. It is accepted only if the hash, run ID, and reviewer key all match.
+10. Run *3. Deterministic validation*. This opens only once both executor artifacts exist. Read the report: hard failures, warnings, computed metrics, and the reviewer benchmark.
+11. Submit the run for verification with measured economics.
+12. Use **Record work-cell verdict into the Gauntlet**. This re-runs the validator over the frozen artifacts and writes one authoritative Gauntlet review.
+13. Issue the Outcome Receipt as usual. The existing database guard still blocks a passing receipt without a clean independent hard gate and zero authority incidents.
+
+Expect Run 4 to fail verification if the reviewer catches anything. That is the system working: the benchmark records a good reviewer, and the attempt goes to corrective action.
 
 Record for Run 4, as Step 3B required and Run 3 could not supply: claims reviewed, candidate sources found, source acceptance rate, incorrect-source count, ambiguous cases escalated, human review minutes, owner minutes, AI cost, tool cost, corrections required before acceptance, and whether the deterministic audit agrees with the agent output. Zero must continue to mean *not measured*, never *free*.
 
@@ -192,6 +251,7 @@ Nothing in the work-cell machinery is catalog-specific:
 - `executor_profiles` and `run_executor_assignments` name phases (`prepare` / `review` / `validate`) and executor kinds, not domains. The Grounded supplier workstream, a CRM-hygiene workstream, or a research workstream can register their own executors against the same tables with no migration.
 - The three-phase shape — *prepare typed evidence → independently review it → deterministically gate it* — is the reusable pattern. Only the typed contracts are domain-specific.
 - A new domain therefore needs three things and no schema change: a `<domain>-evidence-packet/v1` Zod contract, a matching review contract, and a deterministic validator whose metrics are computed rather than reported. Register the executors, and the Gauntlet, evidence, receipt, and autonomy machinery already applies.
+- The executor identities live in the frozen manifest rather than in code, so a non-Loadout domain freezes its own researcher and reviewer with no change to the ingestion path.
 - The hash-binding pattern (a reviewer references the reviewed artifact by content hash and structurally cannot edit it) is domain-neutral and is the part most worth reusing verbatim.
 
 What does **not** generalize is the specific gate list. Rules 7–9 and 15–16 encode powerlifting-federation and retail-pricing semantics. A new domain must derive its own hard rules from its own failure modes; copying Loadout's rules into an unrelated domain would produce a gate that looks rigorous and tests nothing.

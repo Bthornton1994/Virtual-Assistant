@@ -90,8 +90,14 @@ create policy executor_profiles_insert on public.executor_profiles for insert to
 create policy executor_profiles_update on public.executor_profiles for update to authenticated
   using (public.is_ops_manager()) with check (public.is_ops_manager());
 
+-- Executor assignments are internal staffing detail: which agent ran, under what
+-- authority envelope, at what AI and tool cost. VISION and the strategic thesis
+-- both hold that the customer manages outcomes, not the AI workforce, so raw
+-- assignment rows are staff-only at the database boundary rather than merely
+-- hidden by the /ops UI. If customers ever need work-cell status, add a
+-- sanitized customer-safe projection instead of widening this policy.
 create policy run_executor_assignments_select on public.run_executor_assignments for select to authenticated
-  using (organization_id in (select public.my_org_ids()) or public.is_platform_staff());
+  using (public.is_platform_staff());
 create policy run_executor_assignments_insert on public.run_executor_assignments for insert to authenticated
   with check (public.is_platform_staff());
 create policy run_executor_assignments_update on public.run_executor_assignments for update to authenticated
@@ -179,7 +185,13 @@ declare declared_version text;
 begin
   declared_version := new.payload->>'schemaVersion';
   if declared_version is null then return new; end if;
-  if declared_version in ('catalog-evidence-packet/v1', 'catalog-evidence-review/v1') then
+  if declared_version in (
+    'catalog-evidence-input/v1',
+    'catalog-evidence-packet/v1',
+    'catalog-evidence-review/v1',
+    'catalog-evidence-validation/v1',
+    'catalog-evidence-rejection/v1'
+  ) then
     if new.content_hash is null or new.content_hash !~ '^[0-9a-f]{64}$' then
       raise exception 'A % artifact requires a sha256 content hash', declared_version;
     end if;

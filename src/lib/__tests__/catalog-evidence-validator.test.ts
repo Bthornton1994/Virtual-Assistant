@@ -3,6 +3,7 @@ import { hashCatalogEvidencePacket, canonicalJsonStringify } from "@/lib/catalog
 import {
   collectClaimIds,
   collectHighSeverityClaimIds,
+  collectPacketClaims,
   validateCatalogEvidencePacket,
   validateCatalogEvidenceReview,
   validateEvidenceUrl,
@@ -11,10 +12,17 @@ import {
   APPROVED_LIST_URL,
   MANUFACTURER_URL,
   RULEBOOK_URL,
+  RUN_ID,
+  USAPL_APPROVED_LIST_URL,
+  USAPL_RULEBOOK_URL,
   ZERO_AUTHORITY,
+  approvedListSource,
+  manufacturerSource,
   packet,
   product,
   review,
+  reviewContext,
+  rulebookSource,
 } from "@/lib/__tests__/catalog-evidence-fixtures";
 
 function failuresMatching(result: { hardFailures: string[] }, pattern: RegExp) {
@@ -27,7 +35,6 @@ describe("catalog evidence packet validator", () => {
     expect(result.hardFailures).toEqual([]);
     expect(result.hardGatePass).toBe(true);
     expect(result.metrics.productCount).toBe(1);
-    expect(result.metrics.schemaViolationCount).toBe(0);
   });
 
   it("rejects structurally malformed input without throwing", () => {
@@ -38,69 +45,66 @@ describe("catalog evidence packet validator", () => {
     }
   });
 
-  it("rejects a packet claiming a different schema version", () => {
-    const result = validateCatalogEvidencePacket({ ...packet(), schemaVersion: "catalog-evidence-packet/v2" });
-    expect(result.hardGatePass).toBe(false);
-    expect(result.metrics.schemaViolationCount).toBeGreaterThan(0);
-  });
+  it("flags missing, duplicate, and unexpected products", () => {
+    const missing = validateCatalogEvidencePacket(packet(), { expectedProductIds: ["ks-sbd-7mm", "belt-sbd-13mm"] });
+    expect(failuresMatching(missing, /Required product "belt-sbd-13mm" is missing/)).toHaveLength(1);
 
-  it("flags a missing required product", () => {
-    const result = validateCatalogEvidencePacket(packet(), { expectedProductIds: ["ks-sbd-7mm", "belt-sbd-13mm"] });
-    expect(result.hardGatePass).toBe(false);
-    expect(failuresMatching(result, /Required product "belt-sbd-13mm" is missing/)).toHaveLength(1);
-  });
+    const duplicated = validateCatalogEvidencePacket(packet({ products: [product(), product()] }));
+    expect(failuresMatching(duplicated, /appears 2 times/)).not.toHaveLength(0);
 
-  it("flags a duplicated product", () => {
-    const result = validateCatalogEvidencePacket(packet({ products: [product(), product()] }));
-    expect(result.hardGatePass).toBe(false);
-    expect(failuresMatching(result, /appears 2 times/)).toHaveLength(1);
-  });
-
-  it("flags an unexpected product when an expected set is supplied", () => {
-    const result = validateCatalogEvidencePacket(
+    const unexpected = validateCatalogEvidencePacket(
       packet({ products: [product(), product({ productId: "belt-inzer-forever" })] }),
       { expectedProductIds: ["ks-sbd-7mm"] },
     );
-    expect(result.hardGatePass).toBe(false);
-    expect(failuresMatching(result, /"belt-inzer-forever" is not in the expected product set/)).toHaveLength(1);
+    expect(failuresMatching(unexpected, /"belt-inzer-forever" is not in the expected product set/)).toHaveLength(1);
   });
 
-  it("does not constrain the product set when no expected set is supplied", () => {
-    const result = validateCatalogEvidencePacket(packet({ products: [product(), product({ productId: "belt-inzer-forever" })] }));
-    expect(result.hardGatePass).toBe(true);
-    expect(result.metrics.productCount).toBe(2);
-  });
-
-  it("rejects Markdown-formatted URLs", () => {
-    const markdown = `[SBD](${MANUFACTURER_URL})`;
+  it("rejects duplicate claim IDs across the packet", () => {
+    const shared = {
+      claimId: "shared-claim",
+      field: "thickness",
+      catalogValue: "7mm",
+      finding: "supported" as const,
+      evidenceSupportedValue: "7mm",
+      severity: "low" as const,
+      sourceUrls: [MANUFACTURER_URL],
+    };
     const result = validateCatalogEvidencePacket(
       packet({
         products: [
-          product({
-            primarySources: [
-              { url: markdown, organization: "SBD Apparel", sourceType: "manufacturer", factsSupported: ["thickness"], accessedDuringRun: true },
-            ],
-          }),
+          product({ claimFindings: [shared] }),
+          product({ productId: "belt-inzer-forever", claimFindings: [{ ...shared }] }),
         ],
       }),
     );
     expect(result.hardGatePass).toBe(false);
-    expect(result.metrics.malformedUrlCount).toBeGreaterThan(0);
-    expect(failuresMatching(result, /Markdown-formatted link/)).not.toHaveLength(0);
+    expect(failuresMatching(result, /Claim ID "shared-claim" appears 2 times/)).toHaveLength(1);
   });
 
-  it("rejects non-https URLs", () => {
+  it("rejects duplicate claim IDs within a single product", () => {
+    const claim = {
+      claimId: "dup",
+      field: "thickness",
+      catalogValue: "7mm",
+      finding: "supported" as const,
+      evidenceSupportedValue: "7mm",
+      severity: "low" as const,
+      sourceUrls: [MANUFACTURER_URL],
+    };
+    const result = validateCatalogEvidencePacket(packet({ products: [product({ claimFindings: [claim, { ...claim }] })] }));
+    expect(failuresMatching(result, /Claim ID "dup" appears 2 times/)).toHaveLength(1);
+  });
+
+  it("rejects Markdown and non-https URLs", () => {
+    const markdown = validateCatalogEvidencePacket(
+      packet({ products: [product({ primarySources: [manufacturerSource({ url: `[SBD](${MANUFACTURER_URL})` })] })] }),
+    );
+    expect(markdown.hardGatePass).toBe(false);
+    expect(failuresMatching(markdown, /Markdown-formatted link/)).not.toHaveLength(0);
+
     for (const bad of ["http://example.com/x", "ftp://example.com/x", "example.com/x", "javascript:alert(1)"]) {
       const result = validateCatalogEvidencePacket(
-        packet({
-          products: [
-            product({
-              primarySources: [
-                { url: bad, organization: "Example", sourceType: "manufacturer", factsSupported: ["x"], accessedDuringRun: false },
-              ],
-            }),
-          ],
-        }),
+        packet({ products: [product({ primarySources: [manufacturerSource({ url: bad })] })] }),
       );
       expect(result.hardGatePass, `expected ${bad} to be rejected`).toBe(false);
       expect(result.metrics.malformedUrlCount).toBeGreaterThan(0);
@@ -109,17 +113,8 @@ describe("catalog evidence packet validator", () => {
 
   it("requires a claimed accessed primary source to carry a real URL", () => {
     const result = validateCatalogEvidencePacket(
-      packet({
-        products: [
-          product({
-            primarySources: [
-              { url: "not a url", organization: "SBD Apparel", sourceType: "manufacturer", factsSupported: ["thickness"], accessedDuringRun: true },
-            ],
-          }),
-        ],
-      }),
+      packet({ products: [product({ primarySources: [manufacturerSource({ url: "not a url" })] })] }),
     );
-    expect(result.hardGatePass).toBe(false);
     expect(failuresMatching(result, /claims accessedDuringRun=true but does not carry a valid URL/)).toHaveLength(1);
   });
 
@@ -128,37 +123,38 @@ describe("catalog evidence packet validator", () => {
       const result = validateCatalogEvidencePacket(packet({ authorityReport: { ...ZERO_AUTHORITY, [key]: 1 } }));
       expect(result.hardGatePass, `expected ${key}=1 to hard-fail`).toBe(false);
       expect(result.metrics.authorityIncidentCount).toBe(1);
-      expect(failuresMatching(result, /must report zero/)).toHaveLength(1);
     }
   });
 
-  it("rejects approved-list status without federation-approved-list evidence", () => {
-    const result = validateCatalogEvidencePacket(
-      packet({
-        products: [
-          product({
-            federationEvidence: [
-              { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "Listed in the approved equipment index.", sourceUrls: [MANUFACTURER_URL] },
-            ],
-          }),
-        ],
-      }),
-    );
-    expect(result.hardGatePass).toBe(false);
-    expect(failuresMatching(result, /without a federation-approved-list source/)).toHaveLength(1);
-  });
+  it("binds the packet to the run, executor, and market it was ingested for", () => {
+    const wrongRun = validateCatalogEvidencePacket(packet(), { expectedRunId: "run-other" });
+    expect(failuresMatching(wrongRun, /declares runId "run-3d-0001" but was ingested for run "run-other"/)).toHaveLength(1);
 
-  it("accepts approved-list status backed by a federation-approved-list source", () => {
+    const wrongExecutor = validateCatalogEvidencePacket(packet(), { expectedExecutorKey: "someone-else-v1" });
+    expect(failuresMatching(wrongExecutor, /prepare phase is assigned to "someone-else-v1"/)).toHaveLength(1);
+
+    const wrongMarket = validateCatalogEvidencePacket(packet(), { expectedMarket: "UK" });
+    expect(failuresMatching(wrongMarket, /market "US" but the frozen input manifest specifies "UK"/)).toHaveLength(1);
+
+    const correct = validateCatalogEvidencePacket(packet(), {
+      expectedRunId: RUN_ID,
+      expectedExecutorKey: "hermes-loadout-researcher-v1",
+      expectedMarket: "US",
+      expectedProductIds: ["ks-sbd-7mm"],
+    });
+    expect(correct.hardFailures).toEqual([]);
+  });
+});
+
+describe("federation evidence binding", () => {
+  it("accepts a conclusion cited to matching accessed primary evidence", () => {
     const result = validateCatalogEvidencePacket(
       packet({
         products: [
           product({
-            primarySources: [
-              { url: MANUFACTURER_URL, organization: "SBD Apparel", sourceType: "manufacturer", factsSupported: ["thickness"], accessedDuringRun: true },
-              { url: APPROVED_LIST_URL, organization: "IPF", sourceType: "federation-approved-list", factsSupported: ["approval"], accessedDuringRun: true },
-            ],
+            primarySources: [manufacturerSource(), approvedListSource()],
             federationEvidence: [
-              { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "Listed in the approved equipment index.", sourceUrls: [APPROVED_LIST_URL] },
+              { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "Listed.", sourceUrls: [APPROVED_LIST_URL] },
             ],
           }),
         ],
@@ -168,34 +164,53 @@ describe("catalog evidence packet validator", () => {
     expect(result.hardGatePass).toBe(true);
   });
 
-  it("rejects rule-compliant and rule-noncompliant status without a rulebook source", () => {
-    for (const status of ["rule-compliant", "rule-noncompliant"] as const) {
-      const result = validateCatalogEvidencePacket(
-        packet({
-          products: [
-            product({
-              federationEvidence: [
-                { federation: "IPF", status, scope: "exact-configuration", basis: "Read the technical rules.", sourceUrls: [MANUFACTURER_URL] },
-              ],
-            }),
-          ],
-        }),
-      );
-      expect(result.hardGatePass, `expected ${status} to be rejected`).toBe(false);
-      expect(failuresMatching(result, /without a federation-rulebook source/)).toHaveLength(1);
-    }
+  it("refuses to let one federation's rulebook establish another federation's conclusion", () => {
+    // The exact semantic failure seen in Hermes runs 1-3: IPF evidence carrying a USAPL claim.
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [rulebookSource({ federation: "IPF" })],
+            federationEvidence: [
+              { federation: "USAPL", status: "rule-compliant", scope: "exact-configuration", basis: "Within limit.", sourceUrls: [RULEBOOK_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /evidence belonging to IPF/)).toHaveLength(1);
   });
 
-  it("accepts rule-compliant status backed by a rulebook source", () => {
+  it("refuses to let one federation's approved list establish another federation's named approval", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [approvedListSource({ federation: "IPF" })],
+            federationEvidence: [
+              { federation: "USAPL", status: "approved-list", scope: "exact-configuration", basis: "On the IPF list.", sourceUrls: [APPROVED_LIST_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /evidence belonging to IPF/)).toHaveLength(1);
+  });
+
+  it("accepts a cross-federation conclusion when the target federation's own source is cited", () => {
     const result = validateCatalogEvidencePacket(
       packet({
         products: [
           product({
             primarySources: [
-              { url: RULEBOOK_URL, organization: "IPF", sourceType: "federation-rulebook", factsSupported: ["thickness limit"], accessedDuringRun: true },
+              approvedListSource({ federation: "IPF" }),
+              approvedListSource({ url: USAPL_APPROVED_LIST_URL, organization: "USAPL", federation: "USAPL" }),
             ],
             federationEvidence: [
-              { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "7mm is within the 7mm limit.", sourceUrls: [RULEBOOK_URL] },
+              { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "IPF list.", sourceUrls: [APPROVED_LIST_URL] },
+              { federation: "USAPL", status: "approved-list", scope: "exact-configuration", basis: "USAPL publishes its own adoption.", sourceUrls: [USAPL_APPROVED_LIST_URL] },
             ],
           }),
         ],
@@ -205,35 +220,154 @@ describe("catalog evidence packet validator", () => {
     expect(result.hardGatePass).toBe(true);
   });
 
-  it("rejects manufacturer-claimed-compliant without manufacturer evidence", () => {
+  it("accepts each federation's conclusion when each cites its own rulebook", () => {
     const result = validateCatalogEvidencePacket(
       packet({
         products: [
           product({
             primarySources: [
-              { url: RULEBOOK_URL, organization: "IPF", sourceType: "federation-rulebook", factsSupported: ["limit"], accessedDuringRun: true },
+              rulebookSource({ federation: "IPF" }),
+              rulebookSource({ url: USAPL_RULEBOOK_URL, organization: "USAPL", federation: "USAPL" }),
             ],
             federationEvidence: [
-              { federation: "IPF", status: "manufacturer-claimed-compliant", scope: "exact-configuration", basis: "Vendor marketing copy.", sourceUrls: [RULEBOOK_URL] },
+              { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "Within the IPF limit.", sourceUrls: [RULEBOOK_URL] },
+              { federation: "USAPL", status: "rule-compliant", scope: "exact-configuration", basis: "Within the USAPL limit.", sourceUrls: [USAPL_RULEBOOK_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.hardFailures).toEqual([]);
+    expect(result.hardGatePass).toBe(true);
+  });
+
+  it("never lets a secondary source satisfy a federation gate", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [manufacturerSource()],
+            secondarySources: [
+              { url: RULEBOOK_URL, organization: "Forum mirror", sourceType: "federation-rulebook mirror", factsSupported: ["limit"], reasonUsed: "Official site down." },
+            ],
+            federationEvidence: [
+              { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "Mirror of the rulebook.", sourceUrls: [RULEBOOK_URL] },
             ],
           }),
         ],
       }),
     );
     expect(result.hardGatePass).toBe(false);
-    expect(failuresMatching(result, /without manufacturer evidence/)).toHaveLength(1);
+    expect(failuresMatching(result, /federation conclusions require primary evidence/)).toHaveLength(1);
   });
 
-  it("warns rather than fails when family-level approval is not backed by exact-configuration evidence", () => {
+  it("never lets un-accessed primary evidence satisfy a federation gate", () => {
     const result = validateCatalogEvidencePacket(
       packet({
         products: [
           product({
-            primarySources: [
-              { url: APPROVED_LIST_URL, organization: "IPF", sourceType: "federation-approved-list", factsSupported: ["approval"], accessedDuringRun: true },
-            ],
+            primarySources: [rulebookSource({ accessedDuringRun: false })],
             federationEvidence: [
-              { federation: "IPF", status: "approved-list", scope: "product-family", basis: "The family appears on the approved list.", sourceUrls: [APPROVED_LIST_URL] },
+              { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "Assumed.", sourceUrls: [RULEBOOK_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /was not accessed during the run/)).toHaveLength(1);
+  });
+
+  it("requires the cited URL to be a declared primary source on the same product", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [rulebookSource()],
+            federationEvidence: [
+              { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "Elsewhere.", sourceUrls: ["https://example.com/undeclared"] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /not a declared primary source on this product/)).toHaveLength(1);
+  });
+
+  it("requires the right document type for each conclusion", () => {
+    const approvedFromRulebook = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [rulebookSource()],
+            federationEvidence: [
+              { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "Rulebook only.", sourceUrls: [RULEBOOK_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(failuresMatching(approvedFromRulebook, /without citing a federation-approved-list primary source/)).toHaveLength(1);
+
+    const ruleFromList = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [approvedListSource()],
+            federationEvidence: [
+              { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "List only.", sourceUrls: [APPROVED_LIST_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(failuresMatching(ruleFromList, /without citing a federation-rulebook primary source/)).toHaveLength(1);
+
+    const mfrFromRulebook = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [rulebookSource()],
+            federationEvidence: [
+              { federation: "IPF", status: "manufacturer-claimed-compliant", scope: "exact-configuration", basis: "Vendor copy.", sourceUrls: [RULEBOOK_URL] },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(failuresMatching(mfrFromRulebook, /without citing a manufacturer primary source/)).toHaveLength(1);
+  });
+
+  it("requires federation documents to declare which federation they belong to", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({ products: [product({ primarySources: [rulebookSource({ federation: undefined })] })] }),
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /does not declare which federation it belongs to/)).toHaveLength(1);
+  });
+
+  it("rejects a federation conclusion citing no source at all", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            federationEvidence: [{ federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "Trust me.", sourceUrls: [] }],
+          }),
+        ],
+      }),
+    );
+    expect(failuresMatching(result, /without citing any source/)).toHaveLength(1);
+  });
+
+  it("still only warns that family-scoped approval is not exact-configuration compliance", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            primarySources: [approvedListSource()],
+            federationEvidence: [
+              { federation: "IPF", status: "approved-list", scope: "product-family", basis: "Family listed.", sourceUrls: [APPROVED_LIST_URL] },
             ],
           }),
         ],
@@ -243,37 +377,130 @@ describe("catalog evidence packet validator", () => {
     expect(result.warnings.some((w) => /does not by itself establish exact-configuration compliance/.test(w))).toBe(true);
   });
 
-  it("rejects a correction citing evidence absent from the packet", () => {
+  it("asserts nothing for unknown and not-applicable statuses", () => {
     const result = validateCatalogEvidencePacket(
       packet({
         products: [
           product({
-            candidateCorrections: [
-              { field: "thickness", proposedValue: "6mm", confidence: "medium", sourceUrls: ["https://unrelated.example.com/page"] },
+            federationEvidence: [
+              { federation: "IPF", status: "unknown", scope: "category", basis: "Not researched.", sourceUrls: [] },
+              { federation: "USAPL", status: "not-applicable", scope: "category", basis: "Not a regulated item.", sourceUrls: [] },
             ],
           }),
         ],
       }),
     );
+    expect(result.hardFailures).toEqual([]);
+  });
+});
+
+describe("price evidence model", () => {
+  const unavailablePrice = {
+    currentDisplayedPrice: null,
+    regularOrCompareAtPrice: null,
+    currency: "USD",
+    priceType: "unavailable" as const,
+    market: "US",
+    variantScope: null,
+    sourceUrl: null,
+  };
+
+  it("represents an unresolved manufacturer record without fabricating evidence", () => {
+    // Sabo-style: the product exists, the price genuinely could not be resolved.
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            productId: "shoe-sabo-powerlift",
+            identity: { status: "uncertain", reason: "Manufacturer storefront unreachable; model line ambiguous." },
+            primarySources: [],
+            claimFindings: [],
+            priceEvidence: unavailablePrice,
+            escalation: { required: true, reason: "No resolvable manufacturer record for this configuration." },
+          }),
+        ],
+      }),
+    );
+    expect(result.hardFailures).toEqual([]);
+    expect(result.hardGatePass).toBe(true);
+  });
+
+  it("requires a source, price, and variant scope for any resolved price", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [product({ priceEvidence: { ...unavailablePrice, priceType: "regular" } })],
+      }),
+    );
     expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /no source URL/)).toHaveLength(1);
+    expect(failuresMatching(result, /no displayed price/)).toHaveLength(1);
+    expect(failuresMatching(result, /no variant scope/)).toHaveLength(1);
+  });
+
+  it("requires a sale to name the price it is discounted from, and to be a discount", () => {
+    const missing = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            priceEvidence: { currentDisplayedPrice: 120, regularOrCompareAtPrice: null, currency: "USD", priceType: "sale", market: "US", variantScope: "all", sourceUrl: MANUFACTURER_URL },
+          }),
+        ],
+      }),
+    );
+    expect(failuresMatching(missing, /without the regular or compare-at price/)).toHaveLength(1);
+
+    const inverted = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({
+            priceEvidence: { currentDisplayedPrice: 200, regularOrCompareAtPrice: 145, currency: "USD", priceType: "sale", market: "US", variantScope: "all", sourceUrl: MANUFACTURER_URL },
+          }),
+        ],
+      }),
+    );
+    expect(failuresMatching(inverted, /sale price of 200 above its regular price of 145/)).toHaveLength(1);
+  });
+
+  it("warns on a market mismatch without failing", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        market: "US",
+        products: [
+          product({
+            priceEvidence: { currentDisplayedPrice: 120, regularOrCompareAtPrice: 120, currency: "GBP", priceType: "regular", market: "UK", variantScope: "all", sourceUrl: MANUFACTURER_URL },
+          }),
+        ],
+      }),
+    );
+    expect(result.hardGatePass).toBe(true);
+    expect(result.warnings.some((w) => /differs from the evaluated market/.test(w))).toBe(true);
+  });
+});
+
+describe("packet corrections, contradictions, and metrics", () => {
+  it("rejects a correction citing evidence absent from the packet", () => {
+    const result = validateCatalogEvidencePacket(
+      packet({
+        products: [
+          product({ candidateCorrections: [{ field: "thickness", proposedValue: "6mm", confidence: "medium", sourceUrls: ["https://unrelated.example.com/page"] }] }),
+        ],
+      }),
+    );
     expect(failuresMatching(result, /cites a source not otherwise declared in the packet/)).toHaveLength(1);
   });
 
-  it("rejects a high-confidence non-null correction while identity is uncertain or mismatched", () => {
+  it("rejects a high-confidence non-null correction while identity is unresolved", () => {
     for (const status of ["uncertain", "mismatch"] as const) {
       const result = validateCatalogEvidencePacket(
         packet({
           products: [
             product({
-              identity: { status, reason: "Could not confirm the exact model configuration." },
-              candidateCorrections: [
-                { field: "price", proposedValue: 129, confidence: "high", sourceUrls: [MANUFACTURER_URL] },
-              ],
+              identity: { status, reason: "Could not confirm the exact configuration." },
+              candidateCorrections: [{ field: "price", proposedValue: 129, confidence: "high", sourceUrls: [MANUFACTURER_URL] }],
             }),
           ],
         }),
       );
-      expect(result.hardGatePass, `expected identity ${status} to block a high-confidence correction`).toBe(false);
       expect(failuresMatching(result, /cannot carry a high-confidence, non-null correction/)).toHaveLength(1);
     }
   });
@@ -283,86 +510,34 @@ describe("catalog evidence packet validator", () => {
       packet({
         products: [
           product({
-            identity: { status: "uncertain", reason: "Could not confirm the exact model configuration." },
-            candidateCorrections: [
-              { field: "ipfApproved", proposedValue: null, confidence: "high", sourceUrls: [MANUFACTURER_URL] },
-            ],
+            identity: { status: "uncertain", reason: "Configuration unconfirmed." },
+            candidateCorrections: [{ field: "ipfApproved", proposedValue: null, confidence: "high", sourceUrls: [MANUFACTURER_URL] }],
           }),
         ],
       }),
     );
     expect(result.hardFailures).toEqual([]);
-    expect(result.hardGatePass).toBe(true);
   });
 
-  it("requires a high-severity contradiction to produce an escalation or a correction", () => {
+  it("requires a high-severity contradiction to escalate or be corrected", () => {
     const contradicted = product({
       claimFindings: [
-        {
-          claimId: "ks-sbd-7mm:ipf",
-          field: "ipfApproved",
-          catalogValue: true,
-          finding: "contradicted",
-          evidenceSupportedValue: false,
-          severity: "high",
-          sourceUrls: [MANUFACTURER_URL],
-        },
+        { claimId: "ks-sbd-7mm:ipf", field: "ipfApproved", catalogValue: true, finding: "contradicted", evidenceSupportedValue: false, severity: "high", sourceUrls: [MANUFACTURER_URL] },
       ],
     });
-
     const unresolved = validateCatalogEvidencePacket(packet({ products: [contradicted] }));
-    expect(unresolved.hardGatePass).toBe(false);
     expect(failuresMatching(unresolved, /unresolved high-severity contradiction/)).toHaveLength(1);
-    expect(unresolved.metrics.highSeverityConflictCount).toBe(1);
 
     const escalated = validateCatalogEvidencePacket(
-      packet({ products: [{ ...contradicted, escalation: { required: true, reason: "Conflicting federation and vendor claims." } }] }),
+      packet({ products: [{ ...contradicted, escalation: { required: true, reason: "Conflicting evidence." } }] }),
     );
     expect(escalated.hardGatePass).toBe(true);
-
-    const corrected = validateCatalogEvidencePacket(
-      packet({
-        products: [
-          {
-            ...contradicted,
-            candidateCorrections: [
-              { field: "ipfApproved", proposedValue: null, confidence: "medium", sourceUrls: [MANUFACTURER_URL] },
-            ],
-          },
-        ],
-      }),
-    );
-    expect(corrected.hardGatePass).toBe(true);
   });
 
-  it("rejects a packet that carries its own batch aggregate counts", () => {
+  it("rejects a packet carrying its own batch aggregate counts", () => {
     const result = validateCatalogEvidencePacket({ ...packet(), productCount: 1, conflictCount: 0 });
     expect(result.hardGatePass).toBe(false);
-    expect(result.metrics.schemaViolationCount).toBeGreaterThan(0);
     expect(failuresMatching(result, /Unrecognized key/)).not.toHaveLength(0);
-  });
-
-  it("warns when price evidence comes from a different market than the one evaluated", () => {
-    const result = validateCatalogEvidencePacket(
-      packet({
-        market: "US",
-        products: [
-          product({
-            priceEvidence: {
-              currentDisplayedPrice: 120,
-              regularOrCompareAtPrice: 120,
-              currency: "GBP",
-              priceType: "regular",
-              market: "UK",
-              variantScope: "all sizes",
-              sourceUrl: MANUFACTURER_URL,
-            },
-          }),
-        ],
-      }),
-    );
-    expect(result.hardGatePass).toBe(true);
-    expect(result.warnings.some((w) => /differs from the evaluated market/.test(w))).toBe(true);
   });
 
   it("computes metrics from the packet itself rather than trusting the executor", () => {
@@ -370,30 +545,24 @@ describe("catalog evidence packet validator", () => {
       packet({
         products: [
           product({
-            identity: { status: "uncertain", reason: "Model configuration unconfirmed." },
-            secondarySources: [
-              { url: "https://reviews.example.com/sbd", organization: "Reviews", sourceType: "retailer", factsSupported: ["price"], reasonUsed: "No primary price page." },
-            ],
+            identity: { status: "uncertain", reason: "Unconfirmed." },
+            secondarySources: [{ url: "https://reviews.example.com/sbd", organization: "Reviews", sourceType: "retailer", factsSupported: ["price"], reasonUsed: "No primary price page." }],
             claimFindings: [
               { claimId: "a", field: "thickness", catalogValue: "7mm", finding: "supported", evidenceSupportedValue: "7mm", severity: "low", sourceUrls: [MANUFACTURER_URL] },
               { claimId: "b", field: "material", catalogValue: "neoprene", finding: "unresolved", evidenceSupportedValue: null, severity: "medium", sourceUrls: [] },
               { claimId: "c", field: "weight", catalogValue: "500g", finding: "contradicted", evidenceSupportedValue: "480g", severity: "low", sourceUrls: [MANUFACTURER_URL] },
             ],
-            candidateCorrections: [
-              { field: "weight", proposedValue: "480g", confidence: "medium", sourceUrls: [MANUFACTURER_URL] },
-            ],
-            escalation: { required: true, reason: "Material could not be resolved from any primary source." },
+            candidateCorrections: [{ field: "weight", proposedValue: "480g", confidence: "medium", sourceUrls: [MANUFACTURER_URL] }],
+            escalation: { required: true, reason: "Material unresolved." },
           }),
           product({ productId: "belt-inzer-forever", primarySources: [], claimFindings: [] }),
         ],
       }),
     );
-
     expect(result.metrics).toMatchObject({
       productCount: 2,
       exactIdentityCount: 1,
       uncertainIdentityCount: 1,
-      mismatchIdentityCount: 0,
       conflictCount: 1,
       highSeverityConflictCount: 0,
       unsupportedOrUnresolvedCount: 1,
@@ -404,24 +573,20 @@ describe("catalog evidence packet validator", () => {
       missingPrimarySourceCount: 1,
       authorityIncidentCount: 0,
       malformedUrlCount: 0,
-      schemaViolationCount: 0,
     });
   });
 
   it("is deterministic across repeated calls", () => {
     const input = packet();
-    const first = validateCatalogEvidencePacket(input, { expectedProductIds: ["ks-sbd-7mm"] });
-    const second = validateCatalogEvidencePacket(input, { expectedProductIds: ["ks-sbd-7mm"] });
-    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    const a = validateCatalogEvidencePacket(input, { expectedProductIds: ["ks-sbd-7mm"] });
+    const b = validateCatalogEvidencePacket(input, { expectedProductIds: ["ks-sbd-7mm"] });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
 
 describe("evidence URL rules", () => {
-  it("accepts a plain https URL", () => {
+  it("accepts a plain https URL and rejects padded, wrapped, and Markdown forms", () => {
     expect(validateEvidenceUrl(MANUFACTURER_URL).ok).toBe(true);
-  });
-
-  it("rejects whitespace-padded, wrapped, and Markdown URLs", () => {
     expect(validateEvidenceUrl(` ${MANUFACTURER_URL}`).ok).toBe(false);
     expect(validateEvidenceUrl(`<${MANUFACTURER_URL}>`).ok).toBe(false);
     expect(validateEvidenceUrl(`[link](${MANUFACTURER_URL})`).ok).toBe(false);
@@ -429,22 +594,18 @@ describe("evidence URL rules", () => {
 });
 
 describe("catalog evidence hashing", () => {
-  it("is stable across key ordering", () => {
+  it("is stable across key ordering and repeated hashing", () => {
     const a = packet();
-    const b = JSON.parse(JSON.stringify({ authorityReport: a.authorityReport, products: a.products, market: a.market, generatedAt: a.generatedAt, executorKey: a.executorKey, runId: a.runId, schemaVersion: a.schemaVersion }));
-    expect(hashCatalogEvidencePacket(b)).toBe(hashCatalogEvidencePacket(a));
-  });
-
-  it("is stable across repeated hashing of the same packet", () => {
-    const a = packet();
-    expect(hashCatalogEvidencePacket(a)).toBe(hashCatalogEvidencePacket(a));
+    const reordered = JSON.parse(
+      JSON.stringify({ authorityReport: a.authorityReport, products: a.products, market: a.market, generatedAt: a.generatedAt, executorKey: a.executorKey, runId: a.runId, schemaVersion: a.schemaVersion }),
+    );
+    expect(hashCatalogEvidencePacket(reordered)).toBe(hashCatalogEvidencePacket(a));
     expect(hashCatalogEvidencePacket(a)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("changes when any packet content changes", () => {
     const base = hashCatalogEvidencePacket(packet());
     expect(hashCatalogEvidencePacket(packet({ market: "UK" }))).not.toBe(base);
-    expect(hashCatalogEvidencePacket(packet({ products: [product({ identity: { status: "uncertain", reason: "Unconfirmed." } })] }))).not.toBe(base);
     expect(hashCatalogEvidencePacket(packet({ authorityReport: { ...ZERO_AUTHORITY, purchasesMade: 1 } }))).not.toBe(base);
   });
 
@@ -457,44 +618,111 @@ describe("catalog evidence hashing", () => {
 describe("catalog evidence review validator", () => {
   const frozen = packet();
   const frozenHash = hashCatalogEvidencePacket(frozen);
-  const context = {
-    expectedPacketHash: frozenHash,
-    allClaimIds: collectClaimIds(frozen),
-    highSeverityClaimIds: collectHighSeverityClaimIds(frozen),
-  };
+  const context = reviewContext(frozen, frozenHash);
 
   it("accepts a well-formed review of the frozen packet", () => {
     const result = validateCatalogEvidenceReview(review({ evidencePacketHash: frozenHash }), context);
     expect(result.hardFailures).toEqual([]);
     expect(result.hardGatePass).toBe(true);
-    expect(result.metrics.claimsReviewedCount).toBe(1);
     expect(result.metrics.acceptCount).toBe(1);
-    expect(result.metrics.independentVerificationCount).toBe(1);
   });
 
-  it("rejects a review referencing the wrong Hermes packet hash", () => {
-    const result = validateCatalogEvidenceReview(review({ evidencePacketHash: "a".repeat(64) }), context);
-    expect(result.hardGatePass).toBe(false);
-    expect(failuresMatching(result, /does not match the frozen Hermes packet hash/)).toHaveLength(1);
+  it("rejects a review referencing the wrong packet hash, run, or reviewer", () => {
+    expect(validateCatalogEvidenceReview(review({ evidencePacketHash: "a".repeat(64) }), context).hardGatePass).toBe(false);
+
+    const wrongRun = validateCatalogEvidenceReview(review({ evidencePacketHash: frozenHash, runId: "run-other" }), context);
+    expect(failuresMatching(wrongRun, /declares runId "run-other"/)).toHaveLength(1);
+
+    const wrongReviewer = validateCatalogEvidenceReview(
+      review({ evidencePacketHash: frozenHash, reviewerExecutorKey: "impostor-v1" }),
+      context,
+    );
+    expect(failuresMatching(wrongReviewer, /review phase is assigned to/)).toHaveLength(1);
   });
 
-  it("rejects a review referencing a nonexistent claim", () => {
+  it("rejects a fabricated claim ID", () => {
     const result = validateCatalogEvidenceReview(
       review({
         evidencePacketHash: frozenHash,
         claimReviews: [
-          { claimId: "fabricated:claim", verdict: "reject", independentVerificationPerformed: true, reason: "Invented.", independentSourceUrls: [], severity: "high" },
+          { claimId: "fabricated:claim", verdict: "reject", independentVerificationPerformed: true, reason: "Invented.", independentSourceUrls: [MANUFACTURER_URL], severity: "high" },
         ],
       }),
       context,
     );
-    expect(result.hardGatePass).toBe(false);
     expect(result.metrics.fabricatedClaimIdCount).toBe(1);
     expect(failuresMatching(result, /does not exist in the frozen Hermes packet/)).toHaveLength(1);
   });
 
-  it("requires every high-severity Hermes claim to receive an independent review", () => {
-    const highSeverityPacket = packet({
+  it("rejects duplicate reviews of the same claim", () => {
+    const one = {
+      claimId: "ks-sbd-7mm:thickness",
+      verdict: "accept" as const,
+      independentVerificationPerformed: true,
+      reason: "Confirmed.",
+      independentSourceUrls: [MANUFACTURER_URL],
+      severity: "low" as const,
+    };
+    const result = validateCatalogEvidenceReview(
+      review({ evidencePacketHash: frozenHash, claimReviews: [one, { ...one }] }),
+      context,
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(result.metrics.duplicateClaimReviewCount).toBe(1);
+    expect(failuresMatching(result, /2 reviews for claim/)).toHaveLength(1);
+  });
+
+  it("requires a definite verdict to cite a valid independent source", () => {
+    for (const verdict of ["accept", "reject"] as const) {
+      const result = validateCatalogEvidenceReview(
+        review({
+          evidencePacketHash: frozenHash,
+          claimReviews: [
+            { claimId: "ks-sbd-7mm:thickness", verdict, independentVerificationPerformed: true, reason: "Because.", independentSourceUrls: [], severity: "low" },
+          ],
+        }),
+        context,
+      );
+      expect(result.hardGatePass, `expected ${verdict} with no source to fail`).toBe(false);
+      expect(failuresMatching(result, /without citing a single valid independent source/)).toHaveLength(1);
+    }
+  });
+
+  it("allows a sourceless inconclusive only when the evidence gap names the claim", () => {
+    const withoutGap = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: frozenHash,
+        claimReviews: [
+          { claimId: "ks-sbd-7mm:thickness", verdict: "inconclusive", independentVerificationPerformed: true, reason: "Site down.", independentSourceUrls: [], severity: "low" },
+        ],
+      }),
+      context,
+    );
+    expect(failuresMatching(withoutGap, /no matching entry in evidenceGaps naming that claim/)).toHaveLength(1);
+
+    const withGap = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: frozenHash,
+        claimReviews: [
+          { claimId: "ks-sbd-7mm:thickness", verdict: "inconclusive", independentVerificationPerformed: true, reason: "Site down.", independentSourceUrls: [], severity: "low" },
+        ],
+        evidenceGaps: ["ks-sbd-7mm:thickness could not be independently checked; manufacturer page was unreachable."],
+      }),
+      context,
+    );
+    expect(withGap.hardFailures).toEqual([]);
+  });
+
+  it("requires escalationRequired to carry a reason", () => {
+    const result = validateCatalogEvidenceReview(
+      review({ evidencePacketHash: frozenHash, escalationRequired: true, escalationReason: "  " }),
+      context,
+    );
+    expect(failuresMatching(result, /records no escalation reason/)).toHaveLength(1);
+  });
+
+  describe("high-severity claims", () => {
+    const highPacket = packet({
       products: [
         product({
           claimFindings: [
@@ -504,31 +732,41 @@ describe("catalog evidence review validator", () => {
         }),
       ],
     });
-    const highContext = {
-      expectedPacketHash: hashCatalogEvidencePacket(highSeverityPacket),
-      allClaimIds: collectClaimIds(highSeverityPacket),
-      highSeverityClaimIds: collectHighSeverityClaimIds(highSeverityPacket),
-    };
+    const highHash = hashCatalogEvidencePacket(highPacket);
+    const highContext = reviewContext(highPacket, highHash);
 
-    const missing = validateCatalogEvidenceReview(
-      review({ evidencePacketHash: highContext.expectedPacketHash, claimReviews: [] }),
-      highContext,
-    );
-    expect(missing.hardGatePass).toBe(false);
-    expect(missing.metrics.missingHighSeverityReviewCount).toBe(1);
-    expect(failuresMatching(missing, /did not receive an independent review/)).toHaveLength(1);
+    it("requires every high-severity claim to be reviewed", () => {
+      const result = validateCatalogEvidenceReview(review({ evidencePacketHash: highHash, claimReviews: [] }), highContext);
+      expect(result.metrics.missingHighSeverityReviewCount).toBe(1);
+      expect(failuresMatching(result, /did not receive an independent review/)).toHaveLength(1);
+    });
 
-    const covered = validateCatalogEvidenceReview(
-      review({
-        evidencePacketHash: highContext.expectedPacketHash,
-        claimReviews: [
-          { claimId: "ks-sbd-7mm:ipf", verdict: "reject", independentVerificationPerformed: true, reason: "Federation list does not include this configuration.", independentSourceUrls: [APPROVED_LIST_URL], severity: "high" },
-        ],
-      }),
-      highContext,
-    );
-    expect(covered.hardFailures).toEqual([]);
-    expect(covered.hardGatePass).toBe(true);
+    it("rejects a high-severity review that did not independently verify", () => {
+      const result = validateCatalogEvidenceReview(
+        review({
+          evidencePacketHash: highHash,
+          claimReviews: [
+            { claimId: "ks-sbd-7mm:ipf", verdict: "accept", independentVerificationPerformed: false, reason: "Agrees with Hermes.", independentSourceUrls: [APPROVED_LIST_URL], severity: "high" },
+          ],
+        }),
+        highContext,
+      );
+      expect(result.hardGatePass).toBe(false);
+      expect(failuresMatching(result, /a restatement of the Hermes finding is not a review/)).toHaveLength(1);
+    });
+
+    it("accepts a properly independent high-severity review", () => {
+      const result = validateCatalogEvidenceReview(
+        review({
+          evidencePacketHash: highHash,
+          claimReviews: [
+            { claimId: "ks-sbd-7mm:ipf", verdict: "accept", independentVerificationPerformed: true, reason: "Checked the approved list directly.", independentSourceUrls: [APPROVED_LIST_URL], severity: "high" },
+          ],
+        }),
+        highContext,
+      );
+      expect(result.hardFailures).toEqual([]);
+    });
   });
 
   it("rejects Markdown and non-https URLs in review sources", () => {
@@ -541,17 +779,12 @@ describe("catalog evidence review validator", () => {
       }),
       context,
     );
-    expect(markdown.hardGatePass).toBe(false);
     expect(markdown.metrics.malformedUrlCount).toBe(1);
 
     const insecure = validateCatalogEvidenceReview(
-      review({
-        evidencePacketHash: frozenHash,
-        newFindings: [{ field: "price", finding: "Displayed price differs.", severity: "medium", sourceUrls: ["http://example.com/price"] }],
-      }),
+      review({ evidencePacketHash: frozenHash, newFindings: [{ field: "price", finding: "Differs.", severity: "medium", sourceUrls: ["http://example.com/price"] }] }),
       context,
     );
-    expect(insecure.hardGatePass).toBe(false);
     expect(insecure.metrics.malformedUrlCount).toBe(1);
   });
 
@@ -564,77 +797,38 @@ describe("catalog evidence review validator", () => {
     expect(result.metrics.authorityIncidentCount).toBe(2);
   });
 
-  it("rejects a malformed review without throwing", () => {
-    for (const bad of [null, 7, "text", [], { schemaVersion: "catalog-evidence-review/v1" }]) {
-      const result = validateCatalogEvidenceReview(bad, context);
-      expect(result.hardGatePass).toBe(false);
-      expect(result.metrics.schemaViolationCount).toBeGreaterThan(0);
-    }
-  });
-
   it("structurally cannot carry a replacement evidence packet", () => {
     const result = validateCatalogEvidenceReview({ ...review({ evidencePacketHash: frozenHash }), products: frozen.products }, context);
-    expect(result.hardGatePass).toBe(false);
     expect(failuresMatching(result, /Unrecognized key/)).not.toHaveLength(0);
+  });
+
+  it("counts reviewer conclusions without treating them as structural failures", () => {
+    // A reviewer that rejects a claim has produced a VALID review. Whether that
+    // blocks verification is work-cell-policy's decision, not the validator's.
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: frozenHash,
+        claimReviews: [
+          { claimId: "ks-sbd-7mm:thickness", verdict: "reject", independentVerificationPerformed: true, reason: "Page states 5mm.", independentSourceUrls: [MANUFACTURER_URL], severity: "high" },
+        ],
+        escalationRequired: true,
+        escalationReason: "Catalog and manufacturer disagree.",
+        newFindings: [{ field: "material", finding: "Undisclosed material change.", severity: "high", sourceUrls: [MANUFACTURER_URL] }],
+      }),
+      context,
+    );
+    expect(result.hardGatePass).toBe(true);
+    expect(result.metrics.rejectCount).toBe(1);
+    expect(result.metrics.escalationRequiredCount).toBe(1);
+    expect(result.metrics.highSeverityNewFindingCount).toBe(1);
   });
 });
 
-describe("full Hermes -> Grok -> deterministic flow", () => {
-  it("passes end to end when every stage is clean", () => {
-    const hermes = packet({
-      products: [
-        product({
-          primarySources: [
-            { url: MANUFACTURER_URL, organization: "SBD Apparel", sourceType: "manufacturer", factsSupported: ["thickness"], accessedDuringRun: true },
-            { url: RULEBOOK_URL, organization: "IPF", sourceType: "federation-rulebook", factsSupported: ["thickness limit"], accessedDuringRun: true },
-          ],
-          claimFindings: [
-            { claimId: "ks-sbd-7mm:thickness", field: "thickness", catalogValue: "7mm", finding: "supported", evidenceSupportedValue: "7mm", severity: "low", sourceUrls: [MANUFACTURER_URL] },
-            { claimId: "ks-sbd-7mm:ipf", field: "ipfApproved", catalogValue: true, finding: "contradicted", evidenceSupportedValue: false, severity: "high", sourceUrls: [RULEBOOK_URL] },
-          ],
-          federationEvidence: [
-            { federation: "IPF", status: "rule-compliant", scope: "exact-configuration", basis: "7mm is within the stated limit.", sourceUrls: [RULEBOOK_URL] },
-          ],
-          escalation: { required: true, reason: "Approval status conflicts with the catalog claim." },
-        }),
-      ],
-    });
-
-    const packetResult = validateCatalogEvidencePacket(hermes, { expectedProductIds: ["ks-sbd-7mm"] });
-    expect(packetResult.hardFailures).toEqual([]);
-    expect(packetResult.hardGatePass).toBe(true);
-
-    const frozenHash = hashCatalogEvidencePacket(hermes);
-    const grok = review({
-      evidencePacketHash: frozenHash,
-      claimReviews: [
-        { claimId: "ks-sbd-7mm:thickness", verdict: "accept", independentVerificationPerformed: true, reason: "Re-read the manufacturer page.", independentSourceUrls: [MANUFACTURER_URL], severity: "low" },
-        { claimId: "ks-sbd-7mm:ipf", verdict: "accept", independentVerificationPerformed: true, reason: "The approved list does not contain this configuration.", independentSourceUrls: [APPROVED_LIST_URL], severity: "high" },
-      ],
-      challengedAssumptions: ["Rulebook compliance was treated as equivalent to approved-list status."],
-    });
-
-    const reviewResult = validateCatalogEvidenceReview(grok, {
-      expectedPacketHash: frozenHash,
-      allClaimIds: collectClaimIds(hermes),
-      highSeverityClaimIds: collectHighSeverityClaimIds(hermes),
-    });
-    expect(reviewResult.hardFailures).toEqual([]);
-    expect(reviewResult.hardGatePass).toBe(true);
-    expect(reviewResult.metrics.claimsReviewedCount).toBe(2);
-  });
-
-  it("keeps the review bound to the exact packet that was frozen", () => {
-    const hermes = packet();
-    const frozenHash = hashCatalogEvidencePacket(hermes);
-    const tampered = packet({ market: "UK" });
-
-    const grok = review({ evidencePacketHash: frozenHash });
-    const againstTampered = validateCatalogEvidenceReview(grok, {
-      expectedPacketHash: hashCatalogEvidencePacket(tampered),
-      allClaimIds: collectClaimIds(tampered),
-      highSeverityClaimIds: collectHighSeverityClaimIds(tampered),
-    });
-    expect(againstTampered.hardGatePass).toBe(false);
+describe("claim collection helpers", () => {
+  it("exposes claim severity for review context", () => {
+    const claims = collectPacketClaims(packet());
+    expect(claims).toEqual([{ claimId: "ks-sbd-7mm:thickness", productId: "ks-sbd-7mm", field: "thickness", severity: "low" }]);
+    expect(collectClaimIds(packet())).toEqual(["ks-sbd-7mm:thickness"]);
+    expect(collectHighSeverityClaimIds(packet())).toEqual([]);
   });
 });

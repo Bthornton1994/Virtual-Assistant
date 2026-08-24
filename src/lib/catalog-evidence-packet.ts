@@ -64,9 +64,13 @@ const primarySourceSchema = z
     organization: nonEmptyString,
     // Unlike primary sources, the spec leaves secondary-source sourceType open-ended
     // (no enumerated list was given), so it is typed as free text there. Primary
-    // sources are the ones the hard gates (rules 7-9) reason about, so that
+    // sources are the ones the federation hard gates reason about, so that
     // enumeration is load-bearing and kept closed here.
     sourceType: z.enum(PRIMARY_SOURCE_TYPES),
+    // Which federation this document actually belongs to. Required by the
+    // validator for federation-rulebook and federation-approved-list sources,
+    // because a conclusion about USAPL cannot be carried by an IPF document.
+    federation: z.string().trim().optional(),
     factsSupported: z.array(nonEmptyString),
     accessedDuringRun: z.boolean(),
   })
@@ -84,6 +88,10 @@ const secondarySourceSchema = z
   .strict();
 export type SecondarySource = z.infer<typeof secondarySourceSchema>;
 
+// A product whose price genuinely could not be resolved must be representable
+// without fabricating a price or a source. When priceType is "unavailable" the
+// price, comparison price, variant scope, and source URL may all be null; for
+// every other price type the validator requires them.
 const priceEvidenceSchema = z
   .object({
     currentDisplayedPrice: z.number().nonnegative().nullable(),
@@ -91,8 +99,8 @@ const priceEvidenceSchema = z
     currency: nonEmptyString,
     priceType: z.enum(PRICE_TYPES),
     market: nonEmptyString,
-    variantScope: nonEmptyString,
-    sourceUrl: urlFieldSchema,
+    variantScope: nonEmptyString.nullable(),
+    sourceUrl: urlFieldSchema.nullable(),
   })
   .strict();
 export type PriceEvidence = z.infer<typeof priceEvidenceSchema>;

@@ -1,4 +1,5 @@
 import {
+  freezeWorkCellInputManifestAction,
   ingestCatalogEvidencePacketAction,
   ingestCatalogEvidenceReviewAction,
   recordWorkCellGauntletReviewsAction,
@@ -50,10 +51,14 @@ function FindingsList({ title, items, tone }: { title: string; items: string[]; 
 }
 
 /**
- * The Work Cell view for one Gauntlet attempt: who executed which phase, under
- * what frozen authority, producing which hashed artifact, and what the
- * deterministic validator concluded. Ingestion never repairs a malformed paste —
- * a rejected packet is reported and not stored.
+ * The Work Cell view for one Gauntlet attempt.
+ *
+ * The stage order is enforced by the server, and the forms follow it: the input
+ * manifest freezes the expected batch before any evidence exists, and every
+ * later stage reads the batch from there. There is deliberately no executor-key
+ * field and no repeated "expected product IDs" box — both were routes by which
+ * an operator could relabel an artifact or validate against a different set than
+ * the one finally recorded.
  */
 export function WorkCellSection({
   bundle,
@@ -68,10 +73,10 @@ export function WorkCellSection({
   runStatus: string;
   manager: boolean;
 }) {
-  const { assignments, packet, review, validation } = bundle;
+  const { manifest, assignments, packet, review, validation, rejections } = bundle;
   const running = runStatus === "running";
   const awaitingVerification = runStatus === "awaiting_verification";
-  const hasWorkCell = assignments.length > 0 || packet !== null;
+  const hasWorkCell = assignments.length > 0 || packet !== null || manifest !== null;
 
   return (
     <section className="space-y-4">
@@ -83,6 +88,57 @@ export function WorkCellSection({
           they never own the counts, the hash, or the hard gate.
         </p>
       </div>
+
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="font-medium">0. Frozen input manifest</p>
+          {manifest ? <Badge tone="good">frozen</Badge> : <Badge>not frozen</Badge>}
+        </div>
+        {manifest ? (
+          <div className="mt-3 space-y-1 text-sm">
+            <p>
+              <span className="text-muted">Market: </span>
+              {manifest.market}
+            </p>
+            <p>
+              <span className="text-muted">Expected products: </span>
+              {manifest.expectedProductIds.join(", ")}
+            </p>
+            <p className="break-all font-mono text-[11px] text-muted">input {shortHash(manifest.inputHash)}</p>
+            <p className="mt-2 text-xs text-muted">
+              Every later stage validates against this batch automatically. It cannot be retyped or substituted per stage.
+            </p>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted">
+            Freeze exactly what this attempt must cover before any executor evidence is ingested.
+          </p>
+        )}
+
+        {running && manager && !manifest ? (
+          <form action={freezeWorkCellInputManifestAction} className="mt-5 space-y-4 border-t border-line pt-4">
+            <input type="hidden" name="runId" value={runId} />
+            {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
+            <Field label="Market"><Input name="market" required placeholder="US" /></Field>
+            <Field label="Expected product IDs" hint="One per line or comma separated. This becomes immutable run provenance.">
+              <Textarea name="expectedProductIds" required rows={4} placeholder={"ks-sbd-7mm\nbelt-sbd-13mm"} />
+            </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Prepare executor key" hint="Must be a registered researcher.">
+                <Input name="prepareExecutorKey" required defaultValue="hermes-loadout-researcher-v1" />
+              </Field>
+              <Field label="Review executor key" hint="Must be a registered reviewer, and different from the researcher.">
+                <Input name="reviewExecutorKey" required defaultValue="grok-loadout-reviewer-v1" />
+              </Field>
+            </div>
+            <p className="text-xs text-muted">
+              Naming the executors here, before any output exists, is what makes relabeling impossible later: ingestion
+              requires each artifact&apos;s own declared executor key to match this frozen plan.
+            </p>
+            <Button type="submit">Freeze input manifest</Button>
+          </form>
+        ) : null}
+      </Card>
 
       <Card className="p-5">
         <p className="font-medium">Executor assignments</p>
@@ -141,20 +197,15 @@ export function WorkCellSection({
             </div>
           ) : (
             <p className="mt-3 text-sm text-muted">
-              Paste the research executor&apos;s raw output. It is validated before anything is stored.
+              Paste the research executor&apos;s raw output. It is validated against the frozen manifest before anything is
+              stored as evidence.
             </p>
           )}
 
-          {running && manager && !packet ? (
+          {running && manager && manifest && !packet ? (
             <form action={ingestCatalogEvidencePacketAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
-              <Field label="Executor key" hint="Defaults to the executorKey declared inside the packet.">
-                <Input name="executorKey" placeholder="hermes-loadout-researcher-v1" />
-              </Field>
-              <Field label="Expected product IDs" hint="Optional. One per line or comma separated. Enforces exact batch coverage.">
-                <Textarea name="expectedProductIds" placeholder="ks-sbd-7mm" />
-              </Field>
               <Field label="Raw executor JSON" hint="Pasted verbatim. Malformed output is rejected, never repaired.">
                 <Textarea name="raw" required rows={8} placeholder='{"schemaVersion":"catalog-evidence-packet/v1", ...}' />
               </Field>
@@ -189,7 +240,7 @@ export function WorkCellSection({
           ) : (
             <p className="mt-3 text-sm text-muted">
               The reviewer receives the frozen packet and challenges it. It cannot modify the packet, and its review is
-              accepted only if it references the exact packet hash above.
+              accepted only if it references the exact packet hash.
             </p>
           )}
 
@@ -197,9 +248,6 @@ export function WorkCellSection({
             <form action={ingestCatalogEvidenceReviewAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
-              <Field label="Reviewer key" hint="Defaults to the reviewerExecutorKey declared inside the review.">
-                <Input name="executorKey" placeholder="grok-loadout-reviewer-v1" />
-              </Field>
               <Field label="Raw reviewer JSON" hint={`Must reference evidencePacketHash ${packet.contentHash}`}>
                 <Textarea name="raw" required rows={8} placeholder='{"schemaVersion":"catalog-evidence-review/v1", ...}' />
               </Field>
@@ -213,6 +261,36 @@ export function WorkCellSection({
           ) : null}
         </Card>
       </div>
+
+      {rejections.length ? (
+        <Card className="p-5">
+          <p className="font-medium">Rejected executor attempts</p>
+          <p className="mt-1 text-sm text-muted">
+            These outputs were refused and never became evidence. They are kept immutable so a failed executor attempt can
+            still be classified and costed.
+          </p>
+          <div className="mt-3 space-y-3">
+            {rejections.map((rejection) => (
+              <div key={rejection.id} className="rounded-lg border border-line p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="bad">rejected</Badge>
+                  <span className="text-sm font-medium">{rejection.phase}</span>
+                  <span className="text-xs text-muted">{rejection.declaredExecutorKey}</span>
+                </div>
+                <p className="mt-2 break-all font-mono text-[11px] text-muted">raw {shortHash(rejection.rawOutputHash)}</p>
+                <ul className="mt-2 space-y-1 text-sm">
+                  {rejection.hardFailures.slice(0, 5).map((failure) => (
+                    <li key={failure}>• {failure}</li>
+                  ))}
+                </ul>
+                {rejection.hardFailures.length > 5 ? (
+                  <p className="mt-1 text-xs text-muted">+{rejection.hardFailures.length - 5} more</p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
 
       <Card className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -242,6 +320,31 @@ export function WorkCellSection({
               ) : null}
             </div>
 
+            {validation.benchmark.reviewerPresent ? (
+              <div className="rounded-lg border border-line p-4">
+                <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted">Reviewer benchmark</p>
+                <p className="mt-2 text-sm text-muted">
+                  How well the reviewer performed. This is separate from whether the attempt is verifiable — a reviewer that
+                  catches a real defect scores well here while the attempt correctly fails.
+                </p>
+                <MetricGrid
+                  metrics={{
+                    claimsReviewed: validation.benchmark.claimsReviewed,
+                    independentVerifications: validation.benchmark.independentVerifications,
+                    rejectedClaims: validation.benchmark.rejectedClaims,
+                    inconclusiveClaims: validation.benchmark.inconclusiveClaims,
+                    newFindings: validation.benchmark.newFindings,
+                    highSeverityNewFindings: validation.benchmark.highSeverityNewFindings,
+                  }}
+                />
+                {validation.benchmark.reviewerCaughtDefectStructuralValidationMissed ? (
+                  <p className="mt-3 text-sm">
+                    The reviewer surfaced a defect structural validation did not. Good reviewer performance, failed attempt.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted">Packet metrics (computed, not reported)</p>
               <MetricGrid metrics={validation.packet.metrics as unknown as Record<string, number>} />
@@ -260,19 +363,24 @@ export function WorkCellSection({
         ) : (
           <p className="mt-3 text-sm text-muted">
             The validator parses, hashes, counts, and gates. It calls no model and reaches no network, so the same frozen
-            artifacts always produce the same verdict.
+            artifacts always produce the same verdict. It runs once both executor artifacts exist.
           </p>
         )}
 
-        {running && manager && packet && !validation ? (
-          <form action={runWorkCellValidationAction} className="mt-5 space-y-4 border-t border-line pt-4">
+        {running && manager && packet && review && !validation ? (
+          <form action={runWorkCellValidationAction} className="mt-5 space-y-3 border-t border-line pt-4">
             <input type="hidden" name="runId" value={runId} />
             {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
-            <Field label="Expected product IDs" hint="Optional. One per line or comma separated.">
-              <Textarea name="expectedProductIds" />
-            </Field>
+            <p className="text-sm text-muted">Validates the frozen packet and review against the frozen input manifest.</p>
             <Button type="submit" variant="secondary">Run deterministic validation</Button>
           </form>
+        ) : null}
+
+        {running && manager && packet && !review ? (
+          <p className="mt-5 border-t border-line pt-4 text-sm text-muted">
+            Deterministic validation opens once the independent review has been ingested. Validating a half-built cell would
+            produce a report that looks authoritative while describing an incomplete attempt.
+          </p>
         ) : null}
 
         {awaitingVerification && manager && cycleId && hasWorkCell ? (
@@ -280,8 +388,8 @@ export function WorkCellSection({
             <input type="hidden" name="runId" value={runId} />
             <input type="hidden" name="cycleId" value={cycleId} />
             <p className="text-sm text-muted">
-              Re-runs the deterministic validator over the frozen artifacts and records the result as the Gauntlet
-              adversarial review. The hard gate comes from the validator, never from the reviewing agent&apos;s verdict.
+              Re-runs the deterministic validator over the frozen artifacts and records one authoritative Gauntlet review.
+              Its verdict incorporates the reviewer&apos;s conclusions, so a rejected claim cannot yield a passing receipt.
             </p>
             <Button type="submit">Record work-cell verdict into the Gauntlet</Button>
           </form>

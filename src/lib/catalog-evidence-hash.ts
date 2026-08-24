@@ -29,6 +29,11 @@ export function sha256Hex(value: unknown): string {
   return createHash("sha256").update(canonicalJsonStringify(value)).digest("hex");
 }
 
+/** Hashes raw text exactly as received. Used to fingerprint rejected executor output. */
+export function sha256Text(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 export function hashCatalogEvidencePacket(packet: CatalogEvidencePacketV1): string {
   return sha256Hex(packet);
 }

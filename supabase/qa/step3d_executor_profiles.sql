@@ -60,6 +60,9 @@ on conflict (key) do update set
   executor_kind = excluded.executor_kind,
   provider = excluded.provider,
   role = excluded.role,
+  -- Re-running the authoritative QA fixture must restore shadow status, so a
+  -- manual promotion cannot silently survive a fixture re-run.
+  status = excluded.status,
   capabilities = excluded.capabilities,
   authority_envelope = excluded.authority_envelope,
   forbidden_actions = excluded.forbidden_actions,
@@ -118,6 +121,9 @@ on conflict (key) do update set
   executor_kind = excluded.executor_kind,
   provider = excluded.provider,
   role = excluded.role,
+  -- Re-running the authoritative QA fixture must restore shadow status, so a
+  -- manual promotion cannot silently survive a fixture re-run.
+  status = excluded.status,
   capabilities = excluded.capabilities,
   authority_envelope = excluded.authority_envelope,
   forbidden_actions = excluded.forbidden_actions,
