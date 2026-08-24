@@ -367,15 +367,185 @@ describe("Step 3D submit-before-validate guard", () => {
   });
 
   it("rejects an unfit executor before writing any artifact", () => {
-    // The artifact insert and the assignment insert are separate transactions,
-    // so checking fitness only at assignment time left a durable orphan packet.
+    // persistPhaseArtifact (the atomic artifact+assignment RPC wrapper) itself
+    // re-checks fitness, but the ingest function also checks before EVER
+    // calling it, so an unfit profile is refused before any write is attempted.
     const ingest = workCell.slice(
       workCell.indexOf("export async function ingestCatalogEvidencePacket"),
       workCell.indexOf("export type ReviewIngestResult"),
     );
     const fitnessAt = ingest.indexOf('assertProfileFitsPhase(profile, "prepare")');
-    const writeAt = ingest.indexOf("insertEvidenceArtifact");
+    const writeAt = ingest.indexOf("persistPhaseArtifact");
     expect(fitnessAt).toBeGreaterThan(-1);
     expect(writeAt).toBeGreaterThan(fitnessAt);
+  });
+});
+
+describe("Step 3D provenance hardening (round three)", () => {
+  const provenance = readFileSync(
+    resolve(process.cwd(), "supabase/migrations/20260824180000_step3d_work_cell_provenance.sql"),
+    "utf8",
+  );
+
+  it("binds the reserved verdict to the validation artifact's own stored content, not merely its existence", () => {
+    const fn = provenance.slice(provenance.indexOf("function public.reserve_work_cell_reviewer_ref"));
+    expect(fn).toMatch(/payload -> 'gate' ->> 'hardGatePass'/);
+    expect(fn).toMatch(/payload -> 'gate' ->> 'workCellVerdict'/);
+    expect(fn).toMatch(/new\.hard_gate_pass is distinct from v_stored_hard_gate_pass/);
+    expect(fn).toMatch(/new\.verdict is distinct from v_stored_verdict/);
+    expect(fn).toMatch(/disagrees with the deterministic validation artifact it claims to record/);
+  });
+
+  it("requires the validate assignment's executor to be catalog-evidence-validator-v1 specifically, not merely deterministic", () => {
+    expect(provenance).toMatch(/v_validate_profile_key is distinct from 'catalog-evidence-validator-v1'/);
+    expect(provenance).toMatch(/join public\.executor_profiles ep on ep\.id = rea\.executor_profile_id/);
+  });
+
+  it("redefines the function in place rather than declaring a new trigger", () => {
+    // CREATE OR REPLACE FUNCTION preserves the function's identity, so the
+    // existing trg_reserve_work_cell_reviewer_ref trigger (created in
+    // 20260824090000) picks up this body with no new CREATE TRIGGER needed —
+    // and none should appear here, or Postgres would reject it as a duplicate.
+    expect(provenance).not.toMatch(/create trigger trg_reserve_work_cell_reviewer_ref/);
+  });
+
+  it("makes phase persistence atomic via one RPC covering both inserts", () => {
+    expect(provenance).toMatch(/create or replace function public\.record_work_cell_phase_artifact/);
+    expect(provenance).toMatch(/insert into public\.evidence_artifacts/);
+    expect(provenance).toMatch(/insert into public\.run_executor_assignments/);
+    expect(provenance).toMatch(/returning id into v_artifact_id/);
+    expect(provenance).toMatch(/returning id into v_assignment_id/);
+    // No explicit "security definer" clause in the function's own signature —
+    // the surrounding comment discusses the concept, so scope the check to the
+    // signature/body, not the whole file — meaning it runs as the caller and
+    // RLS plus every existing insert trigger on both tables still apply.
+    const fn = provenance.slice(
+      provenance.indexOf("create or replace function public.record_work_cell_phase_artifact"),
+      provenance.indexOf("revoke all on function public.record_work_cell_phase_artifact"),
+    );
+    expect(fn.toLowerCase()).not.toMatch(/security definer/);
+  });
+
+  it("locks down execute on the RPC to authenticated callers only", () => {
+    expect(provenance).toMatch(/revoke all on function public\.record_work_cell_phase_artifact from public/);
+    expect(provenance).toMatch(/grant execute on function public\.record_work_cell_phase_artifact to authenticated/);
+  });
+});
+
+describe("Step 3D P0 reserved-verdict proof script", () => {
+  const proof = readFileSync(
+    resolve(process.cwd(), "supabase/qa/step3d_p0_reserved_verdict_proof.sql"),
+    "utf8",
+  );
+
+  it("proves stored=failed rejects an attempted passed row, and stored=passed accepts a matching row", () => {
+    expect(proof).toMatch(/stored validation=failed rejects an attempted row claiming passed/);
+    expect(proof).toMatch(/stored validation=passed accepts a matching attempted row/);
+    expect(proof).toMatch(/"hardGatePass":false,"workCellVerdict":"failed"/);
+    expect(proof).toMatch(/"hardGatePass":true,"workCellVerdict":"passed"/);
+  });
+
+  it("keeps the embedded function copy in sync with the shipped migration's function name", () => {
+    expect(proof).toContain("create or replace function public.reserve_work_cell_reviewer_ref()");
+  });
+});
+
+describe("Step 3D final validation binds each phase to its completed assignment", () => {
+  const workCell = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
+
+  it("always validates against the frozen manifest's executor keys, never a conditional assignment lookup", () => {
+    const compute = workCell.slice(
+      workCell.indexOf("async function computeValidationReport"),
+      workCell.indexOf("export async function runWorkCellValidation"),
+    );
+    expect(compute).toMatch(/expectedExecutorKey: manifest\.prepareExecutorKey/);
+    expect(compute).toMatch(/expectedReviewerKey: manifest\.reviewExecutorKey/);
+    expect(compute).not.toMatch(/preparedBy\?\.key/);
+    expect(compute).not.toMatch(/reviewedBy\?\.key/);
+  });
+
+  it("refuses an accepted packet or review with no matching completed assignment", () => {
+    expect(workCell).toMatch(/async function describeAssignmentBindingFailure/);
+    expect(workCell).toMatch(/No completed \$\{expected\.phase\} executor assignment is bound to this run/);
+  });
+
+  it("wires the prepare binding check into hard failure and hardGatePass=false, keyed to the packet artifact id", () => {
+    const compute = workCell.slice(
+      workCell.indexOf("async function computeValidationReport"),
+      workCell.indexOf("export async function runWorkCellValidation"),
+    );
+    expect(compute).toMatch(/const prepareBindingFailure = await describeAssignmentBindingFailure\(db, prepareAssignment, \{/);
+    expect(compute).toMatch(/expectedOutputArtifactId: String\(packetRow\.id\)/);
+    expect(compute).toMatch(/packetResult\.hardFailures\.push\(prepareBindingFailure\)/);
+    expect(compute).toMatch(/packetResult\.hardGatePass = false/);
+  });
+
+  it("wires the review binding check into hard failure and hardGatePass=false, keyed to both the packet and review artifact ids", () => {
+    const compute = workCell.slice(
+      workCell.indexOf("async function computeValidationReport"),
+      workCell.indexOf("export async function runWorkCellValidation"),
+    );
+    expect(compute).toMatch(/const reviewBindingFailure = await describeAssignmentBindingFailure\(db, reviewAssignment, \{/);
+    expect(compute).toMatch(/expectedInputArtifactId: String\(packetRow\.id\)/);
+    expect(compute).toMatch(/expectedOutputArtifactId: String\(reviewRow\.id\)/);
+    expect(compute).toMatch(/reviewResult\.hardFailures\.push\(reviewBindingFailure\)/);
+  });
+
+  it("requires the validate assignment recording the verdict to belong to the registered validator", () => {
+    const record = workCell.slice(workCell.indexOf("export async function recordWorkCellGauntletReviews"));
+    expect(record).toMatch(/validateProfile\.key !== VALIDATOR_EXECUTOR_KEY/);
+    expect(record).toMatch(/validationRow\.id\) !== validateAssignment\.outputArtifactId/);
+  });
+});
+
+describe("Step 3D rejected executor output becomes a failed, cost-bearing assignment", () => {
+  const workCell = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
+
+  it("records a failed assignment bound to the rejection artifact, carrying its cost, not just the artifact", () => {
+    const fn = workCell.slice(
+      workCell.indexOf("async function recordRejectedExecutorOutput"),
+      workCell.indexOf("// --- Frozen input manifest"),
+    );
+    expect(fn).toMatch(/assignmentStatus: "failed"/);
+    expect(fn).toMatch(/persistPhaseArtifact/);
+    expect(fn).toMatch(/humanMinutes: input\.humanMinutes/);
+    expect(fn).toMatch(/aiCostMicros: input\.aiCostMicros/);
+    expect(fn).toMatch(/toolCostMicros: input\.toolCostMicros/);
+  });
+
+  it("threads human/AI/tool cost from both ingest call sites into the rejection path", () => {
+    const packetIngest = workCell.slice(
+      workCell.indexOf("export async function ingestCatalogEvidencePacket"),
+      workCell.indexOf("export type ReviewIngestResult"),
+    );
+    const reviewIngest = workCell.slice(workCell.indexOf("export async function ingestCatalogEvidenceReview"));
+    for (const fn of [packetIngest, reviewIngest]) {
+      const rejectionCalls = fn.split("recordRejectedExecutorOutput(db, actor, run, {").length - 1;
+      expect(rejectionCalls).toBeGreaterThanOrEqual(2);
+      expect(fn).toMatch(/recordRejectedExecutorOutput\(db, actor, run, \{[\s\S]*?humanMinutes: input\.humanMinutes,/);
+    }
+  });
+
+  it("relies on the (run_id, phase) unique constraint to block a same-attempt retry", () => {
+    const migration = readFileSync(resolve(process.cwd(), "supabase/migrations/20260823120000_step3d_work_cell.sql"), "utf8");
+    expect(migration).toMatch(/unique\s*\(run_id,\s*phase\)/);
+  });
+});
+
+describe("Step 3D frozen input manifest freezes actual records and self-verifies on load", () => {
+  const workCell = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
+  const input = readFileSync(resolve(process.cwd(), "src/lib/catalog-evidence-input.ts"), "utf8");
+
+  it("requires a frozen input record per expected product, covered by the hash", () => {
+    expect(input).toMatch(/inputRecords: z\.array\(catalogEvidenceInputRecordSchema\)\.min\(1\)/);
+    expect(input).toMatch(/is missing a frozen input record for expected product/);
+    expect(input).toMatch(/freezes input record\(s\) for product ID\(s\) not in the expected batch/);
+    expect(input).toMatch(/inputRecords: \[\.\.\.manifest\.inputRecords\]/);
+  });
+
+  it("verifies the manifest belongs to this run and its artifact content hash on load", () => {
+    const fn = workCell.slice(workCell.indexOf("async function loadInputManifest"), workCell.indexOf("async function requireInputManifest"));
+    expect(fn).toMatch(/result\.manifest\.runId !== runId/);
+    expect(fn).toMatch(/checkPayloadHash\(row\.payload, String\(row\.content_hash/);
   });
 });

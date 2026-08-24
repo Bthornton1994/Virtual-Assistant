@@ -10,7 +10,9 @@ import { summarizeWorkCellBenchmark, summarizeWorkCellGate } from "@/lib/work-ce
 import {
   APPROVED_LIST_URL,
   MANUFACTURER_URL,
+  PRODUCT_ID,
   ZERO_AUTHORITY,
+  catalogFieldCorrection,
   manufacturerSource,
   packet,
   product,
@@ -73,7 +75,11 @@ describe("work cell gate", () => {
   it("does not pass on the reviewer's word when the packet fails validation", () => {
     const badPacket = packet({
       products: [
-        product({ candidateCorrections: [{ field: "thickness", proposedValue: "6mm", confidence: "medium", sourceUrls: ["https://unrelated.example.com/x"] }] }),
+        product({
+          candidateCorrections: [
+            catalogFieldCorrection({ field: "thickness", proposedValue: "6mm", sourceUrls: ["https://unrelated.example.com/x"] }),
+          ],
+        }),
       ],
     });
     const { gate } = evaluate(badPacket, review({ evidencePacketHash: hashCatalogEvidencePacket(badPacket) }));
@@ -111,7 +117,7 @@ describe("reviewer conclusions block verification", () => {
       review({
         evidencePacketHash: cleanHash,
         claimReviews: [
-          { claimId: "ks-sbd-7mm:thickness", verdict: "reject", independentVerificationPerformed: true, reason: "Manufacturer states 5mm.", independentSourceUrls: [MANUFACTURER_URL], severity: "high" },
+          { claimId: "ks-sbd-7mm:thickness", verdict: "reject", independentVerificationPerformed: true, reason: "Manufacturer states 5mm.", independentSourceUrls: [MANUFACTURER_URL], severity: "low" },
         ],
       }),
     );
@@ -152,7 +158,9 @@ describe("reviewer conclusions block verification", () => {
       cleanPacket,
       review({
         evidencePacketHash: cleanHash,
-        newFindings: [{ field: "material", finding: "Undisclosed material change.", severity: "high", sourceUrls: [MANUFACTURER_URL] }],
+        newFindings: [
+          { productId: PRODUCT_ID, findingId: "nf-material", field: "material", finding: "Undisclosed material change.", severity: "high", sourceUrls: [MANUFACTURER_URL] },
+        ],
       }),
     );
     expect(gate.hardGatePass).toBe(false);
@@ -165,7 +173,9 @@ describe("reviewer conclusions block verification", () => {
       cleanPacket,
       review({
         evidencePacketHash: cleanHash,
-        newFindings: [{ field: "copy", finding: "Marketing wording differs slightly.", severity: "low", sourceUrls: [MANUFACTURER_URL] }],
+        newFindings: [
+          { productId: PRODUCT_ID, findingId: "nf-copy", field: "copy", finding: "Marketing wording differs slightly.", severity: "low", sourceUrls: [MANUFACTURER_URL] },
+        ],
       }),
     );
     expect(gate.hardGatePass).toBe(true);
@@ -256,7 +266,7 @@ describe("no configuration yields a passing row while anything rejects", () => {
       ["no review", evaluate(cleanPacket, undefined)],
       [
         "reject",
-        evaluate(cleanPacket, review({ evidencePacketHash: cleanHash, claimReviews: [{ claimId: "ks-sbd-7mm:thickness", verdict: "reject", independentVerificationPerformed: true, reason: "No.", independentSourceUrls: [MANUFACTURER_URL], severity: "high" }] })),
+        evaluate(cleanPacket, review({ evidencePacketHash: cleanHash, claimReviews: [{ claimId: "ks-sbd-7mm:thickness", verdict: "reject", independentVerificationPerformed: true, reason: "No.", independentSourceUrls: [MANUFACTURER_URL], severity: "low" }] })),
       ],
       [
         "inconclusive",
@@ -265,7 +275,7 @@ describe("no configuration yields a passing row while anything rejects", () => {
       ["escalation", evaluate(cleanPacket, review({ evidencePacketHash: cleanHash, escalationRequired: true, escalationReason: "Needs a human." }))],
       [
         "high-severity new finding",
-        evaluate(cleanPacket, review({ evidencePacketHash: cleanHash, newFindings: [{ field: "x", finding: "Serious.", severity: "high", sourceUrls: [MANUFACTURER_URL] }] })),
+        evaluate(cleanPacket, review({ evidencePacketHash: cleanHash, newFindings: [{ productId: PRODUCT_ID, findingId: "nf-x", field: "x", finding: "Serious.", severity: "high", sourceUrls: [MANUFACTURER_URL] }] })),
       ],
       ["wrong hash", evaluate(cleanPacket, review({ evidencePacketHash: "c".repeat(64) }))],
       ["packet authority incident", evaluate(packet({ authorityReport: { ...ZERO_AUTHORITY, accountsCreated: 1 } }), undefined)],

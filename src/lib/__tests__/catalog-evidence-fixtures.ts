@@ -1,4 +1,4 @@
-import type { CatalogEvidencePacketV1, CatalogEvidenceProduct } from "@/lib/catalog-evidence-packet";
+import type { CandidateCorrection, CatalogEvidencePacketV1, CatalogEvidenceProduct } from "@/lib/catalog-evidence-packet";
 import type { CatalogEvidenceReviewV1 } from "@/lib/catalog-evidence-review";
 import type { AuthorityReport } from "@/lib/catalog-evidence-shared";
 import { collectPacketClaims } from "@/lib/catalog-evidence-validator";
@@ -54,6 +54,34 @@ export function approvedListSource(overrides: Partial<PrimarySourceFixture> = {}
     federation: "IPF",
     factsSupported: ["approval"],
     accessedDuringRun: true,
+    ...overrides,
+  };
+}
+
+export function catalogFieldCorrection(overrides: Partial<Extract<CandidateCorrection, { correctionKind: "catalog-field" }>> = {}) {
+  return {
+    correctionKind: "catalog-field" as const,
+    field: "weight",
+    proposedValue: "480g",
+    federation: null,
+    confidence: "medium" as const,
+    sourceUrls: [] as string[],
+    relatedClaimId: null,
+    ...overrides,
+  };
+}
+
+export function federationStatusCorrection(
+  overrides: Partial<Extract<CandidateCorrection, { correctionKind: "federation-status" }>> = {},
+) {
+  return {
+    correctionKind: "federation-status" as const,
+    field: "approvals",
+    federation: "IPF",
+    proposedValue: true,
+    confidence: "high" as const,
+    sourceUrls: [] as string[],
+    relatedClaimId: null,
     ...overrides,
   };
 }
@@ -121,6 +149,7 @@ export function reviewContext(hermes: CatalogEvidencePacketV1, packetHash: strin
   return {
     expectedPacketHash: packetHash,
     claims: collectPacketClaims(hermes),
+    packetProductIds: hermes.products.map((product) => product.productId),
     expectedRunId: RUN_ID,
     expectedReviewerKey: "grok-loadout-reviewer-v1",
   };

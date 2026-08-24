@@ -12,12 +12,15 @@ import {
 import {
   APPROVED_LIST_URL,
   MANUFACTURER_URL,
+  PRODUCT_ID,
   RULEBOOK_URL,
   RUN_ID,
   USAPL_APPROVED_LIST_URL,
   USAPL_RULEBOOK_URL,
   ZERO_AUTHORITY,
   approvedListSource,
+  catalogFieldCorrection,
+  federationStatusCorrection,
   manufacturerSource,
   packet,
   product,
@@ -483,7 +486,11 @@ describe("packet corrections, contradictions, and metrics", () => {
     const result = validateCatalogEvidencePacket(
       packet({
         products: [
-          product({ candidateCorrections: [{ field: "thickness", proposedValue: "6mm", confidence: "medium", sourceUrls: ["https://unrelated.example.com/page"] }] }),
+          product({
+            candidateCorrections: [
+              catalogFieldCorrection({ field: "thickness", proposedValue: "6mm", sourceUrls: ["https://unrelated.example.com/page"] }),
+            ],
+          }),
         ],
       }),
     );
@@ -497,7 +504,7 @@ describe("packet corrections, contradictions, and metrics", () => {
           products: [
             product({
               identity: { status, reason: "Could not confirm the exact configuration." },
-              candidateCorrections: [{ field: "price", proposedValue: 129, confidence: "high", sourceUrls: [MANUFACTURER_URL] }],
+              candidateCorrections: [catalogFieldCorrection({ field: "price", proposedValue: 129, confidence: "high", sourceUrls: [MANUFACTURER_URL] })],
             }),
           ],
         }),
@@ -512,7 +519,7 @@ describe("packet corrections, contradictions, and metrics", () => {
         products: [
           product({
             identity: { status: "uncertain", reason: "Configuration unconfirmed." },
-            candidateCorrections: [{ field: "ipfApproved", proposedValue: null, confidence: "high", sourceUrls: [MANUFACTURER_URL] }],
+            candidateCorrections: [catalogFieldCorrection({ field: "weight", proposedValue: null, confidence: "high", sourceUrls: [MANUFACTURER_URL] })],
           }),
         ],
       }),
@@ -553,7 +560,7 @@ describe("packet corrections, contradictions, and metrics", () => {
               { claimId: "b", field: "material", catalogValue: "neoprene", finding: "unresolved", evidenceSupportedValue: null, severity: "medium", sourceUrls: [] },
               { claimId: "c", field: "weight", catalogValue: "500g", finding: "contradicted", evidenceSupportedValue: "480g", severity: "low", sourceUrls: [MANUFACTURER_URL] },
             ],
-            candidateCorrections: [{ field: "weight", proposedValue: "480g", confidence: "medium", sourceUrls: [MANUFACTURER_URL] }],
+            candidateCorrections: [catalogFieldCorrection({ field: "weight", proposedValue: "480g", sourceUrls: [MANUFACTURER_URL] })],
             escalation: { required: true, reason: "Material unresolved." },
           }),
           product({ productId: "belt-inzer-forever", primarySources: [], claimFindings: [] }),
@@ -783,7 +790,10 @@ describe("catalog evidence review validator", () => {
     expect(markdown.metrics.malformedUrlCount).toBe(1);
 
     const insecure = validateCatalogEvidenceReview(
-      review({ evidencePacketHash: frozenHash, newFindings: [{ field: "price", finding: "Differs.", severity: "medium", sourceUrls: ["http://example.com/price"] }] }),
+      review({
+        evidencePacketHash: frozenHash,
+        newFindings: [{ productId: PRODUCT_ID, findingId: "nf-price", field: "price", finding: "Differs.", severity: "medium", sourceUrls: ["http://example.com/price"] }],
+      }),
       context,
     );
     expect(insecure.metrics.malformedUrlCount).toBe(1);
@@ -810,11 +820,11 @@ describe("catalog evidence review validator", () => {
       review({
         evidencePacketHash: frozenHash,
         claimReviews: [
-          { claimId: "ks-sbd-7mm:thickness", verdict: "reject", independentVerificationPerformed: true, reason: "Page states 5mm.", independentSourceUrls: [MANUFACTURER_URL], severity: "high" },
+          { claimId: "ks-sbd-7mm:thickness", verdict: "reject", independentVerificationPerformed: true, reason: "Page states 5mm.", independentSourceUrls: [MANUFACTURER_URL], severity: "low" },
         ],
         escalationRequired: true,
         escalationReason: "Catalog and manufacturer disagree.",
-        newFindings: [{ field: "material", finding: "Undisclosed material change.", severity: "high", sourceUrls: [MANUFACTURER_URL] }],
+        newFindings: [{ productId: PRODUCT_ID, findingId: "nf-material", field: "material", finding: "Undisclosed material change.", severity: "high", sourceUrls: [MANUFACTURER_URL] }],
       }),
       context,
     );
@@ -822,6 +832,108 @@ describe("catalog evidence review validator", () => {
     expect(result.metrics.rejectCount).toBe(1);
     expect(result.metrics.escalationRequiredCount).toBe(1);
     expect(result.metrics.highSeverityNewFindingCount).toBe(1);
+  });
+});
+
+describe("reviewer new findings are product-addressable (P2-1)", () => {
+  const frozen = packet();
+  const frozenHash = hashCatalogEvidencePacket(frozen);
+  const context = reviewContext(frozen, frozenHash);
+
+  it("rejects a new finding whose productId is not in the frozen packet's product set", () => {
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: frozenHash,
+        newFindings: [{ productId: "not-in-this-run", findingId: "nf-1", field: "x", finding: "Serious.", severity: "high", sourceUrls: [] }],
+      }),
+      context,
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /is not in the frozen packet's product set/)).toHaveLength(1);
+  });
+
+  it("accepts a new finding attached to a product actually in the frozen batch", () => {
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: frozenHash,
+        newFindings: [{ productId: PRODUCT_ID, findingId: "nf-1", field: "x", finding: "Serious.", severity: "low", sourceUrls: [] }],
+      }),
+      context,
+    );
+    expect(result.hardFailures).toEqual([]);
+  });
+
+  it("rejects two new findings sharing the same findingId", () => {
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: frozenHash,
+        newFindings: [
+          { productId: PRODUCT_ID, findingId: "nf-dupe", field: "x", finding: "First.", severity: "low", sourceUrls: [] },
+          { productId: PRODUCT_ID, findingId: "nf-dupe", field: "y", finding: "Second.", severity: "low", sourceUrls: [] },
+        ],
+      }),
+      context,
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /findingId must be unique/)).toHaveLength(1);
+  });
+
+  it("schema-rejects a new finding with no productId at all", () => {
+    const malformed = { ...review({ evidencePacketHash: frozenHash }), newFindings: [{ field: "x", finding: "Serious.", severity: "high", sourceUrls: [] }] };
+    const result = validateCatalogEvidenceReview(malformed, context);
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /Schema: newFindings/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("reviewer cannot relabel frozen claim severity (P2-2)", () => {
+  const frozen = packet(); // "ks-sbd-7mm:thickness" is frozen at severity "low"
+  const frozenHash = hashCatalogEvidencePacket(frozen);
+  const context = reviewContext(frozen, frozenHash);
+
+  it("rejects a claimReview that downgrades a claim's frozen severity", () => {
+    const highPacket = packet({
+      products: [
+        product({
+          claimFindings: [
+            { claimId: "ks-sbd-7mm:ipf", field: "ipfApproved", catalogValue: true, finding: "contradicted", evidenceSupportedValue: false, severity: "high", sourceUrls: [MANUFACTURER_URL] },
+          ],
+          escalation: { required: true, reason: "Conflicting federation evidence." },
+        }),
+      ],
+    });
+    const highHash = hashCatalogEvidencePacket(highPacket);
+    const highContext = reviewContext(highPacket, highHash);
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: highHash,
+        claimReviews: [
+          { claimId: "ks-sbd-7mm:ipf", verdict: "reject", independentVerificationPerformed: true, reason: "Downplayed.", independentSourceUrls: [APPROVED_LIST_URL], severity: "low" },
+        ],
+      }),
+      highContext,
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /declares severity "low" but the frozen Hermes claim has severity "high"/)).toHaveLength(1);
+  });
+
+  it("rejects a claimReview that upgrades a claim's frozen severity too", () => {
+    const result = validateCatalogEvidenceReview(
+      review({
+        evidencePacketHash: frozenHash,
+        claimReviews: [
+          { claimId: "ks-sbd-7mm:thickness", verdict: "accept", independentVerificationPerformed: true, reason: "Confirmed.", independentSourceUrls: [MANUFACTURER_URL], severity: "high" },
+        ],
+      }),
+      context,
+    );
+    expect(result.hardGatePass).toBe(false);
+    expect(failuresMatching(result, /declares severity "high" but the frozen Hermes claim has severity "low"/)).toHaveLength(1);
+  });
+
+  it("accepts a claimReview whose severity matches the frozen claim exactly", () => {
+    const result = validateCatalogEvidenceReview(review({ evidencePacketHash: frozenHash }), context);
+    expect(result.hardFailures).toEqual([]);
   });
 });
 
@@ -848,7 +960,7 @@ describe("adversarial-review regressions", () => {
               { claimId: "c1", field: "weight", catalogValue: "500g", finding: "contradicted", evidenceSupportedValue: "480g", severity: "low", sourceUrls: ["https://liftingblog.example.com/post"] },
             ],
             candidateCorrections: [
-              { field: "weight", proposedValue: "480g", confidence: "high", sourceUrls: ["https://liftingblog.example.com/post"] },
+              catalogFieldCorrection({ field: "weight", proposedValue: "480g", confidence: "high", sourceUrls: ["https://liftingblog.example.com/post"] }),
             ],
           }),
         ],
@@ -858,26 +970,54 @@ describe("adversarial-review regressions", () => {
     expect(failuresMatching(result, /cites a source not otherwise declared in the packet/)).toHaveLength(1);
   });
 
-  it("does not let a correction assert federation compliance around the binding rules", () => {
-    // Asserting ipfApproved=true via candidateCorrections must clear the same
-    // bar as asserting it via federationEvidence.
-    const smuggled = validateCatalogEvidencePacket(
-      packet({
-        products: [
-          product({
-            primarySources: [manufacturerSource()],
-            secondarySources: [
-              { url: "https://liftingblog.example.com/ipf-legal", organization: "Blog", sourceType: "blog", factsSupported: ["approval"], reasonUsed: "No primary page found." },
-            ],
-            candidateCorrections: [
-              { field: "ipfApproved", proposedValue: true, confidence: "high", sourceUrls: ["https://liftingblog.example.com/ipf-legal"] },
-            ],
-          }),
-        ],
-      }),
-    );
-    expect(smuggled.hardGatePass).toBe(false);
-    expect(failuresMatching(smuggled, /asserts IPF compliance, without a IPF federation evidence entry/)).toHaveLength(1);
+  it("rejects any catalog-field correction to the real approvals field, however it is sourced", () => {
+    // The real Loadout Product model carries federation compliance as
+    // `approvals: ApprovalOrg[]`, not per-federation boolean fields like
+    // "ipfApproved". A field-name heuristic never reliably caught a correction
+    // to the actual field; correctionKind now makes the distinction structural,
+    // so this is rejected outright regardless of sourcing or proposed value.
+    for (const proposedValue of [true, false, null]) {
+      const result = validateCatalogEvidencePacket(
+        packet({
+          products: [
+            product({
+              primarySources: [manufacturerSource(), approvedListSource()],
+              federationEvidence: [
+                { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "Listed.", sourceUrls: [APPROVED_LIST_URL] },
+              ],
+              candidateCorrections: [catalogFieldCorrection({ field: "approvals", proposedValue, sourceUrls: [APPROVED_LIST_URL] })],
+            }),
+          ],
+        }),
+      );
+      expect(result.hardGatePass, `proposedValue ${String(proposedValue)} should still be rejected`).toBe(false);
+      expect(failuresMatching(result, /File this as a federation-status correction/)).toHaveLength(1);
+    }
+  });
+
+  it("does not let a federation-status correction assert compliance around the binding rules", () => {
+    // Asserting IPF approval via candidateCorrections must clear the same bar
+    // as asserting it via federationEvidence — for the real "approvals" field,
+    // and for any federation, not a hardcoded list of field/federation pairs.
+    for (const federation of ["IPF", "USAPL"]) {
+      const smuggled = validateCatalogEvidencePacket(
+        packet({
+          products: [
+            product({
+              primarySources: [manufacturerSource()],
+              secondarySources: [
+                { url: "https://liftingblog.example.com/legal", organization: "Blog", sourceType: "blog", factsSupported: ["approval"], reasonUsed: "No primary page found." },
+              ],
+              candidateCorrections: [
+                federationStatusCorrection({ federation, sourceUrls: ["https://liftingblog.example.com/legal"] }),
+              ],
+            }),
+          ],
+        }),
+      );
+      expect(smuggled.hardGatePass, `${federation} should be rejected without bound evidence`).toBe(false);
+      expect(failuresMatching(smuggled, new RegExp(`federation-status correction for ${federation} without a ${federation} federation evidence entry`))).toHaveLength(1);
+    }
 
     // The same correction is fine once a properly bound federation entry exists.
     const backed = validateCatalogEvidencePacket(
@@ -888,9 +1028,7 @@ describe("adversarial-review regressions", () => {
             federationEvidence: [
               { federation: "IPF", status: "approved-list", scope: "exact-configuration", basis: "Listed.", sourceUrls: [APPROVED_LIST_URL] },
             ],
-            candidateCorrections: [
-              { field: "ipfApproved", proposedValue: true, confidence: "high", sourceUrls: [APPROVED_LIST_URL] },
-            ],
+            candidateCorrections: [federationStatusCorrection({ federation: "IPF", sourceUrls: [APPROVED_LIST_URL] })],
           }),
         ],
       }),
@@ -898,16 +1036,18 @@ describe("adversarial-review regressions", () => {
     expect(backed.hardFailures).toEqual([]);
   });
 
-  it("still allows removing an unsupported federation claim", () => {
+  it("still allows removing an unsupported federation claim, once it names the federation", () => {
     // Nullifying or negating a compliance claim needs no federation backing:
-    // withdrawing an unsupported assertion is always permitted.
+    // withdrawing an unsupported assertion is always permitted, as long as the
+    // correction still says which federation (required by correctionKind
+    // 'federation-status'), since a catalog-field correction can never say that.
     for (const proposedValue of [null, false]) {
       const result = validateCatalogEvidencePacket(
         packet({
           products: [
             product({
               primarySources: [manufacturerSource()],
-              candidateCorrections: [{ field: "ipfApproved", proposedValue, confidence: "high", sourceUrls: [MANUFACTURER_URL] }],
+              candidateCorrections: [federationStatusCorrection({ proposedValue, sourceUrls: [MANUFACTURER_URL] })],
             }),
           ],
         }),

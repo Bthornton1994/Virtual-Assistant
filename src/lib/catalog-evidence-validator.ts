@@ -128,25 +128,16 @@ function declaredEvidenceUrls(product: CatalogEvidenceProduct): Set<string> {
   return urls;
 }
 
-// Catalog fields whose value asserts federation compliance. A correction to one
-// of these is a federation conclusion and must clear the same binding rules as a
-// federationEvidence entry, otherwise candidateCorrections becomes a side door
-// around them.
-//
-// This list is domain configuration: a new catalog must extend it with its own
-// compliance-bearing field names. Matching is case-insensitive and exact.
-export const FEDERATION_BEARING_FIELDS: Record<string, string> = {
-  ipfapproved: "IPF",
-  usaplapproved: "USAPL",
-  cpuapproved: "CPU",
-  uspaapproved: "USPA",
-  ipfapproval: "IPF",
-  usaplapproval: "USAPL",
-};
-
-export function federationForField(field: string): string | null {
-  return FEDERATION_BEARING_FIELDS[field.trim().toLowerCase()] ?? null;
-}
+// The real Loadout Product model carries federation compliance as
+// `approvals: ApprovalOrg[]`, not as per-federation boolean fields. A fixed
+// field-name list (ipfApproved, usaplApproved, ...) never reliably matched
+// that shape — a correction naming the actual field ("approvals") slipped
+// past it entirely, and any new spelling would too. A federation conclusion is
+// now identified structurally, by candidateCorrection.correctionKind, not by
+// guessing from a field name; an ordinary catalog-field correction to this
+// field is rejected outright rather than trusted to carry no compliance
+// meaning.
+const FEDERATION_STRUCTURAL_FIELD = "approvals";
 
 // Which primary-source type can carry which federation conclusion. A status not
 // listed here (unknown, not-applicable) asserts nothing and needs no backing.
@@ -347,16 +338,29 @@ export function validateCatalogEvidencePacket(
         );
       }
 
-      // A correction that asserts federation compliance IS a federation
-      // conclusion. Without this, candidateCorrections would be a side door
-      // around every federation binding rule: propose ipfApproved=true citing a
-      // blog, and none of the primary-source, document-type, accessed-during-run,
-      // or federation-attribution checks would ever run.
-      const assertedFederation = federationForField(correction.field);
-      if (assertedFederation !== null && correction.proposedValue !== null && correction.proposedValue !== false) {
-        if (!boundFederationClaims.has(assertedFederation.toLowerCase())) {
+      // A correction is a federation conclusion if and only if it declares
+      // itself one via correctionKind — never inferred from its field name.
+      // Without this, candidateCorrections would be a side door around every
+      // federation binding rule: propose a catalog-field correction to
+      // "approvals" citing a blog, and none of the primary-source,
+      // document-type, accessed-during-run, or federation-attribution checks
+      // would ever run.
+      if (correction.correctionKind === "catalog-field") {
+        // Unconditional: even nullifying/removing a compliance claim must say
+        // which federation it concerns, which a catalog-field correction to
+        // "approvals" structurally cannot express.
+        if (correction.field.trim().toLowerCase() === FEDERATION_STRUCTURAL_FIELD) {
           hardFailures.push(
-            `Product "${product.productId}" proposes correcting "${correction.field}", which asserts ${assertedFederation} compliance, without a ${assertedFederation} federation evidence entry that passed source binding.`,
+            `Product "${product.productId}" proposes a catalog-field correction to "${correction.field}", which asserts federation approval status. File this as a federation-status correction bound to a validated federation evidence entry instead.`,
+          );
+        }
+      } else if (correction.proposedValue !== null && correction.proposedValue !== false) {
+        // Nullifying or negating a compliance claim needs no federation backing
+        // — withdrawing an unsupported assertion is always permitted, as long
+        // as it still names which federation (required by the schema).
+        if (!boundFederationClaims.has(correction.federation.trim().toLowerCase())) {
+          hardFailures.push(
+            `Product "${product.productId}" proposes a federation-status correction for ${correction.federation} without a ${correction.federation} federation evidence entry that passed source binding.`,
           );
         }
       }
@@ -588,6 +592,10 @@ export type CatalogEvidenceReviewContext = {
   expectedPacketHash: string;
   // Every claim in that frozen packet, with the severity Hermes assigned it.
   claims: PacketClaimDescriptor[];
+  // Every product ID in the frozen packet. A new finding must attach to one of
+  // these — not merely to a product that happens to have a claim — so a
+  // product with zero claimFindings can still receive a new finding.
+  packetProductIds: string[];
   expectedRunId?: string;
   expectedReviewerKey?: string;
 };
@@ -650,6 +658,14 @@ export function validateCatalogEvidenceReview(
     if (!claim) {
       metrics.fabricatedClaimIdCount += 1;
       hardFailures.push(`Review references claimId "${claimReview.claimId}" which does not exist in the frozen Hermes packet.`);
+    } else if (claimReview.severity !== claim.severity) {
+      // The reviewer cannot relabel the severity Hermes already assigned in the
+      // frozen packet. Without this, a rejected high-severity claim could be
+      // recorded here as "low" and slip past anything downstream that keys its
+      // urgency off claimReview.severity rather than the frozen claim.
+      hardFailures.push(
+        `Review claimId "${claimReview.claimId}" declares severity "${claimReview.severity}" but the frozen Hermes claim has severity "${claim.severity}".`,
+      );
     }
 
     const validSources: string[] = [];
@@ -707,7 +723,18 @@ export function validateCatalogEvidenceReview(
     }
   }
 
+  const packetProductIds = new Set(context.packetProductIds);
+  const findingIdCounts = new Map<string, number>();
   review.newFindings.forEach((finding, i) => {
+    // A five-product review must never contain an unattached generic finding:
+    // it must name a product actually in the frozen batch, not an arbitrary or
+    // fabricated one.
+    if (!packetProductIds.has(finding.productId)) {
+      hardFailures.push(
+        `Review newFindings[${i}] references productId "${finding.productId}" which is not in the frozen packet's product set.`,
+      );
+    }
+    findingIdCounts.set(finding.findingId, (findingIdCounts.get(finding.findingId) ?? 0) + 1);
     finding.sourceUrls.forEach((url, j) => {
       const check = validateEvidenceUrl(url);
       if (!check.ok) {
@@ -716,6 +743,11 @@ export function validateCatalogEvidenceReview(
       }
     });
   });
+  for (const [findingId, count] of findingIdCounts) {
+    if (count > 1) {
+      hardFailures.push(`Review contains ${count} new findings with findingId "${findingId}"; findingId must be unique.`);
+    }
+  }
 
   if (metrics.authorityIncidentCount > 0) {
     hardFailures.push(

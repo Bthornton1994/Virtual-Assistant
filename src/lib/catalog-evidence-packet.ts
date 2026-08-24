@@ -130,14 +130,46 @@ const federationEvidenceSchema = z
   .strict();
 export type FederationEvidence = z.infer<typeof federationEvidenceSchema>;
 
-const candidateCorrectionSchema = z
+// A correction is structurally typed by what kind of conclusion it is, not
+// inferred later from its field name. 'catalog-field' is an ordinary,
+// non-compliance catalog value change. 'federation-status' is a federation
+// compliance conclusion — for Loadout, correcting the real `approvals:
+// ApprovalOrg[]` field — and must bind to an already-validated
+// federationEvidence entry for that federation, the same as any other
+// federation conclusion. Matching field names such as "ipfApproved" never
+// reliably identified a federation conclusion; the discriminant does.
+export const CANDIDATE_CORRECTION_KINDS = ["catalog-field", "federation-status"] as const;
+export type CandidateCorrectionKind = (typeof CANDIDATE_CORRECTION_KINDS)[number];
+
+const candidateCorrectionSharedFields = {
+  field: nonEmptyString,
+  proposedValue: claimValueSchema,
+  confidence: confidenceLevelSchema,
+  sourceUrls: z.array(urlFieldSchema),
+  // Optional link back to the specific claim this correction addresses.
+  relatedClaimId: identifierString.nullable(),
+};
+
+const catalogFieldCorrectionSchema = z
   .object({
-    field: nonEmptyString,
-    proposedValue: claimValueSchema,
-    confidence: confidenceLevelSchema,
-    sourceUrls: z.array(urlFieldSchema),
+    correctionKind: z.literal("catalog-field"),
+    federation: z.null(),
+    ...candidateCorrectionSharedFields,
   })
   .strict();
+
+const federationStatusCorrectionSchema = z
+  .object({
+    correctionKind: z.literal("federation-status"),
+    federation: nonEmptyString,
+    ...candidateCorrectionSharedFields,
+  })
+  .strict();
+
+const candidateCorrectionSchema = z.discriminatedUnion("correctionKind", [
+  catalogFieldCorrectionSchema,
+  federationStatusCorrectionSchema,
+]);
 export type CandidateCorrection = z.infer<typeof candidateCorrectionSchema>;
 
 const escalationSchema = z

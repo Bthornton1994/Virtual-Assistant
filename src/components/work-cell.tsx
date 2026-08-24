@@ -100,7 +100,7 @@ export function WorkCellSection({
           {manifest ? <Badge tone="good">frozen</Badge> : <Badge>not frozen</Badge>}
         </div>
         {manifest ? (
-          <div className="mt-3 space-y-1 text-sm">
+          <div className="mt-3 space-y-3 text-sm">
             <p>
               <span className="text-muted">Market: </span>
               {manifest.market}
@@ -110,7 +110,26 @@ export function WorkCellSection({
               {manifest.expectedProductIds.join(", ")}
             </p>
             <p className="break-all font-mono text-[11px] text-muted">input {shortHash(manifest.inputHash)}</p>
-            <p className="mt-2 text-xs text-muted">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted">
+                Frozen input records ({manifest.inputRecords.length})
+              </p>
+              <Textarea
+                readOnly
+                rows={6}
+                className="mt-1 font-mono text-[11px]"
+                value={JSON.stringify(
+                  Object.fromEntries(manifest.inputRecords.map((entry) => [entry.productId, entry.record])),
+                  null,
+                  2,
+                )}
+              />
+              <p className="mt-1 text-xs text-muted">
+                Select all and copy this exact JSON to hand to Hermes, then to Grok. Both executors must work from these
+                frozen records, not a live repository lookup.
+              </p>
+            </div>
+            <p className="text-xs text-muted">
               Every later stage validates against this batch automatically. It cannot be retyped or substituted per stage.
             </p>
           </div>
@@ -127,6 +146,18 @@ export function WorkCellSection({
             <Field label="Market"><Input name="market" required placeholder="US" /></Field>
             <Field label="Expected product IDs" hint="One per line or comma separated. This becomes immutable run provenance.">
               <Textarea name="expectedProductIds" required rows={4} placeholder={"ks-sbd-7mm\nbelt-sbd-13mm"} />
+            </Field>
+            <Field
+              label="Frozen input records"
+              hint="One JSON object mapping each expected product ID to its exact catalog record. This is what gets frozen and handed to both executors — not a live repository lookup performed later."
+            >
+              <Textarea
+                name="inputRecords"
+                required
+                rows={6}
+                className="font-mono text-[11px]"
+                placeholder={'{\n  "ks-sbd-7mm": { "thickness": "7mm" },\n  "belt-sbd-13mm": { "width": "4in" }\n}'}
+              />
             </Field>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Prepare executor key" hint="Must be a registered researcher.">

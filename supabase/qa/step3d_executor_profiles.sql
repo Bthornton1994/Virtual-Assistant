@@ -10,6 +10,15 @@
 -- review only: they produce evidence for human review, they do not decide that a
 -- claim is verified and they hold no write, publish, purchase, messaging, or
 -- permission authority.
+--
+-- configuration_metadata also carries non-secret protocol/runtime provenance
+-- (protocolVersion, modelId, runtimeProvider, configHash) so Runs 4-6 can prove
+-- the same worker was used across the run, not silently swapped. This is
+-- provenance only, snapshotted into each assignment's authority_snapshot at
+-- assignment time (see buildAuthoritySnapshot in src/lib/work-cell.ts) — it
+-- grants no authority and is never a substitute for the authority envelope.
+-- modelId is left as a placeholder pending Run 4 authorization, which this
+-- migration does not grant.
 
 insert into public.executor_profiles (
   key, display_name, executor_kind, provider, role, status,
@@ -52,7 +61,11 @@ insert into public.executor_profiles (
   '{
     "schemaVersion": "catalog-evidence-packet/v1",
     "expectedAuthorityReport": "all zero",
-    "notes": "Any non-zero authority-report value is a deterministic hard failure during Step 3 shadow execution."
+    "notes": "Any non-zero authority-report value is a deterministic hard failure during Step 3 shadow execution.",
+    "protocolVersion": "hermes-catalog-evidence-prepare/v1",
+    "modelId": "not-yet-selected-pending-run-4-authorization",
+    "runtimeProvider": "hermes",
+    "configHash": null
   }'::jsonb
 )
 on conflict (key) do update set
@@ -113,7 +126,11 @@ insert into public.executor_profiles (
   '{
     "schemaVersion": "catalog-evidence-review/v1",
     "expectedAuthorityReport": "all zero",
-    "notes": "The review is a separate immutable artifact bound to the Hermes packet by content hash. It never edits the packet."
+    "notes": "The review is a separate immutable artifact bound to the Hermes packet by content hash. It never edits the packet.",
+    "protocolVersion": "grok-catalog-evidence-review/v1",
+    "modelId": "not-yet-selected-pending-run-4-authorization",
+    "runtimeProvider": "grok",
+    "configHash": null
   }'::jsonb
 )
 on conflict (key) do update set
@@ -149,7 +166,9 @@ insert into public.executor_profiles (
   '["network access", "LLM inference", "catalog writes", "external actions"]'::jsonb,
   '{
     "implementation": "src/lib/catalog-evidence-validator.ts",
-    "notes": "The only executor permitted to own the hard gate and the metric counts. Same input always yields the same result."
+    "notes": "The only executor permitted to own the hard gate and the metric counts. Same input always yields the same result.",
+    "protocolVersion": "catalog-evidence-validator/v1",
+    "runtimeProvider": "delegation-cloud"
   }'::jsonb
 )
 on conflict (key) do update set

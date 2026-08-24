@@ -275,82 +275,142 @@ function assertProfileFitsPhase(profile: ExecutorProfile, phase: ExecutorPhase) 
   }
 }
 
-async function createAssignment(
+/**
+ * Non-secret provenance a future run can compare itself against to prove the
+ * worker was not silently swapped between runs: executor identity and role,
+ * authority ceiling, and whatever protocol/model/config version the profile
+ * declares. Never a credential, and never a new authority mechanism — the
+ * authority envelope and forbidden-actions list stay exactly what they were.
+ */
+function buildAuthoritySnapshot(profile: ExecutorProfile): Record<string, unknown> {
+  return {
+    executorKey: profile.key,
+    executorKind: profile.executorKind,
+    executorRole: profile.role,
+    profileStatus: profile.status,
+    authorityEnvelope: profile.authorityEnvelope,
+    forbiddenActions: profile.forbiddenActions,
+    configurationMetadata: profile.configurationMetadata,
+  };
+}
+
+/**
+ * Persists one phase's evidence artifact and its executor assignment together,
+ * atomically, via the record_work_cell_phase_artifact RPC.
+ *
+ * Before this, the artifact insert and the assignment insert were two
+ * independent statements: if the second failed (a race on the (run_id, phase)
+ * unique constraint, a trigger exception, a dropped connection) the first had
+ * already committed, leaving a durable "accepted" artifact with no assignment
+ * behind it. The RPC wraps both inserts in one function call, so one implicit
+ * transaction covers both — nothing partial is ever left behind.
+ */
+async function persistPhaseArtifact(
   db: SupabaseClient,
   actor: Actor,
   run: { id: string; organization_id: string },
   profile: ExecutorProfile,
   input: {
+    kind: string;
+    summary: string;
+    sourceUri?: string | null;
+    payload: Record<string, unknown>;
+    contentHash: string;
     phase: ExecutorPhase;
-    status: RunExecutorAssignment["status"];
+    assignmentStatus: RunExecutorAssignment["status"];
     inputArtifactId?: string | null;
-    outputArtifactId?: string | null;
     humanMinutes?: number;
     aiCostMicros?: number;
     toolCostMicros?: number;
-    metadata?: Record<string, unknown>;
+    assignmentMetadata?: Record<string, unknown>;
   },
-) {
+): Promise<{ artifactId: string; assignmentId: string }> {
   assertProfileFitsPhase(profile, input.phase);
 
   const existing = await getAssignment(db, run.id, input.phase);
   if (existing) {
     throw new DomainError(
-      `The ${input.phase} phase of this run is already assigned. A second ${input.phase} pass belongs to a new Gauntlet attempt, not an overwrite.`,
+      `The ${input.phase} phase of this run already has a recorded attempt (status: ${existing.status}). A retry belongs to a new Gauntlet attempt, not an overwrite.`,
     );
   }
 
-  const { data, error } = await db
-    .from("run_executor_assignments")
-    .insert({
-      organization_id: run.organization_id,
-      run_id: run.id,
-      executor_profile_id: profile.id,
-      phase: input.phase,
-      status: input.status,
-      authority_snapshot: {
-        executorKey: profile.key,
-        executorKind: profile.executorKind,
-        executorRole: profile.role,
-        profileStatus: profile.status,
-        authorityEnvelope: profile.authorityEnvelope,
-        forbiddenActions: profile.forbiddenActions,
-      },
-      input_artifact_id: input.inputArtifactId ?? null,
-      output_artifact_id: input.outputArtifactId ?? null,
-      human_minutes: input.humanMinutes ?? 0,
-      ai_cost_micros: Math.round(input.aiCostMicros ?? 0),
-      tool_cost_micros: Math.round(input.toolCostMicros ?? 0),
-      metadata: input.metadata ?? {},
-      created_by: actor.id,
-    })
-    .select("*")
-    .single();
+  const { data, error } = await db.rpc("record_work_cell_phase_artifact", {
+    p_run_id: run.id,
+    p_kind: input.kind,
+    p_summary: input.summary,
+    p_source_uri: input.sourceUri ?? null,
+    p_content_hash: input.contentHash,
+    p_payload: input.payload,
+    p_executor_profile_id: profile.id,
+    p_phase: input.phase,
+    p_assignment_status: input.assignmentStatus,
+    p_authority_snapshot: buildAuthoritySnapshot(profile),
+    p_input_artifact_id: input.inputArtifactId ?? null,
+    p_human_minutes: input.humanMinutes ?? 0,
+    p_ai_cost_micros: Math.round(input.aiCostMicros ?? 0),
+    p_tool_cost_micros: Math.round(input.toolCostMicros ?? 0),
+    p_assignment_metadata: input.assignmentMetadata ?? {},
+  });
   if (error) throw new DomainError(error.message);
-  return mapAssignment(data as Record<string, unknown>);
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as Array<{
+    artifact_id: string;
+    assignment_id: string;
+  }>;
+  const row = rows[0];
+  if (!row?.artifact_id || !row?.assignment_id) {
+    throw new DomainError("The work-cell phase RPC did not return the persisted artifact and assignment.");
+  }
+
+  await audit(db, actor, run.organization_id, "execution.evidence_added", "evidence_artifact", row.artifact_id, {
+    runId: run.id,
+    phase: input.phase,
+    assignmentStatus: input.assignmentStatus,
+    executorKey: profile.key,
+    contentHash: input.contentHash,
+  });
+
+  return { artifactId: row.artifact_id, assignmentId: row.assignment_id };
 }
 
 /**
- * Records a rejected executor output as immutable, clearly-untrusted evidence.
+ * Records a rejected executor output as immutable, clearly-untrusted evidence,
+ * AND as a failed phase assignment bound to that rejection artifact.
  *
  * The rejected payload never becomes a CatalogEvidencePacketV1 or
  * CatalogEvidenceReviewV1 artifact, so no later stage can mistake it for
  * accepted evidence. But the attempt, its hash, and why it failed stay
- * auditable, because a rejected executor run is exactly the raw material the
+ * auditable — including human/AI/tool cost, which a failed executor run still
+ * spent — because a rejected executor run is exactly the raw material the
  * Gauntlet needs for failure classification and executor economics.
+ *
+ * Recording the failed assignment here, not just the artifact, is what makes
+ * "one executor execution per phase per Gauntlet attempt" real: the
+ * unique(run_id, phase) constraint on run_executor_assignments then refuses a
+ * second attempt at the same phase within this attempt. A retry belongs to a
+ * new Gauntlet attempt.
  */
 async function recordRejectedExecutorOutput(
   db: SupabaseClient,
   actor: Actor,
   run: { id: string; organization_id: string },
-  input: { phase: ExecutorPhase; declaredExecutorKey: string; raw: string; hardFailures: string[]; metrics: Record<string, number> },
+  input: {
+    phase: ExecutorPhase;
+    profile: ExecutorProfile;
+    raw: string;
+    hardFailures: string[];
+    metrics: Record<string, number>;
+    inputArtifactId?: string | null;
+    humanMinutes?: number;
+    aiCostMicros?: number;
+    toolCostMicros?: number;
+  },
 ) {
   const rawHash = sha256Text(input.raw);
   const payload = {
     schemaVersion: WORK_CELL_REJECTION_SCHEMA_VERSION,
     runId: run.id,
     phase: input.phase,
-    declaredExecutorKey: input.declaredExecutorKey,
+    declaredExecutorKey: input.profile.key,
     rawOutputHash: rawHash,
     rawOutputExcerpt: input.raw.slice(0, REJECTED_OUTPUT_EXCERPT_LIMIT),
     rawOutputTruncated: input.raw.length > REJECTED_OUTPUT_EXCERPT_LIMIT,
@@ -358,29 +418,57 @@ async function recordRejectedExecutorOutput(
     hardFailures: input.hardFailures,
     metrics: input.metrics,
   };
-  const artifact = await insertEvidenceArtifact(db, actor, run, {
+  const contentHash = sha256Hex(payload);
+  const { artifactId } = await persistPhaseArtifact(db, actor, run, input.profile, {
     kind: "other",
     summary: `REJECTED ${input.phase} output (${input.hardFailures.length} hard failure(s)). Not accepted as evidence.`,
     payload,
-    contentHash: sha256Hex(payload),
+    contentHash,
+    phase: input.phase,
+    assignmentStatus: "failed",
+    inputArtifactId: input.inputArtifactId ?? null,
+    humanMinutes: input.humanMinutes,
+    aiCostMicros: input.aiCostMicros,
+    toolCostMicros: input.toolCostMicros,
+    assignmentMetadata: { rawOutputHash: rawHash, hardFailureCount: input.hardFailures.length },
   });
-  await audit(db, actor, run.organization_id, "execution.evidence_added", "evidence_artifact", String(artifact.id), {
+  await audit(db, actor, run.organization_id, "execution.evidence_added", "evidence_artifact", artifactId, {
     runId: run.id,
     schemaVersion: WORK_CELL_REJECTION_SCHEMA_VERSION,
     phase: input.phase,
     rawOutputHash: rawHash,
     rejected: true,
   });
-  return String(artifact.id);
+  return artifactId;
 }
 
 // --- Frozen input manifest ---------------------------------------------------------
 
+/**
+ * Loads and fully verifies the frozen input manifest. Two distinct hashes are
+ * checked, for two distinct kinds of tampering: `inputHash` is the hash of the
+ * frozen task/input contract itself (checked by validateInputManifest, via
+ * inputManifestHashSource), while the artifact's own `content_hash` is the
+ * hash of the complete stored manifest payload as written — the same
+ * tamper-detection every other typed artifact in this run gets. A manifest
+ * whose runId does not match this run is rejected outright: without that
+ * check, a manifest frozen for a different run could be read here and its
+ * inputHash would still self-consistently validate.
+ */
 async function loadInputManifest(db: SupabaseClient, runId: string) {
   const row = await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION);
   if (!row) return null;
   const result = validateInputManifest(row.payload, sha256Hex);
   if (!result.ok) throw new DomainError(`The frozen input manifest for this run is invalid: ${result.failures.join(" ")}`);
+  if (result.manifest.runId !== runId) {
+    throw new DomainError(
+      `The frozen input manifest for this run belongs to a different run ("${result.manifest.runId}"). Its inputHash cannot be trusted for this run.`,
+    );
+  }
+  const contentHashCheck = checkPayloadHash(row.payload, String(row.content_hash ?? ""), "input manifest");
+  if (contentHashCheck.tampered) {
+    throw new DomainError(`The frozen input manifest for this run is invalid: ${contentHashCheck.failure}`);
+  }
   return { id: String(row.id), contentHash: String(row.content_hash ?? ""), manifest: result.manifest };
 }
 
@@ -401,7 +489,13 @@ async function requireInputManifest(db: SupabaseClient, runId: string) {
 export async function freezeWorkCellInputManifest(
   actor: Actor,
   runId: string,
-  input: { market: string; expectedProductIds: string[]; prepareExecutorKey: string; reviewExecutorKey: string },
+  input: {
+    market: string;
+    expectedProductIds: string[];
+    inputRecords: Array<{ productId: string; record: Record<string, unknown> }>;
+    prepareExecutorKey: string;
+    reviewExecutorKey: string;
+  },
 ) {
   managerOnly(actor);
   const db = await persistentDb(actor);
@@ -420,9 +514,8 @@ export async function freezeWorkCellInputManifest(
   const reviewExecutorKey = input.reviewExecutorKey.trim();
   if (!market) throw new DomainError("The input manifest requires a market.");
   if (!expectedProductIds.length) throw new DomainError("The input manifest requires at least one expected product ID.");
-  const duplicates = expectedProductIds.filter((id, i) => expectedProductIds.indexOf(id) !== i);
-  if (duplicates.length) {
-    throw new DomainError(`The input manifest lists duplicate product IDs: ${[...new Set(duplicates)].join(", ")}.`);
+  if (!input.inputRecords.length) {
+    throw new DomainError("The input manifest requires a frozen input record for every expected product.");
   }
 
   // Both executors must already be registered and suitable for their phase, so a
@@ -435,18 +528,28 @@ export async function freezeWorkCellInputManifest(
     throw new DomainError("The prepare and review phases must be filled by different executors; a reviewer cannot review its own output.");
   }
 
-  const manifest: CatalogEvidenceInputManifestV1 = {
+  const inputRecords = input.inputRecords;
+  const manifestCandidate = {
     schemaVersion: CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION,
     runId,
     market,
     expectedProductIds,
+    inputRecords,
     prepareExecutorKey,
     reviewExecutorKey,
     createdAt: new Date().toISOString(),
     inputHash: sha256Hex(
-      inputManifestHashSource({ runId, market, expectedProductIds, prepareExecutorKey, reviewExecutorKey }),
+      inputManifestHashSource({ runId, market, expectedProductIds, inputRecords, prepareExecutorKey, reviewExecutorKey }),
     ),
   };
+  // Re-uses the same shape/consistency checks a later read applies (duplicate
+  // product IDs, missing/unexpected input records, self-review), so a manifest
+  // this function will not itself accept can never be frozen in the first place.
+  const validated = validateInputManifest(manifestCandidate, sha256Hex);
+  if (!validated.ok) {
+    throw new DomainError(`The input manifest is invalid: ${validated.failures.join(" ")}`);
+  }
+  const manifest: CatalogEvidenceInputManifestV1 = validated.manifest;
 
   const payload = manifest as unknown as Record<string, unknown>;
   const artifact = await insertEvidenceArtifact(db, actor, run, {
@@ -497,10 +600,7 @@ export async function ingestCatalogEvidencePacket(
   // input at ingest time: an operator must not be able to relabel one executor's
   // output as another's after seeing it.
   const profile = await getProfileByKey(db, manifest.prepareExecutorKey);
-  // Checked before any write. The artifact insert and the assignment insert are
-  // separate transactions, so a profile rejected at assignment time would leave a
-  // durable packet with no assignment — a run that looks like it has evidence but
-  // reads as "not a work-cell run" to every guard.
+  // Checked before any write, so an unfit profile never reaches the persistence RPC.
   assertProfileFitsPhase(profile, "prepare");
 
   const parsed = parseRawExecutorJson(input.raw);
@@ -513,10 +613,13 @@ export async function ingestCatalogEvidencePacket(
     };
     await recordRejectedExecutorOutput(db, actor, run, {
       phase: "prepare",
-      declaredExecutorKey: profile.key,
+      profile,
       raw: input.raw,
       hardFailures: validation.hardFailures,
       metrics: validation.metrics as unknown as Record<string, number>,
+      humanMinutes: input.humanMinutes,
+      aiCostMicros: input.aiCostMicros,
+      toolCostMicros: input.toolCostMicros,
     });
     return { persisted: false, contentHash: null, artifactId: null, validation };
   }
@@ -530,10 +633,13 @@ export async function ingestCatalogEvidencePacket(
   if (!validation.hardGatePass) {
     await recordRejectedExecutorOutput(db, actor, run, {
       phase: "prepare",
-      declaredExecutorKey: profile.key,
+      profile,
       raw: input.raw,
       hardFailures: validation.hardFailures,
       metrics: validation.metrics as unknown as Record<string, number>,
+      humanMinutes: input.humanMinutes,
+      aiCostMicros: input.aiCostMicros,
+      toolCostMicros: input.toolCostMicros,
     });
     return { persisted: false, contentHash: null, artifactId: null, validation };
   }
@@ -541,32 +647,21 @@ export async function ingestCatalogEvidencePacket(
   const packet = parsed.value as CatalogEvidencePacketV1;
   const contentHash = hashCatalogEvidencePacket(packet);
 
-  const artifact = await insertEvidenceArtifact(db, actor, run, {
+  const { artifactId } = await persistPhaseArtifact(db, actor, run, profile, {
     kind: "source",
     summary: `Catalog evidence packet v1 from ${profile.key} covering ${packet.products.length} product(s).`,
     payload: packet as unknown as Record<string, unknown>,
     contentHash,
-  });
-
-  await createAssignment(db, actor, run, profile, {
     phase: "prepare",
-    status: "completed",
+    assignmentStatus: "completed",
     inputArtifactId: null,
-    outputArtifactId: String(artifact.id),
     humanMinutes: input.humanMinutes,
     aiCostMicros: input.aiCostMicros,
     toolCostMicros: input.toolCostMicros,
-    metadata: { packetHash: contentHash, productCount: validation.metrics.productCount, inputHash: manifest.inputHash },
+    assignmentMetadata: { packetHash: contentHash, productCount: validation.metrics.productCount, inputHash: manifest.inputHash },
   });
 
-  await audit(db, actor, run.organization_id, "execution.evidence_added", "evidence_artifact", String(artifact.id), {
-    runId,
-    schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
-    executorKey: profile.key,
-    contentHash,
-  });
-
-  return { persisted: true, validation, contentHash, artifactId: String(artifact.id) };
+  return { persisted: true, validation, contentHash, artifactId };
 }
 
 export type ReviewIngestResult = {
@@ -608,6 +703,7 @@ export async function ingestCatalogEvidenceReview(
   const context = {
     expectedPacketHash,
     claims: collectPacketClaims(packet),
+    packetProductIds: packet.products.map((product) => product.productId),
     expectedRunId: runId,
     expectedReviewerKey: profile.key,
   };
@@ -622,10 +718,14 @@ export async function ingestCatalogEvidenceReview(
     };
     await recordRejectedExecutorOutput(db, actor, run, {
       phase: "review",
-      declaredExecutorKey: profile.key,
+      profile,
       raw: input.raw,
       hardFailures: validation.hardFailures,
       metrics: validation.metrics as unknown as Record<string, number>,
+      inputArtifactId: String(packetRow.id),
+      humanMinutes: input.humanMinutes,
+      aiCostMicros: input.aiCostMicros,
+      toolCostMicros: input.toolCostMicros,
     });
     return { persisted: false, contentHash: null, artifactId: null, expectedPacketHash, validation };
   }
@@ -634,10 +734,14 @@ export async function ingestCatalogEvidenceReview(
   if (!validation.hardGatePass) {
     await recordRejectedExecutorOutput(db, actor, run, {
       phase: "review",
-      declaredExecutorKey: profile.key,
+      profile,
       raw: input.raw,
       hardFailures: validation.hardFailures,
       metrics: validation.metrics as unknown as Record<string, number>,
+      inputArtifactId: String(packetRow.id),
+      humanMinutes: input.humanMinutes,
+      aiCostMicros: input.aiCostMicros,
+      toolCostMicros: input.toolCostMicros,
     });
     return { persisted: false, contentHash: null, artifactId: null, expectedPacketHash, validation };
   }
@@ -645,33 +749,21 @@ export async function ingestCatalogEvidenceReview(
   const reviewPacket = parsed.value as CatalogEvidenceReviewV1;
   const contentHash = sha256Hex(reviewPacket);
 
-  const artifact = await insertEvidenceArtifact(db, actor, run, {
+  const { artifactId } = await persistPhaseArtifact(db, actor, run, profile, {
     kind: "source",
     summary: `Independent catalog evidence review v1 from ${profile.key} covering ${reviewPacket.claimReviews.length} claim(s).`,
     payload: reviewPacket as unknown as Record<string, unknown>,
     contentHash,
-  });
-
-  await createAssignment(db, actor, run, profile, {
     phase: "review",
-    status: "completed",
+    assignmentStatus: "completed",
     inputArtifactId: String(packetRow.id),
-    outputArtifactId: String(artifact.id),
     humanMinutes: input.humanMinutes,
     aiCostMicros: input.aiCostMicros,
     toolCostMicros: input.toolCostMicros,
-    metadata: { reviewHash: contentHash, reviewedPacketHash: expectedPacketHash },
+    assignmentMetadata: { reviewHash: contentHash, reviewedPacketHash: expectedPacketHash },
   });
 
-  await audit(db, actor, run.organization_id, "execution.evidence_added", "evidence_artifact", String(artifact.id), {
-    runId,
-    schemaVersion: CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION,
-    executorKey: profile.key,
-    contentHash,
-    reviewedPacketHash: expectedPacketHash,
-  });
-
-  return { persisted: true, validation, contentHash, artifactId: String(artifact.id), expectedPacketHash };
+  return { persisted: true, validation, contentHash, artifactId, expectedPacketHash };
 }
 
 // --- Deterministic validation ------------------------------------------------------
@@ -688,10 +780,54 @@ export type WorkCellValidationReport = {
 };
 
 /**
+ * Describes why a phase's artifact is not backed by a matching completed
+ * assignment, or returns null when the binding is sound. Checked against the
+ * FROZEN manifest's executor keys, never against whatever assignment happens
+ * to exist — an accepted artifact with no assignment, an assignment for the
+ * wrong executor, or an assignment pointed at a different artifact must all
+ * refuse final validation rather than silently pass with an unbound key.
+ */
+async function describeAssignmentBindingFailure(
+  db: SupabaseClient,
+  assignment: RunExecutorAssignment | null,
+  expected: {
+    phase: ExecutorPhase;
+    expectedExecutorKey: string;
+    expectedInputArtifactId?: string;
+    expectedOutputArtifactId: string;
+  },
+): Promise<string | null> {
+  if (!assignment || assignment.status !== "completed") {
+    return `No completed ${expected.phase} executor assignment is bound to this run; a frozen artifact without a matching assignment cannot be validated.`;
+  }
+  const profile = await getProfileById(db, assignment.executorProfileId);
+  if (profile.key !== expected.expectedExecutorKey) {
+    return `The ${expected.phase} assignment was completed by executor "${profile.key}", not the frozen manifest's "${expected.expectedExecutorKey}".`;
+  }
+  if (expected.expectedInputArtifactId !== undefined && assignment.inputArtifactId !== expected.expectedInputArtifactId) {
+    return `The ${expected.phase} assignment's input artifact does not match this run's frozen evidence packet.`;
+  }
+  if (assignment.outputArtifactId !== expected.expectedOutputArtifactId) {
+    return `The ${expected.phase} assignment's output artifact does not match this run's frozen ${expected.phase === "prepare" ? "evidence packet" : "independent review"}.`;
+  }
+  return null;
+}
+
+/**
  * Recomputes the whole work-cell verdict from the stored artifacts. Reads the
  * expected batch from the frozen manifest, re-derives both artifact hashes from
  * their payloads, and re-runs both validators. A tampered artifact fails here
  * rather than riding a stale pass.
+ *
+ * Validation ALWAYS checks against the frozen manifest's prepareExecutorKey and
+ * reviewExecutorKey — never conditionally against whatever assignment happens
+ * to exist. Deriving the expected key from an optional assignment lookup meant
+ * a run with an accepted packet but no assignment validated with no executor
+ * check at all (`expectedExecutorKey: undefined`), which the validator treats
+ * as "don't check". This also requires each phase's completed assignment to
+ * exist and to be bound to the exact artifact being validated, so an accepted
+ * packet or review with no matching assignment hard-fails here instead of
+ * validating as if the work cell were complete.
  */
 async function computeValidationReport(
   db: SupabaseClient,
@@ -704,13 +840,10 @@ async function computeValidationReport(
   const packet = packetRow.payload as CatalogEvidencePacketV1;
   const storedPacketHash = String(packetRow.content_hash ?? "");
 
-  const prepareAssignment = await getAssignment(db, runId, "prepare");
-  const preparedBy = prepareAssignment ? await getProfileById(db, prepareAssignment.executorProfileId) : null;
-
   const packetResult = validateCatalogEvidencePacket(packet, {
     expectedProductIds: manifest.expectedProductIds,
     expectedRunId: runId,
-    expectedExecutorKey: preparedBy?.key,
+    expectedExecutorKey: manifest.prepareExecutorKey,
     expectedMarket: manifest.market,
   });
 
@@ -720,22 +853,44 @@ async function computeValidationReport(
     packetResult.hardGatePass = false;
   }
 
+  const prepareAssignment = await getAssignment(db, runId, "prepare");
+  const prepareBindingFailure = await describeAssignmentBindingFailure(db, prepareAssignment, {
+    phase: "prepare",
+    expectedExecutorKey: manifest.prepareExecutorKey,
+    expectedOutputArtifactId: String(packetRow.id),
+  });
+  if (prepareBindingFailure) {
+    packetResult.hardFailures.push(prepareBindingFailure);
+    packetResult.hardGatePass = false;
+  }
+
   const reviewRow = await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION);
   let reviewResult: ValidationResult<CatalogEvidenceReviewMetrics> | null = null;
   if (reviewRow) {
-    const reviewAssignment = await getAssignment(db, runId, "review");
-    const reviewedBy = reviewAssignment ? await getProfileById(db, reviewAssignment.executorProfileId) : null;
     reviewResult = validateCatalogEvidenceReview(reviewRow.payload, {
       expectedPacketHash: storedPacketHash,
       claims: collectPacketClaims(packet),
+      packetProductIds: packet.products.map((product) => product.productId),
       expectedRunId: runId,
-      expectedReviewerKey: reviewedBy?.key,
+      expectedReviewerKey: manifest.reviewExecutorKey,
     });
 
     const storedReviewHash = String(reviewRow.content_hash ?? "");
     const reviewHashCheck = checkPayloadHash(reviewRow.payload, storedReviewHash, "review");
     if (reviewHashCheck.tampered) {
       reviewResult.hardFailures.push(reviewHashCheck.failure);
+      reviewResult.hardGatePass = false;
+    }
+
+    const reviewAssignment = await getAssignment(db, runId, "review");
+    const reviewBindingFailure = await describeAssignmentBindingFailure(db, reviewAssignment, {
+      phase: "review",
+      expectedExecutorKey: manifest.reviewExecutorKey,
+      expectedInputArtifactId: String(packetRow.id),
+      expectedOutputArtifactId: String(reviewRow.id),
+    });
+    if (reviewBindingFailure) {
+      reviewResult.hardFailures.push(reviewBindingFailure);
       reviewResult.hardGatePass = false;
     }
   }
@@ -778,25 +933,15 @@ export async function runWorkCellValidation(actor: Actor, runId: string) {
   const payload = report as unknown as Record<string, unknown>;
   const contentHash = sha256Hex(payload);
 
-  const artifact = await insertEvidenceArtifact(db, actor, run, {
+  await persistPhaseArtifact(db, actor, run, profile, {
     kind: "test",
     summary: `Deterministic work-cell validation: ${report.gate.hardGatePass ? "hard gate passed" : "hard gate FAILED"}.`,
     payload,
     contentHash,
-  });
-
-  await createAssignment(db, actor, run, profile, {
     phase: "validate",
-    status: "completed",
+    assignmentStatus: "completed",
     inputArtifactId: packetArtifactId,
-    outputArtifactId: String(artifact.id),
-    metadata: { hardGatePass: report.gate.hardGatePass, packetHash: report.packetHash, reviewHash: report.reviewHash },
-  });
-
-  await audit(db, actor, run.organization_id, "execution.evidence_added", "evidence_artifact", String(artifact.id), {
-    runId,
-    schemaVersion: WORK_CELL_VALIDATION_SCHEMA_VERSION,
-    hardGatePass: report.gate.hardGatePass,
+    assignmentMetadata: { hardGatePass: report.gate.hardGatePass, packetHash: report.packetHash, reviewHash: report.reviewHash },
   });
 
   return report;
@@ -839,6 +984,24 @@ export async function recordWorkCellGauntletReviews(actor: Actor, runId: string)
   if (!validateAssignment || validateAssignment.status !== "completed" || !validateAssignment.outputArtifactId) {
     throw new DomainError(
       "Deterministic work-cell validation has not completed for this run, so its verdict cannot be recorded. Validation runs while the run is in progress.",
+    );
+  }
+  // The reserved reviewer_ref is bound at the database level to a completed
+  // validate assignment's output artifact (see reserve_work_cell_reviewer_ref).
+  // Checking the same binding here, before writing anything, turns a DB-trigger
+  // exception into a clear application error and confirms the assignment
+  // belongs to the registered validator specifically, not merely to some
+  // deterministic executor.
+  const validateProfile = await getProfileById(db, validateAssignment.executorProfileId);
+  if (validateProfile.key !== VALIDATOR_EXECUTOR_KEY) {
+    throw new DomainError(
+      `The validate phase of this run was completed by executor "${validateProfile.key}", not the registered validator "${VALIDATOR_EXECUTOR_KEY}". The work-cell verdict can only be recorded over the registered validator's own output.`,
+    );
+  }
+  const validationRow = await loadTypedArtifact(db, runId, WORK_CELL_VALIDATION_SCHEMA_VERSION);
+  if (!validationRow || String(validationRow.id) !== validateAssignment.outputArtifactId) {
+    throw new DomainError(
+      "The validate assignment's recorded output does not match this run's validation artifact, so the work-cell verdict cannot be recorded.",
     );
   }
 

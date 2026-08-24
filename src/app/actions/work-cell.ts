@@ -46,6 +46,32 @@ function assertAccepted(result: { persisted: boolean; validation: { hardFailures
   throw new Error(`${label} was rejected and not stored as evidence. ${detail}${more}`);
 }
 
+/**
+ * Input records are pasted as one JSON object keyed by product ID, mapping
+ * each to its exact frozen catalog record — the same shape an operator can
+ * copy straight out of the Loadout repository, rather than one record per
+ * form field.
+ */
+function parseInputRecords(formData: FormData): Array<{ productId: string; record: Record<string, unknown> }> {
+  const raw = String(formData.get("inputRecords") || "").trim();
+  if (!raw) throw new Error("Frozen input records are required: paste the exact catalog record for every expected product.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Frozen input records are not valid JSON: ${(error as Error).message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Frozen input records must be a JSON object mapping each product ID to its catalog record.");
+  }
+  return Object.entries(parsed as Record<string, unknown>).map(([productId, record]) => {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      throw new Error(`The frozen input record for product ID "${productId}" must be a JSON object.`);
+    }
+    return { productId, record: record as Record<string, unknown> };
+  });
+}
+
 export async function freezeWorkCellInputManifestAction(formData: FormData) {
   const actor = await requireOps();
   const runId = String(formData.get("runId") || "");
@@ -56,6 +82,7 @@ export async function freezeWorkCellInputManifestAction(formData: FormData) {
         .split(/[\n,]/)
         .map((value) => value.trim())
         .filter(Boolean),
+      inputRecords: parseInputRecords(formData),
       prepareExecutorKey: String(formData.get("prepareExecutorKey") || ""),
       reviewExecutorKey: String(formData.get("reviewExecutorKey") || ""),
     });

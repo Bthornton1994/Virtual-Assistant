@@ -67,7 +67,7 @@ No `catalog_evidence_packets` table exists. Both typed artifacts are ordinary ro
 
 ### New schema
 
-`supabase/migrations/20260823120000_step3d_work_cell.sql`
+`supabase/migrations/20260823120000_step3d_work_cell.sql`, hardened by `20260824090000_step3d_work_cell_hardening.sql` and `20260824180000_step3d_work_cell_provenance.sql` (see [Round-three hardening](#round-three-hardening-content-bound-verdicts-atomic-phase-persistence-frozen-records) below).
 
 **`executor_profiles`** — the generic executor registry. Keyed by a stable `key`, typed by `executor_kind` (`agent` / `deterministic` / `human`), gated by `status` (`shadow` / `active` / `suspended` / `retired`), and carrying `capabilities`, `authority_envelope`, `forbidden_actions`, and `configuration_metadata` as JSONB. It stores **no API keys, tokens, or credentials**. Not org-scoped: it is internal staffing detail, readable only by platform staff and writable only by operations managers.
 
@@ -106,6 +106,8 @@ Two interpretive choices worth recording:
 `CatalogEvidenceReviewV1` — `src/lib/catalog-evidence-review.ts`, `schemaVersion: "catalog-evidence-review/v1"`.
 
 References `runId`, `evidencePacketHash`, `reviewerExecutorKey`, `reviewedAt`. Provides claim-level review — `claimReviews[]` with `claimId`, `verdict` (`accept` / `reject` / `inconclusive`), `independentVerificationPerformed`, `reason`, `independentSourceUrls[]`, `severity` — plus `newFindings[]`, `evidenceGaps[]`, `challengedAssumptions[]`, `escalationRequired`, `escalationReason`, and its own `authorityReport`.
+
+Each `claimReview.severity` must equal the severity Hermes already assigned that claim in the frozen packet — the validator hard-fails a mismatch either direction. The reviewer reports a verdict and a reason; it does not get to relabel how urgent the underlying claim is. Each `newFindings[]` entry additionally carries `productId` (required, must belong to the frozen packet's product set) and `findingId` (a deterministic reference), so a multi-product review can never contain an unattached generic finding.
 
 **The reviewer can never modify the Hermes packet.** This is structural, not procedural: the review schema has no field capable of holding packet content, and `.strict()` rejects any attempt to add one. The only link between the two artifacts is the content hash.
 
@@ -200,11 +202,21 @@ Two further routes around the gate were found by adversarial review of that fix 
 
 ### Side doors around the federation rules
 
-Adversarial review also found that the federation binding could be sidestepped by asserting compliance somewhere other than `federationEvidence`. Three fixes:
+Adversarial review also found that the federation binding could be sidestepped by asserting compliance somewhere other than `federationEvidence`. Several fixes:
 
-- `candidateCorrections` is no longer a side door. A correction to a field that asserts federation compliance (`FEDERATION_BEARING_FIELDS` — domain configuration a new catalog must extend) now requires a `federationEvidence` entry for that federation that actually passed source binding. Withdrawing a claim (`null` or `false`) is always allowed.
+- `candidateCorrections` is no longer a side door — and is no longer identified by matching a field-name string at all. A round-two fix hardcoded a field-name list (`FEDERATION_BEARING_FIELDS`: `ipfApproved`, `usaplApproved`, ...), but the real Loadout Product model carries federation compliance as `approvals: ApprovalOrg[]`, a field that list never matched. Round three replaced the heuristic with a structural discriminant: `candidateCorrection.correctionKind` is either `'catalog-field'` (an ordinary, non-compliance value change — a catalog-field correction to `approvals` is rejected outright, unconditionally, telling the executor to file it the other way) or `'federation-status'` (required to carry a non-empty `federation` and, unless nullifying/negating an existing claim, to bind to a `federationEvidence` entry for that federation that actually passed source binding). This works for `approvals`, and for any other federation-bearing field a future catalog might use, with zero new per-field configuration.
 - `declaredEvidenceUrls` is built from declared **sources** only. Folding in `claimFindings` URLs let an executor park an arbitrary URL in a finding and then cite it as the evidence for a high-confidence correction.
 - A `status: "unknown"` entry can no longer act as exact-configuration backing. Because `unknown` skips every binding rule, a free unsourced decoy entry could silence the family-scope warning. Only positively asserting statuses count, and federation names are compared case- and whitespace-insensitively.
+
+### Round-three hardening: content-bound verdicts, atomic phase persistence, frozen records
+
+A third adversarial-review pass (`supabase/migrations/20260824180000_step3d_work_cell_provenance.sql`) closed two further gaps, both in the same family as the round-two findings: a guard checked *identity and existence* but not *content agreement*, and a two-statement write pattern could leave a durable orphan if the second statement failed.
+
+- **The reserved verdict is now bound to the validation artifact's own content.** `reserve_work_cell_reviewer_ref` previously verified that a completed `validate` assignment existed whose output artifact carried `schemaVersion: "catalog-evidence-validation/v1"` — but never that the row actually being inserted (`hard_gate_pass`, `verdict`) agreed with that artifact's own `payload.gate.hardGatePass` / `payload.gate.workCellVerdict`, or that the assignment belonged to `catalog-evidence-validator-v1` specifically rather than merely `executor_kind = 'deterministic'`. The trigger now reads the stored gate and refuses on any disagreement. `supabase/qa/step3d_p0_reserved_verdict_proof.sql` is a self-contained, repeatable proof of this (a stored `failed` verdict refuses an attempted `passed` row; a matching `passed`/`passed` pair is accepted; a wrong validator profile and a partial field mismatch are both refused).
+- **Phase persistence is atomic.** `ingestCatalogEvidencePacket`, `ingestCatalogEvidenceReview`, and `runWorkCellValidation` each wrote an `evidence_artifacts` row and then, in a second independent statement, a `run_executor_assignments` row. A failure between the two left a durable accepted artifact with no assignment behind it. `record_work_cell_phase_artifact` — a `SECURITY INVOKER` Postgres function, no elevated privilege of its own — wraps both inserts in one function call, so any exception rolls back everything the call did.
+- **A rejected executor attempt is now a failed, cost-bearing phase, not just an artifact.** `recordRejectedExecutorOutput` records the rejection artifact and a `status = 'failed'` assignment together (via the same atomic RPC), preserving `human_minutes` / `ai_cost_micros` / `tool_cost_micros` and the executor's authority snapshot. This is what makes "one executor execution per phase per Gauntlet attempt" real: `unique (run_id, phase)` then refuses a second attempt at that phase within the same attempt — a retry belongs to a new Gauntlet attempt.
+- **Final validation now requires each phase's completed assignment, bound to the exact artifact, not merely a frozen artifact's existence.** `computeValidationReport` previously derived its `expectedExecutorKey` from an *optional* assignment lookup (`prepareAssignment?.key`), so a run with an accepted packet but no assignment validated with no executor check at all. It now always validates against the frozen manifest's `prepareExecutorKey` / `reviewExecutorKey`, and additionally requires a completed assignment for each phase whose `input`/`output` artifact IDs match the packet and review actually being validated.
+- **The frozen input manifest now freezes the actual catalog records, not only the ID list**, and is fully verified on load. `inputRecords[]` pairs each expected product ID with the exact JSON catalog record Hermes and Grok must both work from; `inputHash` covers the complete canonical snapshot (run, market, records, both executor keys), so two executors cannot be handed different actual data while both truthfully citing the same frozen hash. On load, the manifest's own `runId` is checked against the run being read, and the artifact's `content_hash` is re-derived from the stored payload — the same tamper check every other typed artifact gets.
 
 ## Authority boundaries
 
@@ -245,8 +257,8 @@ Prerequisites, in order:
 Then:
 
 4. Create a Gauntlet attempt for the Catalog Integrity workstream in the usual way and start the run.
-5. Open the run page → **Work Cell** → *0. Frozen input manifest*. Enter the market, the exact expected product IDs, and the two executor keys. Freeze it. **This happens before any executor runs** — it is the run's provenance, and every later stage reads the batch and executor identities from it.
-6. Run the Hermes task externally under its documented shadow constraints. Preserve the raw output verbatim.
+5. Open the run page → **Work Cell** → *0. Frozen input manifest*. Enter the market, the exact expected product IDs, the frozen input record for each one (one JSON object mapping product ID to its exact catalog record), and the two executor keys. Freeze it. **This happens before any executor runs** — it is the run's provenance, and every later stage reads the batch, records, and executor identities from it.
+6. Copy the frozen input records shown on the card and hand that exact JSON to Hermes, then later to Grok. Run the Hermes task externally under its documented shadow constraints. Preserve the raw output verbatim.
 7. Paste the raw JSON into *1. Frozen evidence packet*. Record measured human minutes and AI/tool cost. There is no expected-products box and no executor-key box: both come from the manifest.
    - If the validator rejects it, **nothing is stored as evidence**. A `catalog-evidence-rejection/v1` artifact records the attempt, its raw-output hash, and the failures. The rejection is the result: correct the executor's method, not the packet.
 8. Copy the frozen packet hash shown on the card. Give Grok the original catalog input and the frozen packet, and require the returned review to carry that hash in `evidencePacketHash`.

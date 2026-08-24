@@ -39,6 +39,13 @@ export type ClaimReview = z.infer<typeof claimReviewSchema>;
 
 const newFindingSchema = z
   .object({
+    // A new finding must be attached to a specific product from the frozen
+    // batch: a five-product review must never contain an unattached generic
+    // finding that no later stage can trace back to what it is actually about.
+    productId: identifierString,
+    // Deterministic reference for this finding, distinct from productId so two
+    // findings on the same product remain individually addressable.
+    findingId: identifierString,
     field: nonEmptyString,
     finding: nonEmptyString,
     severity: severityLevelSchema,
