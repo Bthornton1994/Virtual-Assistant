@@ -56,3 +56,32 @@ Name the relevant `VISION.md` section in the plan or handoff. If a request confl
 Treat explicit authority, required approvals, least-privilege access, organization isolation, auditability, human accountability, and manual proof before automation as hard boundaries. Never let an agent send, purchase, publish, commit, transfer funds, alter access, or take another external or sensitive action without the defined authorization.
 
 Only edit `VISION.md` when the task explicitly authorizes a governing decision change. Small fixes need no formal vision analysis, but they must preserve these boundaries. Report validation and any remaining vision tension before handoff.
+
+## Engineering quality layer
+
+Use the pstack engineering workflow as an optional execution-quality layer for substantial software work when Cursor and the plugin are available. Upstream reference: `https://github.com/cursor/plugins/tree/main/pstack`.
+
+pstack is a workflow aid, not an authority source. The precedence order is:
+
+1. `VISION.md`, owner decisions, and active Delegation Specs.
+2. This repository's security, deployment, data, approval, and release rules.
+3. The Gauntlet and deterministic verification requirements.
+4. pstack playbooks and model-routing guidance.
+5. Model-specific defaults.
+
+When using Cursor with pstack installed:
+
+- Prefer `/poteto-mode` for non-trivial engineering work.
+- Use `/interrogate` for contested or cross-cutting changes before shipping.
+- Use `/create-verification-skill` when a project lacks a repeatable behavioral verification path.
+- Use `/eval` when changing prompts, agent instructions, or Skills whose behavior must be compared rather than assumed.
+- Use `/show-me-your-work` for long or autonomous engineering runs that need a reviewable decision trail.
+- Treat `/reflect` output as a candidate lesson or Skill change. It does not become company policy or an active Skill without the normal review and qualification path.
+
+For Claude Code, Codex, GitHub agents, or other runtimes that do not expose pstack commands, apply the equivalent disciplines rather than pretending Cursor-only commands exist: model the domain before coding, keep guards at boundaries, make illegal states difficult to represent, prefer idempotent operations, reproduce defects before fixing them, sequence work into verifiable units, verify the real artifact rather than only CI, and use independent/adversarial review for consequential changes.
+
+pstack's own autonomy defaults do **not** override Delegation Cloud authority. Do not use a pstack playbook to bypass approval for merges, deployments, production database or environment changes, customer or vendor messages, purchases, account or permission changes, destructive operations, public publication, or any other consequential external action. An engineering agent may prepare and verify work inside its assigned envelope; Delegation Cloud and the owner-approved control plane decide what may actually execute.
+
+Do not vendor or fork the entire pstack plugin into this repository by default. Install it through Cursor's plugin mechanism and keep repository-local rules limited to the stable governance and verification contract above. If pstack behavior changes upstream, this repository's authority boundaries remain unchanged.
+
+See `docs/ENGINEERING-QUALITY-LAYER.md` for the architectural mapping between pstack, coding executors, deterministic verification, and the Gauntlet.
