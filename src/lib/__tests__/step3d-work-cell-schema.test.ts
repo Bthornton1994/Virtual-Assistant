@@ -192,3 +192,37 @@ describe("Step 3D hardening migration", () => {
     expect(hardening).toMatch(/create trigger trg_reserve_work_cell_reviewer_ref/);
   });
 });
+
+describe("Step 3D generic-evidence-form route", () => {
+  it("allows only one of each singleton typed artifact per run", () => {
+    // loadTypedArtifact takes the first row by created_at, so without this a
+    // planted artifact inserted first would shadow the genuine one.
+    expect(hardening).toMatch(/create unique index step3d_one_typed_artifact_per_run_idx/);
+    expect(hardening).toMatch(/on public\.evidence_artifacts \(run_id, \(payload->>'schemaVersion'\)\)/);
+    for (const version of [
+      "catalog-evidence-input/v1",
+      "catalog-evidence-packet/v1",
+      "catalog-evidence-review/v1",
+      "catalog-evidence-validation/v1",
+    ]) {
+      expect(hardening).toContain(version);
+    }
+  });
+
+  it("still permits repeated rejection records", () => {
+    // Multiple rejected executor attempts are expected and must stay auditable.
+    const index = hardening.slice(
+      hardening.indexOf("create unique index step3d_one_typed_artifact_per_run_idx"),
+      hardening.indexOf("-- 4b."),
+    );
+    expect(index).not.toMatch(/catalog-evidence-rejection/);
+  });
+
+  it("requires manager authority for any work-cell artifact whatever the code path", () => {
+    // addEvidenceArtifact is open to any ops role and writes the same table.
+    expect(hardening).toMatch(/enforce_step3d_artifact_authority/);
+    expect(hardening).toMatch(/not public\.is_ops_manager\(\)/);
+    expect(hardening).toMatch(/may only be written by an operations manager/);
+    expect(hardening).toMatch(/create trigger trg_step3d_artifact_authority/);
+  });
+});

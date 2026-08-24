@@ -59,6 +59,17 @@ export function validateInputManifest(
   if (duplicates.length) {
     return { ok: false, failures: [`Input manifest lists duplicate product IDs: ${[...new Set(duplicates)].join(", ")}.`] };
   }
+  // Enforced here, not only where a manifest is created, so a manifest written
+  // by any other path is still held to it. An executor cannot independently
+  // review its own output; that is the whole point of the review phase.
+  if (manifest.prepareExecutorKey === manifest.reviewExecutorKey) {
+    return {
+      ok: false,
+      failures: [
+        `Input manifest names "${manifest.prepareExecutorKey}" for both the prepare and review phases; an executor cannot independently review its own output.`,
+      ],
+    };
+  }
   const recomputed = computeHash(inputManifestHashSource(manifest));
   if (recomputed !== manifest.inputHash) {
     return {

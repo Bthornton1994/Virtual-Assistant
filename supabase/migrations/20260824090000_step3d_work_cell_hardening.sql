@@ -145,3 +145,56 @@ $$;
 create trigger trg_reserve_work_cell_reviewer_ref
   before insert on public.gauntlet_reviews
   for each row execute function public.reserve_work_cell_reviewer_ref();
+
+-- 4. Close the generic-evidence-form route around the work cell.
+--
+-- The work-cell functions are manager-only and enforce ordering: freeze the
+-- input manifest first, then the packet, then the review, one of each. But
+-- addEvidenceArtifact (execution-primitives) is open to ANY ops role and writes
+-- the same table, so a plain operator could hand-write an artifact carrying a
+-- Step 3D schemaVersion and bypass all of it.
+--
+-- That matters most for the input manifest, which exists precisely to be
+-- authoritative run provenance. loadTypedArtifact takes the FIRST matching row
+-- by created_at, so a planted manifest inserted before the real one would govern
+-- the whole run — and freezeWorkCellInputManifest would then refuse to create
+-- the genuine one, reporting that a manifest already exists.
+--
+-- 4a. Only one of each singleton typed artifact per run. Rejection records are
+--     deliberately excluded: multiple rejected executor attempts are expected.
+create unique index step3d_one_typed_artifact_per_run_idx
+  on public.evidence_artifacts (run_id, (payload->>'schemaVersion'))
+  where payload->>'schemaVersion' in (
+    'catalog-evidence-input/v1',
+    'catalog-evidence-packet/v1',
+    'catalog-evidence-review/v1',
+    'catalog-evidence-validation/v1'
+  );
+
+-- 4b. Writing any Step 3D typed artifact requires manager authority, whichever
+--     code path performs the insert.
+create or replace function public.enforce_step3d_artifact_authority()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare declared_version text;
+begin
+  declared_version := new.payload->>'schemaVersion';
+  if declared_version is null then return new; end if;
+  if declared_version in (
+    'catalog-evidence-input/v1',
+    'catalog-evidence-packet/v1',
+    'catalog-evidence-review/v1',
+    'catalog-evidence-validation/v1',
+    'catalog-evidence-rejection/v1'
+  ) and not public.is_ops_manager() then
+    raise exception 'Work-cell evidence artifacts may only be written by an operations manager';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger trg_step3d_artifact_authority
+  before insert on public.evidence_artifacts
+  for each row execute function public.enforce_step3d_artifact_authority();

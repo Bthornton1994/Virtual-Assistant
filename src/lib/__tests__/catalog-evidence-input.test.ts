@@ -94,3 +94,30 @@ describe("frozen input manifest", () => {
     }
   });
 });
+
+describe("manifest self-review guard", () => {
+  it("rejects a manifest naming one executor for both phases", () => {
+    // Enforced at read time, not only at freeze time, so a manifest written by
+    // any other path is still held to it.
+    const base = {
+      runId: "run-3d-0001",
+      market: "US",
+      expectedProductIds: ["easy-product-1"],
+      prepareExecutorKey: "hermes-loadout-researcher-v1",
+      reviewExecutorKey: "hermes-loadout-researcher-v1",
+    };
+    const planted = {
+      schemaVersion: CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION,
+      ...base,
+      createdAt: "2026-08-24T09:00:00Z",
+      inputHash: sha256Hex(inputManifestHashSource(base)),
+    };
+    const result = validateInputManifest(planted, sha256Hex);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.failures.join(" ")).toMatch(/cannot independently review its own output/);
+  });
+
+  it("accepts distinct prepare and review executors", () => {
+    expect(validateInputManifest(manifest(), sha256Hex).ok).toBe(true);
+  });
+});
