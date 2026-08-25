@@ -26,7 +26,9 @@ Pinned policy SHA-256:
 - Runs 4 through 9 remain unchanged.
 - Every test uses a new immutable Gauntlet attempt.
 - Only public, non-customer catalog inputs may enter the lab.
+- The model is offered exactly `computer_navigate`, `computer_read`, and `computer_snapshot`.
 - The model may navigate and read. Every other computer intent is refused.
+- Secret requests, help requests, human takeover, and delegated human input are prohibited because the pinned upstream control paths are not CEL policy-gated.
 - OpenBot output is untrusted until Delegation Cloud parses and validates it.
 - A failed result is retained and is never repaired within the same attempt.
 - CopilotKit thread or memory state is never authoritative.
@@ -46,7 +48,8 @@ A future lab operator must record all of the following before creating an assign
 - full non-secret configuration hash;
 - economic ceiling;
 - deadline;
-- confirmation that MCP, shell, files, private hosts, human secret entry, customer credentials, and customer data are absent.
+- a captured model-tool inventory containing exactly `computer_navigate`, `computer_read`, and `computer_snapshot`;
+- confirmation that MCP, shell, files, private hosts, direct computer endpoints, human secret entry, human takeover, customer credentials, and customer data are absent.
 
 The operator must put those values in the assignment's `executorConfigurationSnapshot`. Placeholder values do not qualify a run.
 
@@ -63,4 +66,4 @@ npm test -- src/lib/__tests__/openbot-shadow-pilot.test.ts
 
 The expected policy hash is `06759cfc784d9b00d631370063f40946e8cac01bd4df72c1d4955bd9ab38216a`.
 
-These checks validate the repository contract. They do not prove that an OpenBot deployment enforces it. Runtime enforcement must be verified in the isolated lab by attempting each prohibited intent and confirming a refusal plus a corresponding audit event.
+These checks validate the repository contract. They do not prove that an OpenBot deployment enforces it. Runtime enforcement must be verified in the isolated lab by attempting each prohibited intent and confirming a refusal plus a corresponding audit event. Separately, preflight must prove that secret/help/takeover tools are absent, because those control paths are not covered by the pinned CEL policy engine. If they are present, do not run a model.
