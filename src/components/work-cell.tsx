@@ -6,6 +6,7 @@ import {
   runNativePublicWebPrepareAction,
   runWorkCellValidationAction,
 } from "@/app/actions/work-cell";
+import { WorkCellActionForm } from "@/components/work-cell-action-form";
 import { PUBLIC_WEB_RESEARCHER_KEY } from "@/lib/public-web-researcher";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import type { WorkCellBundle } from "@/lib/work-cell";
@@ -144,7 +145,7 @@ export function WorkCellSection({
         )}
 
         {running && manager && !manifest ? (
-          <form action={freezeWorkCellInputManifestAction} className="mt-5 space-y-4 border-t border-line pt-4">
+          <WorkCellActionForm action={freezeWorkCellInputManifestAction} className="mt-5 space-y-4 border-t border-line pt-4">
             <input type="hidden" name="runId" value={runId} />
             {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
             <Field label="Market"><Input name="market" required placeholder="US" /></Field>
@@ -176,7 +177,7 @@ export function WorkCellSection({
               requires each artifact&apos;s own declared executor key to match this frozen plan.
             </p>
             <Button type="submit">Freeze input manifest</Button>
-          </form>
+          </WorkCellActionForm>
         ) : null}
       </Card>
 
@@ -243,7 +244,7 @@ export function WorkCellSection({
           )}
 
           {running && manager && manifest && !packet && !prepareRejected && manifest.prepareExecutorKey === PUBLIC_WEB_RESEARCHER_KEY ? (
-            <form action={runNativePublicWebPrepareAction} className="mt-5 space-y-4 border-t border-line pt-4">
+            <WorkCellActionForm action={runNativePublicWebPrepareAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
               <p className="text-sm text-muted">
@@ -252,11 +253,11 @@ export function WorkCellSection({
                 verification.
               </p>
               <Button type="submit">Run prepare-only public-web research</Button>
-            </form>
+            </WorkCellActionForm>
           ) : null}
 
           {running && manager && manifest && !packet && !prepareRejected ? (
-            <form action={ingestCatalogEvidencePacketAction} className="mt-5 space-y-4 border-t border-line pt-4">
+            <WorkCellActionForm action={ingestCatalogEvidencePacketAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
               <Field label="Raw executor JSON" hint="Pasted verbatim. Malformed output is rejected, never repaired.">
@@ -268,7 +269,7 @@ export function WorkCellSection({
                 <Field label="Tool cost (USD)"><Input name="toolCost" type="number" min="0" step="0.0001" defaultValue="0" /></Field>
               </div>
               <Button type="submit">Validate and freeze packet</Button>
-            </form>
+            </WorkCellActionForm>
           ) : null}
 
           {prepareRejected ? (
@@ -304,7 +305,7 @@ export function WorkCellSection({
           )}
 
           {running && manager && packet && !review && !reviewRejected ? (
-            <form action={ingestCatalogEvidenceReviewAction} className="mt-5 space-y-4 border-t border-line pt-4">
+            <WorkCellActionForm action={ingestCatalogEvidenceReviewAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
               <Field label="Raw reviewer JSON" hint={`Must reference evidencePacketHash ${packet.contentHash}`}>
@@ -316,7 +317,7 @@ export function WorkCellSection({
                 <Field label="Tool cost (USD)"><Input name="toolCost" type="number" min="0" step="0.0001" defaultValue="0" /></Field>
               </div>
               <Button type="submit">Verify hash, validate, and freeze review</Button>
-            </form>
+            </WorkCellActionForm>
           ) : null}
 
           {reviewRejected ? (
@@ -433,12 +434,12 @@ export function WorkCellSection({
         )}
 
         {running && manager && packet && review && !validation ? (
-          <form action={runWorkCellValidationAction} className="mt-5 space-y-3 border-t border-line pt-4">
+          <WorkCellActionForm action={runWorkCellValidationAction} className="mt-5 space-y-3 border-t border-line pt-4">
             <input type="hidden" name="runId" value={runId} />
             {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
             <p className="text-sm text-muted">Validates the frozen packet and review against the frozen input manifest.</p>
             <Button type="submit" variant="secondary">Run deterministic validation</Button>
-          </form>
+          </WorkCellActionForm>
         ) : null}
 
         {running && manager && packet && !review ? (
@@ -449,7 +450,7 @@ export function WorkCellSection({
         ) : null}
 
         {awaitingVerification && manager && cycleId && validationComplete ? (
-          <form action={recordWorkCellGauntletReviewsAction} className="mt-5 space-y-3 border-t border-line pt-4">
+          <WorkCellActionForm action={recordWorkCellGauntletReviewsAction} className="mt-5 space-y-3 border-t border-line pt-4">
             <input type="hidden" name="runId" value={runId} />
             <input type="hidden" name="cycleId" value={cycleId} />
             <p className="text-sm text-muted">
@@ -457,7 +458,7 @@ export function WorkCellSection({
               Its verdict incorporates the reviewer&apos;s conclusions, so a rejected claim cannot yield a passing receipt.
             </p>
             <Button type="submit">Record work-cell verdict into the Gauntlet</Button>
-          </form>
+          </WorkCellActionForm>
         ) : null}
       </Card>
     </section>

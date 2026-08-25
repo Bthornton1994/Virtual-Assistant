@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { requireOps } from "@/lib/auth";
 import { AuthzError, DomainError } from "@/lib/domain";
 import {
@@ -12,15 +11,12 @@ import {
   runWorkCellValidation,
 } from "@/lib/work-cell";
 
-function rethrowAction(error: unknown): never {
-  if (error instanceof DomainError || error instanceof AuthzError) throw new Error(error.message);
-  throw error;
-}
+export type WorkCellActionResult = { ok: true } | { ok: false; error: string };
 
-function refresh(runId: string, cycleId?: string) {
-  revalidatePath(`/ops/execution/runs/${runId}`);
-  if (cycleId) revalidatePath(`/ops/gauntlet/cycles/${cycleId}`);
-  revalidatePath("/ops/execution");
+function fail(error: unknown): WorkCellActionResult {
+  if (error instanceof DomainError || error instanceof AuthzError) return { ok: false, error: error.message };
+  if (error instanceof Error) return { ok: false, error: error.message };
+  return { ok: false, error: "The action failed." };
 }
 
 function nonNegativeNumber(formData: FormData, name: string, label: string) {
@@ -37,9 +33,9 @@ function dollarsToMicros(formData: FormData, name: string, label: string) {
 
 /**
  * Rejected outputs are persisted as immutable, untrusted audit artifacts by the
- * ingestion function. The action deliberately revalidates the run page instead
- * of throwing the expected validation result into Next's error boundary, so the
- * operator can read the rejection and the phase form can close.
+ * ingestion function. These actions return a result instead of revalidatePath:
+ * a Server Component form plus revalidatePath suspends the async run page as
+ * synchronous input (React #441). The client form refreshes after a successful return.
  */
 
 /**
@@ -68,10 +64,10 @@ function parseInputRecords(formData: FormData): Array<{ productId: string; recor
   });
 }
 
-export async function freezeWorkCellInputManifestAction(formData: FormData) {
-  const actor = await requireOps();
-  const runId = String(formData.get("runId") || "");
+export async function freezeWorkCellInputManifestAction(formData: FormData): Promise<WorkCellActionResult> {
   try {
+    const actor = await requireOps();
+    const runId = String(formData.get("runId") || "");
     await freezeWorkCellInputManifest(actor, runId, {
       market: String(formData.get("market") || ""),
       expectedProductIds: String(formData.get("expectedProductIds") || "")
@@ -82,76 +78,71 @@ export async function freezeWorkCellInputManifestAction(formData: FormData) {
       prepareExecutorKey: String(formData.get("prepareExecutorKey") || ""),
       reviewExecutorKey: String(formData.get("reviewExecutorKey") || ""),
     });
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
-  refresh(runId, String(formData.get("cycleId") || "") || undefined);
 }
 
-export async function runNativePublicWebPrepareAction(formData: FormData) {
-  const actor = await requireOps();
-  const runId = String(formData.get("runId") || "");
+export async function runNativePublicWebPrepareAction(formData: FormData): Promise<WorkCellActionResult> {
   try {
-    await runNativePublicWebPrepare(actor, runId);
+    const actor = await requireOps();
+    await runNativePublicWebPrepare(actor, String(formData.get("runId") || ""));
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
-  refresh(runId, String(formData.get("cycleId") || "") || undefined);
 }
 
-export async function ingestCatalogEvidencePacketAction(formData: FormData) {
-  const actor = await requireOps();
-  const runId = String(formData.get("runId") || "");
+export async function ingestCatalogEvidencePacketAction(formData: FormData): Promise<WorkCellActionResult> {
   try {
+    const actor = await requireOps();
     // No executor-key field: the identity comes from the frozen input manifest, so
     // an operator cannot relabel one executor's output as another's after seeing it.
-    await ingestCatalogEvidencePacket(actor, runId, {
+    await ingestCatalogEvidencePacket(actor, String(formData.get("runId") || ""), {
       raw: String(formData.get("raw") || ""),
       humanMinutes: nonNegativeNumber(formData, "humanMinutes", "Human minutes"),
       aiCostMicros: dollarsToMicros(formData, "aiCost", "AI cost"),
       toolCostMicros: dollarsToMicros(formData, "toolCost", "Tool cost"),
     });
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
-  refresh(runId, String(formData.get("cycleId") || "") || undefined);
 }
 
-export async function ingestCatalogEvidenceReviewAction(formData: FormData) {
-  const actor = await requireOps();
-  const runId = String(formData.get("runId") || "");
+export async function ingestCatalogEvidenceReviewAction(formData: FormData): Promise<WorkCellActionResult> {
   try {
-    await ingestCatalogEvidenceReview(actor, runId, {
+    const actor = await requireOps();
+    await ingestCatalogEvidenceReview(actor, String(formData.get("runId") || ""), {
       raw: String(formData.get("raw") || ""),
       humanMinutes: nonNegativeNumber(formData, "humanMinutes", "Human minutes"),
       aiCostMicros: dollarsToMicros(formData, "aiCost", "AI cost"),
       toolCostMicros: dollarsToMicros(formData, "toolCost", "Tool cost"),
     });
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
-  refresh(runId, String(formData.get("cycleId") || "") || undefined);
 }
 
-export async function runWorkCellValidationAction(formData: FormData) {
-  const actor = await requireOps();
-  const runId = String(formData.get("runId") || "");
+export async function runWorkCellValidationAction(formData: FormData): Promise<WorkCellActionResult> {
   try {
+    const actor = await requireOps();
     // The expected batch comes from the frozen input manifest, never from a form.
-    await runWorkCellValidation(actor, runId);
+    await runWorkCellValidation(actor, String(formData.get("runId") || ""));
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
-  refresh(runId, String(formData.get("cycleId") || "") || undefined);
 }
 
-export async function recordWorkCellGauntletReviewsAction(formData: FormData) {
-  const actor = await requireOps();
-  const runId = String(formData.get("runId") || "");
+export async function recordWorkCellGauntletReviewsAction(formData: FormData): Promise<WorkCellActionResult> {
   try {
-    await recordWorkCellGauntletReviews(actor, runId);
+    const actor = await requireOps();
+    await recordWorkCellGauntletReviews(actor, String(formData.get("runId") || ""));
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
-  refresh(runId, String(formData.get("cycleId") || "") || undefined);
 }
