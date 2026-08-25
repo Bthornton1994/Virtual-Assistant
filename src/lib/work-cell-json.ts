@@ -5,7 +5,7 @@
  * keys, values, or trailing commas. A missing or truncated object still fails.
  */
 export function extractJsonObject(raw: string): { ok: true; json: string } | { ok: false; error: string } {
-  const trimmed = raw.trim();
+  const trimmed = raw.replace(/^\uFEFF/, "").trim();
   if (!trimmed) return { ok: false, error: "No executor output was provided." };
 
   const marked = trimmed.indexOf('{"schemaVersion"');

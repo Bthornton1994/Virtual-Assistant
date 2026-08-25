@@ -18,6 +18,18 @@ describe("work-cell JSON extract", () => {
     if (parsed.ok) expect((parsed.value as { schemaVersion: string }).schemaVersion).toBe("catalog-evidence-packet/v1");
   });
 
+  it("strips markdown fences around the object", () => {
+    const parsed = parseExtractedJson("```json\n" + packet + "\n```");
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect((parsed.value as { runId: string }).runId).toBe("abc");
+  });
+
+  it("strips a UTF-8 BOM", () => {
+    const parsed = parseExtractedJson(`\uFEFF${packet}`);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect((parsed.value as { runId: string }).runId).toBe("abc");
+  });
+
   it("does not repair truncated JSON", () => {
     expect(extractJsonObject('{"schemaVersion":"catalog-evidence-packet/v1"').ok).toBe(false);
   });
