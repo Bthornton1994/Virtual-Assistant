@@ -131,6 +131,8 @@ describe("OpenBot shadow adapter contract", () => {
       mayUseShell: { const: false },
       mayUseMcp: { const: false },
       mayRequestHumanSecrets: { const: false },
+      mayRequestHumanTakeover: { const: false },
+      mayReceiveHumanInput: { const: false },
       mayDecideVerified: { const: false },
       mayOwnAuthoritativeState: { const: false },
     });
@@ -150,10 +152,18 @@ describe("OpenBot shadow adapter contract", () => {
       policyPath: {
         const: "experiments/openbot-shadow/policy.json",
       },
+      offeredModelTools: {
+        type: "array",
+        const: ["computer_navigate", "computer_read", "computer_snapshot"],
+      },
+      privateHostAccessEnabled: { const: false },
+      directComputerEndpointAccessEnabled: { const: false },
       mcpEnabled: { const: false },
       shellEnabled: { const: false },
       fileAccessEnabled: { const: false },
       humanSecretEntryEnabled: { const: false },
+      humanTakeoverEnabled: { const: false },
+      browserProfileContainsLogin: { const: false },
       customerCredentialsPresent: { const: false },
       customerDataPresent: { const: false },
       copilotKitStateAuthoritative: { const: false },
@@ -205,10 +215,15 @@ describe("OpenBot shadow QA profile", () => {
       '"upstreamCommit": "6826e11afd52f03c30af2d873203792acad95f63"',
       '"deploymentMode": "external-postgres-loopback"',
       '"policyMode": "enforce"',
+      '"offeredModelTools": ["computer_navigate", "computer_read", "computer_snapshot"]',
+      '"privateHostAccessEnabled": false',
+      '"directComputerEndpointAccessEnabled": false',
       '"eligibleForRuns4To9": false',
       '"mcpEnabled": false',
       '"shellEnabled": false',
       '"fileAccessEnabled": false',
+      '"humanTakeoverEnabled": false',
+      '"browserProfileContainsLogin": false',
       '"customerCredentialsPresent": false',
       '"customerDataPresent": false',
       '"copilotKitStateAuthoritative": false',
@@ -232,6 +247,19 @@ describe("OpenBot pilot doctrine", () => {
     );
     expect(charter).toContain(
       "A failed OpenBot attempt is evidence. It is never repaired or resubmitted within the same attempt.",
+    );
+  });
+
+  it("treats non-policy-gated control paths as a hard blocker", () => {
+    expect(charter).toContain("## Non-policy-gated control paths");
+    expect(charter).toContain(
+      "the offered model-tool inventory is exactly",
+    );
+    expect(charter).toContain(
+      "`computer_request_help`, `computer_request_secret`",
+    );
+    expect(charter).toContain(
+      "Do not substitute a system-prompt prohibition.",
     );
   });
 
