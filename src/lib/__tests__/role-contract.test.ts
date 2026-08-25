@@ -90,7 +90,7 @@ describe("role contract library v1", () => {
 
   it("rejects a role that tries to own authoritative state", () => {
     const result = validateRoleContractLibrary([
-      role({ mayOwnAuthoritativeState: true as false }),
+      role({ mayOwnAuthoritativeState: true as unknown as false }),
     ]);
     expect(result.ok).toBe(false);
     expect(result.ok ? [] : result.failures.join(" ")).toContain("mayOwnAuthoritativeState");
