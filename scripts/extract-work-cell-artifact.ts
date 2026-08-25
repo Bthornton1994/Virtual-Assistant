@@ -24,7 +24,8 @@ function arg(name: string) {
 }
 
 function extractJsonObject(raw: string): string {
-  const start = raw.indexOf('{"schemaVersion"');
+  const candidate = /\{\s*"schemaVersion"\s*:/g.exec(raw);
+  const start = candidate?.index ?? -1;
   if (start === -1) throw new Error("No schemaVersion JSON object found. Paste failed: chatter-only input.");
   let depth = 0;
   let inString = false;
@@ -54,6 +55,10 @@ if (!inputPath || inputPath.startsWith("--")) {
 }
 
 const runId = arg("--run-id");
+if (!runId) {
+  console.error("usage: --run-id <uuid> is required so the artifact is bound to the intended frozen run.");
+  process.exit(2);
+}
 const out = arg("--out") || "work-cell-artifact.json";
 const raw = readFileSync(inputPath, "utf8");
 const json = extractJsonObject(raw);
@@ -64,18 +69,17 @@ if (!parsed.ok) {
 }
 
 const value = parsed.value as { schemaVersion?: string };
-writeFileSync(out, `${json}\n`);
-
 if (value.schemaVersion === "catalog-evidence-packet/v1") {
   const packet = parsed.value as CatalogEvidencePacketV1;
   const validation = validateCatalogEvidencePacket(packet, {
     expectedProductIds: RUN5_PRODUCT_IDS,
-    expectedRunId: runId || packet.runId,
+    expectedRunId: runId,
     expectedExecutorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.prepare,
     expectedMarket: "US",
   });
   const hash = validation.hardGatePass ? hashCatalogEvidencePacket(packet) : null;
-  console.log(JSON.stringify({ kind: "packet", out, hardGatePass: validation.hardGatePass, hardFailures: validation.hardFailures, warnings: validation.warnings, contentHash: hash }, null, 2));
+  if (validation.hardGatePass) writeFileSync(out, `${json}\n`);
+  console.log(JSON.stringify({ kind: "packet", out: validation.hardGatePass ? out : null, hardGatePass: validation.hardGatePass, hardFailures: validation.hardFailures, warnings: validation.warnings, contentHash: hash }, null, 2));
   process.exit(validation.hardGatePass ? 0 : 1);
 }
 
@@ -92,10 +96,11 @@ if (value.schemaVersion === "catalog-evidence-review/v1") {
     expectedPacketHash,
     claims: collectPacketClaims(packet),
     packetProductIds: packet.products.map((product) => product.productId),
-    expectedRunId: runId || packet.runId,
+    expectedRunId: runId,
     expectedReviewerKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.review,
   });
-  console.log(JSON.stringify({ kind: "review", out, hardGatePass: validation.hardGatePass, hardFailures: validation.hardFailures, reviewHash: sha256Hex(review), expectedPacketHash }, null, 2));
+  if (validation.hardGatePass) writeFileSync(out, `${json}\n`);
+  console.log(JSON.stringify({ kind: "review", out: validation.hardGatePass ? out : null, hardGatePass: validation.hardGatePass, hardFailures: validation.hardFailures, reviewHash: sha256Hex(review), expectedPacketHash }, null, 2));
   process.exit(validation.hardGatePass ? 0 : 1);
 }
 
