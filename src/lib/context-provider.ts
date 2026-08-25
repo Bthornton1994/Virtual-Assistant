@@ -91,7 +91,11 @@ export const contextBenchmarkTaskSchema = z
     objective: nonEmptyString,
     expectedFiles: z.array(nonEmptyString).min(1).max(256),
     expectedSymbols: z.array(nonEmptyString).max(256),
-    operations: z\n      .array(contextProviderOperationSchema)\n      .min(1)\n      .max(CONTEXT_PROVIDER_OPERATIONS.length)\n      .refine((operations) => new Set(operations).size === operations.length, "must not repeat operations"),
+    operations: z
+      .array(contextProviderOperationSchema)
+      .min(1)
+      .max(CONTEXT_PROVIDER_OPERATIONS.length)
+      .refine((operations) => new Set(operations).size === operations.length, "must not repeat operations"),
     unseen: z.literal(true),
   })
   .strict();
