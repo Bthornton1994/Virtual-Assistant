@@ -127,6 +127,21 @@ describe("engineering workspace isolation v1", () => {
     expect(comparison.ok ? [] : comparison.failures.join(" ")).toContain("mutable workspaceRef");
   });
 
+  it("allows an abandoned workspace to be cleaned without a result", () => {
+    const abandoned = {
+      ...workspace(),
+      status: "abandoned" as const,
+    };
+    const requested = requestEngineeringWorkspaceCleanup(abandoned, "2026-08-25T21:00:00Z");
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) return;
+    const cleaned = completeEngineeringWorkspaceCleanup(requested.value, "2026-08-25T21:05:00Z");
+    expect(cleaned.ok).toBe(true);
+    if (!cleaned.ok) return;
+    expect(cleaned.value.status).toBe("cleaned");
+    expect(cleaned.value.resultSha).toBeNull();
+  });
+
   it("requires verification evidence before a verified state", () => {
     const invalid = workspace({
       status: "verified",

@@ -67,10 +67,16 @@ export const engineeringWorkspaceSchema = z
       issue(["resultSha"], "is required for a submitted candidate");
     }
     if (
-      (workspace.status === "verified" || workspace.status === "cleaned") &&
+      workspace.status === "verified" &&
       (workspace.resultSha === null || workspace.verificationEvidenceRefs.length === 0)
     ) {
-      issue([], "verified and cleaned candidates require a result SHA and verification evidence");
+      issue([], "verified candidates require a result SHA and verification evidence");
+    }
+    if (
+      workspace.status === "cleaned" &&
+      ((workspace.resultSha === null) !== (workspace.verificationEvidenceRefs.length === 0))
+    ) {
+      issue([], "cleaned candidates must retain both result SHA and verification evidence, or neither");
     }
     if (workspace.status === "cleaned" && workspace.cleanup.status !== "completed") {
       issue(["cleanup", "status"], "cleaned workspaces require completed cleanup");
