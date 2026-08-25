@@ -48,6 +48,12 @@ export const contextProviderRequestSchema = z
   .strict();
 
 export type ContextProviderRequest = z.infer<typeof contextProviderRequestSchema>;
+export type ContextProviderRequestFor<TOperation extends ContextProviderOperation> = Omit<
+  ContextProviderRequest,
+  "operation"
+> & {
+  operation: TOperation;
+};
 
 export const contextProviderResponseSchema = z
   .object({
@@ -73,14 +79,14 @@ export type ContextProviderResponse = z.infer<typeof contextProviderResponseSche
  */
 export interface ContextProvider {
   readonly providerKey: string;
-  build(request: ContextProviderRequest): Promise<ContextProviderResponse>;
-  refresh(request: ContextProviderRequest): Promise<ContextProviderResponse>;
-  architecture(request: ContextProviderRequest): Promise<ContextProviderResponse>;
-  findSymbol(request: ContextProviderRequest): Promise<ContextProviderResponse>;
-  findCallers(request: ContextProviderRequest): Promise<ContextProviderResponse>;
-  impactAnalysis(request: ContextProviderRequest): Promise<ContextProviderResponse>;
-  search(request: ContextProviderRequest): Promise<ContextProviderResponse>;
-  health(request: ContextProviderRequest): Promise<ContextProviderResponse>;
+  build(request: ContextProviderRequestFor<"build">): Promise<ContextProviderResponse>;
+  refresh(request: ContextProviderRequestFor<"refresh">): Promise<ContextProviderResponse>;
+  architecture(request: ContextProviderRequestFor<"architecture">): Promise<ContextProviderResponse>;
+  findSymbol(request: ContextProviderRequestFor<"findSymbol">): Promise<ContextProviderResponse>;
+  findCallers(request: ContextProviderRequestFor<"findCallers">): Promise<ContextProviderResponse>;
+  impactAnalysis(request: ContextProviderRequestFor<"impactAnalysis">): Promise<ContextProviderResponse>;
+  search(request: ContextProviderRequestFor<"search">): Promise<ContextProviderResponse>;
+  health(request: ContextProviderRequestFor<"health">): Promise<ContextProviderResponse>;
 }
 
 export const contextBenchmarkTaskSchema = z
