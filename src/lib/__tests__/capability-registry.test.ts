@@ -120,7 +120,7 @@ describe("frozen Step 3D executor-key guard", () => {
     expect(fixture).toContain("'pending'");
     expect(fixture).toContain("'qualified'");
     expect(fixture).toContain("executor_profiles.status retains shadow");
-    expect(fixture).toContain("Must not be auto-selected over Hermes on frozen Runs 4-9");
+    expect(fixture).not.toContain("delegation-cloud-public-web-researcher-v1");
     expect(fixture).not.toContain("'shadow'");
   });
 });

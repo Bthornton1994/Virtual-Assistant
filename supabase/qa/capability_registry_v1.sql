@@ -54,20 +54,6 @@ from (
       'catalog-evidence-validator/v1',
       'Native deterministic validator owns parsing, hashes, counts, and the hard gate.'
     ),
-    (
-      'delegation-cloud-public-web-researcher-v1',
-      'evidence_research',
-      'pending',
-      'public-web-prepare-v1',
-      'Optional native prepare. Must not be auto-selected over Hermes on frozen Runs 4-9.'
-    ),
-    (
-      'delegation-cloud-public-web-researcher-v1',
-      'public_web_retrieval',
-      'pending',
-      'public-web-prepare-v1',
-      'Optional native GET-only retrieval. Qualification is not implied by registration.'
-    )
 ) as pc(profile_key, capability_key, qualification_status, qualification_version, evidence_summary)
 join public.executor_profiles ep on ep.key = pc.profile_key
 join public.capabilities c on c.key = pc.capability_key
