@@ -92,7 +92,7 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
     ? (derived?.classification ?? storedClassification)
     : storedClassification;
   const retryDefault = unclassified
-    ? (derived?.retryDecision ?? text(openFailure, "retry_decision") || "")
+    ? ((derived?.retryDecision ?? text(openFailure, "retry_decision")) || "")
     : (text(openFailure, "retry_decision") || derived?.retryDecision || "");
   const storedRoot = text(openFailure, "root_cause");
   const rootCauseDefault =
