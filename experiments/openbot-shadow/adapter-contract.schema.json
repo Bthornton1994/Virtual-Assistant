@@ -82,7 +82,9 @@
         "mayRequestHumanSecrets",
         "mayReturnTypedEvidence",
         "mayDecideVerified",
-        "mayOwnAuthoritativeState"
+        "mayOwnAuthoritativeState",
+        "mayRequestHumanTakeover",
+        "mayReceiveHumanInput"
       ],
       "properties": {
         "actionClass": {
@@ -123,6 +125,12 @@
         },
         "mayOwnAuthoritativeState": {
           "const": false
+        },
+        "mayRequestHumanTakeover": {
+          "const": false
+        },
+        "mayReceiveHumanInput": {
+          "const": false
         }
       }
     },
@@ -147,7 +155,12 @@
         "humanSecretEntryEnabled",
         "customerCredentialsPresent",
         "customerDataPresent",
-        "copilotKitStateAuthoritative"
+        "copilotKitStateAuthoritative",
+        "offeredModelTools",
+        "privateHostAccessEnabled",
+        "directComputerEndpointAccessEnabled",
+        "humanTakeoverEnabled",
+        "browserProfileContainsLogin"
       ],
       "properties": {
         "implementationKey": {
@@ -207,6 +220,26 @@
           "const": false
         },
         "copilotKitStateAuthoritative": {
+          "const": false
+        },
+        "offeredModelTools": {
+          "type": "array",
+          "const": [
+            "computer_navigate",
+            "computer_read",
+            "computer_snapshot"
+          ]
+        },
+        "privateHostAccessEnabled": {
+          "const": false
+        },
+        "directComputerEndpointAccessEnabled": {
+          "const": false
+        },
+        "humanTakeoverEnabled": {
+          "const": false
+        },
+        "browserProfileContainsLogin": {
           "const": false
         }
       }
