@@ -76,6 +76,8 @@ export function WorkCellSection({
   const { manifest, assignments, packet, review, validation, rejections } = bundle;
   const running = runStatus === "running";
   const awaitingVerification = runStatus === "awaiting_verification";
+  const prepareRejected = rejections.some((rejection) => rejection.phase === "prepare");
+  const reviewRejected = rejections.some((rejection) => rejection.phase === "review");
   // Gate the verdict control on validation having actually completed. Gating on
   // "has a work cell" would offer a button the database refuses, and surface a
   // trigger message about impersonation rather than the real precondition.
@@ -238,7 +240,7 @@ export function WorkCellSection({
             </p>
           )}
 
-          {running && manager && manifest && !packet ? (
+          {running && manager && manifest && !packet && !prepareRejected ? (
             <form action={ingestCatalogEvidencePacketAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
@@ -252,6 +254,12 @@ export function WorkCellSection({
               </div>
               <Button type="submit">Validate and freeze packet</Button>
             </form>
+          ) : null}
+
+          {prepareRejected ? (
+            <p className="mt-5 border-t border-line pt-4 text-sm text-bad">
+              This prepare attempt was rejected and is immutable. Start a new Gauntlet attempt for another executor run.
+            </p>
           ) : null}
         </Card>
 
@@ -280,7 +288,7 @@ export function WorkCellSection({
             </p>
           )}
 
-          {running && manager && packet && !review ? (
+          {running && manager && packet && !review && !reviewRejected ? (
             <form action={ingestCatalogEvidenceReviewAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
@@ -294,6 +302,12 @@ export function WorkCellSection({
               </div>
               <Button type="submit">Verify hash, validate, and freeze review</Button>
             </form>
+          ) : null}
+
+          {reviewRejected ? (
+            <p className="mt-5 border-t border-line pt-4 text-sm text-bad">
+              This review attempt was rejected and is immutable. Start a new Gauntlet attempt for another reviewer run.
+            </p>
           ) : null}
         </Card>
       </div>

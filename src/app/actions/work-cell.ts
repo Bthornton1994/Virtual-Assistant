@@ -35,16 +35,11 @@ function dollarsToMicros(formData: FormData, name: string, label: string) {
 }
 
 /**
- * A rejected artifact is not stored as evidence, so the operator has to see why.
- * The rejection itself is still recorded as an untrusted audit artifact by the
- * ingestion function before this throws.
+ * Rejected outputs are persisted as immutable, untrusted audit artifacts by the
+ * ingestion function. The action deliberately revalidates the run page instead
+ * of throwing the expected validation result into Next's error boundary, so the
+ * operator can read the rejection and the phase form can close.
  */
-function assertAccepted(result: { persisted: boolean; validation: { hardFailures: string[] } }, label: string) {
-  if (result.persisted) return;
-  const detail = result.validation.hardFailures.slice(0, 8).join(" ");
-  const more = result.validation.hardFailures.length > 8 ? ` (+${result.validation.hardFailures.length - 8} more)` : "";
-  throw new Error(`${label} was rejected and not stored as evidence. ${detail}${more}`);
-}
 
 /**
  * Input records are pasted as one JSON object keyed by product ID, mapping
@@ -98,13 +93,12 @@ export async function ingestCatalogEvidencePacketAction(formData: FormData) {
   try {
     // No executor-key field: the identity comes from the frozen input manifest, so
     // an operator cannot relabel one executor's output as another's after seeing it.
-    const result = await ingestCatalogEvidencePacket(actor, runId, {
+    await ingestCatalogEvidencePacket(actor, runId, {
       raw: String(formData.get("raw") || ""),
       humanMinutes: nonNegativeNumber(formData, "humanMinutes", "Human minutes"),
       aiCostMicros: dollarsToMicros(formData, "aiCost", "AI cost"),
       toolCostMicros: dollarsToMicros(formData, "toolCost", "Tool cost"),
     });
-    assertAccepted(result, "The catalog evidence packet");
   } catch (error) {
     rethrowAction(error);
   }
@@ -115,13 +109,12 @@ export async function ingestCatalogEvidenceReviewAction(formData: FormData) {
   const actor = await requireOps();
   const runId = String(formData.get("runId") || "");
   try {
-    const result = await ingestCatalogEvidenceReview(actor, runId, {
+    await ingestCatalogEvidenceReview(actor, runId, {
       raw: String(formData.get("raw") || ""),
       humanMinutes: nonNegativeNumber(formData, "humanMinutes", "Human minutes"),
       aiCostMicros: dollarsToMicros(formData, "aiCost", "AI cost"),
       toolCostMicros: dollarsToMicros(formData, "toolCost", "Tool cost"),
     });
-    assertAccepted(result, "The independent evidence review");
   } catch (error) {
     rethrowAction(error);
   }
