@@ -9,7 +9,7 @@ This increment makes the capability vocabulary Delegation Cloud-owned while pres
 - A small native vocabulary for the current proving ground and the next approved phases.
 - A capabilities metadata table with contract versions, risk class, verification contract, and lifecycle status.
 - An executor_capabilities mapping with qualification state and evidence summary.
-- Idempotent mappings for the current Hermes, Grok, deterministic validator, and optional native public-web profile.
+- A QA fixture with idempotent mappings for the current Hermes, Grok, and deterministic validator profiles.
 - Agent implementations remain pending until qualification evidence supports promotion. The deterministic catalog validator is the only seeded qualified implementation.
 
 ## What this does not do
@@ -19,6 +19,7 @@ This increment makes the capability vocabulary Delegation Cloud-owned while pres
 - It does not select an executor or add autonomous routing.
 - It does not make an agent authoritative, grant new authority, or alter the hard gate.
 - It does not apply a Supabase migration or write Preview/Production data.
+- The migration seeds the capability vocabulary; `supabase/qa/capability_registry_v1.sql` adds environment-specific executor mappings only when Preview/QA setup is explicitly authorized.
 
 ## Ported operator tooling (consolidated branch)
 

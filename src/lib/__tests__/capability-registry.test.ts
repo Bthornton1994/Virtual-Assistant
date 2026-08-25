@@ -17,6 +17,7 @@ const freezeAction = readFileSync(resolve(process.cwd(), "src/app/actions/work-c
 const opsPage = readFileSync(resolve(process.cwd(), "src/app/(ops)/ops/capabilities/page.tsx"), "utf8");
 const fixture = readFileSync(resolve(process.cwd(), "supabase/qa/capability_registry_v1.sql"), "utf8");
 const migrationDir = resolve(process.cwd(), "supabase/migrations");
+const migration = readFileSync(resolve(migrationDir, "20260825190000_capability_registry_v1.sql"), "utf8");
 
 describe("capability registry", () => {
   it("keeps the vocabulary unique and fully defined", () => {
@@ -107,6 +108,12 @@ describe("frozen Step 3D executor-key guard", () => {
   it("does not add a second CS-1 migration", () => {
     const cs1 = readdirSync(migrationDir).filter((name) => name.includes("capability_registry"));
     expect(cs1).toEqual(["20260825190000_capability_registry_v1.sql"]);
+  });
+
+  it("keeps environment-specific executor mappings in the QA fixture", () => {
+    expect(migration).not.toContain("insert into public.executor_capabilities");
+    expect(migration).not.toContain("profile_capability");
+    expect(fixture).toContain("insert into public.executor_capabilities");
   });
 
   it("keeps agent mappings pending in the QA fixture and profiles in shadow via evidence text", () => {

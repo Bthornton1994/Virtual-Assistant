@@ -32,8 +32,16 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const service = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const token = process.env.SUPABASE_ACCESS_TOKEN || "";
 
-if (!url.includes(PREVIEW_REF)) {
-  console.error("REFUSED: Supabase URL is not the Delegation Cloud Preview project.");
+function isPreviewUrl(value: string) {
+  try {
+    return new URL(value).hostname.toLowerCase() === PREVIEW_REF + ".supabase.co";
+  } catch {
+    return false;
+  }
+}
+
+if (!isPreviewUrl(url)) {
+  console.error("REFUSED: Supabase URL must be exactly the Delegation Cloud Preview project.");
   process.exit(2);
 }
 if (!service) {
