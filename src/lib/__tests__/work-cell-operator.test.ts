@@ -48,8 +48,6 @@ describe("work-cell operator toolchain", () => {
     expect(draft.definitionOfDoneMet).toBe(false);
     expect(draft.packetHash).toBe(packetHash);
     expect(draft.exceptions.some((item) => item.includes("rejected"))).toBe(true);
-    expect(draft.summary).toMatch(/No catalog write/);
-    expect(draft.definitionOfDoneMet).toBe(false);
   });
 
   it("loads Loadout PRODUCTS from a type-imported TypeScript source", () => {

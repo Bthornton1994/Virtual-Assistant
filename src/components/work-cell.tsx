@@ -8,7 +8,7 @@ import {
 } from "@/app/actions/work-cell";
 import { WorkCellActionForm } from "@/components/work-cell-action-form";
 import { PUBLIC_WEB_RESEARCHER_KEY } from "@/lib/public-web-researcher";
-import { catalogDecisionUi, classifyCatalogDecisions, draftWorkCellReceipt } from "@/lib/work-cell-operator";
+import { catalogDecisionUi, classifyCatalogDecisions } from "@/lib/work-cell-operator";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import type { WorkCellBundle } from "@/lib/work-cell";
 
@@ -99,14 +99,6 @@ export function WorkCellSection({
         }),
       )
     : null;
-  const receiptDraft =
-    packet && review && manifest
-      ? draftWorkCellReceipt({
-          packet: packet.payload,
-          review: review.payload,
-          expectedProductIds: manifest.expectedProductIds,
-        })
-      : null;
 
   return (
     <section className="space-y-4">
@@ -502,49 +494,6 @@ export function WorkCellSection({
           </WorkCellActionForm>
         ) : null}
       </Card>
-
-      {receiptDraft ? (
-        <Card className="p-5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="font-medium">Outcome Receipt draft</p>
-            <Badge tone={receiptDraft.hardGatePass ? "good" : "bad"}>
-              {receiptDraft.verificationStatus}
-            </Badge>
-          </div>
-          <p className="mt-3 text-sm text-muted">
-            Derived from the frozen packet, hash-bound review, and deterministic gate. Copy these fields into the Gauntlet
-            receipt. This card does not issue a receipt.
-          </p>
-          <div className="mt-4 space-y-3">
-            <Field label="Summary">
-              <Textarea readOnly rows={5} className="font-mono text-[11px]" value={receiptDraft.summary} />
-            </Field>
-            <Field label="Verification notes">
-              <Textarea readOnly rows={4} className="font-mono text-[11px]" value={receiptDraft.verificationNotes} />
-            </Field>
-            <Field label="Actions taken">
-              <Textarea readOnly rows={4} className="font-mono text-[11px]" value={receiptDraft.actionsTaken.join("\n")} />
-            </Field>
-            <Field label="Exceptions">
-              <Textarea
-                readOnly
-                rows={3}
-                className="font-mono text-[11px]"
-                value={receiptDraft.exceptions.length ? receiptDraft.exceptions.join("\n") : "None"}
-              />
-            </Field>
-            <Field label="Unresolved decisions">
-              <Textarea
-                readOnly
-                rows={3}
-                className="font-mono text-[11px]"
-                value={receiptDraft.unresolvedDecisions.length ? receiptDraft.unresolvedDecisions.join("\n") : "None"}
-              />
-            </Field>
-            <p className="break-all font-mono text-[11px] text-muted">packet {shortHash(receiptDraft.packetHash)}</p>
-          </div>
-        </Card>
-      ) : null}
     </section>
   );
 }
