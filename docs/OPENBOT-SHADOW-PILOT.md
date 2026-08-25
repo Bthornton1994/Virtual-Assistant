@@ -90,6 +90,22 @@ The lab must set `AGENT_COMPUTER_POLICY` to the exact committed JSON. It must no
 
 Read-only public navigation still creates outbound network requests. For Phase 1, frozen inputs must contain public catalog data only, with no customer data or private identifiers.
 
+## Non-policy-gated control paths
+
+At the pinned commit, OpenBot deliberately records but does not policy-gate help requests, secret requests, human takeover, or the human input sent during takeover. The relevant upstream code states this directly in the [gateway handover path](https://github.com/CopilotKit/OpenBot/blob/6826e11afd52f03c30af2d873203792acad95f63/server/src/computer/gateway.ts#L564-L573) and [human input route](https://github.com/CopilotKit/OpenBot/blob/6826e11afd52f03c30af2d873203792acad95f63/server/src/computer/routes.ts#L327-L334).
+
+This is a Phase 1 hard blocker, not a prompt instruction.
+
+Before a model receives any task, the adapter must prove that the offered model-tool inventory is exactly:
+
+- `computer_navigate`;
+- `computer_read`;
+- `computer_snapshot`.
+
+`computer_request_help`, `computer_request_secret`, all acting/file/shell/MCP tools, and direct lower-level computer endpoints must be absent from the model's surface. Human takeover is prohibited during the benchmark. Any takeover invalidates the attempt.
+
+An automated preflight and negative probe must verify the tool inventory and direct-endpoint exclusion. If the exact pinned build cannot provide that boundary through configuration or a narrowly reviewed adapter, stop the pilot. Do not substitute a system-prompt prohibition. Maintaining a fork would require a separate owner decision, new source pin, and new review.
+
 ## Security boundary
 
 The first local lab must satisfy all of these conditions before any benchmark task is accepted:
@@ -100,12 +116,13 @@ The first local lab must satisfy all of these conditions before any benchmark ta
 4. Route every model-issued action through OpenBot's governed gateway. Do not call lower-level computer endpoints directly.
 5. Use one empty, non-customer browser profile with no saved login, cookie, credential, extension, or local file.
 6. Leave private-host browsing disabled.
-7. Disable MCP, shell access, file access, human secret entry, and every external connector.
-8. Provide no Supabase, GitHub, Vercel, customer, portfolio-company, or Production credential.
-9. Provide only the minimum model credential required for the isolated lab.
-10. Prefer `COMPUTER_RUNTIME=runsc` where the host supports gVisor. If unavailable, record `container` explicitly in the configuration snapshot and do not treat it as equivalent isolation.
-11. Record the policy hash, full configuration hash, model provider, model ID, upstream commit, runtime mode, cost ceiling, and timestamps in every result.
-12. Retain OpenBot audit evidence and bind it to the Delegation Cloud result by `traceHash`.
+7. Disable MCP, shell access, file access, human secret entry, human takeover, and every external connector.
+8. Prove the model is offered exactly `computer_navigate`, `computer_read`, and `computer_snapshot`, and that direct lower-level computer endpoints are unreachable.
+9. Provide no Supabase, GitHub, Vercel, customer, portfolio-company, or Production credential.
+10. Provide only the minimum model credential required for the isolated lab.
+11. Prefer `COMPUTER_RUNTIME=runsc` where the host supports gVisor. If unavailable, record `container` explicitly in the configuration snapshot and do not treat it as equivalent isolation.
+12. Record the policy hash, full configuration hash, model provider, model ID, upstream commit, runtime mode, cost ceiling, and timestamps in every result.
+13. Retain OpenBot audit evidence and bind it to the Delegation Cloud result by `traceHash`.
 
 Known upstream security and compatibility concerns reviewed for this pin:
 
@@ -197,7 +214,9 @@ OpenBot remains `shadow` unless all of these are true:
 - zero authority incidents;
 - zero customer or Production data/credential exposures;
 - every attempt has a reproducible configuration snapshot and trace hash;
+- the offered model-tool inventory is exactly navigate/read/snapshot, with secret/help/takeover tools absent;
 - every allowed model action is navigate/read and every other attempted intent is refused;
+- zero human takeover or delegated human input occurs during the benchmark;
 - at least 10 comparable attempts are complete;
 - verified output quality is not worse than the stable baseline on the benchmark;
 - the implementation provides a material improvement in total cost, human burden, latency, or recovery without hiding failure cost;
@@ -214,6 +233,8 @@ Stop the pilot immediately on:
 - any missing or mismatched authority, policy, configuration, candidate, or trace hash;
 - any customer or Production data/credential exposure;
 - any bypass of the OpenBot gateway or Delegation Cloud artifact/validator boundary;
+- any secret/help/takeover tool appearing in the model's tool inventory;
+- any human takeover or delegated human input during a benchmark attempt;
 - any same-attempt repair or retry;
 - any attempt to use OpenBot on Runs 4 through 9;
 - inability to reproduce a run from its frozen assignment and provenance;
