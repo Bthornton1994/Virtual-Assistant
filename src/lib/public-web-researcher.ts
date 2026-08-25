@@ -127,19 +127,48 @@ function organizationFromHost(url: string): string {
   }
 }
 
+const STOP_TOKENS = new Set(["the", "and", "for", "with", "of", "a", "an", "in", "on", "to", "by"]);
+
 function pageMatches(text: string, needle: string): boolean {
   if (!needle.trim()) return false;
   return text.toLowerCase().includes(needle.trim().toLowerCase());
 }
 
-function stripTags(html: string): string {
-  return html
+function significantTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 2 && !STOP_TOKENS.has(token));
+}
+
+export function pageIdentifiesProduct(haystack: string, name: string, productId: string): boolean {
+  if (pageMatches(haystack, name) || pageMatches(haystack, productId)) return true;
+  const tokens = significantTokens(name);
+  if (tokens.length < 2) return false;
+  const hay = haystack.toLowerCase();
+  return tokens.every((token) => hay.includes(token));
+}
+
+function attrMatch(html: string, property: string): string {
+  const pattern = new RegExp(
+    `(?:property|name)=["']${property}["'][^>]*content=["']([^"']+)["']|content=["']([^"']+)["'][^>]*(?:property|name)=["']${property}["']`,
+    "i",
+  );
+  const match = html.match(pattern);
+  return (match?.[1] || match?.[2] || "").trim();
+}
+
+export function readablePageText(html: string): string {
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim() ?? "";
+  const ogTitle = attrMatch(html, "og:title");
+  const ogSite = attrMatch(html, "og:site_name");
+  const body = html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_PAGE_CHARS);
+    .trim();
+  return [title, ogTitle, ogSite, body].filter(Boolean).join(" \n ").slice(0, MAX_PAGE_CHARS);
 }
 
 function parseDisplayedPrice(text: string): number | null {
@@ -161,7 +190,10 @@ export async function fetchPublicHttpsPage(
       method: "GET",
       redirect: "manual",
       signal: controller.signal,
-      headers: { accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1" },
+      headers: {
+        accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+        "user-agent": "DelegationCloudPublicWebResearcher/1.0 (+https://delegation.cloud)",
+      },
     });
     if (response.status >= 300 && response.status < 400) {
       if (redirectsRemaining <= 0) return { error: "Too many redirects." };
@@ -172,7 +204,7 @@ export async function fetchPublicHttpsPage(
     }
     if (!response.ok) return { error: `HTTP ${response.status}` };
     const raw = await response.text();
-    return { url: response.url || url, status: response.status, text: stripTags(raw) };
+    return { url: response.url || url, status: response.status, text: readablePageText(raw) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "fetch failed" };
   } finally {
@@ -188,9 +220,9 @@ function buildProduct(
 ): CatalogEvidenceProduct {
   const name = displayName(productId, record);
   const combined = pages.map((page) => page.text).join("\n");
-  const identityExact = pages.some((page) => pageMatches(page.text, name) || pageMatches(page.text, productId));
+  const identityExact = pages.some((page) => pageIdentifiesProduct(page.text, name, productId));
   const identity = identityExact
-    ? { status: "exact" as const, reason: `Public page text contained the catalog name "${name}".` }
+    ? { status: "exact" as const, reason: `Public page title or text identified "${name}".` }
     : {
         status: "uncertain" as const,
         reason: pages.length
@@ -209,7 +241,9 @@ function buildProduct(
   const sourceUrls = primarySources.map((source) => source.url);
   const claimFindings: ClaimFinding[] = collectScalarClaims(record).map((claim) => {
     const catalogText = String(claim.value);
-    const supported = combined.length > 0 && pageMatches(combined, catalogText);
+    const nameField = /^(name|title|displayName|productName|model)$/i.test(claim.field);
+    const supported =
+      (nameField && identityExact) || (combined.length > 0 && pageMatches(combined, catalogText));
     const highRisk = /approv|complian|ipf|usapl|federation|certif/i.test(claim.field);
     return {
       claimId: `${productId}:${claim.field}`,

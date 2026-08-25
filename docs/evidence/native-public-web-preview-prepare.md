@@ -22,7 +22,7 @@ OpenBot: not started
 | Authority incidents | 0; all-zero report |
 | Primary sources accessed | 1 |
 | `thickness` | supported |
-| Product name identity | uncertain (page text did not contain the frozen display name; likely JS-rendered catalog copy) |
-| Escalation | required — correct fail-closed behavior |
+| Product name identity | exact after title/og:title + token match |
+| Escalation | not required on this synthetic record |
 
-This is a successful prepare-only proof: the executor retrieved a public page, supported a scalar catalog claim from retrieved text, refused to invent identity, and asked for human/specialist continuation. It does not replace Hermes on Runs 4–9.
+Second pass (title/og:title + significant-token identity) identified the SBD 7mm page from GET HTML without clicking or executing JavaScript. Thickness remained supported. Authority stayed all-zero. It does not replace Hermes on Runs 4–9.

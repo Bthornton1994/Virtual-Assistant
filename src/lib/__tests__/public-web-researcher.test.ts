@@ -10,7 +10,9 @@ import {
   PUBLIC_WEB_RESEARCHER_KEY,
   extractHttpsUrls,
   isPublicHttpsUrl,
+  pageIdentifiesProduct,
   preparePublicWebEvidencePacket,
+  readablePageText,
   type PageFetcher,
 } from "@/lib/public-web-researcher";
 
@@ -98,6 +100,23 @@ describe("prepare-only public-web researcher", () => {
     expect(validation.metrics.schemaViolationCount).toBe(0);
     expect(validation.metrics.authorityIncidentCount).toBe(0);
     expect(validation.hardFailures.filter((item) => item.startsWith("Schema:"))).toEqual([]);
+  });
+
+  it("identifies a product from title and og:title when the body is otherwise thin", async () => {
+    const html = `
+      <html><head>
+        <title>7mm Knee Sleeves | SBD Apparel</title>
+        <meta property="og:title" content="SBD 7mm Knee Sleeves" />
+      </head><body><div id="app"></div></body></html>
+    `;
+    expect(pageIdentifiesProduct(readablePageText(html), "SBD 7mm Knee Sleeves", "ks-sbd-7mm")).toBe(true);
+    const fetchPage: PageFetcher = async (url) => ({
+      url,
+      status: 200,
+      text: readablePageText(html),
+    });
+    const packet = await preparePublicWebEvidencePacket(manifest(), { fetchPage, now: "2026-08-25T12:01:00Z" });
+    expect(packet.products[0]?.identity.status).toBe("exact");
   });
 
   it("fails closed to uncertain identity and escalation when pages do not match", async () => {
