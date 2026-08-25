@@ -1,6 +1,7 @@
 "use server";
 
 import { requireOps } from "@/lib/auth";
+import { parseExtractedJson } from "@/lib/work-cell-json";
 import { AuthzError, DomainError } from "@/lib/domain";
 import {
   freezeWorkCellInputManifest,
@@ -47,16 +48,19 @@ function dollarsToMicros(formData: FormData, name: string, label: string) {
 function parseInputRecords(formData: FormData): Array<{ productId: string; record: Record<string, unknown> }> {
   const raw = String(formData.get("inputRecords") || "").trim();
   if (!raw) throw new Error("Frozen input records are required: paste the exact catalog record for every expected product.");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`Frozen input records are not valid JSON: ${(error as Error).message}`);
-  }
+  const extracted = parseExtractedJson(raw);
+  if (!extracted.ok) throw new Error(extracted.error.replace("Executor output", "Frozen input records"));
+  const parsed = extracted.value;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Frozen input records must be a JSON object mapping each product ID to its catalog record.");
   }
-  return Object.entries(parsed as Record<string, unknown>).map(([productId, record]) => {
+  const object = parsed as Record<string, unknown>;
+  if (typeof object.schemaVersion === "string") {
+    throw new Error(
+      `Frozen input records must be a map of product IDs to catalog records (keys like ks-sbd-5mm), not a ${object.schemaVersion} artifact. Paste that packet or review into section 1 or 2 after the manifest is frozen.`,
+    );
+  }
+  return Object.entries(object).map(([productId, record]) => {
     if (!record || typeof record !== "object" || Array.isArray(record)) {
       throw new Error(`The frozen input record for product ID "${productId}" must be a JSON object.`);
     }

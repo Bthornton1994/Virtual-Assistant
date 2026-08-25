@@ -259,8 +259,9 @@ Then:
 4. Create a Gauntlet attempt for the Catalog Integrity workstream in the usual way and start the run.
 5. Open the run page → **Work Cell** → *0. Frozen input manifest*. Enter the market, the exact expected product IDs, the frozen input record for each one (one JSON object mapping product ID to its exact catalog record), and the two executor keys. Freeze it. **This happens before any executor runs** — it is the run's provenance, and every later stage reads the batch, records, and executor identities from it.
 6. Copy the frozen input records shown on the card and hand that exact JSON to Hermes, then later to Grok. Run the Hermes task externally under its documented shadow constraints. Preserve the raw output verbatim.
-7. Paste the raw JSON into *1. Frozen evidence packet*. Record measured human minutes and AI/tool cost. There is no expected-products box and no executor-key box: both come from the manifest.
+7. Paste the research executor output into *1. Frozen evidence packet*. Surrounding chat is stripped; the JSON object is not repaired. Record measured human minutes and AI/tool cost. There is no expected-products box and no executor-key box: both come from the manifest.
    - If the validator rejects it, **nothing is stored as evidence**. A `catalog-evidence-rejection/v1` artifact records the attempt, its raw-output hash, and the failures. The rejection is the result: correct the executor's method, not the packet.
+   - A packet pasted into section 0 is rejected: `schemaVersion` is not a product ID.
 8. Copy the frozen packet hash shown on the card. Give Grok the original catalog input and the frozen packet, and require the returned review to carry that hash in `evidencePacketHash`.
 9. Paste the raw review JSON into *2. Independent review*. It is accepted only if the hash, run ID, and reviewer key all match.
 10. Run *3. Deterministic validation*. This opens only once both executor artifacts exist. Read the report: hard failures, warnings, computed metrics, and the reviewer benchmark.

@@ -120,6 +120,13 @@ describe("capability performance ledger v1", () => {
     expect(result.ok ? [] : result.failures.join(" ")).toContain("sourceArtifactHash");
   });
 
+
+  it("rejects fractional micro-costs", () => {
+    const result = buildCapabilityPerformanceLedger([observation({ aiCostMicros: 0.5 })]);
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.failures.join(" ")).toContain("aiCostMicros");
+  });
+
   it("records authority, correction, and retry rates from evidence", () => {
     const result = buildCapabilityPerformanceLedger([
       observation({

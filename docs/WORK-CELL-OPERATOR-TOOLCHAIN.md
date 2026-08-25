@@ -32,7 +32,7 @@ Uses the deterministic validator and work-cell gate. A rejected claim drafts a *
 
 ## Classify catalog decisions (do not loop Hermes)
 
-When prepare/review already exist, classify whether the remaining work is a catalog identity/price decision. An identity mismatch on a frozen SKU is not a Hermes retry.
+When prepare/review already exist, classify whether the remaining work is a catalog identity/price decision. An identity mismatch on a frozen SKU is not a Hermes retry. The Work Cell page derives the same headline after a packet is frozen (not stored, not a catalog write).
 
 ```text
 npx tsx scripts/classify-catalog-decisions.ts --packet packet.json --records frozen-input-records.json --review review.json

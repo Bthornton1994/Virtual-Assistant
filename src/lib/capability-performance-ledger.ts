@@ -14,6 +14,7 @@ export type LedgerBenchmarkTruth = (typeof LEDGER_BENCHMARK_TRUTH)[number];
 export type LedgerOutcomeSource = (typeof LEDGER_OUTCOME_SOURCES)[number];
 
 const nonNegativeFinite = z.number().finite().min(0);
+const nonNegativeInteger = z.number().int().min(0);
 
 export const performanceObservationSchema = z
   .object({
@@ -31,8 +32,8 @@ export const performanceObservationSchema = z
     correctionRequired: z.boolean(),
     rollbackOrRetry: z.boolean(),
     humanInterventionMinutes: nonNegativeFinite,
-    aiCostMicros: nonNegativeFinite,
-    toolCostMicros: nonNegativeFinite,
+    aiCostMicros: nonNegativeInteger,
+    toolCostMicros: nonNegativeInteger,
     latencyMs: nonNegativeFinite,
     outcomeSource: z.enum(LEDGER_OUTCOME_SOURCES),
     sourceArtifactHash: sha256HexSchema,
