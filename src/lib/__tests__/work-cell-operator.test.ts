@@ -7,6 +7,7 @@ import {
   catalogDecisionUi,
   classifyCatalogDecisions,
   draftWorkCellReceipt,
+  recommendCorrectiveAction,
 } from "@/lib/work-cell-operator";
 
 describe("work-cell operator toolchain", () => {
@@ -100,5 +101,31 @@ export const PRODUCTS = [{ id: "x" }];
     const ui = catalogDecisionUi(report);
     expect(ui.hermesRetryUseful).toBe(false);
     expect(ui.identitySummaries.length).toBeGreaterThan(0);
+    const action = recommendCorrectiveAction({ packet: hermes, report });
+    expect(action.classification).toBe("source_ambiguity");
+    expect(action.retryDecision).toBe("escalate_human");
+    expect(action.droppedProductIds).toEqual(["ww-a7-coneface"]);
+    expect(action.nextProductIds).toEqual([]);
+    expect(action.loadoutWrite).toBe(false);
+  });
+
+  it("keeps exact-identity SKUs as a later freeze and still escalates when any ID mismatches", () => {
+    const hermes = packet({
+      products: [
+        product(),
+        product({
+          productId: "belt-averte",
+          identity: { status: "mismatch", reason: "No manufacturer listing for Averte." },
+          claimFindings: [],
+          candidateCorrections: [],
+          escalation: { required: true, reason: "No manufacturer listing." },
+        }),
+      ],
+    });
+    const report = classifyCatalogDecisions({ packet: hermes });
+    const action = recommendCorrectiveAction({ packet: hermes, report });
+    expect(action.retryDecision).toBe("escalate_human");
+    expect(action.droppedProductIds).toEqual(["belt-averte"]);
+    expect(action.nextProductIds).toEqual(["ks-sbd-7mm"]);
   });
 });
