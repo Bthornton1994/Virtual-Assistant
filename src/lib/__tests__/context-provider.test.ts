@@ -118,6 +118,15 @@ describe("context provider bakeoff v1", () => {
     expect(result.ok ? [] : result.failures.join(" ")).toContain("repositorySnapshotHash");
   });
 
+  it("rejects failed observations that claim a correct outcome", () => {
+    const result = buildContextProviderScorecard({
+      tasks: [task],
+      observations: [observation({ status: "failed", correctOutcome: true })],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.failures.join(" ")).toContain("correctOutcome");
+  });
+
   it("rejects reused or unknown benchmark tasks instead of repairing them", () => {
     const result = buildContextProviderScorecard({
       tasks: [{ ...task, unseen: false } as unknown],

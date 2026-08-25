@@ -91,7 +91,7 @@ export const contextBenchmarkTaskSchema = z
     objective: nonEmptyString,
     expectedFiles: z.array(nonEmptyString).min(1).max(256),
     expectedSymbols: z.array(nonEmptyString).max(256),
-    operations: z.array(contextProviderOperationSchema).min(1).max(CONTEXT_PROVIDER_OPERATIONS.length),
+    operations: z\n      .array(contextProviderOperationSchema)\n      .min(1)\n      .max(CONTEXT_PROVIDER_OPERATIONS.length)\n      .refine((operations) => new Set(operations).size === operations.length, "must not repeat operations"),
     unseen: z.literal(true),
   })
   .strict();
@@ -122,7 +122,16 @@ export const contextProviderObservationSchema = z
     sourceArtifactHash: sha256HexSchema,
     recordedAt: isoDateTimeSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((observation, context) => {
+    if (observation.status === "failed" && observation.correctOutcome) {
+      context.addIssue({
+        code: "custom",
+        path: ["correctOutcome"],
+        message: "failed observations cannot be marked correct",
+      });
+    }
+  });
 
 export type ContextProviderObservation = z.infer<typeof contextProviderObservationSchema>;
 
