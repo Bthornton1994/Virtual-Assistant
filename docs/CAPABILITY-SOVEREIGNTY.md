@@ -705,6 +705,7 @@ This map records the current architectural lesson, not a permanent vendor commit
 | Orca | isolated worktrees, parallel candidate execution | Extract Workspace Isolation; optional implementation |
 | Agent-Reach | broad source acquisition, channel health | Extract Research Connector and trust tiers |
 | OpenMontage | staged specialist pipeline, approval gates, cost/replay | Extract Specialist Pipeline pattern; potential future executor |
+| OpenBot | governed per-agent browser/computer runtime, policy/audit, human takeover | Hybrid/benchmark candidate behind governed computer-use and evidence-research contracts; never authoritative state, memory, or verification |
 | pstack | investigation, architecture-first execution, adversarial verification, empirical engineering | Engineering principles; no runtime dependency required |
 
 No row in this table grants authority or guarantees permanent use.

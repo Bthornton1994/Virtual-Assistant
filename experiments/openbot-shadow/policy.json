@@ -1,0 +1,16 @@
+{
+  "mode": "enforce",
+  "deny": [
+    "intent == \"activate\"",
+    "intent == \"type\"",
+    "intent == \"read_file\"",
+    "intent == \"write_file\"",
+    "intent == \"list_files\"",
+    "intent == \"read_tool\"",
+    "intent == \"write_tool\"",
+    "intent == \"run_command\""
+  ],
+  "allow": [
+    "intent == \"navigate\" || intent == \"read\""
+  ]
+}

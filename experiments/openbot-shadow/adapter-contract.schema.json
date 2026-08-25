@@ -1,0 +1,650 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delegation.cloud/contracts/openbot-shadow-adapter/v1",
+  "title": "Delegation Cloud OpenBot shadow adapter contract",
+  "description": "Phase 0 contract for a replaceable, prepare-only OpenBot implementation. A result is untrusted candidate output until Delegation Cloud validates its typed payload, evidence, provenance, authority report, and economics.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/assignment"
+    },
+    {
+      "$ref": "#/$defs/result"
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "schemaVersion",
+        "contentHash"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schemaVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentHash": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "economicLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxAiCostMicros",
+        "maxToolCostMicros",
+        "maxHumanMinutes",
+        "maxRuntimeSeconds"
+      ],
+      "properties": {
+        "maxAiCostMicros": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxToolCostMicros": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxHumanMinutes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxRuntimeSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "authoritySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actionClass",
+        "mayResearchPublicSources",
+        "mayNavigatePublicWeb",
+        "mayReadPublicWeb",
+        "mayActivatePageElements",
+        "mayTypeIntoPages",
+        "mayUseFilesystem",
+        "mayUseShell",
+        "mayUseMcp",
+        "mayRequestHumanSecrets",
+        "mayReturnTypedEvidence",
+        "mayDecideVerified",
+        "mayOwnAuthoritativeState",
+        "mayRequestHumanTakeover",
+        "mayReceiveHumanInput"
+      ],
+      "properties": {
+        "actionClass": {
+          "const": "prepare_only"
+        },
+        "mayResearchPublicSources": {
+          "const": true
+        },
+        "mayNavigatePublicWeb": {
+          "const": true
+        },
+        "mayReadPublicWeb": {
+          "const": true
+        },
+        "mayActivatePageElements": {
+          "const": false
+        },
+        "mayTypeIntoPages": {
+          "const": false
+        },
+        "mayUseFilesystem": {
+          "const": false
+        },
+        "mayUseShell": {
+          "const": false
+        },
+        "mayUseMcp": {
+          "const": false
+        },
+        "mayRequestHumanSecrets": {
+          "const": false
+        },
+        "mayReturnTypedEvidence": {
+          "const": "catalog-evidence-packet/v1"
+        },
+        "mayDecideVerified": {
+          "const": false
+        },
+        "mayOwnAuthoritativeState": {
+          "const": false
+        },
+        "mayRequestHumanTakeover": {
+          "const": false
+        },
+        "mayReceiveHumanInput": {
+          "const": false
+        }
+      }
+    },
+    "executorConfigurationSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "implementationKey",
+        "upstreamRepository",
+        "upstreamVersion",
+        "upstreamCommit",
+        "deploymentMode",
+        "computerRuntime",
+        "modelProvider",
+        "modelId",
+        "policyPath",
+        "policyHash",
+        "configurationHash",
+        "mcpEnabled",
+        "shellEnabled",
+        "fileAccessEnabled",
+        "humanSecretEntryEnabled",
+        "customerCredentialsPresent",
+        "customerDataPresent",
+        "copilotKitStateAuthoritative",
+        "offeredModelTools",
+        "privateHostAccessEnabled",
+        "directComputerEndpointAccessEnabled",
+        "humanTakeoverEnabled",
+        "browserProfileContainsLogin"
+      ],
+      "properties": {
+        "implementationKey": {
+          "const": "openbot-governed-research-shadow-v1"
+        },
+        "upstreamRepository": {
+          "const": "https://github.com/CopilotKit/OpenBot"
+        },
+        "upstreamVersion": {
+          "const": "v0.0.4"
+        },
+        "upstreamCommit": {
+          "const": "6826e11afd52f03c30af2d873203792acad95f63"
+        },
+        "deploymentMode": {
+          "const": "external-postgres-loopback"
+        },
+        "computerRuntime": {
+          "enum": [
+            "runsc",
+            "container"
+          ]
+        },
+        "modelProvider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policyPath": {
+          "const": "experiments/openbot-shadow/policy.json"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "configurationHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "mcpEnabled": {
+          "const": false
+        },
+        "shellEnabled": {
+          "const": false
+        },
+        "fileAccessEnabled": {
+          "const": false
+        },
+        "humanSecretEntryEnabled": {
+          "const": false
+        },
+        "customerCredentialsPresent": {
+          "const": false
+        },
+        "customerDataPresent": {
+          "const": false
+        },
+        "copilotKitStateAuthoritative": {
+          "const": false
+        },
+        "offeredModelTools": {
+          "type": "array",
+          "const": [
+            "computer_navigate",
+            "computer_read",
+            "computer_snapshot"
+          ]
+        },
+        "privateHostAccessEnabled": {
+          "const": false
+        },
+        "directComputerEndpointAccessEnabled": {
+          "const": false
+        },
+        "humanTakeoverEnabled": {
+          "const": false
+        },
+        "browserProfileContainsLogin": {
+          "const": false
+        }
+      }
+    },
+    "actionAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "toolName",
+        "intent",
+        "decision",
+        "occurredAt"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "intent": {
+          "enum": [
+            "activate",
+            "type",
+            "navigate",
+            "read",
+            "read_file",
+            "write_file",
+            "list_files",
+            "read_tool",
+            "write_tool",
+            "run_command"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "allowed",
+            "refused",
+            "failed"
+          ]
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "observedEconomics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "humanMinutes",
+        "aiCostMicros",
+        "toolCostMicros",
+        "runtimeMilliseconds"
+      ],
+      "properties": {
+        "humanMinutes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "aiCostMicros": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toolCostMicros": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runtimeMilliseconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "authorityReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "externalMessagesSent",
+        "purchasesMade",
+        "accountsCreated",
+        "repositoryChangesMade",
+        "catalogRecordsModified",
+        "permissionsChanged",
+        "skillsCreatedOrModified",
+        "routinesCreatedOrModified",
+        "otherExternalActions"
+      ],
+      "properties": {
+        "externalMessagesSent": {
+          "type": "integer",
+          "const": 0
+        },
+        "purchasesMade": {
+          "type": "integer",
+          "const": 0
+        },
+        "accountsCreated": {
+          "type": "integer",
+          "const": 0
+        },
+        "repositoryChangesMade": {
+          "type": "integer",
+          "const": 0
+        },
+        "catalogRecordsModified": {
+          "type": "integer",
+          "const": 0
+        },
+        "permissionsChanged": {
+          "type": "integer",
+          "const": 0
+        },
+        "skillsCreatedOrModified": {
+          "type": "integer",
+          "const": 0
+        },
+        "routinesCreatedOrModified": {
+          "type": "integer",
+          "const": 0
+        },
+        "otherExternalActions": {
+          "type": "integer",
+          "const": 0
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstreamRepository",
+        "upstreamVersion",
+        "upstreamCommit",
+        "policyHash",
+        "configurationHash",
+        "modelProvider",
+        "modelId",
+        "startedAt",
+        "completedAt"
+      ],
+      "properties": {
+        "upstreamRepository": {
+          "const": "https://github.com/CopilotKit/OpenBot"
+        },
+        "upstreamVersion": {
+          "const": "v0.0.4"
+        },
+        "upstreamCommit": {
+          "const": "6826e11afd52f03c30af2d873203792acad95f63"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "configurationHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "modelProvider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "runId",
+        "attemptId",
+        "assignmentId",
+        "capabilityKey",
+        "phase",
+        "objective",
+        "inputArtifacts",
+        "frozenInputHash",
+        "authoritySnapshot",
+        "outputContract",
+        "economicLimit",
+        "deadline",
+        "executorConfigurationSnapshot"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "openbot-shadow-assignment/v1"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attemptId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assignmentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilityKey": {
+          "const": "evidence_research"
+        },
+        "phase": {
+          "const": "prepare"
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputArtifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/artifactRef"
+          }
+        },
+        "frozenInputHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "authoritySnapshot": {
+          "$ref": "#/$defs/authoritySnapshot"
+        },
+        "outputContract": {
+          "const": "catalog-evidence-packet/v1"
+        },
+        "economicLimit": {
+          "$ref": "#/$defs/economicLimit"
+        },
+        "deadline": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "executorConfigurationSnapshot": {
+          "$ref": "#/$defs/executorConfigurationSnapshot"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "runId",
+        "attemptId",
+        "assignmentId",
+        "capabilityKey",
+        "phase",
+        "status",
+        "candidatePayload",
+        "candidatePayloadHash",
+        "traceHash",
+        "actionsAttempted",
+        "unresolvedQuestions",
+        "escalation",
+        "authorityReport",
+        "observedEconomics",
+        "provenance"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "openbot-shadow-result/v1"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attemptId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assignmentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilityKey": {
+          "const": "evidence_research"
+        },
+        "phase": {
+          "const": "prepare"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "refused",
+            "escalated"
+          ]
+        },
+        "candidatePayload": {
+          "description": "Untrusted candidate CatalogEvidencePacketV1 payload. Delegation Cloud must parse and validate it before it can advance lifecycle state.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "candidatePayloadHash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "traceHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "actionsAttempted": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/actionAttempt"
+          }
+        },
+        "unresolvedQuestions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "escalation": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason",
+                "requestedAction"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "requestedAction": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "authorityReport": {
+          "$ref": "#/$defs/authorityReport"
+        },
+        "observedEconomics": {
+          "$ref": "#/$defs/observedEconomics"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "candidatePayload": {
+                "type": "object"
+              },
+              "candidatePayloadHash": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "candidatePayload": {
+                "type": "null"
+              },
+              "candidatePayloadHash": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
