@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  OPENBOT_ALLOWED_MODEL_TOOLS,
+  OPENBOT_PINNED_PROHIBITED_MODEL_TOOLS,
+  assertDispatchedToolCall,
+  assertOfferedModelTools,
+  containsProhibitedPinnedTool,
+} from "@/lib/openbot-tool-surface";
 
 type SchemaObject = {
   additionalProperties?: boolean;
@@ -25,12 +32,12 @@ const root = process.cwd();
 const policyRaw = readFileSync(
   resolve(root, "experiments/openbot-shadow/policy.json"),
   "utf8",
-);
+).replace(/\r\n/g, "\n");
 const policy = JSON.parse(policyRaw) as ActionPolicy;
 const contractRaw = readFileSync(
   resolve(root, "experiments/openbot-shadow/adapter-contract.schema.json"),
   "utf8",
-);
+).replace(/\r\n/g, "\n");
 const contract = JSON.parse(contractRaw) as AdapterContract;
 const fixture = readFileSync(
   resolve(root, "supabase/qa/openbot_shadow_executor_profile.sql"),
@@ -275,6 +282,29 @@ describe("OpenBot pilot doctrine", () => {
     ]) {
       expect(charter).toContain(exclusion);
     }
+  });
+
+  it("refuses any captured inventory that is not exactly navigate/read/snapshot", () => {
+    expect(assertOfferedModelTools([...OPENBOT_ALLOWED_MODEL_TOOLS])).toEqual({
+      ok: true,
+    });
+    const unmodified = [
+      ...OPENBOT_ALLOWED_MODEL_TOOLS,
+      ...OPENBOT_PINNED_PROHIBITED_MODEL_TOOLS,
+    ];
+    const decision = assertOfferedModelTools(unmodified);
+    expect(decision.ok).toBe(false);
+    expect(containsProhibitedPinnedTool(unmodified)).toBe(true);
+    expect(assertOfferedModelTools(["computer_navigate", "computer_read"]).ok).toBe(
+      false,
+    );
+  });
+
+  it("rejects dispatched tool names outside the allowlist before CopilotKit can run them", () => {
+    expect(assertDispatchedToolCall("computer_read")).toEqual({ ok: true });
+    expect(assertDispatchedToolCall("computer_request_secret").ok).toBe(false);
+    expect(assertDispatchedToolCall("computer_run_command").ok).toBe(false);
+    expect(assertDispatchedToolCall("computer_request_help").ok).toBe(false);
   });
 
   it("records OpenBot as a hybrid benchmark candidate, never a source of authority", () => {

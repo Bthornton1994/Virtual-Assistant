@@ -62,6 +62,7 @@ sha256sum experiments/openbot-shadow/policy.json
 node -e 'JSON.parse(require("node:fs").readFileSync("experiments/openbot-shadow/policy.json", "utf8"))'
 node -e 'JSON.parse(require("node:fs").readFileSync("experiments/openbot-shadow/adapter-contract.schema.json", "utf8"))'
 npm test -- src/lib/__tests__/openbot-shadow-pilot.test.ts
+# also exercises src/lib/openbot-tool-surface.ts inventory/dispatch refusals
 ```
 
 The expected policy hash is `06759cfc784d9b00d631370063f40946e8cac01bd4df72c1d4955bd9ab38216a`.

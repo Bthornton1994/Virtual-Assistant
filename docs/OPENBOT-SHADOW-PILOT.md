@@ -106,6 +106,8 @@ Before a model receives any task, the adapter must prove that the offered model-
 
 An automated preflight and negative probe must verify the tool inventory and direct-endpoint exclusion. If the exact pinned build cannot provide that boundary through configuration or a narrowly reviewed adapter, stop the pilot. Do not substitute a system-prompt prohibition. Maintaining a fork would require a separate owner decision, new source pin, and new review.
 
+Delegation Cloud-side helpers in `src/lib/openbot-tool-surface.ts` refuse any captured inventory or dispatched tool name outside `computer_navigate`, `computer_read`, and `computer_snapshot`. They do **not** change the unmodified-upstream STOP: OpenBot still mounts the full catalogue unless a separately authorized patch/fork prevents that.
+
 ## Security boundary
 
 The first local lab must satisfy all of these conditions before any benchmark task is accepted:
