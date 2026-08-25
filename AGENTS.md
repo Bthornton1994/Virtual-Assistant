@@ -12,6 +12,7 @@ For substantial work involving Delegation Cloud autonomy, portfolio operation, o
 - `docs/STEP-3D-WORK-CELL.md`
 - `docs/CAPABILITY-SOVEREIGNTY.md`
 - `docs/CAPABILITY-SOVEREIGNTY-ROADMAP.md`
+- `docs/ENGINEERING-EXECUTION-PRINCIPLES.md`
 
 `VISION.md` remains the governing product constitution. The strategic thesis is an owner-approved direction to test, not authority to bypass the vision. The execution playbook is an implementation sequence, not evidence that autonomy, product-market fit, or software-like economics have already been achieved. The Gauntlet Loop defines the execution-control and earned-autonomy evidence path; it does not grant authority beyond a Delegation Spec. The work cell defines how several replaceable executors staff one attempt; it grants no authority either. Capability Sovereignty defines how external executors, frameworks, providers, memory systems, context engines, and specialist tools may enter the architecture: as replaceable implementations behind Delegation Cloud-owned contracts, never as sources of authority or product truth.
 
@@ -57,31 +58,32 @@ Treat explicit authority, required approvals, least-privilege access, organizati
 
 Only edit `VISION.md` when the task explicitly authorizes a governing decision change. Small fixes need no formal vision analysis, but they must preserve these boundaries. Report validation and any remaining vision tension before handoff.
 
-## Engineering quality layer
+## Engineering execution principles
 
-Use the pstack engineering workflow as an optional execution-quality layer for substantial software work when Cursor and the plugin are available. Upstream reference: `https://github.com/cursor/plugins/tree/main/pstack`.
+The portfolio engineering standard is tool-agnostic. Apply it whether the work is performed in Cursor, Claude Code, Codex, GitHub tooling, another agent runtime, or by a human engineer. No runtime-specific command or plugin is required.
 
-pstack is a workflow aid, not an authority source. The precedence order is:
+For substantial engineering work:
 
-1. `VISION.md`, owner decisions, and active Delegation Specs.
-2. This repository's security, deployment, data, approval, and release rules.
-3. The Gauntlet and deterministic verification requirements.
-4. pstack playbooks and model-routing guidance.
-5. Model-specific defaults.
+- prefer the smallest sufficient change and subtract obsolete complexity before adding new layers;
+- settle core data shapes, ownership, invariants, and concurrency assumptions before downstream logic;
+- integrate new requirements from first principles instead of bolting them onto an accidental design;
+- minimize reader load and hidden state;
+- optimize product choices for the intended user experience rather than implementation convenience;
+- compare multiple approaches when a novel or consequential design is genuinely uncertain;
+- build rerunnable scripts, validators, harnesses, generators, or benchmarks for repeated work and proof;
+- model the domain explicitly with types, state machines, registries, tables, or other appropriate structures;
+- validate external data at system boundaries and make invalid states hard to represent;
+- make lifecycle operations, retries, migrations, and recovery paths idempotent;
+- migrate callers and remove obsolete internal APIs rather than maintaining permanent dual paths without cause;
+- eliminate unnecessary shared mutable state before adding serialization or locks;
+- reproduce defects and fix root causes when practical;
+- sequence multi-step work into verifiable units;
+- verify the real runtime, artifact, workflow, database invariant, or user-facing behavior rather than treating green CI as sufficient proof;
+- independently challenge consequential changes involving authority, security, tenant isolation, money, privacy, irreversible mutation, or release control;
+- preserve concise evidence and decision provenance instead of raw context volume;
+- answer reversible, observable engineering questions with safe experiments when possible rather than pushing technical uncertainty to the owner;
+- encode repeated lessons into tests, schemas, types, invariants, metadata, verification tooling, or versioned Skills instead of repeating prose instructions.
 
-When using Cursor with pstack installed:
+These principles improve execution quality but grant no authority. They never authorize a merge, Production deployment, Production database or environment write, customer or vendor message, purchase, account or permission change, destructive action, public publication, Skill/Routine promotion, or autonomy increase that the governing repository and Delegation Spec have not already authorized.
 
-- Prefer `/poteto-mode` for non-trivial engineering work.
-- Use `/interrogate` for contested or cross-cutting changes before shipping.
-- Use `/create-verification-skill` when a project lacks a repeatable behavioral verification path.
-- Use `/eval` when changing prompts, agent instructions, or Skills whose behavior must be compared rather than assumed.
-- Use `/show-me-your-work` for long or autonomous engineering runs that need a reviewable decision trail.
-- Treat `/reflect` output as a candidate lesson or Skill change. It does not become company policy or an active Skill without the normal review and qualification path.
-
-For Claude Code, Codex, GitHub agents, or other runtimes that do not expose pstack commands, apply the equivalent disciplines rather than pretending Cursor-only commands exist: model the domain before coding, keep guards at boundaries, make illegal states difficult to represent, prefer idempotent operations, reproduce defects before fixing them, sequence work into verifiable units, verify the real artifact rather than only CI, and use independent/adversarial review for consequential changes.
-
-pstack's own autonomy defaults do **not** override Delegation Cloud authority. Do not use a pstack playbook to bypass approval for merges, deployments, production database or environment changes, customer or vendor messages, purchases, account or permission changes, destructive operations, public publication, or any other consequential external action. An engineering agent may prepare and verify work inside its assigned envelope; Delegation Cloud and the owner-approved control plane decide what may actually execute.
-
-Do not vendor or fork the entire pstack plugin into this repository by default. Install it through Cursor's plugin mechanism and keep repository-local rules limited to the stable governance and verification contract above. If pstack behavior changes upstream, this repository's authority boundaries remain unchanged.
-
-See `docs/ENGINEERING-QUALITY-LAYER.md` for the architectural mapping between pstack, coding executors, deterministic verification, and the Gauntlet.
+See `docs/ENGINEERING-EXECUTION-PRINCIPLES.md` for the full standard and its relationship to the Gauntlet, evidence, Skills, and earned autonomy.
