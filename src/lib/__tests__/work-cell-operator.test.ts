@@ -8,7 +8,9 @@ import {
   classifyCatalogDecisions,
   correctiveActionFromPacket,
   draftWorkCellReceipt,
+  firstNonempty,
   freezeRecordsForNextBatch,
+  receiptFormDefaults,
   recommendCorrectiveAction,
 } from "@/lib/work-cell-operator";
 
@@ -51,6 +53,17 @@ describe("work-cell operator toolchain", () => {
     expect(draft.definitionOfDoneMet).toBe(false);
     expect(draft.packetHash).toBe(packetHash);
     expect(draft.exceptions.some((item) => item.includes("rejected"))).toBe(true);
+    const form = receiptFormDefaults(draft);
+    expect(form.definitionOfDoneMet).toBe(false);
+    expect(form.verificationStatus).toBe("failed");
+    expect(form.summary).toMatch(/No catalog write/);
+    expect(form.exceptions).toContain("rejected");
+  });
+
+  it("returns the first nonempty string without mixing ?? and ||", () => {
+    expect(firstNonempty(undefined, "", "escalate_human")).toBe("escalate_human");
+    expect(firstNonempty("source_ambiguity", "unknown")).toBe("source_ambiguity");
+    expect(firstNonempty(null, undefined, "")).toBe("");
   });
 
   it("loads Loadout PRODUCTS from a type-imported TypeScript source", () => {
