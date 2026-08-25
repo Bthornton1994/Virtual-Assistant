@@ -260,7 +260,7 @@ export function WorkCellSection({
             <WorkCellActionForm action={ingestCatalogEvidencePacketAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
-              <Field label="Raw executor JSON" hint="Pasted verbatim. Malformed output is rejected, never repaired.">
+              <Field label="Raw executor JSON" hint="Paste Hermes output. Surrounding chat is stripped; the JSON object is not repaired.">
                 <Textarea name="raw" required rows={8} placeholder='{"schemaVersion":"catalog-evidence-packet/v1", ...}' />
               </Field>
               <div className="grid gap-3 sm:grid-cols-3">
@@ -308,7 +308,7 @@ export function WorkCellSection({
             <WorkCellActionForm action={ingestCatalogEvidenceReviewAction} className="mt-5 space-y-4 border-t border-line pt-4">
               <input type="hidden" name="runId" value={runId} />
               {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
-              <Field label="Raw reviewer JSON" hint={`Must reference evidencePacketHash ${packet.contentHash}`}>
+              <Field label="Raw reviewer JSON" hint={`Surrounding chat is stripped. Must reference evidencePacketHash ${packet.contentHash}`}>
                 <Textarea name="raw" required rows={8} placeholder='{"schemaVersion":"catalog-evidence-review/v1", ...}' />
               </Field>
               <div className="grid gap-3 sm:grid-cols-3">
