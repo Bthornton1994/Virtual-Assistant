@@ -57,6 +57,15 @@ export const PRODUCTS: Product[] = [
     expect(products[0]?.price).toBe(89.99);
   });
 
+  it("refuses Loadout sources that import runtime modules", () => {
+    expect(() =>
+      loadLoadoutProductsFromSource(`
+import { readFileSync } from "node:fs";
+export const PRODUCTS = [{ id: "x" }];
+`),
+    ).toThrow(/runtime imports/);
+  });
+
   it("does not recommend a Hermes retry when a frozen SKU is an identity mismatch", () => {
     const hermes = packet({
       products: [

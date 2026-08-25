@@ -18,11 +18,11 @@ export function loadLoadoutProductsFromSource(source: string): CatalogProductRec
     },
     fileName: "products.ts",
   });
-  const module = { exports: {} as { PRODUCTS?: unknown } };
+  const cjs = { exports: {} as { PRODUCTS?: unknown } };
   const run = new Function("exports", "module", outputText) as (exports: unknown, module: unknown) => void;
-  run(module.exports, module);
-  if (!Array.isArray(module.exports.PRODUCTS)) {
+  run(cjs.exports, cjs);
+  if (!Array.isArray(cjs.exports.PRODUCTS)) {
     throw new Error("Loadout products.ts did not export a PRODUCTS array.");
   }
-  return JSON.parse(JSON.stringify(module.exports.PRODUCTS)) as CatalogProductRecord[];
+  return JSON.parse(JSON.stringify(cjs.exports.PRODUCTS)) as CatalogProductRecord[];
 }
