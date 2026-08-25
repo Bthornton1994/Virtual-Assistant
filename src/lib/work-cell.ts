@@ -31,6 +31,10 @@ import {
   type WorkCellBenchmark,
   type WorkCellGate,
 } from "@/lib/work-cell-policy";
+import {
+  PUBLIC_WEB_RESEARCHER_KEY,
+  preparePublicWebEvidencePacket,
+} from "@/lib/public-web-researcher";
 
 export const WORK_CELL_VALIDATION_SCHEMA_VERSION = "catalog-evidence-validation/v1" as const;
 export const WORK_CELL_REJECTION_SCHEMA_VERSION = "catalog-evidence-rejection/v1" as const;
@@ -580,6 +584,28 @@ export type PacketIngestResult = {
  * the deterministic gate accepts it. A rejected packet is recorded as an
  * explicitly untrusted rejection artifact, never as evidence.
  */
+export async function runNativePublicWebPrepare(
+  actor: Actor,
+  runId: string,
+): Promise<PacketIngestResult> {
+  managerOnly(actor);
+  const db = await persistentDb(actor);
+  const { manifest } = await requireInputManifest(db, runId);
+  if (manifest.prepareExecutorKey !== PUBLIC_WEB_RESEARCHER_KEY) {
+    throw new DomainError(
+      `Native public-web prepare is only valid when the frozen prepare executor is ${PUBLIC_WEB_RESEARCHER_KEY}.`,
+    );
+  }
+  const packet = await preparePublicWebEvidencePacket(manifest);
+  return ingestCatalogEvidencePacket(actor, runId, {
+    raw: JSON.stringify(packet),
+    humanMinutes: 0,
+    aiCostMicros: 0,
+    toolCostMicros: 0,
+  });
+}
+
+/** Validates a pasted research packet BEFORE persistence. Rejected output is untrusted audit, never evidence. */
 export async function ingestCatalogEvidencePacket(
   actor: Actor,
   runId: string,

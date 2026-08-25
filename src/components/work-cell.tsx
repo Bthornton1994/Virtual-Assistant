@@ -3,8 +3,10 @@ import {
   ingestCatalogEvidencePacketAction,
   ingestCatalogEvidenceReviewAction,
   recordWorkCellGauntletReviewsAction,
+  runNativePublicWebPrepareAction,
   runWorkCellValidationAction,
 } from "@/app/actions/work-cell";
+import { PUBLIC_WEB_RESEARCHER_KEY } from "@/lib/public-web-researcher";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import type { WorkCellBundle } from "@/lib/work-cell";
 
@@ -239,6 +241,19 @@ export function WorkCellSection({
               stored as evidence.
             </p>
           )}
+
+          {running && manager && manifest && !packet && !prepareRejected && manifest.prepareExecutorKey === PUBLIC_WEB_RESEARCHER_KEY ? (
+            <form action={runNativePublicWebPrepareAction} className="mt-5 space-y-4 border-t border-line pt-4">
+              <input type="hidden" name="runId" value={runId} />
+              {cycleId ? <input type="hidden" name="cycleId" value={cycleId} /> : null}
+              <p className="text-sm text-muted">
+                Frozen prepare executor is the native public-web researcher. It will GET only public https URLs already
+                named in the manifest, then freeze an untrusted evidence packet. It will not click, type, or decide
+                verification.
+              </p>
+              <Button type="submit">Run prepare-only public-web research</Button>
+            </form>
+          ) : null}
 
           {running && manager && manifest && !packet && !prepareRejected ? (
             <form action={ingestCatalogEvidencePacketAction} className="mt-5 space-y-4 border-t border-line pt-4">

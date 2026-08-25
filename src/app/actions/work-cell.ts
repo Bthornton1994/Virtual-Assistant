@@ -8,6 +8,7 @@ import {
   ingestCatalogEvidencePacket,
   ingestCatalogEvidenceReview,
   recordWorkCellGauntletReviews,
+  runNativePublicWebPrepare,
   runWorkCellValidation,
 } from "@/lib/work-cell";
 
@@ -81,6 +82,17 @@ export async function freezeWorkCellInputManifestAction(formData: FormData) {
       prepareExecutorKey: String(formData.get("prepareExecutorKey") || ""),
       reviewExecutorKey: String(formData.get("reviewExecutorKey") || ""),
     });
+  } catch (error) {
+    rethrowAction(error);
+  }
+  refresh(runId, String(formData.get("cycleId") || "") || undefined);
+}
+
+export async function runNativePublicWebPrepareAction(formData: FormData) {
+  const actor = await requireOps();
+  const runId = String(formData.get("runId") || "");
+  try {
+    await runNativePublicWebPrepare(actor, runId);
   } catch (error) {
     rethrowAction(error);
   }
