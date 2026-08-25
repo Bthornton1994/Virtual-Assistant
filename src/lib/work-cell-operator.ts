@@ -364,6 +364,42 @@ export function draftWorkCellReceipt(input: {
   };
 }
 
+export function workCellSubmitDefaults(input: {
+  assignments: Array<{
+    phase: string;
+    humanMinutes: number;
+    aiCostMicros: number;
+    toolCostMicros: number;
+    profile: { key: string } | null;
+  }>;
+  prepareExecutorKey?: string;
+  reviewExecutorKey?: string;
+  notes?: string;
+}) {
+  const executorSummary: Record<string, string> = {};
+  let humanMinutes = 0;
+  let aiCostMicros = 0;
+  let toolCostMicros = 0;
+  for (const assignment of input.assignments) {
+    humanMinutes += assignment.humanMinutes;
+    aiCostMicros += assignment.aiCostMicros;
+    toolCostMicros += assignment.toolCostMicros;
+    if (assignment.profile?.key) executorSummary[assignment.phase] = assignment.profile.key;
+  }
+  if (!executorSummary.prepare && input.prepareExecutorKey) executorSummary.prepare = input.prepareExecutorKey;
+  if (!executorSummary.review && input.reviewExecutorKey) executorSummary.review = input.reviewExecutorKey;
+  if (!executorSummary.validate) executorSummary.validate = FROZEN_WORK_CELL_EXECUTOR_KEYS.validate;
+
+  return {
+    humanMinutes: String(humanMinutes),
+    ownerMinutes: "0",
+    aiCostUsd: (aiCostMicros / 1_000_000).toFixed(4),
+    toolCostUsd: (toolCostMicros / 1_000_000).toFixed(4),
+    executorSummary: `${JSON.stringify(executorSummary, null, 2)}\n`,
+    notes: input.notes ?? "",
+  };
+}
+
 export function receiptFormDefaults(draft: WorkCellReceiptDraft) {
   return {
     definitionOfDoneMet: draft.definitionOfDoneMet,

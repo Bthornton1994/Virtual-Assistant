@@ -12,6 +12,7 @@ import {
   freezeRecordsForNextBatch,
   receiptFormDefaults,
   recommendCorrectiveAction,
+  workCellSubmitDefaults,
 } from "@/lib/work-cell-operator";
 
 describe("work-cell operator toolchain", () => {
@@ -64,6 +65,38 @@ describe("work-cell operator toolchain", () => {
     expect(firstNonempty(undefined, "", "escalate_human")).toBe("escalate_human");
     expect(firstNonempty("source_ambiguity", "unknown")).toBe("source_ambiguity");
     expect(firstNonempty(null, undefined, "")).toBe("");
+  });
+
+  it("prefills submit economics and executor keys from work-cell assignments", () => {
+    const defaults = workCellSubmitDefaults({
+      assignments: [
+        {
+          phase: "prepare",
+          humanMinutes: 12,
+          aiCostMicros: 1_500_000,
+          toolCostMicros: 250_000,
+          profile: { key: "hermes-loadout-researcher-v1" },
+        },
+        {
+          phase: "review",
+          humanMinutes: 8,
+          aiCostMicros: 900_000,
+          toolCostMicros: 0,
+          profile: { key: "grok-loadout-reviewer-v1" },
+        },
+      ],
+      notes: "Identity unresolved for ww-a7-coneface. Do not retry Hermes.",
+    });
+    expect(defaults.humanMinutes).toBe("20");
+    expect(defaults.ownerMinutes).toBe("0");
+    expect(defaults.aiCostUsd).toBe("2.4000");
+    expect(defaults.toolCostUsd).toBe("0.2500");
+    expect(JSON.parse(defaults.executorSummary)).toEqual({
+      prepare: "hermes-loadout-researcher-v1",
+      review: "grok-loadout-reviewer-v1",
+      validate: "catalog-evidence-validator-v1",
+    });
+    expect(defaults.notes).toMatch(/Do not retry Hermes/);
   });
 
   it("loads Loadout PRODUCTS from a type-imported TypeScript source", () => {
