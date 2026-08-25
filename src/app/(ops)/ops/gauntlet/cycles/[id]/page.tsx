@@ -17,6 +17,8 @@ import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
 import { FAILURE_CLASSIFICATIONS, RETRY_DECISIONS } from "@/lib/gauntlet-policy";
 import { getGauntletCycleBundle } from "@/lib/gauntlet";
+import { getRunWorkCell } from "@/lib/work-cell";
+import { correctiveActionFromPacket } from "@/lib/work-cell-operator";
 
 export const metadata = { title: "Gauntlet cycle" };
 
@@ -69,6 +71,44 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
   const latestRunHasWorkCell = executorAssignments.some((assignment) => text(assignment, "run_id") === latestRunId);
   const openFailure = failures.find((failure) => text(failure, "status") === "open");
   const proposedDecision = decisions.find((decision) => text(decision, "status") === "proposed");
+  const failureRunId = text(openFailure, "run_id");
+  const workCell =
+    cycle.status === "corrective_action" && failureRunId ? await getRunWorkCell(actor, failureRunId) : null;
+  const derived =
+    workCell?.packet
+      ? correctiveActionFromPacket({
+          packet: workCell.packet.payload,
+          review: workCell.review?.payload,
+          frozenRecords: Object.fromEntries(
+            (workCell.manifest?.inputRecords ?? []).map((entry) => [entry.productId, { id: entry.productId, ...entry.record }]),
+          ),
+        })
+      : null;
+  const AUTO_ROOT_CAUSE = "Terminal Gauntlet attempt has not yet been classified.";
+  const AUTO_CORRECTIVE = "Classify the failure before deciding whether and how to retry.";
+  const storedClassification = text(openFailure, "classification");
+  const unclassified = !storedClassification || storedClassification === "unknown";
+  const classificationDefault = unclassified
+    ? (derived?.classification ?? storedClassification)
+    : storedClassification;
+  const retryDefault = unclassified
+    ? (derived?.retryDecision ?? text(openFailure, "retry_decision") || "")
+    : (text(openFailure, "retry_decision") || derived?.retryDecision || "");
+  const storedRoot = text(openFailure, "root_cause");
+  const rootCauseDefault =
+    storedRoot && storedRoot !== AUTO_ROOT_CAUSE ? storedRoot : (derived?.reason || storedRoot);
+  const storedCorrective = text(openFailure, "corrective_action");
+  const derivedCorrective = derived
+    ? [
+        derived.reason,
+        derived.droppedProductIds.length ? `Drop from freeze: ${derived.droppedProductIds.join(", ")}.` : "",
+        derived.nextProductIds.length ? `Later freeze: ${derived.nextProductIds.join(", ")}.` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "";
+  const correctiveDefault =
+    storedCorrective && storedCorrective !== AUTO_CORRECTIVE ? storedCorrective : (derivedCorrective || storedCorrective);
 
   const stages = ["observing", "executing", "verification", "corrective_action", "impact_review", "autonomy_review", "closed"];
 
@@ -310,7 +350,7 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
                 <input type="hidden" name="cycleId" value={cycle.id} />
                 <input type="hidden" name="failureId" value={text(openFailure, "id")} />
                 <Field label="Classification">
-                  <select name="classification" defaultValue={text(openFailure, "classification")} className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm">
+                  <select name="classification" defaultValue={classificationDefault} className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm">
                     {FAILURE_CLASSIFICATIONS.map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}
                   </select>
                 </Field>
@@ -319,13 +359,18 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
                     <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option>
                   </select>
                 </Field>
-                <Field label="Retry decision" hint="Leave blank to derive from failure class.">
-                  <select name="retryDecision" defaultValue="" className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm">
+                <Field label="Retry decision" hint="Work-cell identity mismatch prefills escalate human. Leave blank to derive from failure class.">
+                  <select name="retryDecision" defaultValue={retryDefault} className="h-10 w-full rounded-md border border-line bg-surface px-3 text-sm">
                     <option value="">Derive automatically</option>{RETRY_DECISIONS.map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}
                   </select>
                 </Field>
-                <Field label="Root cause"><Textarea name="rootCause" required defaultValue={text(openFailure, "root_cause")} /></Field>
-                <Field label="Corrective action"><Textarea name="correctiveAction" required defaultValue={text(openFailure, "corrective_action")} /></Field>
+                <Field label="Root cause"><Textarea name="rootCause" required defaultValue={rootCauseDefault} /></Field>
+                <Field label="Corrective action"><Textarea name="correctiveAction" required defaultValue={correctiveDefault} /></Field>
+                {derived ? (
+                  <p className="text-xs text-muted">
+                    Prefills from the frozen work-cell packet. Not written until you submit. Does not retry Hermes on identity mismatch. No Loadout write.
+                  </p>
+                ) : null}
                 <Button type="submit" variant="secondary">Update classification</Button>
               </form>
               <div>

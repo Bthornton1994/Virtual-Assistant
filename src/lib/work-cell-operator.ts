@@ -271,6 +271,22 @@ export function recommendCorrectiveAction(input: {
   };
 }
 
+export function correctiveActionFromPacket(input: {
+  packet: CatalogEvidencePacketV1;
+  review?: CatalogEvidenceReviewV1;
+  frozenRecords?: Record<string, CatalogProductRecord>;
+}): CorrectiveActionRecommendation {
+  const report = classifyCatalogDecisions(input);
+  return recommendCorrectiveAction({ packet: input.packet, report });
+}
+
+export function freezeRecordsForNextBatch(
+  products: CatalogProductRecord[],
+  recommendation: CorrectiveActionRecommendation,
+): { records: Record<string, CatalogProductRecord>; missing: string[] } {
+  return buildFrozenInputRecords(products, recommendation.nextProductIds);
+}
+
 export type WorkCellReceiptDraft = {
   verificationStatus: "passed" | "failed";
   definitionOfDoneMet: boolean;
