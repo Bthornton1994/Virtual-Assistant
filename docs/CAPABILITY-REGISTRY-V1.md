@@ -20,6 +20,18 @@ This increment makes the capability vocabulary Delegation Cloud-owned while pres
 - It does not make an agent authoritative, grant new authority, or alter the hard gate.
 - It does not apply a Supabase migration or write Preview/Production data.
 
+## Ported operator tooling (consolidated branch)
+
+These sit on PR #26's schema. They do not add a second CS-1 migration.
+
+- `scripts/extract-work-cell-artifact.ts` — strip chatter and validate packet/review JSON before ingest.
+- Frozen Step 3D executor-key guard in `capability-registry.ts` (`FROZEN_WORK_CELL_EXECUTOR_KEYS`).
+- `/ops/capabilities` — staff roster of **qualified** implementations for **active** capabilities only.
+- `docs/evidence/run5-catalog-integrity-work-cell.md` and the Run 5 scorecard.
+- `scripts/apply-cs1-preview.ts` plus `supabase/qa/capability_registry_v1.sql` — Preview/QA only, not executed from this commit.
+
+Qualified queries return only `capabilities.status = active` with `executor_capabilities.qualification_status = qualified`. Hermes and Grok remain `pending`. `executor_profiles.status` retains `shadow` for those agents.
+
 ## Exit check
 
 Operations can now query which implementations are registered for a capability and distinguish pending, qualified, suspended, and expired assignments. CS-2 will add the versioned executor envelope; CS-3 will add deterministic routing only after qualification evidence exists.

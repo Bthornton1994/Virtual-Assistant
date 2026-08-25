@@ -167,3 +167,105 @@ export function hasQualifiedCapability(
     (assignment) => assignment.capabilityKey === key && assignment.qualificationStatus === "qualified",
   );
 }
+
+/** Operator freeze defaults. Capability lookup must not override these. */
+export const FROZEN_WORK_CELL_EXECUTOR_KEYS = {
+  prepare: "hermes-loadout-researcher-v1",
+  review: "grok-loadout-reviewer-v1",
+  validate: "catalog-evidence-validator-v1",
+} as const;
+
+export function frozenWorkCellExecutorKeys() {
+  return { ...FROZEN_WORK_CELL_EXECUTOR_KEYS };
+}
+
+export type CapabilityImplementation = {
+  capabilityKey: string;
+  capabilityStatus: CapabilityStatus;
+  executorKey: string;
+  executorKind: string;
+  profileStatus: string;
+  qualificationStatus: CapabilityQualificationStatus;
+  qualificationVersion: string;
+  evidenceSummary: string;
+  suspendedAt?: string | null;
+};
+
+/**
+ * Qualified implementations only: active capability + qualified mapping.
+ * Pending Hermes/Grok rows must not appear. Does not pick a freeze key.
+ */
+export function qualifiedImplementationsForCapability(
+  rows: readonly CapabilityImplementation[],
+  capabilityKey: string,
+): CapabilityImplementation[] {
+  return rows
+    .filter((row) => row.capabilityKey === capabilityKey)
+    .filter((row) => row.capabilityStatus === "active")
+    .filter((row) => row.qualificationStatus === "qualified")
+    .filter((row) => !row.suspendedAt)
+    .slice()
+    .sort((a, b) => (a.executorKey < b.executorKey ? -1 : a.executorKey > b.executorKey ? 1 : 0));
+}
+
+export type CapabilityRoster = {
+  applied: boolean;
+  frozenKeys: typeof FROZEN_WORK_CELL_EXECUTOR_KEYS;
+  implementations: CapabilityImplementation[];
+  error: string | null;
+};
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+/**
+ * Staff-only roster of *qualified* implementations. Missing tables mean CS-1 is
+ * not applied yet. Never used to freeze a work-cell executor key.
+ */
+export async function loadCapabilityRoster(): Promise<CapabilityRoster> {
+  const frozenKeys = frozenWorkCellExecutorKeys();
+  const { supabaseServer } = await import("@/lib/supabase/server");
+  const db = await supabaseServer();
+  if (!db) {
+    return { applied: false, frozenKeys, implementations: [], error: "No persistent database is configured." };
+  }
+
+  const { data, error } = await db.from("executor_capabilities").select(
+    "qualification_status, qualification_version, evidence_summary, suspended_at, capabilities ( key, status ), executor_profiles ( key, executor_kind, status )",
+  );
+  if (error) {
+    const missing = /does not exist|schema cache|42P01|PGRST/i.test(error.message);
+    return {
+      applied: false,
+      frozenKeys,
+      implementations: [],
+      error: missing ? "CS-1 is not applied on this database yet." : error.message,
+    };
+  }
+
+  const implementations: CapabilityImplementation[] = [];
+  for (const row of data ?? []) {
+    const record = asRecord(row);
+    const capability = asRecord(record.capabilities);
+    const profile = asRecord(record.executor_profiles);
+    implementations.push({
+      capabilityKey: String(capability.key ?? ""),
+      capabilityStatus: String(capability.status ?? "") as CapabilityStatus,
+      executorKey: String(profile.key ?? ""),
+      executorKind: String(profile.executor_kind ?? ""),
+      profileStatus: String(profile.status ?? ""),
+      qualificationStatus: String(record.qualification_status ?? "") as CapabilityQualificationStatus,
+      qualificationVersion: String(record.qualification_version ?? ""),
+      evidenceSummary: String(record.evidence_summary ?? ""),
+      suspendedAt: (record.suspended_at as string | null) ?? null,
+    });
+  }
+
+  return {
+    applied: true,
+    frozenKeys,
+    implementations: CAPABILITY_KEYS.flatMap((key) => qualifiedImplementationsForCapability(implementations, key)),
+    error: null,
+  };
+}
