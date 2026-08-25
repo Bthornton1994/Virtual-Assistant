@@ -2,6 +2,7 @@ import { FROZEN_WORK_CELL_EXECUTOR_KEYS } from "@/lib/capability-registry";
 import { hashCatalogEvidencePacket } from "@/lib/catalog-evidence-hash";
 import type { CatalogEvidencePacketV1 } from "@/lib/catalog-evidence-packet";
 import type { CatalogEvidenceReviewV1 } from "@/lib/catalog-evidence-review";
+import type { FailureClassification, RetryDecision } from "@/lib/gauntlet-policy";
 import {
   collectPacketClaims,
   validateCatalogEvidencePacket,
@@ -188,6 +189,85 @@ export function catalogDecisionUi(report: CatalogDecisionReport) {
     summary: report.summary,
     identitySummaries: identity.map((item) => item.summary),
     otherDecisionCount: report.decisions.length - identity.length,
+  };
+}
+
+export type CorrectiveActionRecommendation = {
+  classification: FailureClassification;
+  retryDecision: RetryDecision;
+  nextProductIds: string[];
+  droppedProductIds: string[];
+  reason: string;
+  hermesRetryUseful: boolean;
+  loadoutWrite: false;
+};
+
+/**
+ * Recommend Gauntlet classification and retry from catalog decisions.
+ * Does not write the Gauntlet row. Identity mismatch is never retry_same_executor.
+ */
+export function recommendCorrectiveAction(input: {
+  packet: CatalogEvidencePacketV1;
+  report: CatalogDecisionReport;
+}): CorrectiveActionRecommendation {
+  const droppedProductIds = [...new Set(
+    input.report.decisions
+      .filter((item) => item.kind === "identity-mismatch" || item.kind === "identity-uncertain")
+      .map((item) => item.productId),
+  )];
+  const nextProductIds = input.packet.products
+    .filter((product) => product.identity.status === "exact" && !droppedProductIds.includes(product.productId))
+    .map((product) => product.productId);
+
+  if (droppedProductIds.length) {
+    return {
+      classification: "source_ambiguity",
+      retryDecision: "escalate_human",
+      nextProductIds,
+      droppedProductIds,
+      hermesRetryUseful: false,
+      loadoutWrite: false,
+      reason: nextProductIds.length
+        ? `Identity unresolved for ${droppedProductIds.join(", ")}. Do not retry Hermes on this frozen batch. A human must replace those IDs. Remaining exact-identity IDs (${nextProductIds.join(", ")}) may be frozen as a later batch after catalog decisions. No Loadout write.`
+        : `Identity unresolved for ${droppedProductIds.join(", ")} and no exact-identity SKU remains. Escalate. Do not retry Hermes. No Loadout write.`,
+    };
+  }
+
+  const catalogSide = input.report.decisions.some(
+    (item) => item.kind === "price-disagreement" || item.kind === "claim-contradicted" || item.kind === "proposed-correction",
+  );
+  if (catalogSide) {
+    return {
+      classification: "evidence_failure",
+      retryDecision: "escalate_human",
+      nextProductIds,
+      droppedProductIds: [],
+      hermesRetryUseful: false,
+      loadoutWrite: false,
+      reason: "Catalog or price decisions remain on exact-identity products. Hermes retry is not useful. Human catalog decision. No Loadout write.",
+    };
+  }
+
+  if (input.report.hermesRetryUseful) {
+    return {
+      classification: "evidence_failure",
+      retryDecision: "retry_same_executor",
+      nextProductIds,
+      droppedProductIds: [],
+      hermesRetryUseful: true,
+      loadoutWrite: false,
+      reason: "No identity mismatch. Escalations on exact-identity products may justify a new prepare on the same frozen IDs. No Loadout write.",
+    };
+  }
+
+  return {
+    classification: "unknown",
+    retryDecision: "no_retry",
+    nextProductIds,
+    droppedProductIds: [],
+    hermesRetryUseful: false,
+    loadoutWrite: false,
+    reason: input.report.summary,
   };
 }
 

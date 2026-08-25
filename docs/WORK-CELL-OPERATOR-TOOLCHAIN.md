@@ -38,4 +38,14 @@ When prepare/review already exist, classify whether the remaining work is a cata
 npx tsx scripts/classify-catalog-decisions.ts --packet packet.json --records frozen-input-records.json --review review.json
 ```
 
+## Recommend Gauntlet corrective action
+
+Does not write the Gauntlet row. Identity mismatch is `source_ambiguity` / `escalate_human`, never `retry_same_executor`.
+
+```text
+npx tsx scripts/recommend-corrective-action.ts --packet packet.json --records frozen-input-records.json --review review.json
+```
+
+The Work Cell page shows the same recommendation after a packet is frozen.
+
 Frozen executor keys remain `hermes-loadout-researcher-v1` / `grok-loadout-reviewer-v1` / `catalog-evidence-validator-v1`.
