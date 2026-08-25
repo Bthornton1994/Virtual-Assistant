@@ -192,6 +192,16 @@ export function validateExecutorEnvelope(input: unknown): EnvelopeValidationResu
     if (!definition.outputContractVersions.includes(envelope.outputContract.schemaVersion)) {
       failures.push("Envelope outputContract.schemaVersion is not declared by the capability.");
     }
+    for (const artifact of envelope.inputArtifactRefs) {
+      if (
+        definition.inputContractVersions.length > 0 &&
+        !definition.inputContractVersions.includes(artifact.schemaVersion)
+      ) {
+        failures.push(
+          "Envelope input artifact schemaVersion is not declared by the capability: " + artifact.schemaVersion,
+        );
+      }
+    }
   }
 
   if (envelope.phase === "validate" && envelope.executorConfigurationSnapshot.executorKind !== "deterministic") {
@@ -259,6 +269,9 @@ export function validateExecutorResult(
   }
   if (result.economics.toolCostMicros > envelope.economicLimit.maxToolCostMicros) {
     failures.push("Result toolCostMicros exceed the envelope limit.");
+  }
+  if (provenance.completedAt && dateValue(provenance.completedAt) < dateValue(provenance.startedAt)) {
+    failures.push("Result completedAt must not precede startedAt.");
   }
   if (provenance.completedAt && dateValue(provenance.completedAt) > dateValue(envelope.deadline)) {
     failures.push("Result completedAt exceeds the envelope deadline.");

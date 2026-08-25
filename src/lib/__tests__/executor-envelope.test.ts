@@ -170,6 +170,20 @@ describe("executor envelope v1", () => {
     expect(failures).toContain("external authority action");
   });
 
+  it("rejects a result that completes before it starts", () => {
+    const check = validateExecutorResult(
+      result({
+        executionProvenance: {
+          ...result().executionProvenance,
+          completedAt: "2026-08-25T20:00:30Z",
+        },
+      }),
+      envelope(),
+    );
+    expect(check.ok).toBe(false);
+    expect(check.ok ? [] : check.failures.join(" ")).toContain("precede startedAt");
+  });
+
   it("requires a reason for blocked results and enforces economic limits", () => {
     const check = validateExecutorResult(
       result({
