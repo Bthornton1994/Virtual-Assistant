@@ -35,6 +35,7 @@ import {
   PUBLIC_WEB_RESEARCHER_KEY,
   preparePublicWebEvidencePacket,
 } from "@/lib/public-web-researcher";
+import { parseExtractedJson } from "@/lib/work-cell-json";
 
 export const WORK_CELL_VALIDATION_SCHEMA_VERSION = "catalog-evidence-validation/v1" as const;
 export const WORK_CELL_REJECTION_SCHEMA_VERSION = "catalog-evidence-rejection/v1" as const;
@@ -170,18 +171,11 @@ async function audit(
 }
 
 /**
- * Parses operator-pasted executor output. Never repairs, reformats, or coerces:
- * a malformed paste is an executor failure worth surfacing, not something to fix
- * silently on the executor's behalf.
+ * Parses operator-pasted executor output. Surrounding chat is stripped.
+ * Field values are never repaired.
  */
 export function parseRawExecutorJson(raw: string): { ok: true; value: unknown } | { ok: false; error: string } {
-  const trimmed = raw.trim();
-  if (!trimmed) return { ok: false, error: "No executor output was provided." };
-  try {
-    return { ok: true, value: JSON.parse(trimmed) as unknown };
-  } catch (error) {
-    return { ok: false, error: `Executor output is not valid JSON: ${(error as Error).message}` };
-  }
+  return parseExtractedJson(raw);
 }
 
 async function loadRun(db: SupabaseClient, actor: Actor, runId: string) {
