@@ -8,7 +8,12 @@ import {
 } from "@/app/actions/work-cell";
 import { WorkCellActionForm } from "@/components/work-cell-action-form";
 import { PUBLIC_WEB_RESEARCHER_KEY } from "@/lib/public-web-researcher";
-import { catalogDecisionUi, classifyCatalogDecisions } from "@/lib/work-cell-operator";
+import {
+  catalogDecisionUi,
+  classifyCatalogDecisions,
+  draftWorkCellReceipt,
+  recommendCorrectiveAction,
+} from "@/lib/work-cell-operator";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import type { WorkCellBundle } from "@/lib/work-cell";
 
@@ -88,17 +93,25 @@ export function WorkCellSection({
   const validationComplete = assignments.some(
     (assignment) => assignment.phase === "validate" && assignment.status === "completed" && assignment.outputArtifactId,
   );
-  const catalogUi = packet
-    ? catalogDecisionUi(
-        classifyCatalogDecisions({
-          packet: packet.payload,
-          frozenRecords: Object.fromEntries(
-            (manifest?.inputRecords ?? []).map((entry) => [entry.productId, { id: entry.productId, ...entry.record }]),
-          ),
-          review: review?.payload,
-        }),
-      )
+  const catalogReport = packet
+    ? classifyCatalogDecisions({
+        packet: packet.payload,
+        frozenRecords: Object.fromEntries(
+          (manifest?.inputRecords ?? []).map((entry) => [entry.productId, { id: entry.productId, ...entry.record }]),
+        ),
+        review: review?.payload,
+      })
     : null;
+  const catalogUi = catalogReport ? catalogDecisionUi(catalogReport) : null;
+  const corrective = catalogReport && packet ? recommendCorrectiveAction({ packet: packet.payload, report: catalogReport }) : null;
+  const receiptDraft =
+    packet && review && manifest
+      ? draftWorkCellReceipt({
+          packet: packet.payload,
+          review: review.payload,
+          expectedProductIds: manifest.expectedProductIds,
+        })
+      : null;
 
   return (
     <section className="space-y-4">
@@ -306,6 +319,27 @@ export function WorkCellSection({
                 {catalogUi.otherDecisionCount} additional catalog or price decision(s). None of these write Loadout.
               </p>
             ) : null}
+            {corrective ? (
+              <div className="mt-4 space-y-2 rounded-lg border border-line p-4 text-sm">
+                <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted">Gauntlet recommendation</p>
+                <p>
+                  <span className="text-muted">Classification: </span>
+                  {corrective.classification}
+                </p>
+                <p>
+                  <span className="text-muted">Retry: </span>
+                  {corrective.retryDecision}
+                </p>
+                <p>{corrective.reason}</p>
+                {corrective.droppedProductIds.length ? (
+                  <p className="font-mono text-[11px]">drop {corrective.droppedProductIds.join(", ")}</p>
+                ) : null}
+                {corrective.nextProductIds.length ? (
+                  <p className="font-mono text-[11px]">later freeze {corrective.nextProductIds.join(", ")}</p>
+                ) : null}
+                <p className="text-xs text-muted">Not written to the Gauntlet. Operator still classifies the cycle.</p>
+              </div>
+            ) : null}
             <p className="mt-3 text-xs text-muted">
               Derived from the frozen packet (and review if present). Not stored. Not a catalog write.
             </p>
@@ -494,6 +528,49 @@ export function WorkCellSection({
           </WorkCellActionForm>
         ) : null}
       </Card>
+
+      {receiptDraft ? (
+        <Card className="p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-medium">Outcome Receipt draft</p>
+            <Badge tone={receiptDraft.hardGatePass ? "good" : "bad"}>
+              {receiptDraft.verificationStatus}
+            </Badge>
+          </div>
+          <p className="mt-3 text-sm text-muted">
+            Derived from the frozen packet, hash-bound review, and deterministic gate. Copy these fields into the Gauntlet
+            receipt. This card does not issue a receipt.
+          </p>
+          <div className="mt-4 space-y-3">
+            <Field label="Summary">
+              <Textarea readOnly rows={5} className="font-mono text-[11px]" value={receiptDraft.summary} />
+            </Field>
+            <Field label="Verification notes">
+              <Textarea readOnly rows={4} className="font-mono text-[11px]" value={receiptDraft.verificationNotes} />
+            </Field>
+            <Field label="Actions taken">
+              <Textarea readOnly rows={4} className="font-mono text-[11px]" value={receiptDraft.actionsTaken.join("\n")} />
+            </Field>
+            <Field label="Exceptions">
+              <Textarea
+                readOnly
+                rows={3}
+                className="font-mono text-[11px]"
+                value={receiptDraft.exceptions.length ? receiptDraft.exceptions.join("\n") : "None"}
+              />
+            </Field>
+            <Field label="Unresolved decisions">
+              <Textarea
+                readOnly
+                rows={3}
+                className="font-mono text-[11px]"
+                value={receiptDraft.unresolvedDecisions.length ? receiptDraft.unresolvedDecisions.join("\n") : "None"}
+              />
+            </Field>
+            <p className="break-all font-mono text-[11px] text-muted">packet {shortHash(receiptDraft.packetHash)}</p>
+          </div>
+        </Card>
+      ) : null}
     </section>
   );
 }
