@@ -28,7 +28,7 @@ npx tsx scripts/extract-work-cell-artifact.ts hermes-raw.txt --run-id <run-uuid>
 npx tsx scripts/draft-work-cell-receipt.ts --packet packet.json --review review.json
 ```
 
-Uses the deterministic validator and work-cell gate. A rejected claim drafts a **failed** receipt.
+Uses the deterministic validator and work-cell gate. A rejected claim drafts a **failed** receipt. The Work Cell page shows the same draft after packet and review are frozen. The Issue Outcome Receipt form prefills from it. It does not issue the receipt.
 
 ## Classify catalog decisions (do not loop Hermes)
 

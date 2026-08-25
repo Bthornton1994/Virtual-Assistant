@@ -18,7 +18,7 @@ import { requireOps } from "@/lib/auth";
 import { FAILURE_CLASSIFICATIONS, RETRY_DECISIONS } from "@/lib/gauntlet-policy";
 import { getGauntletCycleBundle } from "@/lib/gauntlet";
 import { getRunWorkCell } from "@/lib/work-cell";
-import { correctiveActionFromPacket } from "@/lib/work-cell-operator";
+import { correctiveActionFromPacket, firstNonempty } from "@/lib/work-cell-operator";
 
 export const metadata = { title: "Gauntlet cycle" };
 
@@ -92,8 +92,8 @@ export default async function GauntletCyclePage({ params }: { params: Promise<{ 
     ? (derived?.classification ?? storedClassification)
     : storedClassification;
   const retryDefault = unclassified
-    ? ((derived?.retryDecision ?? text(openFailure, "retry_decision")) || "")
-    : (text(openFailure, "retry_decision") || derived?.retryDecision || "");
+    ? firstNonempty(derived?.retryDecision, text(openFailure, "retry_decision"))
+    : firstNonempty(text(openFailure, "retry_decision"), derived?.retryDecision);
   const storedRoot = text(openFailure, "root_cause");
   const rootCauseDefault =
     storedRoot && storedRoot !== AUTO_ROOT_CAUSE ? storedRoot : (derived?.reason || storedRoot);

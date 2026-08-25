@@ -12,6 +12,7 @@ import { WorkCellSection } from "@/components/work-cell";
 import { requireOps } from "@/lib/auth";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
 import { getRunWorkCell } from "@/lib/work-cell";
+import { draftWorkCellReceipt, receiptFormDefaults } from "@/lib/work-cell-operator";
 
 export const metadata = { title: "Execution run" };
 
@@ -70,6 +71,16 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
     (assignment) => assignment.phase === "validate" && assignment.status === "completed" && assignment.outputArtifactId,
   );
   const submitBlockedByWorkCell = runHasWorkCell && !workCellValidated;
+  const receiptDraft =
+    workCell.packet && workCell.review && workCell.manifest
+      ? receiptFormDefaults(
+          draftWorkCellReceipt({
+            packet: workCell.packet.payload,
+            review: workCell.review.payload,
+            expectedProductIds: workCell.manifest.expectedProductIds,
+          }),
+        )
+      : null;
 
   return (
     <div className="space-y-8">
@@ -238,17 +249,29 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         <Card className="p-6">
           <h2 className="font-semibold">Issue Outcome Receipt</h2>
           <p className="mt-1 text-sm text-muted">The verifier decides whether the frozen run actually met its contract. The receipt is immutable.</p>
+          {receiptDraft ? (
+            <p className="mt-2 text-sm text-muted">
+              Fields are prefilled from the work-cell draft ({receiptDraft.verificationStatus}). This does not issue the
+              receipt. A passing receipt still requires definition of done and a clean hard gate.
+            </p>
+          ) : null}
           <form action={verifyWorkstreamRunAction} className="mt-5 grid gap-4 lg:grid-cols-2">
             <input type="hidden" name="runId" value={run.id} />
             <div className="lg:col-span-2 flex items-center gap-2 rounded-md border border-line bg-bg-elevated p-3">
-              <input id="definitionOfDoneMet" name="definitionOfDoneMet" type="checkbox" className="h-4 w-4" />
+              <input
+                id="definitionOfDoneMet"
+                name="definitionOfDoneMet"
+                type="checkbox"
+                className="h-4 w-4"
+                defaultChecked={receiptDraft?.definitionOfDoneMet === true}
+              />
               <label htmlFor="definitionOfDoneMet" className="text-sm">Definition of done is fully met</label>
             </div>
-            <div className="lg:col-span-2"><Field label="Receipt summary"><Textarea name="summary" required placeholder="What outcome was actually achieved?" /></Field></div>
-            <div className="lg:col-span-2"><Field label="Verification notes"><Textarea name="verificationNotes" placeholder="How was the evidence checked? What remains uncertain?" /></Field></div>
-            <Field label="Actions taken" hint="One per line."><Textarea name="actionsTaken" /></Field>
-            <Field label="Exceptions" hint="One per line."><Textarea name="exceptions" /></Field>
-            <Field label="Unresolved decisions" hint="One per line."><Textarea name="unresolvedDecisions" /></Field>
+            <div className="lg:col-span-2"><Field label="Receipt summary"><Textarea name="summary" required defaultValue={receiptDraft?.summary ?? ""} placeholder="What outcome was actually achieved?" /></Field></div>
+            <div className="lg:col-span-2"><Field label="Verification notes"><Textarea name="verificationNotes" defaultValue={receiptDraft?.verificationNotes ?? ""} placeholder="How was the evidence checked? What remains uncertain?" /></Field></div>
+            <Field label="Actions taken" hint="One per line."><Textarea name="actionsTaken" defaultValue={receiptDraft?.actionsTaken ?? ""} /></Field>
+            <Field label="Exceptions" hint="One per line."><Textarea name="exceptions" defaultValue={receiptDraft?.exceptions ?? ""} /></Field>
+            <Field label="Unresolved decisions" hint="One per line."><Textarea name="unresolvedDecisions" defaultValue={receiptDraft?.unresolvedDecisions ?? ""} /></Field>
             <Field label="QA score (0–100)"><Input name="qaScore" type="number" min="0" max="100" step="0.1" /></Field>
             <div className="lg:col-span-2 flex flex-wrap gap-2">
               <Button type="submit" name="verificationStatus" value="passed">Pass and issue receipt</Button>
