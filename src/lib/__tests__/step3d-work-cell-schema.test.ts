@@ -350,6 +350,12 @@ describe("Step 3D submit-before-validate guard", () => {
     expect(component).not.toMatch(/cycleId && hasWorkCell/);
   });
 
+  it("runs work-cell mutations in a client transition instead of revalidatePath", () => {
+    const actions = readFileSync(resolve(process.cwd(), "src/app/actions/work-cell.ts"), "utf8");
+    expect(actions).not.toMatch(/revalidatePath\(/);
+    expect(component).toMatch(/WorkCellActionForm/);
+  });
+
   it("reports the real precondition instead of letting the impersonation message surface", () => {
     expect(workCell).toMatch(/Deterministic work-cell validation has not completed for this run/);
   });

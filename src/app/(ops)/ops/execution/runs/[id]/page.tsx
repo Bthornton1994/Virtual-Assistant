@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import {
   addEvidenceArtifactAction,
   startWorkstreamRunAction,
@@ -14,6 +15,17 @@ import { getRunWorkCell } from "@/lib/work-cell";
 
 export const metadata = { title: "Execution run" };
 
+function RunPageFallback() {
+  return (
+    <div className="space-y-6">
+      <PageHeader kicker="Execution run" title="Loading run…" description="Refreshing the work cell after the last save." />
+      <Card className="p-5">
+        <p className="text-sm text-muted">The save may already have succeeded. This page is reloading frozen state.</p>
+      </Card>
+    </div>
+  );
+}
+
 function dollars(micros: number) {
   return `$${(micros / 1_000_000).toFixed(4)}`;
 }
@@ -26,7 +38,15 @@ function statusTone(status: string): "good" | "bad" | "warn" | "info" | "neutral
   return "neutral";
 }
 
-export default async function ExecutionRunPage({ params }: { params: Promise<{ id: string }> }) {
+export default function ExecutionRunPage({ params }: { params: Promise<{ id: string }> }) {
+  return (
+    <Suspense fallback={<RunPageFallback />}>
+      <ExecutionRunContent params={params} />
+    </Suspense>
+  );
+}
+
+async function ExecutionRunContent({ params }: { params: Promise<{ id: string }> }) {
   const actor = await requireOps();
   const manager = actor.role === "ops_manager" || actor.role === "platform_admin";
   const { id } = await params;
