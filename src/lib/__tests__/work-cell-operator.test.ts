@@ -6,7 +6,9 @@ import {
   buildFrozenInputRecords,
   catalogDecisionUi,
   classifyCatalogDecisions,
+  correctiveActionFromPacket,
   draftWorkCellReceipt,
+  freezeRecordsForNextBatch,
   recommendCorrectiveAction,
 } from "@/lib/work-cell-operator";
 
@@ -127,5 +129,15 @@ export const PRODUCTS = [{ id: "x" }];
     expect(action.retryDecision).toBe("escalate_human");
     expect(action.droppedProductIds).toEqual(["belt-averte"]);
     expect(action.nextProductIds).toEqual(["ks-sbd-7mm"]);
+    const next = freezeRecordsForNextBatch(
+      [
+        { id: "ks-sbd-7mm", name: "SBD 7mm" },
+        { id: "belt-averte", name: "Averte" },
+      ],
+      action,
+    );
+    expect(Object.keys(next.records)).toEqual(["ks-sbd-7mm"]);
+    expect(next.missing).toEqual([]);
+    expect(correctiveActionFromPacket({ packet: hermes }).retryDecision).toBe("escalate_human");
   });
 });

@@ -46,6 +46,14 @@ Does not write the Gauntlet row. Identity mismatch is `source_ambiguity` / `esca
 npx tsx scripts/recommend-corrective-action.ts --packet packet.json --records frozen-input-records.json --review review.json
 ```
 
-The Work Cell page shows the same recommendation after a packet is frozen.
+The Work Cell page shows the same recommendation after a packet is frozen. The Gauntlet cycle corrective-action form prefills from it; it is not written until an operator submits.
+
+## Later freeze from exact-identity SKUs
+
+Drops identity mismatches. Does not start a run.
+
+```text
+npx tsx scripts/next-freeze-from-packet.ts --packet packet.json --out later-freeze.json --loadout ../Loadout
+```
 
 Frozen executor keys remain `hermes-loadout-researcher-v1` / `grok-loadout-reviewer-v1` / `catalog-evidence-validator-v1`.
