@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { hashCatalogEvidencePacket } from "@/lib/catalog-evidence-hash";
 import { PRODUCT_ID, packet, product, review } from "@/lib/__tests__/catalog-evidence-fixtures";
 import { loadLoadoutProductsFromSource } from "@/lib/loadout-catalog-loader";
-import { buildFrozenInputRecords, classifyCatalogDecisions, draftWorkCellReceipt } from "@/lib/work-cell-operator";
+import {
+  buildFrozenInputRecords,
+  catalogDecisionUi,
+  classifyCatalogDecisions,
+  draftWorkCellReceipt,
+} from "@/lib/work-cell-operator";
 
 describe("work-cell operator toolchain", () => {
   it("builds freeze records in the requested product order and reports missing IDs", () => {
@@ -92,5 +97,8 @@ export const PRODUCTS = [{ id: "x" }];
     expect(report.loadoutWrite).toBe(false);
     expect(report.decisions.some((item) => item.kind === "identity-mismatch")).toBe(true);
     expect(report.summary).toMatch(/Do not retry Hermes/);
+    const ui = catalogDecisionUi(report);
+    expect(ui.hermesRetryUseful).toBe(false);
+    expect(ui.identitySummaries.length).toBeGreaterThan(0);
   });
 });

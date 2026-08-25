@@ -178,6 +178,19 @@ export function classifyCatalogDecisions(input: {
   };
 }
 
+export function catalogDecisionUi(report: CatalogDecisionReport) {
+  const identity = report.decisions.filter(
+    (item) => item.kind === "identity-mismatch" || item.kind === "identity-uncertain",
+  );
+  return {
+    hermesRetryUseful: report.hermesRetryUseful,
+    loadoutWrite: report.loadoutWrite,
+    summary: report.summary,
+    identitySummaries: identity.map((item) => item.summary),
+    otherDecisionCount: report.decisions.length - identity.length,
+  };
+}
+
 export type WorkCellReceiptDraft = {
   verificationStatus: "passed" | "failed";
   definitionOfDoneMet: boolean;

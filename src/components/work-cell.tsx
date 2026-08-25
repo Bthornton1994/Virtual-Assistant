@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/work-cell";
 import { WorkCellActionForm } from "@/components/work-cell-action-form";
 import { PUBLIC_WEB_RESEARCHER_KEY } from "@/lib/public-web-researcher";
+import { catalogDecisionUi, classifyCatalogDecisions } from "@/lib/work-cell-operator";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import type { WorkCellBundle } from "@/lib/work-cell";
 
@@ -87,6 +88,17 @@ export function WorkCellSection({
   const validationComplete = assignments.some(
     (assignment) => assignment.phase === "validate" && assignment.status === "completed" && assignment.outputArtifactId,
   );
+  const catalogUi = packet
+    ? catalogDecisionUi(
+        classifyCatalogDecisions({
+          packet: packet.payload,
+          frozenRecords: Object.fromEntries(
+            (manifest?.inputRecords ?? []).map((entry) => [entry.productId, { id: entry.productId, ...entry.record }]),
+          ),
+          review: review?.payload,
+        }),
+      )
+    : null;
 
   return (
     <section className="space-y-4">
@@ -278,6 +290,27 @@ export function WorkCellSection({
             </p>
           ) : null}
         </Card>
+
+        {catalogUi ? (
+          <Card className="p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-medium">Catalog decisions</p>
+              <Badge tone={catalogUi.hermesRetryUseful ? "warn" : "info"}>
+                {catalogUi.hermesRetryUseful ? "Hermes retry may help" : "do not retry Hermes"}
+              </Badge>
+            </div>
+            <p className="mt-3 text-sm">{catalogUi.summary}</p>
+            <FindingsList title="Identity" items={catalogUi.identitySummaries} tone="bad" />
+            {catalogUi.otherDecisionCount > 0 ? (
+              <p className="mt-3 text-sm text-muted">
+                {catalogUi.otherDecisionCount} additional catalog or price decision(s). None of these write Loadout.
+              </p>
+            ) : null}
+            <p className="mt-3 text-xs text-muted">
+              Derived from the frozen packet (and review if present). Not stored. Not a catalog write.
+            </p>
+          </Card>
+        ) : null}
 
         <Card className="p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
