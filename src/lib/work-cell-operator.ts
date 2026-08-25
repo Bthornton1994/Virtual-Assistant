@@ -287,6 +287,13 @@ export function freezeRecordsForNextBatch(
   return buildFrozenInputRecords(products, recommendation.nextProductIds);
 }
 
+export function firstNonempty(...values: Array<string | null | undefined>): string {
+  for (const value of values) {
+    if (value) return value;
+  }
+  return "";
+}
+
 export type WorkCellReceiptDraft = {
   verificationStatus: "passed" | "failed";
   definitionOfDoneMet: boolean;
@@ -354,5 +361,17 @@ export function draftWorkCellReceipt(input: {
       ...mismatches.map((id) => `${id}: identity mismatch; no replacement SKU from this packet`),
       ...escalations.filter((id) => !mismatches.includes(id)).map((id) => `${id}: Hermes required escalation`),
     ],
+  };
+}
+
+export function receiptFormDefaults(draft: WorkCellReceiptDraft) {
+  return {
+    definitionOfDoneMet: draft.definitionOfDoneMet,
+    verificationStatus: draft.verificationStatus,
+    summary: draft.summary,
+    verificationNotes: draft.verificationNotes,
+    actionsTaken: draft.actionsTaken.join("\n"),
+    exceptions: draft.exceptions.join("\n"),
+    unresolvedDecisions: draft.unresolvedDecisions.join("\n"),
   };
 }
