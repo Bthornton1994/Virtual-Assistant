@@ -128,7 +128,9 @@ export function admitResearchEvidence(input: {
   if (!connector.success) failures.push(...issueMessages(connector.error.issues, "Connector "));
   if (!evidence.success) failures.push(...issueMessages(evidence.error.issues, "Evidence "));
   if (!requirement.success) failures.push(...issueMessages(requirement.error.issues, "Requirement "));
-  if (failures.length > 0) return { ok: false, failures };
+  if (!connector.success || !evidence.success || !requirement.success) {
+    return { ok: false, failures };
+  }
 
   const source = connector.data;
   const artifact = evidence.data;
