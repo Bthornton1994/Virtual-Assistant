@@ -142,6 +142,22 @@ describe("engineering workspace isolation v1", () => {
     expect(cleaned.value.resultSha).toBeNull();
   });
 
+  it("does not compare cleaned abandoned workspaces as candidates", () => {
+    const cleaned = {
+      ...workspace(),
+      status: "cleaned" as const,
+      cleanup: {
+        status: "completed" as const,
+        requestedAt: "2026-08-25T21:00:00Z",
+        completedAt: "2026-08-25T21:05:00Z",
+        failureReason: null,
+      },
+    };
+    const comparison = compareEngineeringWorkspaces([cleaned, cleaned]);
+    expect(comparison.ok).toBe(false);
+    expect(comparison.ok ? [] : comparison.failures.join(" ")).toContain("result SHA");
+  });
+
   it("requires verification evidence before a verified state", () => {
     const invalid = workspace({
       status: "verified",

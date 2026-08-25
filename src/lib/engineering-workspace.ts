@@ -277,6 +277,13 @@ export function compareEngineeringWorkspaces(
       failures.push("Candidate " + index + " must be verified before comparison.");
       return;
     }
+    if (
+      parsed.value.resultSha === null ||
+      parsed.value.verificationEvidenceRefs.length === 0
+    ) {
+      failures.push("Candidate " + index + " must retain a result SHA and verification evidence for comparison.");
+      return;
+    }
     workspaces.push(parsed.value);
   });
   if (failures.length > 0) return { ok: false, failures };
