@@ -191,6 +191,13 @@ describe("specialist pipeline v1", () => {
       stageKey: stage.stageKey,
       status: "completed" as const,
       approvalStatus: stage.requiresHumanApproval ? "approved" as const : "not_required" as const,
+      inputArtifactRefs: [
+        {
+          artifactId: "input-" + index,
+          schemaVersion: stage.inputContractVersions[0],
+          contentHash: HASH,
+        },
+      ],
       outputArtifactRefs: [
         {
           artifactId: "output-" + index,
@@ -208,7 +215,13 @@ describe("specialist pipeline v1", () => {
         ...created.value,
         status: "delivered",
         stageStates,
-        finalOutputArtifactRefs: [inputRef("final-output")],
+        finalOutputArtifactRefs: [
+          {
+            artifactId: "final-output",
+            schemaVersion: "catalog-outcome/v1",
+            contentHash: HASH,
+          },
+        ],
         updatedAt: "2026-08-26T21:00:00Z",
       },
       pipeline(),
@@ -236,6 +249,18 @@ describe("specialist pipeline v1", () => {
     expect(wrongInput.ok).toBe(false);
     expect(wrongInput.ok ? [] : wrongInput.failures.join(" ")).toContain("input artifact schemaVersion");
 
+    const wrongFinalOutput = validateSpecialistPipelineRun(
+      {
+        ...created.value,
+        finalOutputArtifactRefs: [{ ...inputRef("final-output") }],
+      },
+      pipeline(),
+    );
+    expect(wrongFinalOutput.ok).toBe(false);
+    expect(wrongFinalOutput.ok ? [] : wrongFinalOutput.failures.join(" ")).toContain(
+      "final output artifact schemaVersion",
+    );
+
     const skippedApproval = created.value.stageStates.map((state) =>
       state.stageKey === "owner-approval"
         ? {
@@ -251,6 +276,91 @@ describe("specialist pipeline v1", () => {
     );
     expect(invalid.ok).toBe(false);
     expect(invalid.ok ? [] : invalid.failures.join(" ")).toContain("cannot be skipped");
+
+    const activePendingApproval = created.value.stageStates.map((state) =>
+      state.stageKey === "owner-approval"
+        ? {
+            ...state,
+            status: "active" as const,
+            startedAt: "2026-08-26T20:05:00Z",
+          }
+        : state,
+    );
+    const activeBeforeApproval = validateSpecialistPipelineRun(
+      { ...created.value, status: "in_progress", stageStates: activePendingApproval },
+      pipeline(),
+    );
+    expect(activeBeforeApproval.ok).toBe(false);
+    expect(activeBeforeApproval.ok ? [] : activeBeforeApproval.failures.join(" ")).toContain(
+      "before approval",
+    );
+
+    const completedStates = pipeline().stages.map((stage, index) => ({
+      stageKey: stage.stageKey,
+      status: "completed" as const,
+      approvalStatus: stage.requiresHumanApproval ? "approved" as const : "not_required" as const,
+      inputArtifactRefs: [
+        {
+          artifactId: "reviewed-input-" + index,
+          schemaVersion: stage.inputContractVersions[0],
+          contentHash: HASH,
+        },
+      ],
+      outputArtifactRefs: [
+        {
+          artifactId: "reviewed-output-" + index,
+          schemaVersion: stage.outputContractVersions[0],
+          contentHash: HASH,
+        },
+      ],
+      startedAt: "2026-08-26T22:0" + String(index) + ":00Z",
+      completedAt: "2026-08-26T22:1" + String(index) + ":00Z",
+      blockingReason: null,
+    }));
+    const skippedTechnical = completedStates.map((state) =>
+      state.stageKey === "technical-check"
+        ? {
+            ...state,
+            status: "skipped" as const,
+            inputArtifactRefs: [],
+            outputArtifactRefs: [],
+            startedAt: null,
+            completedAt: null,
+            blockingReason: "Validator unavailable",
+          }
+        : state,
+    );
+    const deliveredBypass = validateSpecialistPipelineRun(
+      {
+        ...created.value,
+        status: "delivered",
+        stageStates: skippedTechnical,
+        finalOutputArtifactRefs: [
+          {
+            artifactId: "final-output",
+            schemaVersion: "catalog-outcome/v1",
+            contentHash: HASH,
+          },
+        ],
+        updatedAt: "2026-08-26T23:00:00Z",
+      },
+      pipeline(),
+    );
+    expect(deliveredBypass.ok).toBe(false);
+    expect(deliveredBypass.ok ? [] : deliveredBypass.failures.join(" ")).toContain("Required stage");
+  });
+
+  it("enforces plan-first ordering", () => {
+    const stages = pipeline().stages.map((stage) =>
+      stage.stageKey === "plan"
+        ? { ...stage, order: 7 }
+        : stage.stageKey === "replay"
+          ? { ...stage, order: 0 }
+          : stage,
+    );
+    const result = validateSpecialistPipeline(pipeline({ stages }));
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.failures.join(" ")).toContain("plan must precede");
   });
 
   it("fails closed when a run skips approval or activates a later stage", () => {
