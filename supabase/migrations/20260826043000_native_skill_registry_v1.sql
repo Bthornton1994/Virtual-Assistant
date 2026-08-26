@@ -64,7 +64,9 @@ declare
   old_history jsonb := old.payload -> 'qualificationHistory';
   new_history jsonb := new.payload -> 'qualificationHistory';
 begin
-  if old.skill_key is distinct from new.skill_key
+  if old.id is distinct from new.id
+     or old.created_at is distinct from new.created_at
+     or old.skill_key is distinct from new.skill_key
      or old.skill_version is distinct from new.skill_version
      or old.capability_key is distinct from new.capability_key
      or old.definition_hash is distinct from new.definition_hash
