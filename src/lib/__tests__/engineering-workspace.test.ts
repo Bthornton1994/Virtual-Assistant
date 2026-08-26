@@ -119,6 +119,7 @@ describe("engineering workspace isolation v1", () => {
       workspaceId: "workspace-002",
       candidateKey: "candidate-b",
       branchName: "agent/candidate-b",
+      status: "verified",
       resultSha: RESULT_B,
       verificationEvidenceRefs: [EVIDENCE],
     });
