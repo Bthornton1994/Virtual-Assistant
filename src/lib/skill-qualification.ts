@@ -51,7 +51,7 @@ function hasDuplicates(values: readonly string[]): boolean {
   return new Set(values).size !== values.length;
 }
 
-const qualificationSuiteSchema = z
+export const qualificationSuiteSchema = z
   .object({
     suiteKey: identifierString,
     suiteVersion: identifierString,
@@ -89,6 +89,8 @@ const qualificationSuiteSchema = z
       });
     }
   });
+
+export type QualificationSuite = z.infer<typeof qualificationSuiteSchema>;
 
 export const skillQualificationCandidateSchema = z
   .object({
@@ -251,6 +253,26 @@ function decisionWithoutHash(
   return decision;
 }
 
+export function hashSkillQualificationDecision(
+  decision: Omit<SkillQualificationDecision, "decisionHash">,
+): string {
+  return sha256Hex(decisionWithoutHash(decision));
+}
+
+export function validateSkillQualificationDecision(
+  input: unknown,
+): SkillQualificationEvaluationResult {
+  const parsed = skillQualificationDecisionSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, failures: issueMessages(parsed.error.issues, "Decision ") };
+  }
+  const { decisionHash: _decisionHash, ...body } = parsed.data;
+  if (hashSkillQualificationDecision(body) !== parsed.data.decisionHash) {
+    return { ok: false, failures: ["Decision decisionHash does not match the deterministic decision body."] };
+  }
+  return { ok: true, value: parsed.data };
+}
+
 export function evaluateSkillQualification(
   candidateInput: unknown,
   observationInputs: readonly unknown[],
@@ -411,7 +433,7 @@ export function evaluateSkillQualification(
   };
   const value = {
     ...decisionBody,
-    decisionHash: sha256Hex(decisionWithoutHash(decisionBody)),
+    decisionHash: hashSkillQualificationDecision(decisionBody),
   };
   const checked = skillQualificationDecisionSchema.safeParse(value);
   if (!checked.success) {

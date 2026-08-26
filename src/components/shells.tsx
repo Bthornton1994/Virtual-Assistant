@@ -62,6 +62,7 @@ const opsNav = [
   { href: "/ops/execution", label: "Execution Lab" },
   { href: "/ops/gauntlet", label: "Gauntlet" },
   { href: "/ops/capabilities", label: "Capabilities" },
+  { href: "/ops/skills", label: "Skills" },
   { href: "/ops/queue", label: "Queue" },
   { href: "/ops/clients", label: "Clients" },
   { href: "/ops/operators", label: "Operators" },
