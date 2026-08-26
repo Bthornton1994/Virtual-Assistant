@@ -16,6 +16,7 @@ import {
   SKILL_QUALIFICATION_OBSERVATION_SCHEMA_VERSION,
   SKILL_QUALIFICATION_SCHEMA_VERSION,
   evaluateSkillQualification,
+  hashSkillQualificationDecision,
   type SkillQualificationCandidate,
   type SkillQualificationObservation,
 } from "@/lib/skill-qualification";
@@ -251,6 +252,34 @@ describe("Native Skill Registry v1", () => {
     });
     expect(forged.ok).toBe(false);
     expect(forged.ok ? [] : forged.failures.join(" ")).toContain("artifact hash");
+  });
+
+  it("rejects a hash-valid qualification decision belonging to another Skill", () => {
+    const skill = buildQualifiedSkill();
+    const original = skill.qualificationHistory[0].decision;
+    const { decisionHash: _decisionHash, ...originalBody } = original;
+    const foreignBody = { ...originalBody, candidateKey: "different-skill" };
+    const foreignDecision = {
+      ...foreignBody,
+      decisionHash: hashSkillQualificationDecision(foreignBody),
+    };
+    const forged = validateNativeSkill({
+      ...skill,
+      qualificationHistory: [{
+        ...skill.qualificationHistory[0],
+        decision: foreignDecision,
+        decisionArtifactRef: {
+          ...skill.qualificationHistory[0].decisionArtifactRef,
+          contentHash: foreignDecision.decisionHash,
+        },
+      }],
+      approval: {
+        ...skill.approval,
+        qualificationDecisionHash: foreignDecision.decisionHash,
+      },
+    });
+    expect(forged.ok).toBe(false);
+    expect(forged.ok ? [] : forged.failures.join(" ")).toContain("candidateKey");
   });
 
   it("regenerates replaceable runtime instructions from one qualified Skill", () => {
