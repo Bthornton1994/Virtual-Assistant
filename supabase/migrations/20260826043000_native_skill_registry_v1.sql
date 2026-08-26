@@ -68,7 +68,8 @@ begin
      or old.skill_version is distinct from new.skill_version
      or old.capability_key is distinct from new.capability_key
      or old.definition_hash is distinct from new.definition_hash
-     or old.procedure_hash is distinct from new.procedure_hash then
+     or old.procedure_hash is distinct from new.procedure_hash
+     or old.created_by is distinct from new.created_by then
     raise exception 'Native Skill identity and definition hashes are immutable'
       using errcode = '23514';
   end if;
