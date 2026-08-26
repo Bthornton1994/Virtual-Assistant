@@ -12,6 +12,18 @@ import { summarizeWorkCellBenchmark, summarizeWorkCellGate } from "@/lib/work-ce
 
 export type CatalogProductRecord = { id: string } & Record<string, unknown>;
 
+/** Current Loadout freeze batch after owner dropped phantom Coneface and Averte SKUs. */
+export const CURRENT_LOADOUT_BATCH_PRODUCT_IDS = ["ks-sbd-5mm", "shoe-do-win", "suit-inzer-champion"] as const;
+
+/** Historical Run 5 freeze. Kept so extract can still validate those artifacts. */
+export const RUN5_LOADOUT_BATCH_PRODUCT_IDS = [
+  "ks-sbd-5mm",
+  "ww-a7-coneface",
+  "shoe-do-win",
+  "suit-inzer-champion",
+  "belt-averte",
+] as const;
+
 export function buildFrozenInputRecords(
   products: CatalogProductRecord[],
   productIds: string[],

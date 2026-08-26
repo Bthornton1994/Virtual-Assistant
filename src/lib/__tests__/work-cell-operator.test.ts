@@ -3,6 +3,7 @@ import { hashCatalogEvidencePacket } from "@/lib/catalog-evidence-hash";
 import { PRODUCT_ID, packet, product, review } from "@/lib/__tests__/catalog-evidence-fixtures";
 import { loadLoadoutProductsFromSource } from "@/lib/loadout-catalog-loader";
 import {
+  CURRENT_LOADOUT_BATCH_PRODUCT_IDS,
   buildFrozenInputRecords,
   catalogDecisionUi,
   classifyCatalogDecisions,
@@ -17,6 +18,12 @@ import {
 } from "@/lib/work-cell-operator";
 
 describe("work-cell operator toolchain", () => {
+  it("uses the three-product freeze batch after phantom SKUs were dropped", () => {
+    expect([...CURRENT_LOADOUT_BATCH_PRODUCT_IDS]).toEqual(["ks-sbd-5mm", "shoe-do-win", "suit-inzer-champion"]);
+    expect(CURRENT_LOADOUT_BATCH_PRODUCT_IDS).not.toContain("ww-a7-coneface");
+    expect(CURRENT_LOADOUT_BATCH_PRODUCT_IDS).not.toContain("belt-averte");
+  });
+
   it("builds freeze records in the requested product order and reports missing IDs", () => {
     const { records, missing } = buildFrozenInputRecords(
       [
