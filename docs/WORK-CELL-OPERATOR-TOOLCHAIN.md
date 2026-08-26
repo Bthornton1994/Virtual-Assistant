@@ -9,7 +9,7 @@ These scripts cut owner minutes on freeze, receipt drafting, and catalog-side de
 Reads `Loadout/src/data/products.ts` in-process (type-only import stripped). Loadout does not need `tsx`.
 
 ```text
-npx tsx scripts/freeze-from-loadout.ts --ids ks-sbd-5mm,ww-a7-coneface,shoe-do-win,suit-inzer-champion,belt-averte --out frozen-input-records.json --loadout ../Loadout
+npx tsx scripts/freeze-from-loadout.ts --ids ks-sbd-5mm,shoe-do-win,suit-inzer-champion --out frozen-input-records.json --loadout ../Loadout
 ```
 
 Paste the file into Work Cell section 0.

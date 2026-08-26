@@ -15,8 +15,10 @@ import {
   validateCatalogEvidenceReview,
 } from "../src/lib/catalog-evidence-validator";
 import { parseRawExecutorJson } from "../src/lib/work-cell";
-
-const RUN5_PRODUCT_IDS = ["ks-sbd-5mm", "ww-a7-coneface", "shoe-do-win", "suit-inzer-champion", "belt-averte"];
+import {
+  CURRENT_LOADOUT_BATCH_PRODUCT_IDS,
+  RUN5_LOADOUT_BATCH_PRODUCT_IDS,
+} from "../src/lib/work-cell-operator";
 
 function arg(name: string) {
   const at = process.argv.indexOf(name);
@@ -60,6 +62,12 @@ if (!runId) {
   process.exit(2);
 }
 const out = arg("--out") || "work-cell-artifact.json";
+function expectedProductIds() {
+  if (process.argv.includes("--run5")) return [...RUN5_LOADOUT_BATCH_PRODUCT_IDS];
+  const ids = arg("--ids");
+  if (ids) return ids.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean);
+  return [...CURRENT_LOADOUT_BATCH_PRODUCT_IDS];
+}
 const raw = readFileSync(inputPath, "utf8");
 const json = extractJsonObject(raw);
 const parsed = parseRawExecutorJson(json);
@@ -72,7 +80,7 @@ const value = parsed.value as { schemaVersion?: string };
 if (value.schemaVersion === "catalog-evidence-packet/v1") {
   const packet = parsed.value as CatalogEvidencePacketV1;
   const validation = validateCatalogEvidencePacket(packet, {
-    expectedProductIds: RUN5_PRODUCT_IDS,
+    expectedProductIds: expectedProductIds(),
     expectedRunId: runId,
     expectedExecutorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.prepare,
     expectedMarket: "US",

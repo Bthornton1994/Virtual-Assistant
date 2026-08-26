@@ -2,12 +2,12 @@
  * Build Work Cell section-0 frozen input records from the Loadout catalog.
  * Does not write Loadout, Supabase, or Production.
  *
- *   npx tsx scripts/freeze-from-loadout.ts --ids ks-sbd-5mm,ww-a7-coneface --out records.json
+ *   npx tsx scripts/freeze-from-loadout.ts --ids ks-sbd-5mm,shoe-do-win --out records.json
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { loadLoadoutProductsFromSource } from "../src/lib/loadout-catalog-loader";
-import { buildFrozenInputRecords } from "../src/lib/work-cell-operator";
+import { buildFrozenInputRecords, CURRENT_LOADOUT_BATCH_PRODUCT_IDS } from "../src/lib/work-cell-operator";
 
 function arg(name: string) {
   const at = process.argv.indexOf(name);
@@ -18,9 +18,11 @@ function main() {
   const idsRaw = arg("--ids");
   const out = arg("--out") || "frozen-input-records.json";
   const loadoutRoot = arg("--loadout") || resolve("..", "Loadout");
-  const productIds = idsRaw.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean);
+  const productIds = idsRaw
+    ? idsRaw.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)
+    : [...CURRENT_LOADOUT_BATCH_PRODUCT_IDS];
   if (!productIds.length) {
-    console.error("usage: npx tsx scripts/freeze-from-loadout.ts --ids id1,id2 --out records.json [--loadout path]");
+    console.error("usage: npx tsx scripts/freeze-from-loadout.ts [--ids id1,id2] --out records.json [--loadout path]");
     process.exit(2);
   }
 
