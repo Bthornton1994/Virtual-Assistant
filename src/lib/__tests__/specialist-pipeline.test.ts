@@ -216,6 +216,43 @@ describe("specialist pipeline v1", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("binds artifact contracts and refuses skipped approval stages", () => {
+    const created = createSpecialistPipelineRun(pipeline(), {
+      runId: "specialist-run-004",
+      inputArtifactRefs: [inputRef()],
+      authoritySnapshot: authoritySnapshot(),
+      createdAt: "2026-08-26T20:00:00Z",
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const wrongInput = validateSpecialistPipelineRun(
+      {
+        ...created.value,
+        inputArtifactRefs: [{ ...inputRef(), schemaVersion: "unexpected/v1" }],
+      },
+      pipeline(),
+    );
+    expect(wrongInput.ok).toBe(false);
+    expect(wrongInput.ok ? [] : wrongInput.failures.join(" ")).toContain("input artifact schemaVersion");
+
+    const skippedApproval = created.value.stageStates.map((state) =>
+      state.stageKey === "owner-approval"
+        ? {
+            ...state,
+            status: "skipped" as const,
+            blockingReason: "Owner unavailable",
+          }
+        : state,
+    );
+    const invalid = validateSpecialistPipelineRun(
+      { ...created.value, stageStates: skippedApproval },
+      pipeline(),
+    );
+    expect(invalid.ok).toBe(false);
+    expect(invalid.ok ? [] : invalid.failures.join(" ")).toContain("cannot be skipped");
+  });
+
   it("fails closed when a run skips approval or activates a later stage", () => {
     const created = createSpecialistPipelineRun(pipeline(), {
       runId: "specialist-run-003",
