@@ -287,6 +287,41 @@ export function freezeRecordsForNextBatch(
   return buildFrozenInputRecords(products, recommendation.nextProductIds);
 }
 
+export type CatalogReplacementSuggestion = {
+  mismatchedProductId: string;
+  brand: string;
+  category: string;
+  candidates: Array<{ id: string; name: string; brand: string; category: string }>;
+  loadoutWrite: false;
+};
+
+/**
+ * Same brand and category, different id. Does not invent SKUs or write Loadout.
+ */
+export function suggestCatalogReplacements(input: {
+  droppedProductIds: string[];
+  frozenRecords: Record<string, CatalogProductRecord>;
+  catalog: CatalogProductRecord[];
+}): CatalogReplacementSuggestion[] {
+  return input.droppedProductIds.map((productId) => {
+    const frozen = input.frozenRecords[productId];
+    const brand = typeof frozen?.brand === "string" ? frozen.brand : "";
+    const category = typeof frozen?.category === "string" ? frozen.category : "";
+    const candidates = brand && category
+      ? input.catalog
+          .filter((product) => product.id !== productId && product.brand === brand && product.category === category)
+          .map((product) => ({
+            id: product.id,
+            name: typeof product.name === "string" ? product.name : product.id,
+            brand: String(product.brand),
+            category: String(product.category),
+          }))
+          .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      : [];
+    return { mismatchedProductId: productId, brand, category, candidates, loadoutWrite: false as const };
+  });
+}
+
 export function firstNonempty(...values: Array<string | null | undefined>): string {
   for (const value of values) {
     if (value) return value;
