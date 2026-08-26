@@ -18,6 +18,10 @@ const opsPage = readFileSync(resolve(process.cwd(), "src/app/(ops)/ops/capabilit
 const fixture = readFileSync(resolve(process.cwd(), "supabase/qa/capability_registry_v1.sql"), "utf8");
 const migrationDir = resolve(process.cwd(), "supabase/migrations");
 const migration = readFileSync(resolve(migrationDir, "20260825190000_capability_registry_v1.sql"), "utf8");
+const privilegeHardening = readFileSync(
+  resolve(migrationDir, "20260826140500_registry_privilege_hardening.sql"),
+  "utf8",
+);
 
 describe("capability registry", () => {
   it("keeps the vocabulary unique and fully defined", () => {
@@ -110,10 +114,11 @@ describe("frozen Step 3D executor-key guard", () => {
     expect(cs1).toEqual(["20260825190000_capability_registry_v1.sql"]);
   });
 
-  it("keeps environment-specific executor mappings in the QA fixture", () => {
+  it("keeps environment-specific executor mappings in a valid QA fixture", () => {
     expect(migration).not.toContain("insert into public.executor_capabilities");
     expect(migration).not.toContain("profile_capability");
     expect(fixture).toContain("insert into public.executor_capabilities");
+    expect(fixture).not.toMatch(/\),\s*\)\s+as pc/);
   });
 
   it("keeps agent mappings pending in the QA fixture and profiles in shadow via evidence text", () => {
@@ -122,5 +127,17 @@ describe("frozen Step 3D executor-key guard", () => {
     expect(fixture).toContain("executor_profiles.status retains shadow");
     expect(fixture).not.toContain("delegation-cloud-public-web-researcher-v1");
     expect(fixture).not.toContain("'shadow'");
+  });
+
+  it("resets registry tables to explicit least privilege", () => {
+    expect(privilegeHardening).toContain("public.capabilities");
+    expect(privilegeHardening).toContain("public.executor_capabilities");
+    expect(privilegeHardening).toContain("public.native_skills");
+    expect(privilegeHardening).toMatch(
+      /revoke all privileges[\s\S]*from anon, authenticated, public;/,
+    );
+    expect(privilegeHardening).toMatch(
+      /grant select, insert, update[\s\S]*to authenticated;/,
+    );
   });
 });
