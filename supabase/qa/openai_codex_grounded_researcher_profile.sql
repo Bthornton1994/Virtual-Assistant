@@ -68,3 +68,43 @@ on conflict (key) do update set
   authority_envelope = excluded.authority_envelope,
   forbidden_actions = excluded.forbidden_actions,
   configuration_metadata = excluded.configuration_metadata;
+
+
+-- CS-1 mappings remain pending until real Grounded run evidence supports qualification.
+insert into public.executor_capabilities (
+  executor_profile_id,
+  capability_id,
+  qualification_status,
+  qualification_version,
+  evidence_summary
+)
+select
+  ep.id,
+  c.id,
+  ec.qualification_status,
+  ec.qualification_version,
+  ec.evidence_summary
+from (
+  values
+    (
+      'openai-codex-grounded-researcher-v1',
+      'evidence_research',
+      'pending',
+      'grounded-portability-v1',
+      'Grounded Step 4 prepare-only portability candidate. Qualification remains pending until immutable run evidence exists.'
+    ),
+    (
+      'openai-codex-grounded-researcher-v1',
+      'public_web_retrieval',
+      'pending',
+      'grounded-portability-v1',
+      'Public-web research is bounded by the frozen catalog-evidence input contract and the all-zero authority report.'
+    )
+) as ec(profile_key, capability_key, qualification_status, qualification_version, evidence_summary)
+join public.executor_profiles ep on ep.key = ec.profile_key
+join public.capabilities c on c.key = ec.capability_key
+on conflict (executor_profile_id, capability_id) do update set
+  qualification_status = excluded.qualification_status,
+  qualification_version = excluded.qualification_version,
+  evidence_summary = excluded.evidence_summary,
+  suspended_at = null;
