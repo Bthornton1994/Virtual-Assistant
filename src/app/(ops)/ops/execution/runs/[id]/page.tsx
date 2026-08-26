@@ -12,7 +12,12 @@ import { WorkCellSection } from "@/components/work-cell";
 import { requireOps } from "@/lib/auth";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
 import { getRunWorkCell } from "@/lib/work-cell";
-import { draftWorkCellReceipt, receiptFormDefaults } from "@/lib/work-cell-operator";
+import {
+  correctiveActionFromPacket,
+  draftWorkCellReceipt,
+  receiptFormDefaults,
+  workCellSubmitDefaults,
+} from "@/lib/work-cell-operator";
 
 export const metadata = { title: "Execution run" };
 
@@ -81,6 +86,23 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
           }),
         )
       : null;
+  const submitNotes = workCell.packet
+    ? correctiveActionFromPacket({
+        packet: workCell.packet.payload,
+        review: workCell.review?.payload,
+        frozenRecords: Object.fromEntries(
+          (workCell.manifest?.inputRecords ?? []).map((entry) => [entry.productId, { id: entry.productId, ...entry.record }]),
+        ),
+      }).reason
+    : "";
+  const submitDefaults = runHasWorkCell
+    ? workCellSubmitDefaults({
+        assignments: workCell.assignments,
+        prepareExecutorKey: workCell.manifest?.prepareExecutorKey,
+        reviewExecutorKey: workCell.manifest?.reviewExecutorKey,
+        notes: submitNotes,
+      })
+    : null;
 
   return (
     <div className="space-y-8">
@@ -228,18 +250,27 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         <Card className="p-6">
           <h2 className="font-semibold">Submit for independent verification</h2>
           <p className="mt-1 text-sm text-muted">Record actual delivery economics before freezing the run for review.</p>
+          {submitDefaults ? (
+            <p className="mt-2 text-sm text-muted">
+              Economics and executor keys are prefilled from work-cell assignments. Owner minutes stay 0 unless you measured them. Submitting still freezes the run.
+            </p>
+          ) : null}
           <form action={submitWorkstreamRunAction} className="mt-5 grid gap-4 lg:grid-cols-2">
             <input type="hidden" name="runId" value={run.id} />
-            <Field label="Human intervention (minutes)"><Input name="humanMinutes" type="number" min="0" step="0.1" defaultValue="0" /></Field>
-            <Field label="Owner intervention (minutes)"><Input name="ownerMinutes" type="number" min="0" step="0.1" defaultValue="0" /></Field>
-            <Field label="AI cost (USD)"><Input name="aiCost" type="number" min="0" step="0.0001" defaultValue="0" /></Field>
-            <Field label="Tool/API cost (USD)"><Input name="toolCost" type="number" min="0" step="0.0001" defaultValue="0" /></Field>
+            <Field label="Human intervention (minutes)"><Input name="humanMinutes" type="number" min="0" step="0.1" defaultValue={submitDefaults?.humanMinutes ?? "0"} /></Field>
+            <Field label="Owner intervention (minutes)"><Input name="ownerMinutes" type="number" min="0" step="0.1" defaultValue={submitDefaults?.ownerMinutes ?? "0"} /></Field>
+            <Field label="AI cost (USD)"><Input name="aiCost" type="number" min="0" step="0.0001" defaultValue={submitDefaults?.aiCostUsd ?? "0"} /></Field>
+            <Field label="Tool/API cost (USD)"><Input name="toolCost" type="number" min="0" step="0.0001" defaultValue={submitDefaults?.toolCostUsd ?? "0"} /></Field>
             <div className="lg:col-span-2">
               <Field label="Executor summary" hint="Optional JSON object describing which executor performed which part.">
-                <Textarea name="executorSummary" placeholder={'{"research":"human","linkCheck":"script","analysis":"grok"}'} />
+                <Textarea
+                  name="executorSummary"
+                  defaultValue={submitDefaults?.executorSummary ?? ""}
+                  placeholder={'{"research":"human","linkCheck":"script","analysis":"grok"}'}
+                />
               </Field>
             </div>
-            <div className="lg:col-span-2"><Field label="Run notes"><Textarea name="notes" placeholder="Unexpected behavior, assumptions, or context for the verifier." /></Field></div>
+            <div className="lg:col-span-2"><Field label="Run notes"><Textarea name="notes" defaultValue={submitDefaults?.notes ?? ""} placeholder="Unexpected behavior, assumptions, or context for the verifier." /></Field></div>
             <div className="lg:col-span-2"><Button type="submit">Freeze and submit for verification</Button></div>
           </form>
         </Card>
