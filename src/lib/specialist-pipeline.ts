@@ -159,6 +159,17 @@ export const specialistPipelineSchema = z
     if (new Set(pipeline.requiredCapabilities).size !== pipeline.requiredCapabilities.length) {
       issue(["requiredCapabilities"], "must not contain duplicates");
     }
+    for (const [index, stage] of stages.entries()) {
+      if (new Set(stage.requiredCapabilities).size !== stage.requiredCapabilities.length) {
+        issue(["stages", String(index), "requiredCapabilities"], "must not contain duplicates");
+      }
+      if (new Set(stage.inputContractVersions).size !== stage.inputContractVersions.length) {
+        issue(["stages", String(index), "inputContractVersions"], "must not contain duplicates");
+      }
+      if (new Set(stage.outputContractVersions).size !== stage.outputContractVersions.length) {
+        issue(["stages", String(index), "outputContractVersions"], "must not contain duplicates");
+      }
+    }
     if (new Set(pipeline.stopConditions).size !== pipeline.stopConditions.length) {
       issue(["stopConditions"], "must not contain duplicates");
     }
@@ -255,6 +266,12 @@ export function validateSpecialistPipelineRun(
   ) {
     failures.push("Run authority snapshot exceeds the pipeline authority ceiling.");
   }
+  const pipelineInputVersions = new Set(pipeline.inputContracts.map((contract) => contract.schemaVersion));
+  for (const inputRef of run.inputArtifactRefs) {
+    if (!pipelineInputVersions.has(inputRef.schemaVersion)) {
+      failures.push("Run input artifact schemaVersion is not declared by the pipeline: " + inputRef.schemaVersion);
+    }
+  }
   if (duplicates(run.stageStates.map((state) => state.stageKey)).length > 0) {
     failures.push("Run stageStates contains duplicate stageKey values.");
   }
@@ -276,10 +293,20 @@ export function validateSpecialistPipelineRun(
     if (stage.requiresHumanApproval && state.approvalStatus === "not_required") {
       failures.push("Stage " + stage.stageKey + " requires human approval.");
     }
+    if (stage.requiresHumanApproval && state.status === "skipped") {
+      failures.push("Approval-required stage " + stage.stageKey + " cannot be skipped.");
+    }
     if (!stage.requiresHumanApproval && state.approvalStatus === "approved") {
       failures.push("Stage " + stage.stageKey + " cannot carry an approval that it does not require.");
     }
     if (state.status === "completed") {
+      for (const outputRef of state.outputArtifactRefs) {
+        if (!stage.outputContractVersions.includes(outputRef.schemaVersion)) {
+          failures.push(
+            "Stage " + stage.stageKey + " output artifact schemaVersion is not declared by the stage: " + outputRef.schemaVersion,
+          );
+        }
+      }
       if (state.outputArtifactRefs.length === 0) failures.push("Completed stage " + stage.stageKey + " needs output evidence.");
       if (!state.startedAt || !state.completedAt) {
         failures.push("Completed stage " + stage.stageKey + " needs startedAt and completedAt.");
@@ -311,6 +338,12 @@ export function validateSpecialistPipelineRun(
     }
     if (state.status === "skipped" && !state.blockingReason) {
       failures.push("Skipped stage " + stage.stageKey + " needs a reason.");
+    }
+    if (
+      state.status === "skipped" &&
+      (state.startedAt || state.completedAt || state.outputArtifactRefs.length > 0)
+    ) {
+      failures.push("Skipped stage " + stage.stageKey + " cannot carry timestamps or output evidence.");
     }
   }
 
