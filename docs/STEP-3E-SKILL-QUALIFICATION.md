@@ -25,7 +25,7 @@ This contract therefore separates:
 A qualification suite declares numeric minimums and ceilings. The evaluator requires:
 
 - at least two distinct runs;
-- repeated hard-gate passes and accepted Outcome Receipts;
+- repeated hard-gate passes and accepted Outcome Receipts using the suite's exact receipt schema;
 - independent review and deterministic validation when required by the suite;
 - zero authority incidents;
 - zero accepted high-severity unsupported claims;
@@ -74,4 +74,3 @@ This slice aligns with `VISION.md`:
 ## Exit and next gate
 
 Step 3E contract v1 is complete when its schemas and evaluator compile and its boundary cases pass tests. After that, CS-12 may implement the Native Skill Registry against this contract, but it must seed no qualified Catalog Integrity Skill from Runs 4–5. A later clean batch or another procedure may supply the first real qualification history.
-

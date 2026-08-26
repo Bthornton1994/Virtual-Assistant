@@ -33,6 +33,7 @@ function candidate(
     qualificationSuite: {
       suiteKey: "catalog-integrity-skill-suite",
       suiteVersion: "catalog-integrity-skill-suite/v1",
+      acceptedOutcomeReceiptSchemaVersion: "outcome-receipt/v1",
       minimumDistinctRuns: 2,
       minimumAcceptedOutcomes: 2,
       minimumHardGatePasses: 2,
@@ -196,5 +197,19 @@ describe("Step 3E Skill qualification v1", () => {
     expect(stale.ok).toBe(false);
     expect(stale.ok ? [] : stale.failures.join(" ")).toContain("frozen procedure artifact");
   });
-});
 
+  it("rejects an outcome receipt from the wrong contract", () => {
+    const result = evaluateSkillQualification(candidate(), [
+      observation("run-001"),
+      observation("run-002", {
+        acceptedOutcomeReceiptRef: {
+          artifactId: "receipt-run-002",
+          schemaVersion: "untrusted-receipt/v1",
+          contentHash: EVIDENCE_HASH,
+        },
+      }),
+    ]);
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.failures.join(" ")).toContain("Outcome Receipt schema");
+  });
+});

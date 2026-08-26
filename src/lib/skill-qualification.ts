@@ -8,7 +8,7 @@ import {
   artifactReferenceSchema,
   executorConfigurationSnapshotSchema,
 } from "@/lib/executor-envelope";
-import { TOOL_CLASSES } from "@/lib/execution-context";
+import { TOOL_CLASSES, delegationSpecSnapshotSchema } from "@/lib/execution-context";
 
 export const SKILL_QUALIFICATION_SCHEMA_VERSION = "skill-qualification/v1" as const;
 export const SKILL_QUALIFICATION_OBSERVATION_SCHEMA_VERSION =
@@ -55,6 +55,7 @@ const qualificationSuiteSchema = z
   .object({
     suiteKey: identifierString,
     suiteVersion: identifierString,
+    acceptedOutcomeReceiptSchemaVersion: identifierString,
     minimumDistinctRuns: z.number().int().min(2),
     minimumAcceptedOutcomes: z.number().int().min(1),
     minimumHardGatePasses: z.number().int().min(1),
@@ -124,6 +125,26 @@ export const skillQualificationCandidateSchema = z
         path: ["currentState"],
         message: "a retired Skill cannot enter qualification",
       });
+    }
+    const authorityCheck = delegationSpecSnapshotSchema.safeParse({
+      specKey: candidate.candidateKey,
+      specVersion: candidate.candidateVersion,
+      actionClass: candidate.authorityCeiling,
+      allowedToolClasses: candidate.requiredToolClasses,
+      forbiddenToolClasses: [],
+      requiresHumanApproval:
+        candidate.authorityCeiling === "external_execution" ||
+        candidate.authorityCeiling === "sensitive_execution",
+      mayOwnAuthoritativeState: false,
+    });
+    if (!authorityCheck.success) {
+      for (const issue of authorityCheck.error.issues) {
+        context.addIssue({
+          code: "custom",
+          path: ["requiredToolClasses"],
+          message: "tool requirement exceeds the authority ceiling: " + issue.message,
+        });
+      }
     }
   });
 
@@ -277,6 +298,12 @@ export function evaluateSkillQualification(
     if (observation.suiteKey !== suite.suiteKey || observation.suiteVersion !== suite.suiteVersion) {
       bindingFailures.push(prefix + "qualification suite does not match the candidate.");
     }
+    if (
+      observation.acceptedOutcomeReceiptRef &&
+      observation.acceptedOutcomeReceiptRef.schemaVersion !== suite.acceptedOutcomeReceiptSchemaVersion
+    ) {
+      bindingFailures.push(prefix + "accepted Outcome Receipt schema does not match the suite.");
+    }
   });
   if (bindingFailures.length > 0) return { ok: false, failures: bindingFailures };
 
@@ -392,4 +419,3 @@ export function evaluateSkillQualification(
   }
   return { ok: true, value: checked.data };
 }
-
