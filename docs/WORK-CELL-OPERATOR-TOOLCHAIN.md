@@ -56,4 +56,20 @@ Drops identity mismatches. Does not start a run.
 npx tsx scripts/next-freeze-from-packet.ts --packet packet.json --out later-freeze.json --loadout ../Loadout
 ```
 
+## Catalog replacement candidates
+
+Same brand and category only. Does not invent a SKU or write Loadout. Empty candidates mean the frozen identity is not in the rest of the catalog.
+
+```text
+npx tsx scripts/suggest-catalog-replacements.ts --packet packet.json --loadout ../Loadout
+```
+
+## Work-cell ledger observations
+
+Emits CS-4 observations from frozen packet+review. Does not persist or promote an executor.
+
+```text
+npx tsx scripts/work-cell-ledger-observations.ts --packet packet.json --review review.json
+```
+
 Frozen executor keys remain `hermes-loadout-researcher-v1` / `grok-loadout-reviewer-v1` / `catalog-evidence-validator-v1`.

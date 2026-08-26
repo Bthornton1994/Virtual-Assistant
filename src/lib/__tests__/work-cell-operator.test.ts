@@ -12,6 +12,7 @@ import {
   freezeRecordsForNextBatch,
   receiptFormDefaults,
   recommendCorrectiveAction,
+  suggestCatalogReplacements,
   workCellSubmitDefaults,
 } from "@/lib/work-cell-operator";
 
@@ -185,5 +186,25 @@ export const PRODUCTS = [{ id: "x" }];
     expect(Object.keys(next.records)).toEqual(["ks-sbd-7mm"]);
     expect(next.missing).toEqual([]);
     expect(correctiveActionFromPacket({ packet: hermes }).retryDecision).toBe("escalate_human");
+  });
+
+  it("suggests same-brand same-category replacements and never writes Loadout", () => {
+    const suggestions = suggestCatalogReplacements({
+      droppedProductIds: ["ww-a7-coneface", "belt-averte"],
+      frozenRecords: {
+        "ww-a7-coneface": { id: "ww-a7-coneface", brand: "A7", category: "wrist-wraps", name: "Coneface" },
+        "belt-averte": { id: "belt-averte", brand: "Averte", category: "belt", name: "Averte Dual Prong" },
+      },
+      catalog: [
+        { id: "ww-a7-coneface", brand: "A7", category: "wrist-wraps", name: "Coneface" },
+        { id: "ww-a7-zebra", brand: "A7", category: "wrist-wraps", name: "Zebra" },
+        { id: "ks-a7-conical", brand: "A7", category: "knee-sleeves", name: "Conical" },
+        { id: "belt-averte", brand: "Averte", category: "belt", name: "Averte Dual Prong" },
+        { id: "belt-sbd-13mm", brand: "SBD", category: "belt", name: "SBD 13mm" },
+      ],
+    });
+    expect(suggestions[0]?.candidates.map((item) => item.id)).toEqual(["ww-a7-zebra"]);
+    expect(suggestions[1]?.candidates).toEqual([]);
+    expect(suggestions.every((item) => item.loadoutWrite === false)).toBe(true);
   });
 });
