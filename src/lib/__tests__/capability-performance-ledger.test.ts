@@ -79,8 +79,8 @@ describe("capability performance ledger v1", () => {
       falseRejections: 1,
       falseRejectionRate: 1,
       hardGatePassRate: 1 / 3,
-      acceptedOutcomes: 0,
-      acceptedOutcomeRate: 0,
+      acceptedOutcomes: 1,
+      acceptedOutcomeRate: 1 / 3,
     });
   });
 
