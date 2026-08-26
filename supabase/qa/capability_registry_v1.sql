@@ -53,7 +53,7 @@ from (
       'qualified',
       'catalog-evidence-validator/v1',
       'Native deterministic validator owns parsing, hashes, counts, and the hard gate.'
-    ),
+    )
 ) as pc(profile_key, capability_key, qualification_status, qualification_version, evidence_summary)
 join public.executor_profiles ep on ep.key = pc.profile_key
 join public.capabilities c on c.key = pc.capability_key
