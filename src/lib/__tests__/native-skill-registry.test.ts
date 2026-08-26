@@ -237,6 +237,22 @@ describe("Native Skill Registry v1", () => {
     expect(tampered.ok ? [] : tampered.failures.join(" ")).toContain("decisionHash");
   });
 
+  it("rejects a forged qualification history artifact", () => {
+    const skill = buildQualifiedSkill();
+    const forged = validateNativeSkill({
+      ...skill,
+      qualificationHistory: skill.qualificationHistory.map((entry) => ({
+        ...entry,
+        decisionArtifactRef: {
+          ...entry.decisionArtifactRef,
+          contentHash: "f".repeat(64),
+        },
+      })),
+    });
+    expect(forged.ok).toBe(false);
+    expect(forged.ok ? [] : forged.failures.join(" ")).toContain("artifact hash");
+  });
+
   it("regenerates replaceable runtime instructions from one qualified Skill", () => {
     const skill = buildQualifiedSkill();
     const hermes = projectNativeSkill(skill, "hermes_markdown");
@@ -266,4 +282,3 @@ describe("Native Skill Registry v1", () => {
     expect(qualifiedNativeSkills()).toEqual([]);
   });
 });
-

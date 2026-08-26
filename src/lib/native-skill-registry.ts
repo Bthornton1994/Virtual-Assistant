@@ -6,10 +6,11 @@ import { identifierString, isoDateTimeSchema, nonEmptyString } from "@/lib/catal
 import { ACTION_CLASSES, artifactReferenceSchema } from "@/lib/executor-envelope";
 import { TOOL_CLASSES, delegationSpecSnapshotSchema } from "@/lib/execution-context";
 import {
+  SKILL_QUALIFICATION_DECISION_SCHEMA_VERSION,
   SKILL_FAILURE_CLASSES,
   qualificationSuiteSchema,
+  skillQualificationDecisionSchema,
   validateSkillQualificationDecision,
-  type SkillQualificationDecision,
 } from "@/lib/skill-qualification";
 
 export const NATIVE_SKILL_SCHEMA_VERSION = "native-skill/v1" as const;
@@ -104,8 +105,7 @@ const skillDefinitionBodySchema = z
 
 const qualificationHistoryEntrySchema = z
   .object({
-    decision: z.enum(["qualify", "remain_shadow", "suspend"]),
-    decisionHash: sha256HexSchema,
+    decision: skillQualificationDecisionSchema,
     decisionArtifactRef: artifactReferenceSchema,
     recordedAt: isoDateTimeSchema,
   })
@@ -141,7 +141,10 @@ export const nativeSkillSchema = skillDefinitionBodySchema
     duplicate(skill.outputContractVersions, "outputContractVersions");
     duplicate(skill.evidenceRequirements, "evidenceRequirements");
     duplicate(skill.knownFailureClasses, "knownFailureClasses");
-    duplicate(skill.qualificationHistory.map((entry) => entry.decisionHash), "qualificationHistory");
+    duplicate(
+      skill.qualificationHistory.map((entry) => entry.decision.decisionHash),
+      "qualificationHistory",
+    );
 
     if ((skill.status === "candidate" || skill.status === "shadow") && skill.approval !== null) {
       context.addIssue({
@@ -161,8 +164,8 @@ export const nativeSkillSchema = skillDefinitionBodySchema
       skill.approval &&
       !skill.qualificationHistory.some(
         (entry) =>
-          entry.decision === "qualify" &&
-          entry.decisionHash === skill.approval?.qualificationDecisionHash,
+          entry.decision.decision === "qualify" &&
+          entry.decision.decisionHash === skill.approval?.qualificationDecisionHash,
       )
     ) {
       context.addIssue({
@@ -246,6 +249,25 @@ export function validateNativeSkill(input: unknown): NativeSkillResult<NativeSki
   if (sha256Hex(definitionBody(skill)) !== skill.definitionHash) {
     failures.push("Skill definitionHash does not match the immutable canonical definition.");
   }
+
+  skill.qualificationHistory.forEach((entry, index) => {
+    const decisionCheck = validateSkillQualificationDecision(entry.decision);
+    if (!decisionCheck.ok) {
+      failures.push(
+        ...decisionCheck.failures.map((failure) => `Skill qualificationHistory.${index} ${failure}`),
+      );
+    }
+    if (entry.decisionArtifactRef.schemaVersion !== SKILL_QUALIFICATION_DECISION_SCHEMA_VERSION) {
+      failures.push(
+        `Skill qualificationHistory.${index} decision artifact schemaVersion does not match Step 3E.`,
+      );
+    }
+    if (entry.decisionArtifactRef.contentHash !== entry.decision.decisionHash) {
+      failures.push(
+        `Skill qualificationHistory.${index} decision artifact hash does not match its decision.`,
+      );
+    }
+  });
 
   const authorityCheck = delegationSpecSnapshotSchema.safeParse({
     specKey: skill.skillKey,
@@ -332,8 +354,7 @@ export function qualifyNativeSkill(
   if (failures.length > 0) return { ok: false, failures };
 
   const historyEntry = {
-    decision: decision.decision,
-    decisionHash: decision.decisionHash,
+    decision,
     decisionArtifactRef: artifactCheck.data,
     recordedAt: timeCheck.data,
   };
@@ -448,4 +469,3 @@ export function registeredNativeSkills(): NativeSkill[] {
 export function qualifiedNativeSkills(): NativeSkill[] {
   return registeredNativeSkills().filter((skill) => skill.status === "qualified");
 }
-

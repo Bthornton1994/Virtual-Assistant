@@ -34,7 +34,7 @@ A candidate may enter shadow qualification. It can become qualified only when:
 2. the decision is `qualify`;
 3. candidate key, version, capability, procedure hash, and qualification suite match the Skill;
 4. a manager identity and approval time are supplied;
-5. the decision is added to immutable qualification history.
+5. the complete hash-valid decision is added to qualification history and bound to an artifact whose schema and content hash match exactly.
 
 Qualification still grants no run authority. The Delegation Spec and Execution Context govern every assignment.
 
@@ -68,4 +68,3 @@ This implementation aligns with `VISION.md` because:
 ## Exit gate
 
 CS-12 v1 exits when the canonical contract compiles, qualification and tamper boundaries pass, qualified synthetic evidence regenerates equivalent Hermes/Grok/generic projections, the operator roster is visible, and no real Skill is falsely promoted.
-
