@@ -257,6 +257,24 @@ export function validateNativeSkill(input: unknown): NativeSkillResult<NativeSki
         ...decisionCheck.failures.map((failure) => `Skill qualificationHistory.${index} ${failure}`),
       );
     }
+    if (entry.decision.candidateKey !== skill.skillKey) {
+      failures.push(`Skill qualificationHistory.${index} candidateKey does not match the Skill.`);
+    }
+    if (entry.decision.candidateVersion !== skill.skillVersion) {
+      failures.push(`Skill qualificationHistory.${index} candidateVersion does not match the Skill.`);
+    }
+    if (entry.decision.capabilityKey !== skill.capabilityKey) {
+      failures.push(`Skill qualificationHistory.${index} capabilityKey does not match the Skill.`);
+    }
+    if (entry.decision.procedureHash !== skill.procedureArtifact.contentHash) {
+      failures.push(`Skill qualificationHistory.${index} procedureHash does not match the Skill.`);
+    }
+    if (
+      entry.decision.suiteKey !== skill.qualificationSuite.suiteKey ||
+      entry.decision.suiteVersion !== skill.qualificationSuite.suiteVersion
+    ) {
+      failures.push(`Skill qualificationHistory.${index} qualification suite does not match the Skill.`);
+    }
     if (entry.decisionArtifactRef.schemaVersion !== SKILL_QUALIFICATION_DECISION_SCHEMA_VERSION) {
       failures.push(
         `Skill qualificationHistory.${index} decision artifact schemaVersion does not match Step 3E.`,
