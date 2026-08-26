@@ -487,3 +487,67 @@ export function registeredNativeSkills(): NativeSkill[] {
 export function qualifiedNativeSkills(): NativeSkill[] {
   return registeredNativeSkills().filter((skill) => skill.status === "qualified");
 }
+
+export type NativeSkillRegistrySnapshot = {
+  applied: boolean;
+  skills: NativeSkill[];
+  invalidRows: number;
+  error: string | null;
+};
+
+/**
+ * Staff-facing persistence adapter. Database rows remain untrusted until the
+ * complete canonical payload, hashes, qualification history, and approval bind
+ * through validateNativeSkill. Any invalid row fails the roster closed.
+ */
+export async function loadNativeSkillRegistry(): Promise<NativeSkillRegistrySnapshot> {
+  const { supabaseServer } = await import("@/lib/supabase/server");
+  const db = await supabaseServer();
+  if (!db) {
+    return {
+      applied: false,
+      skills: [],
+      invalidRows: 0,
+      error: "No persistent database is configured.",
+    };
+  }
+
+  const { data, error } = await db
+    .from("native_skills")
+    .select("payload")
+    .order("skill_key", { ascending: true })
+    .order("skill_version", { ascending: true });
+
+  if (error) {
+    const missing = /does not exist|schema cache|42P01|PGRST/i.test(error.message);
+    return {
+      applied: !missing,
+      skills: [],
+      invalidRows: 0,
+      error: missing ? "CS-12 persistence is not applied on this database yet." : error.message,
+    };
+  }
+
+  const skills: NativeSkill[] = [];
+  let invalidRows = 0;
+  for (const row of data ?? []) {
+    const payload = (row as { payload?: unknown }).payload;
+    const checked = validateNativeSkill(payload);
+    if (!checked.ok) {
+      invalidRows += 1;
+      continue;
+    }
+    skills.push(checked.value);
+  }
+
+  if (invalidRows > 0) {
+    return {
+      applied: true,
+      skills: [],
+      invalidRows,
+      error: `${invalidRows} persisted Skill row(s) failed canonical validation; roster hidden.`,
+    };
+  }
+
+  return { applied: true, skills, invalidRows: 0, error: null };
+}

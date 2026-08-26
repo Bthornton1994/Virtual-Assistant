@@ -1,14 +1,16 @@
 import { PageHeader } from "@/components/product";
 import { Badge, Card } from "@/components/ui";
 import { requireOps } from "@/lib/auth";
-import { qualifiedNativeSkills, registeredNativeSkills } from "@/lib/native-skill-registry";
+import { loadNativeSkillRegistry, registeredNativeSkills } from "@/lib/native-skill-registry";
 
 export const metadata = { title: "Skills" };
 
 export default async function SkillsPage() {
   await requireOps();
-  const registered = registeredNativeSkills();
-  const qualified = qualifiedNativeSkills();
+  const persisted = await loadNativeSkillRegistry();
+  const registered =
+    persisted.applied && !persisted.error ? persisted.skills : registeredNativeSkills();
+  const qualified = registered.filter((skill) => skill.status === "qualified");
 
   return (
     <div className="space-y-8">
@@ -28,6 +30,18 @@ export default async function SkillsPage() {
           <p className="mt-2 text-2xl font-semibold">{qualified.length}</p>
         </Card>
       </div>
+
+      {persisted.error ? (
+        <Card className="p-5">
+          <Badge tone="warn">{persisted.applied ? "validation blocked" : "not applied"}</Badge>
+          <p className="mt-3 text-sm text-muted">{persisted.error}</p>
+          {persisted.invalidRows > 0 ? (
+            <p className="mt-1 text-sm text-muted">
+              Invalid persisted rows are never shown or projected.
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
 
       {registered.length === 0 ? (
         <Card className="p-5">
