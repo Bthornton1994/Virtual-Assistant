@@ -127,7 +127,11 @@ create policy native_skills_select on public.native_skills
 
 create policy native_skills_insert on public.native_skills
   for insert to authenticated
-  with check (public.is_ops_manager() and created_by = (select auth.uid()));
+  with check (
+    public.is_ops_manager()
+    and created_by = (select auth.uid())
+    and status = 'candidate'
+  );
 
 create policy native_skills_update on public.native_skills
   for update to authenticated
