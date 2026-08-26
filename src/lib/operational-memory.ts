@@ -230,7 +230,7 @@ export function invalidateOperationalMemory(
   const failures: string[] = [];
   if (!timestamp.success) failures.push("invalidatedAt: " + timestamp.error.issues[0].message);
   if (!parsedReason.success) failures.push("invalidationReason: " + parsedReason.error.issues[0].message);
-  if (failures.length > 0) return { ok: false, failures };
+  if (!timestamp.success || !parsedReason.success) return { ok: false, failures };
 
   return createOperationalMemory({
     ...withoutHash(current.value),
