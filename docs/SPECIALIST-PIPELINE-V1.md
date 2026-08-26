@@ -41,19 +41,20 @@ A run freezes:
 - input artifact references;
 - authority snapshot;
 - one state for every stage;
-- stage output artifact references;
+- stage input and output artifact references, including upstream content hashes;
 - timestamps and blocking reasons;
-- final output evidence.
+- final output evidence bound to the pipeline output contract.
 
 Validation fails closed when:
 
 - the run does not match the pipeline identity;
 - a stage is missing, duplicated, out of order, or unknown;
 - a later stage is active while an earlier stage is incomplete;
-- an approval is missing;
-- a completed stage has no output evidence;
+- an approval is missing or a protected stage activates before approval;
+- a required plan, technical-check, business-QA, delivery, or replay stage is skipped;
+- a completed stage has no input evidence bound by content hash or no output evidence matching its declared contract;
 - a blocked or skipped stage has no reason;
-- a delivered run lacks completed delivery and replay stages or final evidence;
+- a delivered run lacks completed delivery and replay stages or final evidence matching the pipeline output contract;
 - authority exceeds the pipeline ceiling.
 
 ## Authority and implementation boundary
@@ -78,4 +79,6 @@ The test suite covers:
 - approval-before-execution and authority ceilings;
 - planned-run creation with all stages pending;
 - completed delivery with replay evidence;
+- input/output contract and upstream-hash binding;
+- approval-before-activation and mandatory-stage skip rejection;
 - fail-closed activation of a later stage before approval/order.
