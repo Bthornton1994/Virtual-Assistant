@@ -43,6 +43,14 @@ export const SPECIALIST_APPROVAL_STATUSES = [
   "rejected",
 ] as const;
 
+export const REQUIRED_SPECIALIST_STAGE_KINDS = [
+  "plan",
+  "technical_check",
+  "business_qa",
+  "delivery",
+  "replay",
+] as const;
+
 export type SpecialistStageKind = (typeof SPECIALIST_STAGE_KINDS)[number];
 export type SpecialistStageStatus = (typeof SPECIALIST_STAGE_STATUSES)[number];
 export type SpecialistPipelineStatus = (typeof SPECIALIST_PIPELINE_STATUSES)[number];
@@ -132,14 +140,29 @@ export const specialistPipelineSchema = z
     });
 
     const kindIndex = (kind: SpecialistStageKind) => stages.findIndex((stage) => stage.kind === kind);
-    for (const required of ["plan", "technical_check", "business_qa", "delivery", "replay"] as const) {
-      if (kindIndex(required) === -1) issue(["stages"], "pipeline requires a " + required + " stage");
+    for (const required of REQUIRED_SPECIALIST_STAGE_KINDS) {
+      const matches = stages.filter((stage) => stage.kind === required);
+      if (matches.length === 0) issue(["stages"], "pipeline requires a " + required + " stage");
+      if (matches.length > 1) issue(["stages"], "pipeline requires exactly one " + required + " stage");
     }
 
+    const planIndex = kindIndex("plan");
     const technicalIndex = kindIndex("technical_check");
     const businessQaIndex = kindIndex("business_qa");
     const deliveryIndex = kindIndex("delivery");
     const replayIndex = kindIndex("replay");
+    if (planIndex !== -1) {
+      for (const [kind, index] of [
+        ["technical_check", technicalIndex],
+        ["business_qa", businessQaIndex],
+        ["delivery", deliveryIndex],
+        ["replay", replayIndex],
+      ] as const) {
+        if (index !== -1 && index < planIndex) {
+          issue(["stages"], "plan must precede " + kind);
+        }
+      }
+    }
     if (technicalIndex !== -1 && businessQaIndex !== -1 && businessQaIndex < technicalIndex) {
       issue(["stages"], "business_qa must follow technical_check");
     }
@@ -186,6 +209,7 @@ const pipelineStageStateSchema = z
     stageKey: identifierString,
     status: z.enum(SPECIALIST_STAGE_STATUSES),
     approvalStatus: z.enum(SPECIALIST_APPROVAL_STATUSES),
+    inputArtifactRefs: z.array(artifactReferenceSchema).max(100),
     outputArtifactRefs: z.array(artifactReferenceSchema).max(100),
     startedAt: isoDateTimeSchema.nullable(),
     completedAt: isoDateTimeSchema.nullable(),
@@ -272,6 +296,12 @@ export function validateSpecialistPipelineRun(
       failures.push("Run input artifact schemaVersion is not declared by the pipeline: " + inputRef.schemaVersion);
     }
   }
+  const pipelineOutputVersions = new Set(pipeline.outputContracts.map((contract) => contract.schemaVersion));
+  for (const outputRef of run.finalOutputArtifactRefs) {
+    if (!pipelineOutputVersions.has(outputRef.schemaVersion)) {
+      failures.push("Run final output artifact schemaVersion is not declared by the pipeline: " + outputRef.schemaVersion);
+    }
+  }
   if (duplicates(run.stageStates.map((state) => state.stageKey)).length > 0) {
     failures.push("Run stageStates contains duplicate stageKey values.");
   }
@@ -293,11 +323,32 @@ export function validateSpecialistPipelineRun(
     if (stage.requiresHumanApproval && state.approvalStatus === "not_required") {
       failures.push("Stage " + stage.stageKey + " requires human approval.");
     }
+    if (stage.requiresHumanApproval && state.status === "active" && state.approvalStatus !== "approved") {
+      failures.push("Approval-required stage " + stage.stageKey + " cannot be active before approval.");
+    }
     if (stage.requiresHumanApproval && state.status === "skipped") {
       failures.push("Approval-required stage " + stage.stageKey + " cannot be skipped.");
     }
+    if (
+      REQUIRED_SPECIALIST_STAGE_KINDS.includes(stage.kind as (typeof REQUIRED_SPECIALIST_STAGE_KINDS)[number]) &&
+      state.status === "skipped"
+    ) {
+      failures.push("Required stage " + stage.stageKey + " cannot be skipped.");
+    }
     if (!stage.requiresHumanApproval && state.approvalStatus === "approved") {
       failures.push("Stage " + stage.stageKey + " cannot carry an approval that it does not require.");
+    }
+    if (state.status === "active" || state.status === "completed") {
+      if (state.inputArtifactRefs.length === 0) {
+        failures.push("Active or completed stage " + stage.stageKey + " needs input evidence.");
+      }
+      for (const inputRef of state.inputArtifactRefs) {
+        if (!stage.inputContractVersions.includes(inputRef.schemaVersion)) {
+          failures.push(
+            "Stage " + stage.stageKey + " input artifact schemaVersion is not declared by the stage: " + inputRef.schemaVersion,
+          );
+        }
+      }
     }
     if (state.status === "completed") {
       for (const outputRef of state.outputArtifactRefs) {
@@ -320,6 +371,7 @@ export function validateSpecialistPipelineRun(
       if (state.blockingReason) failures.push("Completed stage " + stage.stageKey + " cannot carry a blockingReason.");
     }
     if (state.status === "active") {
+      if (state.outputArtifactRefs.length > 0) failures.push("Active stage " + stage.stageKey + " cannot have output evidence.");
       if (!state.startedAt) failures.push("Active stage " + stage.stageKey + " needs startedAt.");
       if (state.completedAt) failures.push("Active stage " + stage.stageKey + " cannot have completedAt.");
       if (state.blockingReason) failures.push("Active stage " + stage.stageKey + " cannot carry a blockingReason.");
@@ -331,8 +383,12 @@ export function validateSpecialistPipelineRun(
     if (state.status === "blocked" && state.completedAt) {
       failures.push("Blocked stage " + stage.stageKey + " cannot have completedAt.");
     }
+    if (state.status === "blocked" && state.outputArtifactRefs.length > 0) {
+      failures.push("Blocked stage " + stage.stageKey + " cannot have output evidence.");
+    }
     if (state.status === "pending") {
       if (state.startedAt || state.completedAt) failures.push("Pending stage " + stage.stageKey + " cannot have timestamps.");
+      if (state.outputArtifactRefs.length > 0) failures.push("Pending stage " + stage.stageKey + " cannot have output evidence.");
       if (state.blockingReason) failures.push("Pending stage " + stage.stageKey + " cannot carry a blockingReason.");
       if (state.approvalStatus === "approved") failures.push("Pending stage " + stage.stageKey + " cannot be approved.");
     }
@@ -341,9 +397,12 @@ export function validateSpecialistPipelineRun(
     }
     if (
       state.status === "skipped" &&
-      (state.startedAt || state.completedAt || state.outputArtifactRefs.length > 0)
+      (state.startedAt ||
+        state.completedAt ||
+        state.inputArtifactRefs.length > 0 ||
+        state.outputArtifactRefs.length > 0)
     ) {
-      failures.push("Skipped stage " + stage.stageKey + " cannot carry timestamps or output evidence.");
+      failures.push("Skipped stage " + stage.stageKey + " cannot carry timestamps or artifact evidence.");
     }
   }
 
@@ -433,6 +492,7 @@ export function createSpecialistPipelineRun(
       stageKey: stage.stageKey,
       status: "pending",
       approvalStatus: stage.requiresHumanApproval ? "pending" : "not_required",
+      inputArtifactRefs: [],
       outputArtifactRefs: [],
       startedAt: null,
       completedAt: null,
