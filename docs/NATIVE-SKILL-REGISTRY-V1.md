@@ -1,6 +1,6 @@
 # Native Skill Registry v1
 
-Status: **CS-12 canonical contract and runtime projection boundary**
+Status: **CS-12 canonical contract, persistence source, and runtime projection boundary**
 
 ## Outcome
 
@@ -52,7 +52,17 @@ Each projection carries the canonical definition and procedure hashes and states
 
 The source registry intentionally starts empty. The operator page at `/ops/skills` makes this visible instead of presenting the failed Runs 4–5 batch as qualified.
 
-The Supabase connector available during implementation exposed project `cvpypxzqcsdhabiejyxh`, not Delegation Cloud QA project `qbvmtgaphvpwpwemplje`, and the Supabase CLI was unavailable. No database was written and no untested migration was fabricated. A persistence migration may later store these exact canonical objects when the correct project is connected; persistence must not change the contract or create a qualified seed.
+`supabase/migrations/20260826043000_native_skill_registry_v1.sql` adds a no-seed persistence table for the exact canonical payload. The table:
+
+- binds key, version, capability, definition hash, procedure hash, lifecycle state, and JSON payload;
+- preserves an immutable definition while allowing only explicit lifecycle transitions;
+- keeps qualification history append-only and preserves an existing manager approval;
+- enables RLS, grants staff read access, limits writes to ops managers, and grants no authenticated delete path;
+- deliberately inserts no Skill.
+
+`loadNativeSkillRegistry` treats every persisted payload as untrusted. It recomputes the procedure, definition, and qualification-decision hashes, checks exact Skill bindings, and hides the entire roster if any row fails validation.
+
+The connected Supabase app still exposes project `cvpypxzqcsdhabiejyxh`, not Delegation Cloud QA project `qbvmtgaphvpwpwemplje`. The migration is therefore source-reviewed and deployment-compiled but unapplied. No database was written. Operational activation requires connecting the exact QA project, applying CS-1 first, applying this migration, and verifying that the roster is empty before any candidate is created.
 
 ## Vision audit
 
@@ -67,4 +77,6 @@ This implementation aligns with `VISION.md` because:
 
 ## Exit gate
 
-CS-12 v1 exits when the canonical contract compiles, qualification and tamper boundaries pass, qualified synthetic evidence regenerates equivalent Hermes/Grok/generic projections, the operator roster is visible, and no real Skill is falsely promoted.
+The source-level CS-12 gate exits when the canonical contract and persistence adapter compile, qualification and tamper boundaries pass, qualified synthetic evidence regenerates equivalent Hermes/Grok/generic projections, the authenticated operator roster is visible, and no real Skill is falsely promoted.
+
+The operational persistence gate remains open until the exact Delegation Cloud QA project is connected, both CS-1 and CS-12 migrations are applied there, RLS is verified as staff-read/manager-write, and an empty no-seed roster is observed. Production remains out of scope until that QA evidence exists.
