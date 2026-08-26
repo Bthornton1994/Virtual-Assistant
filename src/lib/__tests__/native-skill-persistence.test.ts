@@ -21,6 +21,7 @@ describe("Native Skill persistence boundary", () => {
     expect(migration).toContain("alter table public.native_skills enable row level security");
     expect(migration).toMatch(/native_skills_select[\s\S]*public\.is_platform_staff\(\)/);
     expect(migration).toMatch(/native_skills_insert[\s\S]*public\.is_ops_manager\(\)/);
+    expect(migration).toMatch(/native_skills_insert[\s\S]*status = 'candidate'/);
     expect(migration).toMatch(/native_skills_update[\s\S]*public\.is_ops_manager\(\)/);
     expect(migration).not.toMatch(/insert\s+into\s+public\.native_skills/i);
     expect(migration).not.toMatch(/grant[^;]*delete[^;]*native_skills/i);
