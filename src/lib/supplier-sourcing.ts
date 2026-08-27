@@ -718,10 +718,7 @@ export function supplierSourcingAuthorityReport(): AuthorityReport {
 export function serializeSupplierSourcingValidation(
   result: SupplierSourcingValidationResult,
 ): Record<string, unknown> {
-  return {
-    schemaVersion: SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION,
-    ...result,
-  };
+  return { ...result };
 }
 
 export function serializeSupplierSourcingRejection(
