@@ -23,6 +23,7 @@ import {
   supplierSourcingPacketV1Schema,
   supplierSourcingReviewV1Schema,
   supplierSourcingValidationV1Schema,
+  buildGrokSupplierSourcingPrompt,
   validateSupplierSourcingInputManifest,
   validateSupplierSourcingPacket,
   validateSupplierSourcingReview,
@@ -781,6 +782,16 @@ export async function recordSupplierSourcingGauntletReview(
       ". No supplier relationship, catalog, purchase, or external-message action was performed.",
   });
   return validation;
+}
+
+export async function getGrokSupplierSourcingPrompt(
+  actor: Actor,
+  runId: string,
+): Promise<string> {
+  managerOnly(actor);
+  const db = await persistentDb(actor);
+  const input = await requireInputManifest(db, runId);
+  return buildGrokSupplierSourcingPrompt(input.manifest);
 }
 
 export async function submitSupplierSourcingRun(
