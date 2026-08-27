@@ -404,6 +404,7 @@ export const supplierSourcingValidationV1Schema = z
   .object({
     schemaVersion: z.literal(SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION),
     runId: identifierString,
+    validatedAt: isoDateTimeSchema,
     inputHash: sha256HexSchema,
     packetHash: sha256HexSchema,
     reviewHash: sha256HexSchema,
@@ -490,9 +491,12 @@ export function validateSupplierSourcingPacket(
   expected: {
     manifest: SupplierSourcingInputManifestV1;
     expectedExecutorKey?: string;
+    evaluatedAt?: string;
   },
 ): SupplierSourcingValidationResult {
   const metrics = emptyMetrics();
+  const parsedEvaluationTime = expected.evaluatedAt ? Date.parse(expected.evaluatedAt) : Number.NaN;
+  const evaluationTime = Number.isFinite(parsedEvaluationTime) ? parsedEvaluationTime : Date.now();
   const parsed = supplierSourcingPacketV1Schema.safeParse(input);
   if (!parsed.success) {
     return {
@@ -596,7 +600,7 @@ export function validateSupplierSourcingPacket(
       if (artifact.validUntil && Date.parse(artifact.validUntil) < Date.parse(artifact.accessedAt)) {
         failures.push("Supplier sourcing source artifact validUntil precedes accessedAt for " + artifact.url + ".");
       }
-      if (artifact.validUntil && Date.parse(artifact.validUntil) < Date.now()) {
+      if (artifact.validUntil && Date.parse(artifact.validUntil) < evaluationTime) {
         failures.push("Supplier sourcing source artifact is expired for " + artifact.url + ".");
       }
     }
@@ -629,7 +633,7 @@ export function validateSupplierSourcingPacket(
       !candidate.sourceArtifacts.some(
         (artifact) =>
           artifact.validUntil !== null &&
-          Date.parse(artifact.validUntil) >= Date.now() &&
+          Date.parse(artifact.validUntil) >= evaluationTime &&
           candidate.fulfillment.availability.sourceUrls.includes(artifact.url) &&
           candidate.fulfillment.availability.sourceArtifactHashes.includes(artifact.rawArtifactHash),
       )
