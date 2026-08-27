@@ -144,7 +144,7 @@ export async function createSupplierOutreachApproval(
   const factsUsedSourceUrls = [...new Set(input.factsUsedSourceUrls.map((url) => url.trim()).filter(Boolean))];
   if (!factsUsedSourceUrls.length) throw new DomainError("Outreach approval must cite the facts used by the message.");
   for (const url of factsUsedSourceUrls) {
-    if (!validateEvidenceUrl(url).ok || !/^https:\\/\\//i.test(url)) {
+    if (!validateEvidenceUrl(url).ok || !url.toLowerCase().startsWith("https://")) {
       throw new DomainError("Outreach approval facts must use plain public HTTPS URLs.");
     }
     if (!candidateSourceUrls.has(url)) {
