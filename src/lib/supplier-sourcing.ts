@@ -366,6 +366,58 @@ export const supplierSourcingReviewV1Schema = z
 
 export type SupplierSourcingReviewV1 = z.infer<typeof supplierSourcingReviewV1Schema>;
 
+const supplierSourcingValidationMetricsSchema = z
+  .object({
+    candidateCount: z.number().int().min(0),
+    exactSupplierCount: z.number().int().min(0),
+    supplierDirectSupportedCount: z.number().int().min(0),
+    partnerFulfilledSupportedCount: z.number().int().min(0),
+    kitAssemblySupportedCount: z.number().int().min(0),
+    unresolvedCandidateCount: z.number().int().min(0),
+    disqualifiedCandidateCount: z.number().int().min(0),
+    sourceArtifactCount: z.number().int().min(0),
+    outreachDraftCount: z.number().int().min(0),
+    authorityIncidentCount: z.number().int().min(0),
+    malformedUrlCount: z.number().int().min(0),
+    schemaViolationCount: z.number().int().min(0),
+  })
+  .strict();
+
+const supplierSourcingValidationStageSchema = z
+  .object({
+    hardGatePass: z.boolean(),
+    hardFailures: z.array(nonEmptyString),
+    warnings: z.array(nonEmptyString),
+    metrics: supplierSourcingValidationMetricsSchema,
+  })
+  .strict();
+
+const supplierSourcingReviewValidationSchema = z
+  .object({
+    hardGatePass: z.boolean(),
+    hardFailures: z.array(nonEmptyString),
+    warnings: z.array(nonEmptyString),
+  })
+  .strict();
+
+export const supplierSourcingValidationV1Schema = z
+  .object({
+    schemaVersion: z.literal(SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION),
+    runId: identifierString,
+    inputHash: sha256HexSchema,
+    packetHash: sha256HexSchema,
+    reviewHash: sha256HexSchema,
+    packet: supplierSourcingValidationStageSchema,
+    review: supplierSourcingReviewValidationSchema,
+    hardGatePass: z.boolean(),
+    hardFailures: z.array(nonEmptyString),
+    warnings: z.array(nonEmptyString),
+    authorityReport: authorityReportSchema,
+  })
+  .strict();
+
+export type SupplierSourcingValidationV1 = z.infer<typeof supplierSourcingValidationV1Schema>;
+
 export type SupplierSourcingValidationMetrics = {
   candidateCount: number;
   exactSupplierCount: number;
