@@ -43,7 +43,8 @@ async function persistentDb(actor: Actor): Promise<SupabaseClient> {
 }
 
 function canApprove(actor: Actor) {
-  return actor.role === "client_admin" || actor.role === "ops_manager" || actor.role === "platform_admin";
+  // Typed external-execution artifacts are manager-authored in the database.
+  return actor.role === "ops_manager" || actor.role === "platform_admin";
 }
 
 async function loadRun(db: SupabaseClient, actor: Actor, runId: string): Promise<ApprovalRun> {
@@ -144,7 +145,7 @@ export async function createSupplierOutreachApproval(
     expiresAt: string;
   },
 ): Promise<SupplierOutreachApprovalV1> {
-  if (!canApprove(actor)) throw new AuthzError("Only a client administrator or operations manager can approve supplier outreach.");
+  if (!canApprove(actor)) throw new AuthzError("Only an operations manager can approve supplier outreach.");
   const db = await persistentDb(actor);
   const run = await loadRun(db, actor, runId);
   if (run.status !== "verified") {
@@ -245,7 +246,7 @@ export async function listSupplierOutreachApprovals(
   runId: string,
   candidateId?: string,
 ): Promise<Array<SupplierOutreachApprovalV1 & { artifactId: string }>> {
-  if (!canApprove(actor)) throw new AuthzError("Only a client administrator or operations manager can read supplier outreach approvals.");
+  if (!canApprove(actor)) throw new AuthzError("Only an operations manager can read supplier outreach approvals.");
   const db = await persistentDb(actor);
   const run = await loadRun(db, actor, runId);
   const { data, error } = await db
