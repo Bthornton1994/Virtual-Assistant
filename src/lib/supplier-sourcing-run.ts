@@ -642,11 +642,13 @@ function buildValidationPayload(
   return parsed.data;
 }
 
-function addAssignmentFailure(
+async function addAssignmentFailure(
+  db: SupabaseClient,
   failures: string[],
   assignment: Record<string, unknown> | null,
   phase: Phase,
   expectedArtifactId: string,
+  expectedProfileKey: string,
 ) {
   if (!assignment || assignment.status !== "completed") {
     failures.push("No completed " + phase + " assignment is bound to the expected supplier-sourcing artifact.");
@@ -654,6 +656,16 @@ function addAssignmentFailure(
   }
   if (String(assignment.output_artifact_id ?? "") !== expectedArtifactId) {
     failures.push("The " + phase + " assignment output is not bound to the expected supplier-sourcing artifact.");
+  }
+  const profileId = String(assignment.executor_profile_id ?? "");
+  if (!profileId) {
+    failures.push("The " + phase + " assignment has no executor profile binding.");
+    return;
+  }
+  const { data, error } = await db.from("executor_profiles").select("key").eq("id", profileId).maybeSingle();
+  if (error) throw new DomainError(error.message);
+  if (!data || String(data.key) !== expectedProfileKey) {
+    failures.push("The " + phase + " assignment is not bound to the frozen executor " + expectedProfileKey + ".");
   }
 }
 
@@ -687,8 +699,22 @@ export async function runSupplierSourcingValidation(
   const failures = [...validation.hardFailures];
   const prepareAssignment = await getPhaseAssignment(db, runId, "prepare");
   const reviewAssignment = await getPhaseAssignment(db, runId, "review");
-  addAssignmentFailure(failures, prepareAssignment, "prepare", packetArtifact.id);
-  addAssignmentFailure(failures, reviewAssignment, "review", reviewArtifact.id);
+  await addAssignmentFailure(
+    db,
+    failures,
+    prepareAssignment,
+    "prepare",
+    packetArtifact.id,
+    inputArtifact.manifest.prepareExecutorKey,
+  );
+  await addAssignmentFailure(
+    db,
+    failures,
+    reviewAssignment,
+    "review",
+    reviewArtifact.id,
+    inputArtifact.manifest.reviewExecutorKey,
+  );
   const finalValidation: SupplierSourcingValidationV1 = {
     ...validation,
     hardGatePass: validation.hardGatePass && failures.length === 0,
@@ -732,6 +758,12 @@ export async function recordSupplierSourcingGauntletReview(
   const parsed = supplierSourcingValidationV1Schema.safeParse(validationArtifact.payload);
   if (!parsed.success) throw new DomainError("The stored supplier validation report is invalid.");
   const validation = parsed.data;
+  const validationHashCheck = checkPayloadHash(
+    validationArtifact.payload,
+    validationArtifact.contentHash,
+    "supplier-sourcing validation",
+  );
+  if (validationHashCheck.tampered) throw new DomainError(validationHashCheck.failure);
 
   const validateAssignment = await getPhaseAssignment(db, runId, "validate");
   if (!validateAssignment || validateAssignment.status !== "completed") {
