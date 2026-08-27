@@ -113,6 +113,18 @@ async function requireReviewedCandidate(db: SupabaseClient, runId: string, candi
 
   const candidate = packetResult.data.candidates.find((item) => item.candidateId === candidateId);
   if (!candidate) throw new DomainError("The requested supplier candidate is not in the frozen packet.");
+  if (candidate.status !== "candidate") {
+    throw new DomainError("Only a candidate that passed sourcing classification can reach outreach approval.");
+  }
+  if (candidate.supplierIdentity.status !== "exact" || candidate.productFit.status !== "exact") {
+    throw new DomainError("Outreach approval requires exact supplier identity and exact product fit.");
+  }
+  if (
+    candidate.fulfillment.supplierDirect.status !== "supported" &&
+    candidate.fulfillment.partnerFulfilled.status !== "supported"
+  ) {
+    throw new DomainError("Outreach approval requires evidence for supplier-direct or partner-fulfilled fulfillment.");
+  }
   if (candidate.outreachDraft.status !== "draft") {
     throw new DomainError("This candidate has no prepared outreach draft to approve.");
   }
@@ -135,11 +147,41 @@ export async function createSupplierOutreachApproval(
   if (!canApprove(actor)) throw new AuthzError("Only a client administrator or operations manager can approve supplier outreach.");
   const db = await persistentDb(actor);
   const run = await loadRun(db, actor, runId);
-  if (run.status !== "awaiting_verification") {
-    throw new DomainError("Supplier outreach approval requires a submitted sourcing run.");
+  if (run.status !== "verified") {
+    throw new DomainError("Supplier outreach approval requires a verified sourcing run and passing Outcome Receipt.");
+  }
+  const { data: receipt, error: receiptError } = await db
+    .from("outcome_receipts")
+    .select("verification_status, definition_of_done_met")
+    .eq("run_id", run.id)
+    .maybeSingle();
+  if (receiptError) throw new DomainError(receiptError.message);
+  if (
+    !receipt ||
+    String(receipt.verification_status) !== "passed" ||
+    receipt.definition_of_done_met !== true
+  ) {
+    throw new DomainError("Supplier outreach approval requires a passing Outcome Receipt.");
   }
 
   const { candidate } = await requireReviewedCandidate(db, runId, input.candidateId);
+  const destination = input.destination.trim();
+  const subject = input.subject.trim();
+  const body = input.body.trim();
+  const expiresAt = input.expiresAt.trim();
+  if (!destination || !subject || !body) {
+    throw new DomainError("Outreach approval requires a destination, subject, and message body.");
+  }
+  if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
+    throw new DomainError("Outreach approval must expire in the future.");
+  }
+  const publicChannel = candidate.publicContactChannels.find(
+    (channel) => channel.channel === input.channel && channel.value.trim() === destination,
+  );
+  if (!publicChannel) {
+    throw new DomainError("The outreach destination must exactly match a public contact channel in the reviewed packet.");
+  }
+
   const candidateSourceUrls = new Set(candidate.sourceArtifacts.map((artifact) => artifact.url));
   const factsUsedSourceUrls = [...new Set(input.factsUsedSourceUrls.map((url) => url.trim()).filter(Boolean))];
   if (!factsUsedSourceUrls.length) throw new DomainError("Outreach approval must cite the facts used by the message.");
@@ -160,20 +202,20 @@ export async function createSupplierOutreachApproval(
     draftHash: hashSupplierOutreachDraft({
       candidateId: input.candidateId,
       channel: input.channel,
-      destination: input.destination,
-      subject: input.subject,
-      body: input.body,
+      destination,
+      subject,
+      body,
       factsUsedSourceUrls,
     }),
     channel: input.channel,
-    destination: input.destination,
-    subject: input.subject,
-    body: input.body,
+    destination,
+    subject,
+    body,
     factsUsedSourceUrls,
     actionClass: "external_execution" as const,
     approvedBy: actor.id,
     approvedAt,
-    expiresAt: input.expiresAt,
+    expiresAt,
   };
   const parsed = supplierOutreachApprovalV1Schema.safeParse(approvalCandidate);
   if (!parsed.success) {
