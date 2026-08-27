@@ -4,6 +4,11 @@ import { addGauntletReview } from "@/lib/gauntlet";
 import { transitionWorkstreamRun } from "@/lib/execution-primitives";
 import { supabaseServer } from "@/lib/supabase/server";
 import { checkPayloadHash, sha256Hex, sha256Text } from "@/lib/catalog-evidence-hash";
+import {
+  SUPPLIER_OUTREACH_APPROVAL_SCHEMA_VERSION,
+  supplierOutreachApprovalV1Schema,
+  type SupplierOutreachApprovalV1,
+} from "@/lib/supplier-communication";
 import { parseExtractedJson } from "@/lib/work-cell-json";
 import {
   SUPPLIER_SOURCING_EXECUTOR_KEYS,
@@ -870,6 +875,7 @@ export type SupplierSourcingBundle = {
     hardFailures: string[];
     rawOutputHash: string;
   }>;
+  approvals: Array<SupplierOutreachApprovalV1 & { artifactId: string }>;
 };
 
 function supplierArtifactPayload(row: Record<string, unknown>): Record<string, unknown> {
@@ -961,6 +967,21 @@ export async function getSupplierSourcingRunBundle(
       };
     });
 
+  const approvals: Array<SupplierOutreachApprovalV1 & { artifactId: string }> = [];
+  for (const row of artifacts.filter(
+    (candidate) => supplierArtifactPayload(candidate).schemaVersion === SUPPLIER_OUTREACH_APPROVAL_SCHEMA_VERSION,
+  )) {
+    const parsed = supplierOutreachApprovalV1Schema.safeParse(supplierArtifactPayload(row));
+    if (!parsed.success) throw new DomainError("The stored supplier outreach approval is invalid.");
+    const hashCheck = checkPayloadHash(
+      supplierArtifactPayload(row),
+      String(row.content_hash ?? ""),
+      "supplier outreach approval",
+    );
+    if (hashCheck.tampered) throw new DomainError(hashCheck.failure);
+    approvals.push({ ...parsed.data, artifactId: String(row.id) });
+  }
+
   return {
     manifest,
     prompt: manifest ? buildGrokSupplierSourcingPrompt(manifest) : null,
@@ -980,5 +1001,6 @@ export async function getSupplierSourcingRunBundle(
     review,
     validation,
     rejections,
+    approvals,
   };
 }
