@@ -133,7 +133,9 @@ export function supplierSourcingInputHashSource(
     market: input.market,
     catalogRepository: input.catalogRepository,
     catalogRepositorySha: input.catalogRepositorySha,
-    candidates: [...input.candidates].sort((a, b) => (a.candidateId < b.candidateId ? -1 : 1)),
+    candidates: [...input.candidates].sort((a, b) =>
+      a.candidateId < b.candidateId ? -1 : a.candidateId > b.candidateId ? 1 : 0,
+    ),
     prepareExecutorKey: input.prepareExecutorKey,
     reviewExecutorKey: input.reviewExecutorKey,
   };
