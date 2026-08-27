@@ -86,6 +86,12 @@ function packet(overrides: Partial<SupplierSourcingPacketV1> = {}): SupplierSour
   const candidate = {
     candidateId: "candidate-001",
     productId: "calm-cloud-rice",
+    productName: "Calm Cloud Rice",
+    brand: "Grounded Curated",
+    modelOrVariant: "standard",
+    category: "calming",
+    desiredFulfillmentModes: ["supplier-direct", "partner-fulfilled"],
+    kitAssemblyRequired: true,
     status: "candidate" as const,
     supplierIdentity: {
       status: "exact" as const,
