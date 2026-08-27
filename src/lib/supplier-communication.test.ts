@@ -81,6 +81,13 @@ describe("supplier outreach contract", () => {
     const check = validateSupplierOutreachResult(sent, approved);
     expect(check.ok).toBe(true);
 
+    const extraAuthority = validateSupplierOutreachResult(
+      { ...sent, authorityReport: { ...authorityReport(1), purchasesMade: 1 } },
+      approved,
+    );
+    expect(extraAuthority.ok).toBe(false);
+    expect(extraAuthority.ok ? "" : extraAuthority.failures.join(" ")).toContain("authorityReport");
+
     const wrongRecipient = validateSupplierOutreachResult(
       { ...sent, destination: "other@example.com" },
       approved,
