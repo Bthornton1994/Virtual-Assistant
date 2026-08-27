@@ -85,8 +85,8 @@ insert into public.capabilities (
   'Supplier outreach',
   'Transmit one exact, human-approved supplier message through an approved connector and preserve the delivery receipt.',
   'critical',
-  '[\"supplier-outreach-approval/v1\"]'::jsonb,
-  '[\"supplier-outreach-result/v1\"]'::jsonb,
+  '["supplier-outreach-approval/v1"]'::jsonb,
+  '["supplier-outreach-result/v1"]'::jsonb,
   '{"kind":"human_and_delivery","implementation":"supplier-outreach-approval/v1"}'::jsonb,
   'proposed'
 )
