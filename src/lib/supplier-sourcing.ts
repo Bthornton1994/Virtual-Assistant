@@ -705,3 +705,41 @@ export const supplierSourcingContractSummary = {
 
 // Keep this module's canonicalization dependency visible to contract reviewers.
 export const supplierSourcingCanonicalization = canonicalJsonStringify;
+
+
+/**
+ * The frozen task text for a Grok prepare session. It deliberately names the
+ * exact input hash and keeps communication draft-only; a runtime adapter may
+ * transport this prompt, but the prompt never grants authority.
+ */
+export function buildGrokSupplierSourcingPrompt(
+  manifest: SupplierSourcingInputManifestV1,
+): string {
+  const candidateSummary = manifest.candidates
+    .map(
+      (candidate) =>
+        "- " +
+        candidate.candidateId +
+        ": " +
+        candidate.productName +
+        (candidate.brand ? " / " + candidate.brand : "") +
+        (candidate.modelOrVariant ? " / " + candidate.modelOrVariant : ""),
+    )
+    .join("\n");
+
+  return [
+    "Run Grounded Supplier Sourcing v1 in shadow, prepare-only mode.",
+    "Use only the frozen brief below. Do not inspect or mutate live catalog state.",
+    "Research public primary sources for supplier identity, exact product fit, supplier-direct or partner-fulfilled capability, kit assembly, availability, shipping, returns, compliance, seller of record, and commercial terms.",
+    "You may identify candidates and draft an inquiry, but you must not send or schedule a message, create a relationship, assert acceptance, purchase anything, hold inventory, modify a repository or catalog, publish, create an account, change permissions, create a Skill or Routine, or spend money.",
+    "Every candidate remains unverified. Preserve unresolved or conflicting facts and include direct HTTPS source URLs, access times, raw artifact hashes when available, and escalation reasons.",
+    "Return exactly one JSON object conforming to supplier-sourcing-packet/v1. Do not return Markdown or a prose wrapper.",
+    "Before the JSON object, do not perform any external action. The authorityReport must contain all zero values. Any outreachDraft must have sent=false and sentAt=null.",
+    "",
+    "Frozen runId: " + manifest.runId,
+    "Frozen inputHash: " + manifest.inputHash,
+    "Market: " + manifest.market,
+    "Candidate brief:",
+    candidateSummary,
+  ].join("\n");
+}
