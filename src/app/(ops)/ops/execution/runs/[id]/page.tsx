@@ -8,9 +8,11 @@ import {
 } from "@/app/actions/execution";
 import { ActionClassBadge, PageHeader } from "@/components/product";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
+import { SupplierSourcingSection } from "@/components/supplier-sourcing";
 import { WorkCellSection } from "@/components/work-cell";
 import { requireOps } from "@/lib/auth";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
+import { getSupplierSourcingRunBundle } from "@/lib/supplier-sourcing-run";
 import { getRunWorkCell } from "@/lib/work-cell";
 import {
   correctiveActionFromPacket,
@@ -67,15 +69,21 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
   }
 
   const { run, spec, evidence, receipt } = await getWorkstreamRunBundle(actor, id);
+  const supplierRun =
+    spec.objective.toLowerCase().includes("supplier sourcing") ||
+    spec.requiredInputs.some((input) => input.toLowerCase() === "supplier-sourcing-input/v1");
+  const supplierBundle = supplierRun ? await getSupplierSourcingRunBundle(actor, id) : null;
   const workCell = await getRunWorkCell(actor, id);
   // A work-cell run reserves its single Gauntlet review slot for the deterministic
   // verdict, which needs a completed validation. Submitting before that strands
   // the run, so the submit card is withheld until validation has run.
-  const runHasWorkCell = workCell.assignments.length > 0 || workCell.packet !== null || workCell.manifest !== null;
-  const workCellValidated = workCell.assignments.some(
+  const runHasWorkCell = supplierRun || workCell.assignments.length > 0 || workCell.packet !== null || workCell.manifest !== null;
+  const workCellValidated = supplierRun
+    ? Boolean(supplierBundle?.validation)
+    : workCell.assignments.some(
     (assignment) => assignment.phase === "validate" && assignment.status === "completed" && assignment.outputArtifactId,
   );
-  const submitBlockedByWorkCell = runHasWorkCell && !workCellValidated;
+  const submitBlockedByWorkCell = supplierRun || (runHasWorkCell && !workCellValidated);
   const receiptDraft =
     workCell.packet && workCell.review && workCell.manifest
       ? receiptFormDefaults(
@@ -174,13 +182,22 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         </Card>
       ) : null}
 
-      <WorkCellSection
-        bundle={workCell}
-        runId={run.id}
-        cycleId={run.gauntletCycleId}
-        runStatus={run.status}
-        manager={manager}
-      />
+      {supplierRun && supplierBundle ? (
+        <SupplierSourcingSection
+          bundle={supplierBundle}
+          runId={run.id}
+          runStatus={run.status}
+          manager={manager}
+        />
+      ) : (
+        <WorkCellSection
+          bundle={workCell}
+          runId={run.id}
+          cycleId={run.gauntletCycleId}
+          runStatus={run.status}
+          manager={manager}
+        />
+      )}
 
       <section className="space-y-3">
         <div>
@@ -235,7 +252,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         </div>
       </section>
 
-      {run.status === "running" && submitBlockedByWorkCell ? (
+      {run.status === "running" && submitBlockedByWorkCell && !supplierRun ? (
         <Card className="p-6">
           <h2 className="font-semibold">Submit for independent verification</h2>
           <p className="mt-1 max-w-2xl text-sm text-muted">
@@ -246,7 +263,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         </Card>
       ) : null}
 
-      {run.status === "running" && !submitBlockedByWorkCell ? (
+      {run.status === "running" && !submitBlockedByWorkCell && !supplierRun ? (
         <Card className="p-6">
           <h2 className="font-semibold">Submit for independent verification</h2>
           <p className="mt-1 text-sm text-muted">Record actual delivery economics before freezing the run for review.</p>
