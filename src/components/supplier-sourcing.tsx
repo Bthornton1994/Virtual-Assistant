@@ -4,6 +4,7 @@ import {
   ingestSupplierSourcingReviewAction,
   runSupplierSourcingValidationAction,
   submitSupplierSourcingRunAction,
+  approveSupplierOutreachAction,
 } from "@/app/actions/supplier-sourcing";
 import { WorkCellActionForm } from "@/components/work-cell-action-form";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
@@ -291,6 +292,110 @@ export function SupplierSourcingSection({
           </WorkCellActionForm>
         ) : null}
       </Card>
+
+      {packet && validation ? (
+        <Card className="p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-medium">4. Supplier communication handoff</p>
+            <Badge tone={runStatus === "verified" ? "warn" : "neutral"}>
+              {runStatus === "verified" ? "human approval available" : "blocked until receipt"}
+            </Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted">
+            Grok can prepare an inquiry, but it cannot send it. A message may be approved only after this run has a passing
+            Outcome Receipt, and the destination must be a public channel cited by the reviewed candidate. Approval records an
+            exact draft; a qualified delivery connector is still required before any message leaves Grounded.
+          </p>
+          <div className="mt-4 space-y-4">
+            {packet.payload.candidates.map((candidate) => {
+              const draft = candidate.outreachDraft;
+              const existingApproval = bundle.approvals.find((approval) => approval.candidateId === candidate.candidateId);
+              const eligible =
+                candidate.status === "candidate" &&
+                candidate.supplierIdentity.status === "exact" &&
+                candidate.productFit.status === "exact" &&
+                (candidate.fulfillment.supplierDirect.status === "supported" ||
+                  candidate.fulfillment.partnerFulfilled.status === "supported") &&
+                draft.status === "draft" &&
+                draft.channel !== null &&
+                draft.destination !== null &&
+                draft.subject !== null &&
+                draft.body !== null;
+              return (
+                <div key={candidate.candidateId} className="rounded-lg border border-line p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{candidate.candidateId}</span>
+                    <Badge tone={eligible ? "warn" : "neutral"}>{eligible ? "eligible for review" : "not eligible"}</Badge>
+                    {existingApproval ? <Badge tone="good">approval recorded</Badge> : null}
+                  </div>
+                  <p className="mt-2 text-xs text-muted">
+                    Identity {candidate.supplierIdentity.status}; product fit {candidate.productFit.status}; supplier-direct{" "}
+                    {candidate.fulfillment.supplierDirect.status}; partner-fulfilled {candidate.fulfillment.partnerFulfilled.status};
+                    seller of record {candidate.fulfillment.sellerOfRecord.value}.
+                  </p>
+                  {draft.status === "draft" ? (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-sm font-medium">{draft.subject}</p>
+                      <p className="whitespace-pre-wrap text-sm text-muted">{draft.body}</p>
+                      <p className="break-all text-xs text-muted">
+                        Proposed destination: {draft.destination} · cited facts: {draft.factsUsedSourceUrls.join(", ")}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-muted">Grok did not prepare a draft for this candidate.</p>
+                  )}
+                  {existingApproval ? (
+                    <p className="mt-3 break-all font-mono text-[11px] text-muted">
+                      approved {existingApproval.approvedAt} · expires {existingApproval.expiresAt} · draft {shortHash(existingApproval.draftHash)}
+                    </p>
+                  ) : null}
+                  {runStatus === "verified" && manager && eligible && !existingApproval ? (
+                    <WorkCellActionForm action={approveSupplierOutreachAction} className="mt-4 space-y-3 border-t border-line pt-4">
+                      <input type="hidden" name="runId" value={runId} />
+                      <input type="hidden" name="candidateId" value={candidate.candidateId} />
+                      <Field label="Channel">
+                        <select
+                          name="channel"
+                          defaultValue={draft.channel}
+                          className="min-h-11 w-full rounded-lg border border-line bg-surface px-3 text-sm"
+                        >
+                          {candidate.publicContactChannels.map((channel) => (
+                            <option key={channel.channel + ":" + channel.value} value={channel.channel}>
+                              {channel.channel}: {channel.value}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="Destination" hint="Must exactly match a cited public contact channel.">
+                        <Input name="destination" defaultValue={draft.destination} required />
+                      </Field>
+                      <Field label="Subject">
+                        <Input name="subject" defaultValue={draft.subject} required />
+                      </Field>
+                      <Field label="Exact message body">
+                        <Textarea name="body" defaultValue={draft.body} required rows={7} />
+                      </Field>
+                      <input type="hidden" name="factsUsedSourceUrls" value={JSON.stringify(draft.factsUsedSourceUrls)} />
+                      <Field label="Approval expires at" hint="Use an explicit UTC ISO timestamp; expired approvals cannot be delivered.">
+                        <Input
+                          name="expiresAt"
+                          type="datetime-local"
+                          required
+                          defaultValue={new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16)}
+                        />
+                      </Field>
+                      <p className="text-xs text-muted">
+                        This action stores human approval only. It does not send, schedule, or create a supplier relationship.
+                      </p>
+                      <Button type="submit" variant="secondary">Record exact draft approval</Button>
+                    </WorkCellActionForm>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      ) : null}
 
       {running && manager && packet && review && validation ? (
         <Card className="border-line-strong p-5">
