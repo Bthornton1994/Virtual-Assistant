@@ -46,7 +46,7 @@ type SupplierRun = {
   gauntlet_cycle_id: string | null;
 };
 
-export export type SupplierProfile = {
+export type SupplierProfile = {
   id: string;
   key: string;
   displayName: string;
@@ -880,7 +880,6 @@ export async function getSupplierSourcingRunBundle(
   actor: Actor,
   runId: string,
 ): Promise<SupplierSourcingBundle> {
-  await persistentDb(actor);
   const db = await persistentDb(actor);
   const run = await loadRun(db, actor, runId);
 
