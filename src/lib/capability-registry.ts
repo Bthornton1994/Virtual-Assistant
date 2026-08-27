@@ -18,6 +18,7 @@ export const CAPABILITY_KEYS = [
   "structured_data_transform",
   "business_research",
   "supplier_sourcing",
+  "deterministic_supplier_sourcing_validation",
   "specialist_escalation",
 ] as const;
 
@@ -141,6 +142,16 @@ export const CAPABILITY_DEFINITIONS = [
     inputContractVersions: ["supplier-sourcing-input/v1"],
     outputContractVersions: ["supplier-sourcing-packet/v1"],
     verificationContract: { kind: "deterministic", implementation: "supplier-sourcing-validator/v1" },
+    status: "active",
+  },
+  {
+    key: "deterministic_supplier_sourcing_validation",
+    displayName: "Deterministic supplier sourcing validation",
+    description: "Parse, hash, count, and enforce the supplier-sourcing evidence contract without deciding that a supplier relationship exists.",
+    riskClass: "high",
+    inputContractVersions: ["supplier-sourcing-packet/v1", "supplier-sourcing-review/v1"],
+    outputContractVersions: ["supplier-sourcing-validation/v1"],
+    verificationContract: { kind: "native", implementation: "supplier-sourcing-validator/v1" },
     status: "active",
   },
   {
