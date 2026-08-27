@@ -50,3 +50,13 @@ create trigger trg_supplier_outreach_artifact_guard
   on public.evidence_artifacts
   for each row
   execute function public.enforce_supplier_outreach_artifact_guard();
+
+-- One approved draft per exact candidate per run. The UI check is advisory;
+-- this index makes the invariant hold under concurrent submissions as well.
+create unique index if not exists evidence_artifacts_supplier_outreach_approval_unique
+  on public.evidence_artifacts (
+    organization_id,
+    run_id,
+    (payload->>'candidateId')
+  )
+  where payload->>'schemaVersion' = 'supplier-outreach-approval/v1';
