@@ -67,7 +67,7 @@ async function loadArtifact(
   runId: string,
   schemaVersion: string,
 ): Promise<TypedArtifact | null> {
-  const { error } = await db
+  const { data, error } = await db
     .from("evidence_artifacts")
     .select("id, content_hash, payload")
     .eq("run_id", runId)
