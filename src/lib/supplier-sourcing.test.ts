@@ -83,7 +83,7 @@ function manifest(): SupplierSourcingInputManifestV1 {
 function packet(overrides: Partial<SupplierSourcingPacketV1> = {}): SupplierSourcingPacketV1 {
   const input = manifest();
   const supported = finding("supported");
-  const candidate = {
+  const candidate: SupplierSourcingPacketV1["candidates"][number] = {
     candidateId: "candidate-001",
     productId: "calm-cloud-rice",
     productName: "Calm Cloud Rice",
