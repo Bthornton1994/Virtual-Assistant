@@ -54,7 +54,7 @@ export const supplierOutreachApprovalV1Schema = z
         message: "Outreach approval expires before it was approved.",
       });
     }
-    if (sha256Hex({
+    if (hashSupplierOutreachDraft({
       candidateId: approval.candidateId,
       channel: approval.channel,
       destination: approval.destination,
@@ -103,18 +103,23 @@ export const supplierOutreachResultV1Schema = z
         message: "A failed or unknown outreach result cannot claim a sentAt.",
       });
     }
-    if (result.deliveryStatus === "sent" && sumAuthorityReport(result.authorityReport) === 0) {
+    if (result.deliveryStatus === "sent") {
+      const nonMessageAuthority = Object.entries(result.authorityReport)
+        .filter(([key]) => key !== "externalMessagesSent")
+        .some(([, value]) => value !== 0);
+      if (result.authorityReport.externalMessagesSent !== 1 || nonMessageAuthority) {
+        context.addIssue({
+          code: "custom",
+          path: ["authorityReport"],
+          message: "A sent outreach result must record exactly one external message and no other authority event.",
+        });
+      }
+    }
+    if (result.deliveryStatus !== "sent" && sumAuthorityReport(result.authorityReport) !== 0) {
       context.addIssue({
         code: "custom",
         path: ["authorityReport"],
-        message: "A sent outreach result must record the external message authority event.",
-      });
-    }
-    if (result.deliveryStatus !== "sent" && result.authorityReport.externalMessagesSent !== 0) {
-      context.addIssue({
-        code: "custom",
-        path: ["authorityReport", "externalMessagesSent"],
-        message: "A failed or unknown outreach result cannot claim a sent message.",
+        message: "A failed or unknown outreach result cannot claim any completed authority event.",
       });
     }
   });
@@ -169,6 +174,9 @@ export function validateSupplierOutreachResult(
   if (!result.success) failures.push(...issues("Result ", result.error.issues));
   if (!approval.success || !result.success) return { ok: false, failures };
 
+  if (result.data.approvalHash !== hashSupplierOutreachApproval(approval.data)) {
+    failures.push("Outreach result approvalHash does not match the exact approved approval artifact.");
+  }
   if (result.data.runId !== approval.data.runId) failures.push("Outreach result runId does not match approval.");
   if (result.data.candidateId !== approval.data.candidateId) failures.push("Outreach result candidateId does not match approval.");
   if (result.data.draftHash !== approval.data.draftHash) failures.push("Outreach result draftHash does not match approval.");
