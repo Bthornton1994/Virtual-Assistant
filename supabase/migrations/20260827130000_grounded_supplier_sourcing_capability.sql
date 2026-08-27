@@ -67,3 +67,34 @@ on conflict (key) do update set
   output_contract_versions = excluded.output_contract_versions,
   verification_contract = excluded.verification_contract,
   status = excluded.status;
+
+-- Sending is intentionally a separate proposed capability. No Grok profile is
+-- mapped to it: every invocation requires a fresh human approval and a delivery
+-- receipt, and the connector implementation must be added independently.
+insert into public.capabilities (
+  key,
+  display_name,
+  description,
+  risk_class,
+  input_contract_versions,
+  output_contract_versions,
+  verification_contract,
+  status
+) values (
+  'supplier_outreach',
+  'Supplier outreach',
+  'Transmit one exact, human-approved supplier message through an approved connector and preserve the delivery receipt.',
+  'critical',
+  '[\"supplier-outreach-approval/v1\"]'::jsonb,
+  '[\"supplier-outreach-result/v1\"]'::jsonb,
+  '{"kind":"human_and_delivery","implementation":"supplier-outreach-approval/v1"}'::jsonb,
+  'proposed'
+)
+on conflict (key) do update set
+  display_name = excluded.display_name,
+  description = excluded.description,
+  risk_class = excluded.risk_class,
+  input_contract_versions = excluded.input_contract_versions,
+  output_contract_versions = excluded.output_contract_versions,
+  verification_contract = excluded.verification_contract,
+  status = excluded.status;
