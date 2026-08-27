@@ -47,7 +47,11 @@ function nonNegativeNumber(formData: FormData, name: string) {
 }
 
 function dollarsToMicros(formData: FormData, name: string, label: string) {
-  return Math.round(nonNegativeNumber(formData, name) * 1_000_000);
+  const raw = String(formData.get(name) || "").trim();
+  if (!raw) return 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) throw new Error(label + " must be a non-negative number.");
+  return Math.round(value * 1_000_000);
 }
 
 function refresh(runId: string) {
@@ -120,8 +124,8 @@ export async function ingestSupplierSourcingReviewAction(
     await ingestSupplierSourcingReview(actor, runId, {
       raw: String(formData.get("raw") || ""),
       humanMinutes: nonNegativeNumber(formData, "humanMinutes"),
-      aiCostMicros: nonNegativeNumber(formData, "aiCostMicros"),
-      toolCostMicros: nonNegativeNumber(formData, "toolCostMicros"),
+      aiCostMicros: dollarsToMicros(formData, "aiCost", "AI cost"),
+      toolCostMicros: dollarsToMicros(formData, "toolCost", "Tool cost"),
     });
     refresh(runId);
     return { ok: true };
