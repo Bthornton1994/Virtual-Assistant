@@ -898,7 +898,10 @@ export async function getSupplierSourcingRunBundle(
       .select("*")
       .eq("run_id", run.id)
       .order("created_at", { ascending: true }),
-    db.from("executor_profiles").select("*"),
+    db
+      .from("executor_profiles")
+      .select("*")
+      .in("key", Object.values(SUPPLIER_SOURCING_EXECUTOR_KEYS)),
     db.from("evidence_artifacts").select("*").eq("run_id", run.id).order("created_at", { ascending: true }),
   ]);
   for (const result of [assignmentResult, profileResult, artifactResult]) {
