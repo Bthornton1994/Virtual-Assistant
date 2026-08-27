@@ -38,7 +38,18 @@ function finding(status: "supported" | "contradicted" | "unresolved" = "unresolv
 }
 
 function manifest(): SupplierSourcingInputManifestV1 {
-  const base = {
+  type InputHashSource = Pick<
+    SupplierSourcingInputManifestV1,
+    | "runId"
+    | "objective"
+    | "market"
+    | "catalogRepository"
+    | "catalogRepositorySha"
+    | "candidates"
+    | "prepareExecutorKey"
+    | "reviewExecutorKey"
+  >;
+  const base: InputHashSource = {
     runId: "run-grounded-001",
     objective: "Find supplier-direct or partner-fulfilled options for Grounded kits.",
     market: "US",
