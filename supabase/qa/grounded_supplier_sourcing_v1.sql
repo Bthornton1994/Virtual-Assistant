@@ -183,20 +183,35 @@ insert into public.executor_capabilities (
 select
   ep.id,
   c.id,
-  'pending',
-  'grounded-supplier-sourcing-v1',
-  case ep.key
-    when 'grok-grounded-supplier-researcher-v1' then 'Shadow prepare profile. No authenticated Grok run or qualification receipt exists yet.'
-    when 'grok-grounded-supplier-reviewer-v1' then 'Shadow independent reviewer profile. No authenticated Grok run or qualification receipt exists yet.'
-    else 'Deterministic contract implementation exists, but qualification remains pending until the first reviewed run is completed.'
-  end
-from public.executor_profiles ep
-join public.capabilities c on c.key = 'supplier_sourcing'
-where ep.key in (
-  'grok-grounded-supplier-researcher-v1',
-  'grok-grounded-supplier-reviewer-v1',
-  'supplier-sourcing-validator-v1'
-)
+  mappings.qualification_status,
+  mappings.qualification_version,
+  mappings.evidence_summary
+from (
+  values
+    (
+      'grok-grounded-supplier-researcher-v1',
+      'supplier_sourcing',
+      'pending',
+      'grounded-supplier-sourcing-v1',
+      'Shadow prepare profile. No authenticated Grok run or qualification receipt exists yet.'
+    ),
+    (
+      'grok-grounded-supplier-reviewer-v1',
+      'independent_evidence_review',
+      'pending',
+      'grounded-supplier-sourcing-v1',
+      'Shadow independent reviewer profile. No authenticated Grok run or qualification receipt exists yet.'
+    ),
+    (
+      'supplier-sourcing-validator-v1',
+      'deterministic_supplier_sourcing_validation',
+      'pending',
+      'grounded-supplier-sourcing-v1',
+      'Deterministic contract implementation exists, but qualification remains pending until the first reviewed run is completed.'
+    )
+) as mappings(profile_key, capability_key, qualification_status, qualification_version, evidence_summary)
+join public.executor_profiles ep on ep.key = mappings.profile_key
+join public.capabilities c on c.key = mappings.capability_key
 on conflict (executor_profile_id, capability_id) do update set
   qualification_status = excluded.qualification_status,
   qualification_version = excluded.qualification_version,
