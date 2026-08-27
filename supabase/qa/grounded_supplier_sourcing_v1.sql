@@ -13,7 +13,7 @@ insert into public.executor_profiles (
   'Grok Grounded Supplier Researcher v1',
   'agent',
   'grok',
-  'supplier-sourcing-researcher',
+  'researcher',
   'shadow',
   '[
     "read frozen Grounded supplier-sourcing brief",
@@ -76,7 +76,7 @@ insert into public.executor_profiles (
   'Grok Grounded Supplier Reviewer v1',
   'agent',
   'grok',
-  'supplier-sourcing-reviewer',
+  'reviewer',
   'shadow',
   '[
     "read frozen Grounded supplier-sourcing brief",
