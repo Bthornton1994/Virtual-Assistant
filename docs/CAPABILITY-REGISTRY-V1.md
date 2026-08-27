@@ -36,3 +36,17 @@ Qualified queries return only `capabilities.status = active` with `executor_capa
 ## Exit check
 
 Operations can now query which implementations are registered for a capability and distinguish pending, qualified, suspended, and expired assignments. CS-2 will add the versioned executor envelope; CS-3 will add deterministic routing only after qualification evidence exists.
+
+## Grounded supplier sourcing
+
+The Grounded lane adds two active internal capabilities:
+
+- `supplier_sourcing` — prepare public-source supplier-direct, partner-fulfilled,
+  and kit-assembly research under a frozen input contract.
+- `deterministic_supplier_sourcing_validation` — enforce scope, provenance,
+  authority, and no-owned-inventory rules over the packet and independent review.
+
+Supplier communication is a separate `supplier_outreach` capability and remains
+`proposed`. It has no executor mapping. Its exact-message approval and delivery
+contracts must be implemented and qualified before any connector can transmit a
+supplier message.
