@@ -19,6 +19,7 @@ export const CAPABILITY_KEYS = [
   "business_research",
   "supplier_sourcing",
   "deterministic_supplier_sourcing_validation",
+  "supplier_outreach",
   "specialist_escalation",
 ] as const;
 
@@ -153,6 +154,16 @@ export const CAPABILITY_DEFINITIONS = [
     outputContractVersions: ["supplier-sourcing-validation/v1"],
     verificationContract: { kind: "native", implementation: "supplier-sourcing-validator/v1" },
     status: "active",
+  },
+  {
+    key: "supplier_outreach",
+    displayName: "Supplier outreach",
+    description: "Transmit one exact, human-approved supplier message through an approved connector and preserve the delivery receipt.",
+    riskClass: "critical",
+    inputContractVersions: ["supplier-outreach-approval/v1"],
+    outputContractVersions: ["supplier-outreach-result/v1"],
+    verificationContract: { kind: "human_and_delivery", implementation: "supplier-outreach-approval/v1" },
+    status: "proposed",
   },
   {
     key: "specialist_escalation",
