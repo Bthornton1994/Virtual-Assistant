@@ -182,7 +182,7 @@ export async function createSupplierOutreachApproval(
     );
   }
 
-  const { data, error } = await db
+  const { error } = await db
     .from("evidence_artifacts")
     .insert({
       organization_id: run.organizationId,
@@ -193,7 +193,7 @@ export async function createSupplierOutreachApproval(
       content_hash: hashSupplierOutreachApproval(parsed.data),
       payload: parsed.data,
       created_by: actor.id,
-    })
+    });
   if (error) throw new DomainError(error.message);
   return parsed.data;
 }
