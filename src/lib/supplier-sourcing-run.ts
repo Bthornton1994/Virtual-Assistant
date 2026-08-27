@@ -600,9 +600,11 @@ function buildValidationPayload(
     throw new DomainError("Supplier sourcing validation requires valid packet and review artifacts.");
   }
 
+  const validatedAt = new Date().toISOString();
   const packetValidation = validateSupplierSourcingPacket(packetResult.data, {
     manifest,
     expectedExecutorKey: manifest.prepareExecutorKey,
+    evaluatedAt: validatedAt,
   });
   const reviewValidation = validateSupplierSourcingReview(reviewResult.data, {
     manifest,
@@ -626,6 +628,7 @@ function buildValidationPayload(
   const payload = {
     schemaVersion: SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION,
     runId,
+    validatedAt,
     inputHash: manifest.inputHash,
     packetHash: packet.contentHash,
     reviewHash: review.contentHash,
