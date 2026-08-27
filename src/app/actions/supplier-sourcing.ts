@@ -46,6 +46,10 @@ function nonNegativeNumber(formData: FormData, name: string) {
   return value;
 }
 
+function dollarsToMicros(formData: FormData, name: string, label: string) {
+  return Math.round(nonNegativeNumber(formData, name) * 1_000_000);
+}
+
 function refresh(runId: string) {
   revalidatePath("/ops/gauntlet");
   revalidatePath("/ops/execution");
@@ -97,8 +101,8 @@ export async function ingestSupplierSourcingPacketAction(
     await ingestSupplierSourcingPacket(actor, runId, {
       raw: String(formData.get("raw") || ""),
       humanMinutes: nonNegativeNumber(formData, "humanMinutes"),
-      aiCostMicros: nonNegativeNumber(formData, "aiCostMicros"),
-      toolCostMicros: nonNegativeNumber(formData, "toolCostMicros"),
+      aiCostMicros: dollarsToMicros(formData, "aiCost", "AI cost"),
+      toolCostMicros: dollarsToMicros(formData, "toolCost", "Tool cost"),
     });
     refresh(runId);
     return { ok: true };
