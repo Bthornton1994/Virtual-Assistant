@@ -473,6 +473,10 @@ function validUrl(url: string): boolean {
   return validateEvidenceUrl(url).ok && /^https:\/\//i.test(url);
 }
 
+function sameFulfillmentModes(left: SupplierProductInput["desiredFulfillmentModes"], right: SupplierProductInput["desiredFulfillmentModes"]): boolean {
+  return [...left].sort().join(",") === [...right].sort().join(",");
+}
+
 export function hashSupplierSourcingPacket(packet: SupplierSourcingPacketV1): string {
   return sha256Hex(packet);
 }
@@ -535,8 +539,6 @@ export function validateSupplierSourcingPacket(
   const warnings: string[] = [];
   const expectedCandidates = new Map(expected.manifest.candidates.map((candidate) => [candidate.candidateId, candidate]));
   const seenCandidateIds = new Set<string>();
-  const sourceHashes = new Set<string>();
-  const sourceUrls = new Set<string>();
 
   if (packet.runId !== expected.manifest.runId) failures.push("Supplier sourcing packet runId does not match the frozen input.");
   if (packet.inputHash !== expected.manifest.inputHash) failures.push("Supplier sourcing packet inputHash does not match the frozen input.");
@@ -563,16 +565,39 @@ export function validateSupplierSourcingPacket(
     if (candidate.productId !== expectedCandidate.productId) {
       failures.push("Supplier sourcing candidate " + candidate.candidateId + " productId does not match the frozen brief.");
     }
+    if (candidate.productName !== expectedCandidate.productName) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " productName does not match the frozen brief.");
+    }
+    if (candidate.brand !== expectedCandidate.brand) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " brand does not match the frozen brief.");
+    }
+    if (candidate.modelOrVariant !== expectedCandidate.modelOrVariant) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " modelOrVariant does not match the frozen brief.");
+    }
+    if (candidate.category !== expectedCandidate.category) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " category does not match the frozen brief.");
+    }
+    if (candidate.kitAssemblyRequired !== expectedCandidate.kitAssemblyRequired) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " kitAssemblyRequired does not match the frozen brief.");
+    }
+    if (!sameFulfillmentModes(candidate.desiredFulfillmentModes, expectedCandidate.desiredFulfillmentModes)) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " desired fulfillment modes do not match the frozen brief.");
+    }
 
+    const candidateSourceHashes = new Set<string>();
+    const candidateSourceUrls = new Set<string>();
     for (const artifact of candidate.sourceArtifacts) {
-      sourceHashes.add(artifact.rawArtifactHash);
-      sourceUrls.add(artifact.url);
+      candidateSourceHashes.add(artifact.rawArtifactHash);
+      candidateSourceUrls.add(artifact.url);
       if (!validUrl(artifact.url)) {
         metrics.malformedUrlCount += 1;
         failures.push("Supplier sourcing source artifact URL is not a plain public HTTPS URL: " + artifact.url);
       }
       if (artifact.validUntil && Date.parse(artifact.validUntil) < Date.parse(artifact.accessedAt)) {
         failures.push("Supplier sourcing source artifact validUntil precedes accessedAt for " + artifact.url + ".");
+      }
+      if (artifact.validUntil && Date.parse(artifact.validUntil) < Date.now()) {
+        failures.push("Supplier sourcing source artifact is expired for " + artifact.url + ".");
       }
     }
 
@@ -581,6 +606,35 @@ export function validateSupplierSourcingPacket(
         metrics.malformedUrlCount += 1;
         failures.push("Supplier sourcing candidate contains a non-public HTTPS URL: " + url);
       }
+    }
+
+    const referencedUrls = [
+      ...candidate.supplierIdentity.sourceUrls,
+      ...candidate.productFit.sourceUrls,
+      ...candidate.publicContactChannels.map((channel) => channel.sourceUrl),
+      ...candidate.outreachDraft.factsUsedSourceUrls,
+    ];
+    for (const url of referencedUrls) {
+      if (!validUrl(url) || !candidateSourceUrls.has(url)) {
+        failures.push("Supplier sourcing candidate " + candidate.candidateId + " references a source URL that is not bound to its own source artifacts: " + url);
+      }
+    }
+    for (const channel of candidate.publicContactChannels) {
+      if (!validUrl(channel.sourceUrl) || !candidateSourceUrls.has(channel.sourceUrl)) {
+        failures.push("Supplier sourcing public contact channel for " + candidate.candidateId + " is not bound to a source artifact.");
+      }
+    }
+    if (
+      candidate.fulfillment.availability.status === "supported" &&
+      !candidate.sourceArtifacts.some(
+        (artifact) =>
+          artifact.validUntil !== null &&
+          Date.parse(artifact.validUntil) >= Date.now() &&
+          candidate.fulfillment.availability.sourceUrls.includes(artifact.url) &&
+          candidate.fulfillment.availability.sourceArtifactHashes.includes(artifact.rawArtifactHash),
+      )
+    ) {
+      failures.push("A supported availability finding for " + candidate.candidateId + " requires a current, validity-bound source artifact.");
     }
 
     const findings = [
@@ -602,13 +656,13 @@ export function validateSupplierSourcingPacket(
         failures.push("A supported supplier sourcing finding must cite source URLs and raw artifact hashes for " + candidate.candidateId + ".");
       }
       for (const hash of finding.sourceArtifactHashes) {
-        if (!sourceHashes.has(hash)) {
-          failures.push("Finding on " + candidate.candidateId + " references a source artifact hash that is not bound to this packet.");
+        if (!candidateSourceHashes.has(hash)) {
+          failures.push("Finding on " + candidate.candidateId + " references a source artifact hash that is not bound to this candidate.");
         }
       }
       for (const url of finding.sourceUrls) {
-        if (!sourceUrls.has(url)) {
-          failures.push("Finding on " + candidate.candidateId + " references a source URL that is not bound to a source artifact.");
+        if (!candidateSourceUrls.has(url)) {
+          failures.push("Finding on " + candidate.candidateId + " references a source URL that is not bound to this candidate.");
         }
       }
     }
