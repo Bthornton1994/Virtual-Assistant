@@ -14,9 +14,15 @@ import {
   submitSupplierSourcingRun,
 } from "@/lib/supplier-sourcing-run";
 
-function rethrowAction(error: unknown): never {
-  if (error instanceof DomainError || error instanceof AuthzError) throw new Error(error.message);
-  throw error;
+export type SupplierSourcingActionResult = { ok: true } | { ok: false; error: string };
+export type SupplierSourcingPromptActionResult =
+  | { ok: true; prompt: string }
+  | { ok: false; error: string };
+
+function fail(error: unknown): SupplierSourcingActionResult {
+  if (error instanceof DomainError || error instanceof AuthzError) return { ok: false, error: error.message };
+  if (error instanceof Error) return { ok: false, error: error.message };
+  return { ok: false, error: "The supplier-sourcing action failed." };
 }
 
 function jsonArray(formData: FormData, name: string, label: string): unknown[] {
@@ -31,12 +37,6 @@ function jsonArray(formData: FormData, name: string, label: string): unknown[] {
   }
 }
 
-function refresh(runId: string) {
-  revalidatePath("/ops/gauntlet");
-  revalidatePath("/ops/execution");
-  revalidatePath("/ops/execution/runs/" + runId);
-}
-
 function nonNegativeNumber(formData: FormData, name: string) {
   const raw = String(formData.get(name) || "").trim();
   if (!raw) return 0;
@@ -45,11 +45,19 @@ function nonNegativeNumber(formData: FormData, name: string) {
   return value;
 }
 
-export async function freezeSupplierSourcingInputManifestAction(formData: FormData) {
+function refresh(runId: string) {
+  revalidatePath("/ops/gauntlet");
+  revalidatePath("/ops/execution");
+  revalidatePath("/ops/execution/runs/" + runId);
+}
+
+export async function freezeSupplierSourcingInputManifestAction(
+  formData: FormData,
+): Promise<SupplierSourcingActionResult> {
   const actor = await requireManager();
   const runId = String(formData.get("runId") || "");
   try {
-    const result = await freezeSupplierSourcingInputManifest(actor, runId, {
+    await freezeSupplierSourcingInputManifest(actor, runId, {
       objective: String(formData.get("objective") || ""),
       market: String(formData.get("market") || ""),
       catalogRepository: String(formData.get("catalogRepository") || "") || null,
@@ -58,66 +66,104 @@ export async function freezeSupplierSourcingInputManifestAction(formData: FormDa
       prepareExecutorKey: String(formData.get("prepareExecutorKey") || "") || undefined,
       reviewExecutorKey: String(formData.get("reviewExecutorKey") || "") || undefined,
     });
-    refresh(runId);
+    return { ok: true };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function getGrokSupplierSourcingPromptAction(
+  formData: FormData,
+): Promise<SupplierSourcingPromptActionResult> {
+  const actor = await requireManager();
+  try {
+    return {
+      ok: true,
+      prompt: await getGrokSupplierSourcingPrompt(actor, String(formData.get("runId") || "")),
+    };
+  } catch (error) {
+    const result = fail(error);
     return result;
-  } catch (error) {
-    rethrowAction(error);
   }
 }
 
-export async function getGrokSupplierSourcingPromptAction(formData: FormData) {
+export async function ingestSupplierSourcingPacketAction(
+  formData: FormData,
+): Promise<SupplierSourcingActionResult> {
   const actor = await requireManager();
   const runId = String(formData.get("runId") || "");
   try {
-    return { prompt: await getGrokSupplierSourcingPrompt(actor, runId) };
-  } catch (error) {
-    rethrowAction(error);
-  }
-}
-
-export async function ingestSupplierSourcingPacketAction(formData: FormData) {
-  const actor = await requireManager();
-  const runId = String(formData.get("runId") || "");
-  try {
-    const result = await ingestSupplierSourcingPacket(actor, runId, {
+    await ingestSupplierSourcingPacket(actor, runId, {
       raw: String(formData.get("raw") || ""),
       humanMinutes: nonNegativeNumber(formData, "humanMinutes"),
       aiCostMicros: nonNegativeNumber(formData, "aiCostMicros"),
       toolCostMicros: nonNegativeNumber(formData, "toolCostMicros"),
     });
     refresh(runId);
-    return result;
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
 }
 
-export async function ingestSupplierSourcingReviewAction(formData: FormData) {
+export async function ingestSupplierSourcingReviewAction(
+  formData: FormData,
+): Promise<SupplierSourcingActionResult> {
   const actor = await requireManager();
   const runId = String(formData.get("runId") || "");
   try {
-    const result = await ingestSupplierSourcingReview(actor, runId, {
+    await ingestSupplierSourcingReview(actor, runId, {
       raw: String(formData.get("raw") || ""),
       humanMinutes: nonNegativeNumber(formData, "humanMinutes"),
       aiCostMicros: nonNegativeNumber(formData, "aiCostMicros"),
       toolCostMicros: nonNegativeNumber(formData, "toolCostMicros"),
     });
     refresh(runId);
-    return result;
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
 }
 
-export async function approveSupplierOutreachAction(formData: FormData) {
+export async function runSupplierSourcingValidationAction(
+  formData: FormData,
+): Promise<SupplierSourcingActionResult> {
+  const actor = await requireManager();
+  const runId = String(formData.get("runId") || "");
+  try {
+    await runSupplierSourcingValidation(actor, runId);
+    refresh(runId);
+    return { ok: true };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function submitSupplierSourcingRunAction(
+  formData: FormData,
+): Promise<SupplierSourcingActionResult> {
+  const actor = await requireManager();
+  const runId = String(formData.get("runId") || "");
+  try {
+    await submitSupplierSourcingRun(actor, runId);
+    refresh(runId);
+    return { ok: true };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function approveSupplierOutreachAction(
+  formData: FormData,
+): Promise<SupplierSourcingActionResult> {
   const actor = await requireSession();
   const runId = String(formData.get("runId") || "");
   const rawChannel = String(formData.get("channel") || "");
   if (!(SUPPLIER_OUTREACH_CHANNELS as readonly string[]).includes(rawChannel)) {
-    throw new Error("A valid outreach channel is required.");
+    return { ok: false, error: "A valid outreach channel is required." };
   }
   try {
-    const result = await createSupplierOutreachApproval(actor, runId, {
+    await createSupplierOutreachApproval(actor, runId, {
       candidateId: String(formData.get("candidateId") || ""),
       channel: rawChannel as (typeof SUPPLIER_OUTREACH_CHANNELS)[number],
       destination: String(formData.get("destination") || ""),
@@ -127,32 +173,8 @@ export async function approveSupplierOutreachAction(formData: FormData) {
       expiresAt: String(formData.get("expiresAt") || ""),
     });
     refresh(runId);
-    return result;
+    return { ok: true };
   } catch (error) {
-    rethrowAction(error);
-  }
-}
-
-export async function runSupplierSourcingValidationAction(formData: FormData) {
-  const actor = await requireManager();
-  const runId = String(formData.get("runId") || "");
-  try {
-    const result = await runSupplierSourcingValidation(actor, runId);
-    refresh(runId);
-    return result;
-  } catch (error) {
-    rethrowAction(error);
-  }
-}
-
-export async function submitSupplierSourcingRunAction(formData: FormData) {
-  const actor = await requireManager();
-  const runId = String(formData.get("runId") || "");
-  try {
-    const result = await submitSupplierSourcingRun(actor, runId);
-    refresh(runId);
-    return result;
-  } catch (error) {
-    rethrowAction(error);
+    return fail(error);
   }
 }
