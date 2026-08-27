@@ -84,6 +84,7 @@ export const supplierOutreachResultV1Schema = z
     deliveryStatus: z.enum(SUPPLIER_OUTREACH_DELIVERY_STATUSES),
     sentAt: isoDateTimeSchema.nullable(),
     provider: identifierString,
+    senderIdentity: nonEmptyString,
     providerMessageId: nonEmptyString.nullable(),
     authorityReport: authorityReportSchema,
   })
@@ -94,6 +95,13 @@ export const supplierOutreachResultV1Schema = z
         code: "custom",
         path: ["sentAt"],
         message: "A sent outreach result requires sentAt.",
+      });
+    }
+    if (result.deliveryStatus === "sent" && result.providerMessageId === null) {
+      context.addIssue({
+        code: "custom",
+        path: ["providerMessageId"],
+        message: "A sent outreach result requires the provider delivery identifier.",
       });
     }
     if (result.deliveryStatus !== "sent" && result.sentAt !== null) {
@@ -184,6 +192,9 @@ export function validateSupplierOutreachResult(
   if (result.data.destination !== approval.data.destination) failures.push("Outreach result destination does not match approval.");
   if (result.data.deliveryStatus === "sent" && Date.parse(result.data.sentAt ?? "") < Date.parse(approval.data.approvedAt)) {
     failures.push("Outreach result sentAt precedes the human approval time.");
+  }
+  if (result.data.deliveryStatus === "sent" && Date.parse(result.data.sentAt ?? "") > Date.parse(approval.data.expiresAt)) {
+    failures.push("Outreach result sentAt is after the exact approval expired.");
   }
 
   return failures.length ? { ok: false, failures } : { ok: true, value: result.data };
