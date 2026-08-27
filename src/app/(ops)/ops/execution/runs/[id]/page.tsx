@@ -103,7 +103,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         ),
       }).reason
     : "";
-  const submitDefaults = runHasWorkCell
+  const submitDefaults = !supplierRun && runHasWorkCell
     ? workCellSubmitDefaults({
         assignments: workCell.assignments,
         prepareExecutorKey: workCell.manifest?.prepareExecutorKey,
