@@ -548,7 +548,14 @@ export function validateSupplierSourcingPacket(
         failures.push("A supported supplier sourcing finding must cite source URLs and raw artifact hashes for " + candidate.candidateId + ".");
       }
       for (const hash of finding.sourceArtifactHashes) {
-        if (!sourceHashes.has(hash)) warnings.push("Finding on " + candidate.candidateId + " references an artifact hash not yet visited.");
+        if (!sourceHashes.has(hash)) {
+          failures.push("Finding on " + candidate.candidateId + " references a source artifact hash that is not bound to this packet.");
+        }
+      }
+      for (const url of finding.sourceUrls) {
+        if (!sourceUrls.has(url)) {
+          failures.push("Finding on " + candidate.candidateId + " references a source URL that is not bound to a source artifact.");
+        }
       }
     }
 
