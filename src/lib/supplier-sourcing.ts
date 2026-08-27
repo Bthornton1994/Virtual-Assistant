@@ -756,6 +756,9 @@ export function validateSupplierSourcingReview(
         failures.push("Supplier sourcing review contains a non-public HTTPS URL: " + url);
       }
     }
+    if (candidateReview.verdict === "accept" && candidateReview.independentSourceUrls.length === 0) {
+      failures.push("An accepted supplier sourcing review candidate must cite at least one independent source.");
+    }
   }
 
   for (const expectedId of expectedIds) {
