@@ -67,7 +67,7 @@ async function loadArtifact(
   runId: string,
   schemaVersion: string,
 ): Promise<TypedArtifact | null> {
-  const { data, error } = await db
+  const { error } = await db
     .from("evidence_artifacts")
     .select("id, content_hash, payload")
     .eq("run_id", runId)
@@ -194,8 +194,6 @@ export async function createSupplierOutreachApproval(
       payload: parsed.data,
       created_by: actor.id,
     })
-    .select("id")
-    .single();
   if (error) throw new DomainError(error.message);
   return parsed.data;
 }
