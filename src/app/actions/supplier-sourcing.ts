@@ -1,9 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireManager } from "@/lib/auth";
+import { requireManager, requireSession } from "@/lib/auth";
 import { AuthzError, DomainError } from "@/lib/domain";
+import { SUPPLIER_OUTREACH_CHANNELS } from "@/lib/supplier-communication";
 import {
+  createSupplierOutreachApproval,
   freezeSupplierSourcingInputManifest,
   getGrokSupplierSourcingPrompt,
   ingestSupplierSourcingPacket,
@@ -99,6 +101,30 @@ export async function ingestSupplierSourcingReviewAction(formData: FormData) {
       humanMinutes: nonNegativeNumber(formData, "humanMinutes"),
       aiCostMicros: nonNegativeNumber(formData, "aiCostMicros"),
       toolCostMicros: nonNegativeNumber(formData, "toolCostMicros"),
+    });
+    refresh(runId);
+    return result;
+  } catch (error) {
+    rethrowAction(error);
+  }
+}
+
+export async function approveSupplierOutreachAction(formData: FormData) {
+  const actor = await requireSession();
+  const runId = String(formData.get("runId") || "");
+  const rawChannel = String(formData.get("channel") || "");
+  if (!(SUPPLIER_OUTREACH_CHANNELS as readonly string[]).includes(rawChannel)) {
+    throw new Error("A valid outreach channel is required.");
+  }
+  try {
+    const result = await createSupplierOutreachApproval(actor, runId, {
+      candidateId: String(formData.get("candidateId") || ""),
+      channel: rawChannel as (typeof SUPPLIER_OUTREACH_CHANNELS)[number],
+      destination: String(formData.get("destination") || ""),
+      subject: String(formData.get("subject") || ""),
+      body: String(formData.get("body") || ""),
+      factsUsedSourceUrls: jsonArray(formData, "factsUsedSourceUrls", "Facts used source URLs").map(String),
+      expiresAt: String(formData.get("expiresAt") || ""),
     });
     refresh(runId);
     return result;
