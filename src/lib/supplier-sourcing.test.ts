@@ -128,7 +128,7 @@ function packet(overrides: Partial<SupplierSourcingPacketV1> = {}): SupplierSour
         organization: "Example Supplier",
         sourceType: "manufacturer" as const,
         accessedAt: "2026-08-27T10:05:00Z",
-        validUntil: null,
+        validUntil: "2099-12-31T23:59:59Z",
         rawArtifactHash: HASH,
         facts: ["Product identity is named.", "Supplier-direct fulfillment is stated."],
       },
@@ -258,6 +258,50 @@ describe("supplier sourcing contract", () => {
     });
     expect(reviewCheck.hardGatePass).toBe(false);
     expect(reviewCheck.hardFailures.join(" ")).toContain("exact supplier packet hash");
+  });
+
+  it("rejects candidate identity drift and stale current availability evidence", () => {
+    const input = manifest();
+    const identityDrift = packet({
+      candidates: [{ ...packet().candidates[0], productName: "Different product" }],
+    });
+    const identityCheck = validateSupplierSourcingPacket(identityDrift, { manifest: input });
+    expect(identityCheck.hardGatePass).toBe(false);
+    expect(identityCheck.hardFailures.join(" ")).toContain("productName");
+
+    const stale = packet({
+      candidates: [
+        {
+          ...packet().candidates[0],
+          sourceArtifacts: [
+            {
+              ...packet().candidates[0].sourceArtifacts[0],
+              validUntil: "2020-01-01T00:00:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    const staleCheck = validateSupplierSourcingPacket(stale, { manifest: input });
+    expect(staleCheck.hardGatePass).toBe(false);
+    expect(staleCheck.hardFailures.join(" ")).toContain("expired");
+  });
+
+  it("requires independent citations for an accepted candidate review", () => {
+    const packetValue = packet();
+    const accepted = review(packetValue);
+    accepted.candidateReviews[0] = {
+      ...accepted.candidateReviews[0],
+      verdict: "accept",
+      independentSourceUrls: [],
+    };
+    const check = validateSupplierSourcingReview(accepted, {
+      manifest: manifest(),
+      packetHash: hashSupplierSourcingPacket(packetValue),
+      expectedReviewerKey: manifest().reviewExecutorKey,
+    });
+    expect(check.hardGatePass).toBe(false);
+    expect(check.hardFailures.join(" ")).toContain("independent source");
   });
 
   it("hashes the same frozen artifact deterministically", () => {
