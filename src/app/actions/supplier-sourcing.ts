@@ -18,8 +18,9 @@ export type SupplierSourcingActionResult = { ok: true } | { ok: false; error: st
 export type SupplierSourcingPromptActionResult =
   | { ok: true; prompt: string }
   | { ok: false; error: string };
+type SupplierSourcingActionFailure = { ok: false; error: string };
 
-function fail(error: unknown): SupplierSourcingActionResult {
+function fail(error: unknown): SupplierSourcingActionFailure {
   if (error instanceof DomainError || error instanceof AuthzError) return { ok: false, error: error.message };
   if (error instanceof Error) return { ok: false, error: error.message };
   return { ok: false, error: "The supplier-sourcing action failed." };
