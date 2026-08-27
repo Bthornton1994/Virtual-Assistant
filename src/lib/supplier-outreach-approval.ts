@@ -276,7 +276,10 @@ export async function listSupplierOutreachApprovals(
 export const supplierOutreachApprovalPolicy = {
   schemaVersion: SUPPLIER_OUTREACH_APPROVAL_SCHEMA_VERSION,
   requiresValidatedSourcingRun: true,
+  requiresVerifiedOutcomeReceipt: true,
   requiresHumanApprover: true,
+  qualifiedDeliveryConnectorAvailable: false,
+  acceptsSentDeliveryResults: false,
   sendsMessage: false,
   createsSupplierRelationship: false,
   modifiesCatalog: false,
