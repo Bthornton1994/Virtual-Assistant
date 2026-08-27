@@ -106,3 +106,27 @@ No reply or absence of reply can mark a supplier verified by itself. A human mus
 9. Keep all supplier-contact and catalog changes human-approved.
 
 A successful contract test or a passing research run does not make any Grounded SKU production-ready.
+
+## Runtime surface
+
+The supplier lane is exposed through the manager-only server actions in
+`src/app/actions/supplier-sourcing.ts`:
+
+1. Freeze the candidate brief. The action computes and persists
+   `supplier-sourcing-input/v1` and its deterministic input hash.
+2. Read the prompt generated from that persisted manifest. This is the only
+   prompt that should be sent to the Grok shadow session.
+3. Ingest Grok's raw JSON. Invalid or out-of-scope output is stored as a rejected
+   artifact and failed phase assignment; it is never promoted to a packet.
+4. Ingest the independent review against the exact packet hash.
+5. Run deterministic validation. The report is stored as
+   `supplier-sourcing-validation/v1`, even when the hard gate fails.
+6. Submit the run and record the single deterministic supplier-sourcing Gauntlet
+   review. A receipt can pass only when this review and the full contract pass.
+
+The `supplier_outreach` capability is deliberately `proposed` and has no
+executor mapping. The approval and delivery contracts
+`supplier-outreach-approval/v1` and `supplier-outreach-result/v1` bind the
+exact recipient, message, facts, approval expiry, and delivery receipt. A
+future approved connector must be implemented and separately qualified before
+any message can be transmitted. Grok itself does not receive that capability.
