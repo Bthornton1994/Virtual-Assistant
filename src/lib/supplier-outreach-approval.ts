@@ -8,7 +8,6 @@ import {
   SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION,
   supplierSourcingPacketV1Schema,
   supplierSourcingValidationV1Schema,
-  type SupplierCandidate,
 } from "@/lib/supplier-sourcing";
 import {
   SUPPLIER_OUTREACH_APPROVAL_SCHEMA_VERSION,
