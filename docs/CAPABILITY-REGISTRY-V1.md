@@ -49,4 +49,7 @@ The Grounded lane adds two active internal capabilities:
 Supplier communication is a separate `supplier_outreach` capability and remains
 `proposed`. It has no executor mapping. Its exact-message approval and delivery
 contracts must be implemented and qualified before any connector can transmit a
-supplier message.
+supplier message. The operator handoff is documented in
+`docs/GROK-BOT-SUPPLIER-SOURCING-RUNBOOK.md`; the current database guard also
+rejects outreach approval before a verified Outcome Receipt and rejects sent
+delivery results until a connector is qualified.
