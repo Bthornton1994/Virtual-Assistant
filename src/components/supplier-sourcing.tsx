@@ -379,9 +379,9 @@ export function SupplierSourcingSection({
                       <Field label="Approval expires at" hint="Use an explicit UTC ISO timestamp; expired approvals cannot be delivered.">
                         <Input
                           name="expiresAt"
-                          type="datetime-local"
+                          type="text"
                           required
-                          defaultValue={new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16)}
+                          defaultValue={new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()}
                         />
                       </Field>
                       <p className="text-xs text-muted">
