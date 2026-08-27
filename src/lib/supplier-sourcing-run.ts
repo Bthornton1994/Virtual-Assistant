@@ -46,9 +46,10 @@ type SupplierRun = {
   gauntlet_cycle_id: string | null;
 };
 
-type SupplierProfile = {
+export export type SupplierProfile = {
   id: string;
   key: string;
+  displayName: string;
   executorKind: string;
   role: string;
   status: string;
@@ -87,6 +88,7 @@ function mapProfile(row: Record<string, unknown>): SupplierProfile {
   return {
     id: String(row.id),
     key: String(row.key),
+    displayName: String(row.display_name ?? row.key ?? ""),
     executorKind: String(row.executor_kind ?? ""),
     role: String(row.role ?? ""),
     status: String(row.status ?? ""),
@@ -840,4 +842,144 @@ export async function submitSupplierSourcingRun(
     throw new DomainError("Supplier sourcing can only be submitted from a running attempt.");
   }
   return recordSupplierSourcingGauntletReview(actor, runId);
+}
+
+
+export type SupplierSourcingBundle = {
+  manifest: SupplierSourcingInputManifestV1 | null;
+  prompt: string | null;
+  assignments: Array<{
+    id: string;
+    phase: Phase;
+    status: string;
+    executorProfileId: string;
+    inputArtifactId: string | null;
+    outputArtifactId: string | null;
+    humanMinutes: number;
+    aiCostMicros: number;
+    toolCostMicros: number;
+    profile: SupplierProfile | null;
+  }>;
+  packet: { id: string; contentHash: string; payload: SupplierSourcingPacketV1 } | null;
+  review: { id: string; contentHash: string; payload: SupplierSourcingReviewV1 } | null;
+  validation: SupplierSourcingValidationV1 | null;
+  rejections: Array<{
+    id: string;
+    phase: string;
+    declaredExecutorKey: string;
+    hardFailures: string[];
+    rawOutputHash: string;
+  }>;
+};
+
+function supplierArtifactPayload(row: Record<string, unknown>): Record<string, unknown> {
+  return asObject(row.payload);
+}
+
+export async function getSupplierSourcingRunBundle(
+  actor: Actor,
+  runId: string,
+): Promise<SupplierSourcingBundle> {
+  await persistentDb(actor);
+  const db = await persistentDb(actor);
+  const run = await loadRun(db, actor, runId);
+
+  const [assignmentResult, profileResult, artifactResult] = await Promise.all([
+    db
+      .from("run_executor_assignments")
+      .select("*")
+      .eq("run_id", run.id)
+      .order("created_at", { ascending: true }),
+    db.from("executor_profiles").select("*"),
+    db.from("evidence_artifacts").select("*").eq("run_id", run.id).order("created_at", { ascending: true }),
+  ]);
+  for (const result of [assignmentResult, profileResult, artifactResult]) {
+    if (result.error) throw new DomainError(result.error.message);
+  }
+
+  const profiles = new Map(
+    ((profileResult.data ?? []) as Array<Record<string, unknown>>).map((row) => {
+      const profile = mapProfile(row);
+      return [profile.id, profile] as const;
+    }),
+  );
+  const artifacts = (artifactResult.data ?? []) as Array<Record<string, unknown>>;
+  const find = (schemaVersion: string) =>
+    artifacts.find((row) => supplierArtifactPayload(row).schemaVersion === schemaVersion) ?? null;
+
+  const manifestRow = find(SUPPLIER_SOURCING_INPUT_SCHEMA_VERSION);
+  const packetRow = find(SUPPLIER_SOURCING_PACKET_SCHEMA_VERSION);
+  const reviewRow = find(SUPPLIER_SOURCING_REVIEW_SCHEMA_VERSION);
+  const validationRow = find(SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION);
+
+  let manifest: SupplierSourcingInputManifestV1 | null = null;
+  if (manifestRow) {
+    const parsed = validateSupplierSourcingInputManifest(supplierArtifactPayload(manifestRow));
+    if (!parsed.ok) throw new DomainError("The stored supplier-sourcing input is invalid: " + parsed.failures.join(" "));
+    const hashCheck = checkPayloadHash(supplierArtifactPayload(manifestRow), String(manifestRow.content_hash ?? ""), "supplier-sourcing input");
+    if (hashCheck.tampered) throw new DomainError(hashCheck.failure);
+    if (parsed.value.runId !== run.id) throw new DomainError("The stored supplier-sourcing input belongs to another run.");
+    manifest = parsed.value;
+  }
+
+  let packet: SupplierSourcingBundle["packet"] = null;
+  if (packetRow) {
+    const parsed = supplierSourcingPacketV1Schema.safeParse(supplierArtifactPayload(packetRow));
+    if (!parsed.success) throw new DomainError("The stored supplier-sourcing packet is invalid.");
+    const hashCheck = checkPayloadHash(supplierArtifactPayload(packetRow), String(packetRow.content_hash ?? ""), "supplier-sourcing packet");
+    if (hashCheck.tampered) throw new DomainError(hashCheck.failure);
+    packet = { id: String(packetRow.id), contentHash: String(packetRow.content_hash ?? ""), payload: parsed.data };
+  }
+
+  let review: SupplierSourcingBundle["review"] = null;
+  if (reviewRow) {
+    const parsed = supplierSourcingReviewV1Schema.safeParse(supplierArtifactPayload(reviewRow));
+    if (!parsed.success) throw new DomainError("The stored supplier-sourcing review is invalid.");
+    const hashCheck = checkPayloadHash(supplierArtifactPayload(reviewRow), String(reviewRow.content_hash ?? ""), "supplier-sourcing review");
+    if (hashCheck.tampered) throw new DomainError(hashCheck.failure);
+    review = { id: String(reviewRow.id), contentHash: String(reviewRow.content_hash ?? ""), payload: parsed.data };
+  }
+
+  let validation: SupplierSourcingValidationV1 | null = null;
+  if (validationRow) {
+    const parsed = supplierSourcingValidationV1Schema.safeParse(supplierArtifactPayload(validationRow));
+    if (!parsed.success) throw new DomainError("The stored supplier-sourcing validation report is invalid.");
+    const hashCheck = checkPayloadHash(supplierArtifactPayload(validationRow), String(validationRow.content_hash ?? ""), "supplier-sourcing validation");
+    if (hashCheck.tampered) throw new DomainError(hashCheck.failure);
+    validation = parsed.data;
+  }
+
+  const rejections = artifacts
+    .filter((row) => supplierArtifactPayload(row).schemaVersion === SUPPLIER_SOURCING_REJECTION_SCHEMA_VERSION)
+    .map((row) => {
+      const payload = supplierArtifactPayload(row);
+      return {
+        id: String(row.id),
+        phase: String(payload.phase ?? ""),
+        declaredExecutorKey: String(payload.executorKey ?? ""),
+        hardFailures: Array.isArray(payload.failures) ? payload.failures.map(String) : [],
+        rawOutputHash: String(payload.rawOutputHash ?? ""),
+      };
+    });
+
+  return {
+    manifest,
+    prompt: manifest ? buildGrokSupplierSourcingPrompt(manifest) : null,
+    assignments: ((assignmentResult.data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      id: String(row.id),
+      phase: String(row.phase) as Phase,
+      status: String(row.status),
+      executorProfileId: String(row.executor_profile_id),
+      inputArtifactId: (row.input_artifact_id as string) ?? null,
+      outputArtifactId: (row.output_artifact_id as string) ?? null,
+      humanMinutes: Number(row.human_minutes ?? 0),
+      aiCostMicros: Number(row.ai_cost_micros ?? 0),
+      toolCostMicros: Number(row.tool_cost_micros ?? 0),
+      profile: profiles.get(String(row.executor_profile_id)) ?? null,
+    })),
+    packet,
+    review,
+    validation,
+    rejections,
+  };
 }
