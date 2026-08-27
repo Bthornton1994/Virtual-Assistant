@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   hashSupplierSourcingInput,
+  buildGrokSupplierSourcingPrompt,
   hashSupplierSourcingPacket,
   validateSupplierSourcingInputManifest,
   validateSupplierSourcingPacket,
@@ -252,5 +253,14 @@ describe("supplier sourcing contract", () => {
     const input = manifest();
     expect(hashSupplierSourcingInput(input)).toBe(input.inputHash);
     expect(hashSupplierSourcingPacket(packet())).toBe(hashSupplierSourcingPacket(packet()));
+  });
+
+  it("builds a prompt bound to the frozen brief and draft-only authority", () => {
+    const input = manifest();
+    const prompt = buildGrokSupplierSourcingPrompt(input);
+    expect(prompt).toContain(input.runId);
+    expect(prompt).toContain(input.inputHash);
+    expect(prompt).toContain("must not send or schedule a message");
+    expect(prompt).toContain("supplier-sourcing-packet/v1");
   });
 });
