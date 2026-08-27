@@ -21,7 +21,9 @@ begin
     'supplier-sourcing-packet/v1',
     'supplier-sourcing-review/v1',
     'supplier-sourcing-validation/v1',
-    'supplier-sourcing-rejection/v1'
+    'supplier-sourcing-rejection/v1',
+    'supplier-outreach-approval/v1',
+    'supplier-outreach-result/v1'
   ) then
     if new.content_hash is null or new.content_hash !~ '^[0-9a-f]{64}$' then
       raise exception 'A % artifact requires a sha256 content hash', declared_version;
