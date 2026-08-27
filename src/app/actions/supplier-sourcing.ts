@@ -4,8 +4,8 @@ import { revalidatePath } from "next/cache";
 import { requireManager, requireSession } from "@/lib/auth";
 import { AuthzError, DomainError } from "@/lib/domain";
 import { SUPPLIER_OUTREACH_CHANNELS } from "@/lib/supplier-communication";
+import { createSupplierOutreachApproval } from "@/lib/supplier-outreach-approval";
 import {
-  createSupplierOutreachApproval,
   freezeSupplierSourcingInputManifest,
   getGrokSupplierSourcingPrompt,
   ingestSupplierSourcingPacket,
