@@ -35,6 +35,14 @@ function refresh(runId: string) {
   revalidatePath("/ops/execution/runs/" + runId);
 }
 
+function nonNegativeNumber(formData: FormData, name: string) {
+  const raw = String(formData.get(name) || "").trim();
+  if (!raw) return 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) throw new Error(name + " must be a non-negative number.");
+  return value;
+}
+
 export async function freezeSupplierSourcingInputManifestAction(formData: FormData) {
   const actor = await requireManager();
   const runId = String(formData.get("runId") || "");
@@ -71,9 +79,9 @@ export async function ingestSupplierSourcingPacketAction(formData: FormData) {
   try {
     const result = await ingestSupplierSourcingPacket(actor, runId, {
       raw: String(formData.get("raw") || ""),
-      humanMinutes: Number(formData.get("humanMinutes") || 0),
-      aiCostMicros: Number(formData.get("aiCostMicros") || 0),
-      toolCostMicros: Number(formData.get("toolCostMicros") || 0),
+      humanMinutes: nonNegativeNumber(formData, "humanMinutes"),
+      aiCostMicros: nonNegativeNumber(formData, "aiCostMicros"),
+      toolCostMicros: nonNegativeNumber(formData, "toolCostMicros"),
     });
     refresh(runId);
     return result;
@@ -88,9 +96,9 @@ export async function ingestSupplierSourcingReviewAction(formData: FormData) {
   try {
     const result = await ingestSupplierSourcingReview(actor, runId, {
       raw: String(formData.get("raw") || ""),
-      humanMinutes: Number(formData.get("humanMinutes") || 0),
-      aiCostMicros: Number(formData.get("aiCostMicros") || 0),
-      toolCostMicros: Number(formData.get("toolCostMicros") || 0),
+      humanMinutes: nonNegativeNumber(formData, "humanMinutes"),
+      aiCostMicros: nonNegativeNumber(formData, "aiCostMicros"),
+      toolCostMicros: nonNegativeNumber(formData, "toolCostMicros"),
     });
     refresh(runId);
     return result;
