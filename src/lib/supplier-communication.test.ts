@@ -75,6 +75,7 @@ describe("supplier outreach contract", () => {
       deliveryStatus: "sent" as const,
       sentAt: "2026-08-27T11:05:00Z",
       provider: "approved-communication-connector-v1",
+      senderIdentity: "grounded-ops@example.com",
       providerMessageId: "message-001",
       authorityReport: authorityReport(1),
     };
@@ -96,6 +97,32 @@ describe("supplier outreach contract", () => {
     expect(wrongRecipient.ok ? "" : wrongRecipient.failures.join(" ")).toContain("destination");
   });
 
+  it("rejects a sent result after approval expiry or without a provider message id", () => {
+    const approved = approval();
+    const base = {
+      schemaVersion: "supplier-outreach-result/v1" as const,
+      runId: approved.runId,
+      candidateId: approved.candidateId,
+      approvalHash: hashSupplierOutreachApproval(approved),
+      draftHash: approved.draftHash,
+      channel: approved.channel,
+      destination: approved.destination,
+      deliveryStatus: "sent" as const,
+      sentAt: "2026-08-29T11:05:00Z",
+      provider: "approved-communication-connector-v1",
+      senderIdentity: "grounded-ops@example.com",
+      providerMessageId: "message-001",
+      authorityReport: authorityReport(1),
+    };
+    const expired = validateSupplierOutreachResult(base, approved);
+    expect(expired.ok).toBe(false);
+    expect(expired.ok ? "" : expired.failures.join(" ")).toContain("expired");
+
+    const missingId = validateSupplierOutreachResult({ ...base, sentAt: "2026-08-27T11:05:00Z", providerMessageId: null }, approved);
+    expect(missingId.ok).toBe(false);
+    expect(missingId.ok ? "" : missingId.failures.join(" ")).toContain("provider delivery identifier");
+  });
+
   it("does not let an unapproved or failed send become a successful delivery", () => {
     const approved = approval();
     const failed = {
@@ -109,6 +136,7 @@ describe("supplier outreach contract", () => {
       deliveryStatus: "failed" as const,
       sentAt: null,
       provider: "approved-communication-connector-v1",
+      senderIdentity: "grounded-ops@example.com",
       providerMessageId: null,
       authorityReport: authorityReport(),
     };
