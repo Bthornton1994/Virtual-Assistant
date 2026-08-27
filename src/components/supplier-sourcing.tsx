@@ -356,7 +356,7 @@ export function SupplierSourcingSection({
                       <Field label="Channel">
                         <select
                           name="channel"
-                          defaultValue={draft.channel}
+                          defaultValue={draft.channel ?? ""}
                           className="min-h-11 w-full rounded-lg border border-line bg-surface px-3 text-sm"
                         >
                           {candidate.publicContactChannels.map((channel) => (
@@ -367,13 +367,13 @@ export function SupplierSourcingSection({
                         </select>
                       </Field>
                       <Field label="Destination" hint="Must exactly match a cited public contact channel.">
-                        <Input name="destination" defaultValue={draft.destination} required />
+                        <Input name="destination" defaultValue={draft.destination ?? ""} required />
                       </Field>
                       <Field label="Subject">
-                        <Input name="subject" defaultValue={draft.subject} required />
+                        <Input name="subject" defaultValue={draft.subject ?? ""} required />
                       </Field>
                       <Field label="Exact message body">
-                        <Textarea name="body" defaultValue={draft.body} required rows={7} />
+                        <Textarea name="body" defaultValue={draft.body ?? ""} required rows={7} />
                       </Field>
                       <input type="hidden" name="factsUsedSourceUrls" value={JSON.stringify(draft.factsUsedSourceUrls)} />
                       <Field label="Approval expires at" hint="Use an explicit UTC ISO timestamp; expired approvals cannot be delivered.">
