@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CAPABILITY_KEYS, type CapabilityKey } from "@/lib/capability-registry";
 import { sha256Hex } from "@/lib/catalog-evidence-hash";
+import { sha256HexSchema } from "@/lib/catalog-evidence-review";
 import { identifierString } from "@/lib/catalog-evidence-shared";
 import {
   buildCapabilityPerformanceLedger,
@@ -91,10 +92,55 @@ export type CapabilityPerformanceReview = {
   authorityGranted: false;
   reviewHash: string;
 };
+const reviewNonNegativeInteger = z.number().int().min(0);
+const reviewBps = z.number().int().min(0).max(10_000);
+
+const capabilityPerformanceImplementationReviewSchema = z.object({
+  executorKey: identifierString,
+  eligible: z.boolean(),
+  totalRuns: reviewNonNegativeInteger,
+  acceptedOutcomes: reviewNonNegativeInteger,
+  benchmarkEvaluatedRuns: reviewNonNegativeInteger,
+  hardGatePassRateBps: reviewBps,
+  falseAcceptanceRateBps: reviewBps.nullable(),
+  falseRejectionRateBps: reviewBps.nullable(),
+  authorityIncidents: reviewNonNegativeInteger,
+  evidenceCompletenessRateBps: reviewBps,
+  correctionRateBps: reviewBps,
+  rollbackOrRetryRateBps: reviewBps,
+  failureCodes: z.array(identifierString),
+}).strict();
+
+export const capabilityPerformanceReviewSchema = z.object({
+  schemaVersion: z.literal(CAPABILITY_PERFORMANCE_REVIEW_SCHEMA_VERSION),
+  policyKey: identifierString,
+  policyVersion: identifierString,
+  capabilityKey: z.enum(CAPABILITY_KEYS),
+  contractVersion: identifierString,
+  disposition: z.enum(CAPABILITY_PERFORMANCE_REVIEW_DISPOSITIONS),
+  comparedImplementationKeys: z.array(identifierString),
+  implementationReviews: z.array(capabilityPerformanceImplementationReviewSchema),
+  conflicts: z.array(identifierString),
+  failures: z.array(identifierString),
+  requiresManagerApproval: z.literal(true),
+  authorityGranted: z.literal(false),
+  reviewHash: sha256HexSchema,
+}).strict();
 
 export type CapabilityPerformanceReviewResult =
   | { ok: true; value: CapabilityPerformanceReview }
   | { ok: false; failures: string[] };
+export function validateCapabilityPerformanceReview(input: unknown): CapabilityPerformanceReviewResult {
+  const parsed = capabilityPerformanceReviewSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, failures: issueMessages(parsed.error.issues, "Review ") };
+  }
+  const { reviewHash: _reviewHash, ...body } = parsed.data;
+  if (sha256Hex(body) !== parsed.data.reviewHash) {
+    return { ok: false, failures: ["Review reviewHash does not match the deterministic review body."] };
+  }
+  return { ok: true, value: parsed.data };
+}
 
 function issueMessages(issues: readonly z.ZodIssue[], prefix: string): string[] {
   return issues.map((issue) => prefix + issue.path.join(".") + ": " + issue.message);
@@ -288,11 +334,8 @@ export function reviewCapabilityPerformance(input: {
     requiresManagerApproval: true as const,
     authorityGranted: false as const,
   };
-  return {
-    ok: true,
-    value: {
-      ...body,
-      reviewHash: sha256Hex(body),
-    },
-  };
+  return validateCapabilityPerformanceReview({
+    ...body,
+    reviewHash: sha256Hex(body),
+  });
 }
