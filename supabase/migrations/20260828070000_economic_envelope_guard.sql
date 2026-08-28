@@ -2,9 +2,9 @@
 -- authoritative run from passing after it exceeds its governing limits.
 --
 -- Existing envelopes contain recording flags such as record_human_minutes. Those
--- keys remain accepted. Only the reserved max* keys below are interpreted as
--- numeric ceilings, so this migration is backward-compatible for existing specs
--- while making any future ceiling explicit and database-enforced.
+-- keys remain accepted. The camelCase max* keys and the legacy snake_case
+-- aliases below are interpreted as numeric ceilings. Other unknown keys remain
+-- metadata for forward compatibility.
 
 create or replace function public.validate_economic_envelope_shape(p_envelope jsonb)
 returns void
@@ -23,7 +23,16 @@ begin
   for item_key, item_value in
     select key, value
       from jsonb_each(p_envelope)
-     where key in ('maxHumanMinutes', 'maxOwnerMinutes', 'maxAiCostMicros', 'maxToolCostMicros')
+     where key in (
+       'maxHumanMinutes',
+       'max_human_minutes',
+       'maxOwnerMinutes',
+       'max_owner_minutes',
+       'maxAiCostMicros',
+       'max_ai_cost_micros',
+       'maxToolCostMicros',
+       'max_tool_cost_micros'
+     )
   loop
     if jsonb_typeof(item_value) <> 'number' then
       raise exception 'economic_envelope.% must be a JSON number', item_key;
@@ -39,11 +48,36 @@ begin
       raise exception 'economic_envelope.% must be non-negative', item_key;
     end if;
 
-    if item_key in ('maxAiCostMicros', 'maxToolCostMicros')
-       and value_number <> trunc(value_number) then
+    if item_key in (
+      'maxAiCostMicros',
+      'max_ai_cost_micros',
+      'maxToolCostMicros',
+      'max_tool_cost_micros'
+    ) and value_number <> trunc(value_number) then
       raise exception 'economic_envelope.% must be a non-negative integer', item_key;
     end if;
   end loop;
+
+  if p_envelope ? 'maxHumanMinutes'
+     and p_envelope ? 'max_human_minutes'
+     and (p_envelope ->> 'maxHumanMinutes')::numeric <> (p_envelope ->> 'max_human_minutes')::numeric then
+    raise exception 'economic_envelope maxHumanMinutes conflicts with max_human_minutes';
+  end if;
+  if p_envelope ? 'maxOwnerMinutes'
+     and p_envelope ? 'max_owner_minutes'
+     and (p_envelope ->> 'maxOwnerMinutes')::numeric <> (p_envelope ->> 'max_owner_minutes')::numeric then
+    raise exception 'economic_envelope maxOwnerMinutes conflicts with max_owner_minutes';
+  end if;
+  if p_envelope ? 'maxAiCostMicros'
+     and p_envelope ? 'max_ai_cost_micros'
+     and (p_envelope ->> 'maxAiCostMicros')::numeric <> (p_envelope ->> 'max_ai_cost_micros')::numeric then
+    raise exception 'economic_envelope maxAiCostMicros conflicts with max_ai_cost_micros';
+  end if;
+  if p_envelope ? 'maxToolCostMicros'
+     and p_envelope ? 'max_tool_cost_micros'
+     and (p_envelope ->> 'maxToolCostMicros')::numeric <> (p_envelope ->> 'max_tool_cost_micros')::numeric then
+    raise exception 'economic_envelope maxToolCostMicros conflicts with max_tool_cost_micros';
+  end if;
 end;
 $$;
 
@@ -79,7 +113,7 @@ declare
 begin
   -- A run may be recorded as failed after an overage. Only an authoritative
   -- verified status is blocked, so the overage remains visible and reviewable.
-  if tg_op <> 'UPDATE' or new.status <> 'verified' then
+  if tg_op <> 'UPDATE' or new.status not in ('awaiting_verification', 'verified') then
     return new;
   end if;
 
@@ -121,10 +155,20 @@ begin
     if new.human_minutes > limit_value then
       raise exception 'Economic envelope maxHumanMinutes exceeded: actual % is greater than limit %', new.human_minutes, limit_value;
     end if;
+  elsif governing_envelope ? 'max_human_minutes' then
+    limit_value := (governing_envelope ->> 'max_human_minutes')::numeric;
+    if new.human_minutes > limit_value then
+      raise exception 'Economic envelope maxHumanMinutes exceeded: actual % is greater than limit %', new.human_minutes, limit_value;
+    end if;
   end if;
 
   if governing_envelope ? 'maxOwnerMinutes' then
     limit_value := (governing_envelope ->> 'maxOwnerMinutes')::numeric;
+    if new.owner_minutes > limit_value then
+      raise exception 'Economic envelope maxOwnerMinutes exceeded: actual % is greater than limit %', new.owner_minutes, limit_value;
+    end if;
+  elsif governing_envelope ? 'max_owner_minutes' then
+    limit_value := (governing_envelope ->> 'max_owner_minutes')::numeric;
     if new.owner_minutes > limit_value then
       raise exception 'Economic envelope maxOwnerMinutes exceeded: actual % is greater than limit %', new.owner_minutes, limit_value;
     end if;
@@ -135,10 +179,20 @@ begin
     if new.ai_cost_micros > limit_value then
       raise exception 'Economic envelope maxAiCostMicros exceeded: actual % is greater than limit %', new.ai_cost_micros, limit_value;
     end if;
+  elsif governing_envelope ? 'max_ai_cost_micros' then
+    limit_value := (governing_envelope ->> 'max_ai_cost_micros')::numeric;
+    if new.ai_cost_micros > limit_value then
+      raise exception 'Economic envelope maxAiCostMicros exceeded: actual % is greater than limit %', new.ai_cost_micros, limit_value;
+    end if;
   end if;
 
   if governing_envelope ? 'maxToolCostMicros' then
     limit_value := (governing_envelope ->> 'maxToolCostMicros')::numeric;
+    if new.tool_cost_micros > limit_value then
+      raise exception 'Economic envelope maxToolCostMicros exceeded: actual % is greater than limit %', new.tool_cost_micros, limit_value;
+    end if;
+  elsif governing_envelope ? 'max_tool_cost_micros' then
+    limit_value := (governing_envelope ->> 'max_tool_cost_micros')::numeric;
     if new.tool_cost_micros > limit_value then
       raise exception 'Economic envelope maxToolCostMicros exceeded: actual % is greater than limit %', new.tool_cost_micros, limit_value;
     end if;
