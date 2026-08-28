@@ -51,8 +51,8 @@ Required closeout:
 ## EXP-004 — Loadout current-head re-audit
 
 Date planned: 2026-08-28  
-Status: gated  
-Target head: `72673fa14cbca6bfdcca4bcc4adb7b9b7da86cd8`
+Status: gated — post-merge workflow did not execute  
+Target application head: `af42f7afdbbc5af8d88451d4a2fbfd618b9711ae`
 
 Required result:
 
@@ -62,6 +62,8 @@ Required result:
 - clean structural gate;
 - preserved demo/unverified disclosures;
 - human acceptance before any catalog correction.
+
+The post-merge [Deploy to GitHub Pages run](https://github.com/Bthornton1994/Loadout/actions/runs/33179347590) failed in the build job with zero steps and skipped deployment. No current-head verification result is claimed until the workflow executes successfully.
 
 ## EXP-005 — First repeatable internal workstream batch
 
