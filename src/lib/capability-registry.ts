@@ -17,6 +17,9 @@ export const CAPABILITY_KEYS = [
   "software_change_verify",
   "structured_data_transform",
   "business_research",
+  "supplier_sourcing",
+  "deterministic_supplier_sourcing_validation",
+  "supplier_outreach",
   "specialist_escalation",
 ] as const;
 
@@ -133,6 +136,36 @@ export const CAPABILITY_DEFINITIONS = [
     status: "proposed",
   },
   {
+    key: "supplier_sourcing",
+    displayName: "Supplier sourcing research",
+    description: "Prepare evidence-backed supplier, fulfillment, kit-assembly, and draft outreach candidates without contacting suppliers or asserting a relationship.",
+    riskClass: "high",
+    inputContractVersions: ["supplier-sourcing-input/v1"],
+    outputContractVersions: ["supplier-sourcing-packet/v1"],
+    verificationContract: { kind: "deterministic", implementation: "supplier-sourcing-validator/v1" },
+    status: "active",
+  },
+  {
+    key: "deterministic_supplier_sourcing_validation",
+    displayName: "Deterministic supplier sourcing validation",
+    description: "Parse, hash, count, and enforce the supplier-sourcing evidence contract without deciding that a supplier relationship exists.",
+    riskClass: "high",
+    inputContractVersions: ["supplier-sourcing-packet/v1", "supplier-sourcing-review/v1"],
+    outputContractVersions: ["supplier-sourcing-validation/v1"],
+    verificationContract: { kind: "native", implementation: "supplier-sourcing-validator/v1" },
+    status: "active",
+  },
+  {
+    key: "supplier_outreach",
+    displayName: "Supplier outreach",
+    description: "Transmit one exact, human-approved supplier message through an approved connector and preserve the delivery receipt.",
+    riskClass: "critical",
+    inputContractVersions: ["supplier-outreach-approval/v1"],
+    outputContractVersions: ["supplier-outreach-result/v1"],
+    verificationContract: { kind: "human_and_delivery", implementation: "supplier-outreach-approval/v1" },
+    status: "proposed",
+  },
+  {
     key: "specialist_escalation",
     displayName: "Specialist escalation",
     description: "Route work that exceeds the current authority, evidence, or domain boundary to an accountable specialist.",
@@ -177,6 +210,20 @@ export const FROZEN_WORK_CELL_EXECUTOR_KEYS = {
 
 export function frozenWorkCellExecutorKeys() {
   return { ...FROZEN_WORK_CELL_EXECUTOR_KEYS };
+}
+
+/**
+ * Separate Grounded supplier-sourcing freeze. It must not alter the historical
+ * Loadout work-cell keys used by Runs 4-9.
+ */
+export const SUPPLIER_SOURCING_EXECUTOR_KEYS = {
+  prepare: "grok-grounded-supplier-researcher-v1",
+  review: "grok-grounded-supplier-reviewer-v1",
+  validate: "supplier-sourcing-validator-v1",
+} as const;
+
+export function supplierSourcingExecutorKeys() {
+  return { ...SUPPLIER_SOURCING_EXECUTOR_KEYS };
 }
 
 export type CapabilityImplementation = {

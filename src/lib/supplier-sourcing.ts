@@ -1,0 +1,886 @@
+import { z } from "zod";
+import { canonicalJsonStringify, sha256Hex } from "@/lib/catalog-evidence-hash";
+import { sha256HexSchema } from "@/lib/catalog-evidence-review";
+import {
+  authorityReportSchema,
+  identifierString,
+  isoDateTimeSchema,
+  nonEmptyString,
+  severityLevelSchema,
+  sumAuthorityReport,
+  urlFieldSchema,
+  type AuthorityReport,
+} from "@/lib/catalog-evidence-shared";
+import { validateEvidenceUrl } from "@/lib/catalog-evidence-validator";
+
+export const SUPPLIER_SOURCING_INPUT_SCHEMA_VERSION = "supplier-sourcing-input/v1" as const;
+export const SUPPLIER_SOURCING_PACKET_SCHEMA_VERSION = "supplier-sourcing-packet/v1" as const;
+export const SUPPLIER_SOURCING_REVIEW_SCHEMA_VERSION = "supplier-sourcing-review/v1" as const;
+export const SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION = "supplier-sourcing-validation/v1" as const;
+export const SUPPLIER_SOURCING_REJECTION_SCHEMA_VERSION = "supplier-sourcing-rejection/v1" as const;
+
+export const SUPPLIER_FULFILLMENT_MODES = ["supplier-direct", "partner-fulfilled"] as const;
+export type SupplierFulfillmentMode = (typeof SUPPLIER_FULFILLMENT_MODES)[number];
+
+export const SUPPLIER_CANDIDATE_STATUSES = [
+  "candidate",
+  "not-found",
+  "disqualified",
+  "needs-review",
+] as const;
+export type SupplierCandidateStatus = (typeof SUPPLIER_CANDIDATE_STATUSES)[number];
+
+export const SUPPLIER_IDENTITY_STATUSES = ["exact", "partial", "mismatch", "unresolved"] as const;
+export const SUPPLIER_EVIDENCE_FINDINGS = ["supported", "contradicted", "unresolved"] as const;
+export const SUPPLIER_SOURCE_TYPES = [
+  "manufacturer",
+  "authorized-distributor",
+  "fulfillment-provider",
+  "brand-program",
+  "policy",
+  "other-primary",
+] as const;
+export const SUPPLIER_TYPES = [
+  "manufacturer",
+  "authorized-distributor",
+  "fulfillment-provider",
+  "other",
+  "unknown",
+] as const;
+export const PUBLIC_CONTACT_CHANNELS = ["email", "web-form", "phone", "other"] as const;
+export const REVIEW_VERDICTS = ["accept", "reject", "inconclusive"] as const;
+export const COMMUNICATION_DISPOSITIONS = [
+  "draft-only",
+  "needs-human-approval",
+  "not-ready",
+] as const;
+
+const findingSchema = z
+  .object({
+    status: z.enum(SUPPLIER_EVIDENCE_FINDINGS),
+    basis: nonEmptyString,
+    sourceUrls: z.array(urlFieldSchema),
+    sourceArtifactHashes: z.array(sha256HexSchema),
+  })
+  .strict();
+export type SupplierEvidenceFinding = z.infer<typeof findingSchema>;
+
+const sourceArtifactSchema = z
+  .object({
+    url: urlFieldSchema,
+    title: nonEmptyString,
+    organization: nonEmptyString,
+    sourceType: z.enum(SUPPLIER_SOURCE_TYPES),
+    accessedAt: isoDateTimeSchema,
+    validUntil: isoDateTimeSchema.nullable(),
+    rawArtifactHash: sha256HexSchema,
+    facts: z.array(nonEmptyString),
+  })
+  .strict();
+export type SupplierSourceArtifact = z.infer<typeof sourceArtifactSchema>;
+
+const supplierProductInputSchema = z
+  .object({
+    candidateId: identifierString,
+    productId: identifierString.nullable(),
+    productName: nonEmptyString,
+    brand: nonEmptyString.nullable(),
+    modelOrVariant: nonEmptyString.nullable(),
+    category: nonEmptyString,
+    desiredFulfillmentModes: z.array(z.enum(SUPPLIER_FULFILLMENT_MODES)).min(1),
+    kitAssemblyRequired: z.boolean(),
+    knownSourceUrls: z.array(urlFieldSchema),
+    constraints: z.array(nonEmptyString),
+  })
+  .strict();
+export type SupplierProductInput = z.infer<typeof supplierProductInputSchema>;
+
+export const supplierSourcingInputManifestV1Schema = z
+  .object({
+    schemaVersion: z.literal(SUPPLIER_SOURCING_INPUT_SCHEMA_VERSION),
+    runId: identifierString,
+    objective: nonEmptyString,
+    market: nonEmptyString,
+    catalogRepository: nonEmptyString.nullable(),
+    catalogRepositorySha: z.string().regex(/^[0-9a-f]{40}$/i).nullable(),
+    candidates: z.array(supplierProductInputSchema).min(1),
+    prepareExecutorKey: identifierString,
+    reviewExecutorKey: identifierString,
+    createdAt: isoDateTimeSchema,
+    inputHash: sha256HexSchema,
+  })
+  .strict();
+
+export type SupplierSourcingInputManifestV1 = z.infer<typeof supplierSourcingInputManifestV1Schema>;
+
+export function supplierSourcingInputHashSource(
+  input: Pick<
+    SupplierSourcingInputManifestV1,
+    | "runId"
+    | "objective"
+    | "market"
+    | "catalogRepository"
+    | "catalogRepositorySha"
+    | "candidates"
+    | "prepareExecutorKey"
+    | "reviewExecutorKey"
+  >,
+) {
+  return {
+    schemaVersion: SUPPLIER_SOURCING_INPUT_SCHEMA_VERSION,
+    runId: input.runId,
+    objective: input.objective,
+    market: input.market,
+    catalogRepository: input.catalogRepository,
+    catalogRepositorySha: input.catalogRepositorySha,
+    candidates: [...input.candidates].sort((a, b) =>
+      a.candidateId < b.candidateId ? -1 : a.candidateId > b.candidateId ? 1 : 0,
+    ),
+    prepareExecutorKey: input.prepareExecutorKey,
+    reviewExecutorKey: input.reviewExecutorKey,
+  };
+}
+
+export function hashSupplierSourcingInput(
+  input: Pick<
+    SupplierSourcingInputManifestV1,
+    | "runId"
+    | "objective"
+    | "market"
+    | "catalogRepository"
+    | "catalogRepositorySha"
+    | "candidates"
+    | "prepareExecutorKey"
+    | "reviewExecutorKey"
+  >,
+): string {
+  return sha256Hex(supplierSourcingInputHashSource(input));
+}
+
+export function validateSupplierSourcingInputManifest(
+  input: unknown,
+): { ok: true; value: SupplierSourcingInputManifestV1 } | { ok: false; failures: string[] } {
+  const parsed = supplierSourcingInputManifestV1Schema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      failures: parsed.error.issues.map(
+        (issue) => "Supplier sourcing input " + (issue.path.join(".") || "(root)") + ": " + issue.message,
+      ),
+    };
+  }
+
+  const manifest = parsed.data;
+  const candidateIds = manifest.candidates.map((candidate) => candidate.candidateId);
+  const duplicates = candidateIds.filter((id, index) => candidateIds.indexOf(id) !== index);
+  const failures: string[] = [];
+
+  if (duplicates.length) {
+    failures.push("Supplier sourcing input contains duplicate candidate IDs: " + [...new Set(duplicates)].join(", "));
+  }
+  if (manifest.prepareExecutorKey === manifest.reviewExecutorKey) {
+    failures.push("Supplier sourcing prepare and review executors must be different.");
+  }
+  if (hashSupplierSourcingInput(manifest) !== manifest.inputHash) {
+    failures.push("Supplier sourcing inputHash does not match the frozen brief.");
+  }
+
+  return failures.length ? { ok: false, failures } : { ok: true, value: manifest };
+}
+
+const outreachDraftSchema = z
+  .object({
+    status: z.enum(["draft", "not-prepared"]),
+    channel: z.enum(PUBLIC_CONTACT_CHANNELS).nullable(),
+    destination: nonEmptyString.nullable(),
+    subject: nonEmptyString.nullable(),
+    body: nonEmptyString.nullable(),
+    factsUsedSourceUrls: z.array(urlFieldSchema),
+    sent: z.literal(false),
+    sentAt: z.null(),
+  })
+  .strict()
+  .superRefine((draft, context) => {
+    if (draft.status === "draft") {
+      for (const key of ["channel", "destination", "subject", "body"] as const) {
+        if (draft[key] === null) {
+          context.addIssue({
+            code: "custom",
+            path: [key],
+            message: "A draft outreach record requires " + key + ".",
+          });
+        }
+      }
+      if (!draft.factsUsedSourceUrls.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["factsUsedSourceUrls"],
+          message: "A draft outreach record must cite the facts it uses.",
+        });
+      }
+    } else if (
+      draft.channel !== null ||
+      draft.destination !== null ||
+      draft.subject !== null ||
+      draft.body !== null ||
+      draft.factsUsedSourceUrls.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "A not-prepared outreach record cannot contain draft content.",
+      });
+    }
+  });
+export type SupplierOutreachDraft = z.infer<typeof outreachDraftSchema>;
+
+const supplierIdentitySchema = z
+  .object({
+    status: z.enum(SUPPLIER_IDENTITY_STATUSES),
+    tradingName: nonEmptyString.nullable(),
+    legalName: nonEmptyString.nullable(),
+    websiteUrl: urlFieldSchema.nullable(),
+    supplierType: z.enum(SUPPLIER_TYPES),
+    sourceUrls: z.array(urlFieldSchema),
+    reason: nonEmptyString,
+  })
+  .strict();
+export type SupplierIdentityEvidence = z.infer<typeof supplierIdentitySchema>;
+
+const productFitSchema = z
+  .object({
+    status: z.enum(["exact", "partial", "mismatch", "unresolved"]),
+    basis: nonEmptyString,
+    sourceUrls: z.array(urlFieldSchema),
+  })
+  .strict();
+
+const sellerOfRecordSchema = z
+  .object({
+    value: z.enum(["supplier", "partner", "grounded", "unknown"]),
+    evidence: findingSchema,
+  })
+  .strict();
+
+const supplierCandidateSchema = z
+  .object({
+    candidateId: identifierString,
+    productId: identifierString.nullable(),
+    productName: nonEmptyString,
+    brand: nonEmptyString.nullable(),
+    modelOrVariant: nonEmptyString.nullable(),
+    category: nonEmptyString,
+    desiredFulfillmentModes: z.array(z.enum(SUPPLIER_FULFILLMENT_MODES)).min(1),
+    kitAssemblyRequired: z.boolean(),
+    status: z.enum(SUPPLIER_CANDIDATE_STATUSES),
+    supplierIdentity: supplierIdentitySchema,
+    productFit: productFitSchema,
+    fulfillment: z
+      .object({
+        supplierDirect: findingSchema,
+        partnerFulfilled: findingSchema,
+        kitAssembly: findingSchema,
+        inventoryModel: z.enum(["supplier-direct", "partner-fulfilled", "owned-inventory", "unknown"]),
+        shipping: findingSchema,
+        returns: findingSchema,
+        availability: findingSchema,
+        compliance: findingSchema,
+        sellerOfRecord: sellerOfRecordSchema,
+      })
+      .strict(),
+    commercialTerms: z
+      .object({
+        pricing: findingSchema,
+        minimumOrderQuantity: findingSchema,
+        dropshipFees: findingSchema,
+        kitAssemblyFees: findingSchema,
+      })
+      .strict(),
+    publicContactChannels: z.array(
+      z
+        .object({
+          channel: z.enum(PUBLIC_CONTACT_CHANNELS),
+          value: nonEmptyString,
+          sourceUrl: urlFieldSchema,
+        })
+        .strict(),
+    ),
+    sourceArtifacts: z.array(sourceArtifactSchema),
+    outreachDraft: outreachDraftSchema,
+    escalation: z
+      .object({
+        required: z.boolean(),
+        reason: z.string(),
+      })
+      .strict(),
+  })
+  .strict();
+export type SupplierCandidate = z.infer<typeof supplierCandidateSchema>;
+
+const zeroAuthorityReport: AuthorityReport = {
+  externalMessagesSent: 0,
+  purchasesMade: 0,
+  accountsCreated: 0,
+  repositoryChangesMade: 0,
+  catalogRecordsModified: 0,
+  permissionsChanged: 0,
+  skillsCreatedOrModified: 0,
+  routinesCreatedOrModified: 0,
+  otherExternalActions: 0,
+};
+
+export const supplierSourcingPacketV1Schema = z
+  .object({
+    schemaVersion: z.literal(SUPPLIER_SOURCING_PACKET_SCHEMA_VERSION),
+    runId: identifierString,
+    inputHash: sha256HexSchema,
+    executorKey: identifierString,
+    generatedAt: isoDateTimeSchema,
+    market: nonEmptyString,
+    candidates: z.array(supplierCandidateSchema).min(1),
+    authorityReport: authorityReportSchema,
+  })
+  .strict();
+
+export type SupplierSourcingPacketV1 = z.infer<typeof supplierSourcingPacketV1Schema>;
+
+export const supplierSourcingReviewV1Schema = z
+  .object({
+    schemaVersion: z.literal(SUPPLIER_SOURCING_REVIEW_SCHEMA_VERSION),
+    runId: identifierString,
+    evidencePacketHash: sha256HexSchema,
+    reviewerExecutorKey: identifierString,
+    reviewedAt: isoDateTimeSchema,
+    candidateReviews: z.array(
+      z
+        .object({
+          candidateId: identifierString,
+          verdict: z.enum(REVIEW_VERDICTS),
+          reason: nonEmptyString,
+          independentSourceUrls: z.array(urlFieldSchema),
+          evidenceGaps: z.array(nonEmptyString),
+          severity: severityLevelSchema,
+        })
+        .strict(),
+    ),
+    communicationDisposition: z.enum(COMMUNICATION_DISPOSITIONS),
+    escalationRequired: z.boolean(),
+    escalationReason: z.string(),
+    authorityReport: authorityReportSchema,
+  })
+  .strict();
+
+export type SupplierSourcingReviewV1 = z.infer<typeof supplierSourcingReviewV1Schema>;
+
+const supplierSourcingValidationMetricsSchema = z
+  .object({
+    candidateCount: z.number().int().min(0),
+    exactSupplierCount: z.number().int().min(0),
+    supplierDirectSupportedCount: z.number().int().min(0),
+    partnerFulfilledSupportedCount: z.number().int().min(0),
+    kitAssemblySupportedCount: z.number().int().min(0),
+    unresolvedCandidateCount: z.number().int().min(0),
+    disqualifiedCandidateCount: z.number().int().min(0),
+    sourceArtifactCount: z.number().int().min(0),
+    outreachDraftCount: z.number().int().min(0),
+    authorityIncidentCount: z.number().int().min(0),
+    malformedUrlCount: z.number().int().min(0),
+    schemaViolationCount: z.number().int().min(0),
+  })
+  .strict();
+
+const supplierSourcingValidationStageSchema = z
+  .object({
+    hardGatePass: z.boolean(),
+    hardFailures: z.array(nonEmptyString),
+    warnings: z.array(nonEmptyString),
+    metrics: supplierSourcingValidationMetricsSchema,
+  })
+  .strict();
+
+const supplierSourcingReviewValidationSchema = z
+  .object({
+    hardGatePass: z.boolean(),
+    hardFailures: z.array(nonEmptyString),
+    warnings: z.array(nonEmptyString),
+  })
+  .strict();
+
+export const supplierSourcingValidationV1Schema = z
+  .object({
+    schemaVersion: z.literal(SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION),
+    runId: identifierString,
+    validatedAt: isoDateTimeSchema,
+    inputHash: sha256HexSchema,
+    packetHash: sha256HexSchema,
+    reviewHash: sha256HexSchema,
+    packet: supplierSourcingValidationStageSchema,
+    review: supplierSourcingReviewValidationSchema,
+    hardGatePass: z.boolean(),
+    hardFailures: z.array(nonEmptyString),
+    warnings: z.array(nonEmptyString),
+    authorityReport: authorityReportSchema,
+  })
+  .strict();
+
+export type SupplierSourcingValidationV1 = z.infer<typeof supplierSourcingValidationV1Schema>;
+
+export type SupplierSourcingValidationMetrics = {
+  candidateCount: number;
+  exactSupplierCount: number;
+  supplierDirectSupportedCount: number;
+  partnerFulfilledSupportedCount: number;
+  kitAssemblySupportedCount: number;
+  unresolvedCandidateCount: number;
+  disqualifiedCandidateCount: number;
+  sourceArtifactCount: number;
+  outreachDraftCount: number;
+  authorityIncidentCount: number;
+  malformedUrlCount: number;
+  schemaViolationCount: number;
+};
+
+export type SupplierSourcingValidationResult = {
+  schemaVersion: typeof SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION;
+  hardGatePass: boolean;
+  hardFailures: string[];
+  warnings: string[];
+  metrics: SupplierSourcingValidationMetrics;
+};
+
+function emptyMetrics(): SupplierSourcingValidationMetrics {
+  return {
+    candidateCount: 0,
+    exactSupplierCount: 0,
+    supplierDirectSupportedCount: 0,
+    partnerFulfilledSupportedCount: 0,
+    kitAssemblySupportedCount: 0,
+    unresolvedCandidateCount: 0,
+    disqualifiedCandidateCount: 0,
+    sourceArtifactCount: 0,
+    outreachDraftCount: 0,
+    authorityIncidentCount: 0,
+    malformedUrlCount: 0,
+    schemaViolationCount: 0,
+  };
+}
+
+function urlsInCandidate(candidate: SupplierCandidate): string[] {
+  const urls = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (typeof value === "string" && value.startsWith("http")) urls.add(value);
+    else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object") Object.values(value as Record<string, unknown>).forEach(visit);
+  };
+  visit(candidate);
+  return [...urls];
+}
+
+function validUrl(url: string): boolean {
+  return validateEvidenceUrl(url).ok && /^https:\/\//i.test(url);
+}
+
+function sameFulfillmentModes(left: SupplierProductInput["desiredFulfillmentModes"], right: SupplierProductInput["desiredFulfillmentModes"]): boolean {
+  return [...left].sort().join(",") === [...right].sort().join(",");
+}
+
+export function hashSupplierSourcingPacket(packet: SupplierSourcingPacketV1): string {
+  return sha256Hex(packet);
+}
+
+export function hashSupplierSourcingReview(review: SupplierSourcingReviewV1): string {
+  return sha256Hex(review);
+}
+
+export function validateSupplierSourcingPacket(
+  input: unknown,
+  expected: {
+    manifest: SupplierSourcingInputManifestV1;
+    expectedExecutorKey?: string;
+    evaluatedAt?: string;
+  },
+): SupplierSourcingValidationResult {
+  const metrics = emptyMetrics();
+  const parsedEvaluationTime = expected.evaluatedAt ? Date.parse(expected.evaluatedAt) : Number.NaN;
+  const evaluationTime = Number.isFinite(parsedEvaluationTime) ? parsedEvaluationTime : Date.now();
+  const parsed = supplierSourcingPacketV1Schema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      schemaVersion: SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION,
+      hardGatePass: false,
+      hardFailures: parsed.error.issues.map(
+        (issue) => "Supplier sourcing packet " + (issue.path.join(".") || "(root)") + ": " + issue.message,
+      ),
+      warnings: [],
+      metrics: { ...metrics, schemaViolationCount: parsed.error.issues.length },
+    };
+  }
+
+  const packet = parsed.data;
+  metrics.candidateCount = packet.candidates.length;
+  metrics.exactSupplierCount = packet.candidates.filter(
+    (candidate) => candidate.supplierIdentity.status === "exact",
+  ).length;
+  metrics.supplierDirectSupportedCount = packet.candidates.filter(
+    (candidate) => candidate.fulfillment.supplierDirect.status === "supported",
+  ).length;
+  metrics.partnerFulfilledSupportedCount = packet.candidates.filter(
+    (candidate) => candidate.fulfillment.partnerFulfilled.status === "supported",
+  ).length;
+  metrics.kitAssemblySupportedCount = packet.candidates.filter(
+    (candidate) => candidate.fulfillment.kitAssembly.status === "supported",
+  ).length;
+  metrics.unresolvedCandidateCount = packet.candidates.filter(
+    (candidate) => candidate.status === "needs-review" || candidate.status === "not-found",
+  ).length;
+  metrics.disqualifiedCandidateCount = packet.candidates.filter(
+    (candidate) => candidate.status === "disqualified",
+  ).length;
+  metrics.sourceArtifactCount = packet.candidates.reduce(
+    (total, candidate) => total + candidate.sourceArtifacts.length,
+    0,
+  );
+  metrics.outreachDraftCount = packet.candidates.filter(
+    (candidate) => candidate.outreachDraft.status === "draft",
+  ).length;
+  metrics.authorityIncidentCount = sumAuthorityReport(packet.authorityReport);
+
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  const expectedCandidates = new Map(expected.manifest.candidates.map((candidate) => [candidate.candidateId, candidate]));
+  const seenCandidateIds = new Set<string>();
+
+  if (packet.runId !== expected.manifest.runId) failures.push("Supplier sourcing packet runId does not match the frozen input.");
+  if (packet.inputHash !== expected.manifest.inputHash) failures.push("Supplier sourcing packet inputHash does not match the frozen input.");
+  if (packet.market !== expected.manifest.market) failures.push("Supplier sourcing packet market does not match the frozen input.");
+  if (expected.expectedExecutorKey && packet.executorKey !== expected.expectedExecutorKey) {
+    failures.push("Supplier sourcing packet executorKey does not match the frozen prepare executor.");
+  }
+  if (metrics.authorityIncidentCount > 0) failures.push("Supplier sourcing packet reports a forbidden authority action.");
+  if (packet.candidates.length !== expectedCandidates.size) {
+    failures.push("Supplier sourcing packet candidate count does not match the frozen brief.");
+  }
+
+  for (const candidate of packet.candidates) {
+    if (seenCandidateIds.has(candidate.candidateId)) {
+      failures.push("Supplier sourcing packet contains duplicate candidate ID " + candidate.candidateId + ".");
+    }
+    seenCandidateIds.add(candidate.candidateId);
+
+    const expectedCandidate = expectedCandidates.get(candidate.candidateId);
+    if (!expectedCandidate) {
+      failures.push("Supplier sourcing packet contains unexpected candidate " + candidate.candidateId + ".");
+      continue;
+    }
+    if (candidate.productId !== expectedCandidate.productId) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " productId does not match the frozen brief.");
+    }
+    if (candidate.productName !== expectedCandidate.productName) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " productName does not match the frozen brief.");
+    }
+    if (candidate.brand !== expectedCandidate.brand) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " brand does not match the frozen brief.");
+    }
+    if (candidate.modelOrVariant !== expectedCandidate.modelOrVariant) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " modelOrVariant does not match the frozen brief.");
+    }
+    if (candidate.category !== expectedCandidate.category) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " category does not match the frozen brief.");
+    }
+    if (candidate.kitAssemblyRequired !== expectedCandidate.kitAssemblyRequired) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " kitAssemblyRequired does not match the frozen brief.");
+    }
+    if (!sameFulfillmentModes(candidate.desiredFulfillmentModes, expectedCandidate.desiredFulfillmentModes)) {
+      failures.push("Supplier sourcing candidate " + candidate.candidateId + " desired fulfillment modes do not match the frozen brief.");
+    }
+
+    const candidateSourceHashes = new Set<string>();
+    const candidateSourceUrls = new Set<string>();
+    for (const artifact of candidate.sourceArtifacts) {
+      candidateSourceHashes.add(artifact.rawArtifactHash);
+      candidateSourceUrls.add(artifact.url);
+      if (!validUrl(artifact.url)) {
+        metrics.malformedUrlCount += 1;
+        failures.push("Supplier sourcing source artifact URL is not a plain public HTTPS URL: " + artifact.url);
+      }
+      if (artifact.validUntil && Date.parse(artifact.validUntil) < Date.parse(artifact.accessedAt)) {
+        failures.push("Supplier sourcing source artifact validUntil precedes accessedAt for " + artifact.url + ".");
+      }
+      if (artifact.validUntil && Date.parse(artifact.validUntil) < evaluationTime) {
+        failures.push("Supplier sourcing source artifact is expired for " + artifact.url + ".");
+      }
+    }
+
+    for (const url of urlsInCandidate(candidate)) {
+      if (!validUrl(url)) {
+        metrics.malformedUrlCount += 1;
+        failures.push("Supplier sourcing candidate contains a non-public HTTPS URL: " + url);
+      }
+    }
+
+    const referencedUrls = [
+      ...candidate.supplierIdentity.sourceUrls,
+      ...candidate.productFit.sourceUrls,
+      ...candidate.publicContactChannels.map((channel) => channel.sourceUrl),
+      ...candidate.outreachDraft.factsUsedSourceUrls,
+    ];
+    for (const url of referencedUrls) {
+      if (!validUrl(url) || !candidateSourceUrls.has(url)) {
+        failures.push("Supplier sourcing candidate " + candidate.candidateId + " references a source URL that is not bound to its own source artifacts: " + url);
+      }
+    }
+    for (const channel of candidate.publicContactChannels) {
+      if (!validUrl(channel.sourceUrl) || !candidateSourceUrls.has(channel.sourceUrl)) {
+        failures.push("Supplier sourcing public contact channel for " + candidate.candidateId + " is not bound to a source artifact.");
+      }
+    }
+    if (
+      candidate.fulfillment.availability.status === "supported" &&
+      !candidate.sourceArtifacts.some(
+        (artifact) =>
+          artifact.validUntil !== null &&
+          Date.parse(artifact.validUntil) >= evaluationTime &&
+          candidate.fulfillment.availability.sourceUrls.includes(artifact.url) &&
+          candidate.fulfillment.availability.sourceArtifactHashes.includes(artifact.rawArtifactHash),
+      )
+    ) {
+      failures.push("A supported availability finding for " + candidate.candidateId + " requires a current, validity-bound source artifact.");
+    }
+
+    const findings = [
+      candidate.fulfillment.supplierDirect,
+      candidate.fulfillment.partnerFulfilled,
+      candidate.fulfillment.kitAssembly,
+      candidate.fulfillment.shipping,
+      candidate.fulfillment.returns,
+      candidate.fulfillment.availability,
+      candidate.fulfillment.compliance,
+      candidate.fulfillment.sellerOfRecord.evidence,
+      candidate.commercialTerms.pricing,
+      candidate.commercialTerms.minimumOrderQuantity,
+      candidate.commercialTerms.dropshipFees,
+      candidate.commercialTerms.kitAssemblyFees,
+    ];
+    for (const finding of findings) {
+      if (finding.status === "supported" && (!finding.sourceUrls.length || !finding.sourceArtifactHashes.length)) {
+        failures.push("A supported supplier sourcing finding must cite source URLs and raw artifact hashes for " + candidate.candidateId + ".");
+      }
+      for (const hash of finding.sourceArtifactHashes) {
+        if (!candidateSourceHashes.has(hash)) {
+          failures.push("Finding on " + candidate.candidateId + " references a source artifact hash that is not bound to this candidate.");
+        }
+      }
+      for (const url of finding.sourceUrls) {
+        if (!candidateSourceUrls.has(url)) {
+          failures.push("Finding on " + candidate.candidateId + " references a source URL that is not bound to this candidate.");
+        }
+      }
+    }
+
+    if (candidate.fulfillment.inventoryModel === "owned-inventory") {
+      failures.push("Supplier sourcing packet proposes owned inventory, which is outside the Grounded operating constraint.");
+    }
+    if (candidate.fulfillment.sellerOfRecord.value === "grounded") {
+      failures.push("Supplier sourcing packet implies Grounded is seller of record; a human commercial decision is required and no owned-inventory assumption is allowed.");
+    }
+    if (candidate.outreachDraft.sent || candidate.outreachDraft.sentAt !== null) {
+      failures.push("Supplier sourcing packet contains a sent outreach claim; this contract is draft-only.");
+    }
+    if (candidate.outreachDraft.status === "draft") {
+      warnings.push("Supplier outreach draft for " + candidate.candidateId + " requires explicit human approval before transmission.");
+    }
+    if (candidate.status === "candidate" && candidate.supplierIdentity.status !== "exact") {
+      warnings.push("Candidate " + candidate.candidateId + " is not an exact supplier identity match.");
+    }
+    if (candidate.supplierIdentity.status === "exact" && !candidate.supplierIdentity.sourceUrls.length) {
+      failures.push("An exact supplier identity must cite at least one source URL.");
+    }
+  }
+
+  for (const expectedCandidate of expected.manifest.candidates) {
+    if (!seenCandidateIds.has(expectedCandidate.candidateId)) {
+      failures.push("Supplier sourcing packet is missing frozen candidate " + expectedCandidate.candidateId + ".");
+    }
+  }
+
+  return {
+    schemaVersion: SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION,
+    hardGatePass: failures.length === 0,
+    hardFailures: failures,
+    warnings,
+    metrics,
+  };
+}
+
+export type SupplierSourcingReviewValidationResult = {
+  hardGatePass: boolean;
+  hardFailures: string[];
+  warnings: string[];
+};
+
+export function validateSupplierSourcingReview(
+  input: unknown,
+  expected: {
+    manifest: SupplierSourcingInputManifestV1;
+    packetHash: string;
+    expectedReviewerKey?: string;
+  },
+): SupplierSourcingReviewValidationResult {
+  const parsed = supplierSourcingReviewV1Schema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      hardGatePass: false,
+      hardFailures: parsed.error.issues.map(
+        (issue) => "Supplier sourcing review " + (issue.path.join(".") || "(root)") + ": " + issue.message,
+      ),
+      warnings: [],
+    };
+  }
+
+  const review = parsed.data;
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  const expectedIds = new Set(expected.manifest.candidates.map((candidate) => candidate.candidateId));
+  const seen = new Set<string>();
+
+  if (review.runId !== expected.manifest.runId) failures.push("Supplier sourcing review runId does not match the frozen input.");
+  if (review.evidencePacketHash !== expected.packetHash) failures.push("Supplier sourcing review is not bound to the exact supplier packet hash.");
+  if (expected.expectedReviewerKey && review.reviewerExecutorKey !== expected.expectedReviewerKey) {
+    failures.push("Supplier sourcing review reviewerExecutorKey does not match the frozen reviewer.");
+  }
+  if (sumAuthorityReport(review.authorityReport) > 0) failures.push("Supplier sourcing review reports a forbidden authority action.");
+  if (review.communicationDisposition === "needs-human-approval") {
+    warnings.push("Supplier communication remains blocked until a human approves the exact draft, recipient, and source facts.");
+  }
+
+  for (const candidateReview of review.candidateReviews) {
+    if (seen.has(candidateReview.candidateId)) {
+      failures.push("Supplier sourcing review contains duplicate candidate review " + candidateReview.candidateId + ".");
+    }
+    seen.add(candidateReview.candidateId);
+    if (!expectedIds.has(candidateReview.candidateId)) {
+      failures.push("Supplier sourcing review contains an unexpected candidate " + candidateReview.candidateId + ".");
+    }
+    for (const url of candidateReview.independentSourceUrls) {
+      if (!validUrl(url)) {
+        failures.push("Supplier sourcing review contains a non-public HTTPS URL: " + url);
+      }
+    }
+    if (candidateReview.verdict === "accept" && candidateReview.independentSourceUrls.length === 0) {
+      failures.push("An accepted supplier sourcing review candidate must cite at least one independent source.");
+    }
+  }
+
+  for (const expectedId of expectedIds) {
+    if (!seen.has(expectedId)) failures.push("Supplier sourcing review is missing candidate " + expectedId + ".");
+  }
+
+  return { hardGatePass: failures.length === 0, hardFailures: failures, warnings };
+}
+
+export function supplierSourcingAuthorityReport(): AuthorityReport {
+  return { ...zeroAuthorityReport };
+}
+
+export function serializeSupplierSourcingValidation(
+  result: SupplierSourcingValidationResult,
+): Record<string, unknown> {
+  return { ...result };
+}
+
+export function serializeSupplierSourcingRejection(
+  runId: string,
+  executorKey: string,
+  rawOutputHash: string,
+  failures: string[],
+): Record<string, unknown> {
+  return {
+    schemaVersion: SUPPLIER_SOURCING_REJECTION_SCHEMA_VERSION,
+    runId,
+    executorKey,
+    rawOutputHash,
+    failures: [...failures],
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+export const supplierSourcingContractSummary = {
+  input: SUPPLIER_SOURCING_INPUT_SCHEMA_VERSION,
+  packet: SUPPLIER_SOURCING_PACKET_SCHEMA_VERSION,
+  review: SUPPLIER_SOURCING_REVIEW_SCHEMA_VERSION,
+  validation: SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION,
+  allowedActionClass: "prepare_only",
+  forbidden: [
+    "send_supplier_message",
+    "assert_supplier_relationship",
+    "purchase",
+    "hold_inventory",
+    "modify_catalog",
+    "publish",
+    "merge",
+  ],
+} as const;
+
+// Keep this module's canonicalization dependency visible to contract reviewers.
+export const supplierSourcingCanonicalization = canonicalJsonStringify;
+
+
+/**
+ * The frozen task text for a Grok prepare session. It deliberately names the
+ * exact input hash and keeps communication draft-only; a runtime adapter may
+ * transport this prompt, but the prompt never grants authority.
+ */
+export function buildGrokSupplierSourcingPrompt(
+  manifest: SupplierSourcingInputManifestV1,
+): string {
+  const candidateSummary = manifest.candidates
+    .map(
+      (candidate) =>
+        "- candidateId: " +
+        candidate.candidateId +
+        " | productId: " +
+        (candidate.productId ?? "null") +
+        " | productName: " +
+        candidate.productName +
+        " | brand: " +
+        (candidate.brand ?? "null") +
+        " | modelOrVariant: " +
+        (candidate.modelOrVariant ?? "null") +
+        " | category: " +
+        candidate.category +
+        " | desiredFulfillmentModes: [" +
+        candidate.desiredFulfillmentModes.join(", ") +
+        "] | kitAssemblyRequired: " +
+        String(candidate.kitAssemblyRequired),
+    )
+    .join("\n");
+
+  return [
+    "Run Grounded Supplier Sourcing v1 in shadow, prepare-only mode.",
+    "Use only the frozen brief below. Do not inspect or mutate live catalog state.",
+    "Research public primary sources for supplier identity, exact product fit, supplier-direct or partner-fulfilled capability, kit assembly, availability, shipping, returns, compliance, seller of record, and commercial terms.",
+    "You may identify candidates and draft an inquiry, but you must not send or schedule a message, create a relationship, assert acceptance, purchase anything, hold inventory, modify a repository or catalog, publish, create an account, change permissions, create a Skill or Routine, or spend money.",
+    "Every candidate remains unverified. Preserve every frozen candidate field exactly. Use unresolved or needs-review when evidence is incomplete or conflicting.",
+    "Output contract: return exactly one JSON object with only these top-level keys: schemaVersion, runId, inputHash, executorKey, generatedAt, market, candidates, authorityReport.",
+    "Do not add summary-report fields such as id, name, schema, mode, prepareOnly, verificationStatus, frozenBrief, or a top-level outreachDraft.",
+    "Each candidate must use exactly these fields: candidateId, productId, productName, brand, modelOrVariant, category, desiredFulfillmentModes, kitAssemblyRequired, status, supplierIdentity, productFit, fulfillment, commercialTerms, publicContactChannels, sourceArtifacts, outreachDraft, escalation.",
+    "Candidate status must be exactly one of candidate, not-found, disqualified, or needs-review. Do not use unverified as a status value.",
+    "supplierIdentity must contain exactly: status, tradingName, legalName, websiteUrl, supplierType, sourceUrls, reason.",
+    "productFit must contain exactly: status, basis, sourceUrls.",
+    "fulfillment must contain exactly: supplierDirect, partnerFulfilled, kitAssembly, inventoryModel, shipping, returns, availability, compliance, sellerOfRecord. sellerOfRecord must contain value and evidence.",
+    "commercialTerms must contain exactly: pricing, minimumOrderQuantity, dropshipFees, kitAssemblyFees.",
+    "Every finding object must contain exactly: status, basis, sourceUrls, sourceArtifactHashes. Finding status must be supported, contradicted, or unresolved.",
+    "publicContactChannels must be objects with channel, value, and sourceUrl. sourceArtifacts must contain url, title, organization, sourceType, accessedAt, validUntil, rawArtifactHash, and facts.",
+    "Each candidate outreachDraft must contain status, channel, destination, subject, body, factsUsedSourceUrls, sent, and sentAt. Use sent=false and sentAt=null. escalation must contain required and reason.",
+    "authorityReport must contain exactly these zero-valued keys: externalMessagesSent, purchasesMade, accountsCreated, repositoryChangesMade, catalogRecordsModified, permissionsChanged, skillsCreatedOrModified, routinesCreatedOrModified, otherExternalActions.",
+    "All URL values must be plain public HTTPS strings, never Markdown links. Never claim owned inventory, Grounded as seller of record, sent outreach, current availability without validity-bound evidence, or production readiness.",
+    "Preserve unresolved and conflicting facts, cite source artifact hashes, and do not invent missing fields or supplier terms.",
+    "Return no Markdown and no prose wrapper.",
+    "",
+    "Frozen runId: " + manifest.runId,
+    "Frozen inputHash: " + manifest.inputHash,
+    "Market: " + manifest.market,
+    "Candidate brief:",
+    candidateSummary,
+  ].join("\n");
+}
