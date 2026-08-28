@@ -145,7 +145,11 @@ describe("capability performance review v1", () => {
     const result = reviewCapabilityPerformance({
       capabilityKey: "evidence_research",
       contractVersion: "catalog-evidence-packet/v1",
-      policy: policy({ minimumTotalRunsPerImplementation: 1, minimumAcceptedOutcomesPerImplementation: 0 }),
+      policy: policy({
+        minimumTotalRunsPerImplementation: 1,
+        minimumAcceptedOutcomesPerImplementation: 0,
+        minimumBenchmarkEvaluatedRunsPerImplementation: 1,
+      }),
       observations: [
         observation({
           runId: "shared-run",
