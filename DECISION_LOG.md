@@ -1,0 +1,57 @@
+# Delegation Cloud Decision Log
+
+## D-001 — Delegation Cloud owns the control plane
+
+Date: 2026-08-21  
+Status: active  
+Decision: External models, agents, runtimes, providers, context engines, and skills remain replaceable implementations behind Delegation Cloud-owned contracts. They do not own authority, lifecycle state, evidence truth, or autonomy policy.
+
+Source: [VISION.md](VISION.md), [Capability Sovereignty doctrine](docs/CAPABILITY-SOVEREIGNTY.md).
+
+## D-002 — Evidence precedes autonomy
+
+Date: 2026-08-22  
+Status: active  
+Decision: A workstream must produce inspectable evidence, independent review, deterministic validation, accepted outcomes, and measured exceptions/costs before authority can increase.
+
+Source: [Gauntlet Loop](docs/GAUNTLET-LOOP.md), [Step 3E Skill Qualification](docs/STEP-3E-SKILL-QUALIFICATION.md).
+
+## D-003 — Preserve failed and inconclusive work
+
+Date: 2026-08-22  
+Status: active  
+Decision: Failed attempts, unresolved facts, rejected candidates, and inconclusive impact are retained as evidence. They are not repaired retrospectively or relabeled as success.
+
+Source: [Step 3D QA Qualification](docs/STEP-3D-QA-QUALIFICATION.md), [Gauntlet Loop](docs/GAUNTLET-LOOP.md).
+
+## D-004 — Grounded remains fail-closed
+
+Date: 2026-08-28  
+Status: active  
+Decision: Grounded product visibility, inventory claims, supplier partnerships, supplier outreach, purchases, and production commerce remain blocked until real product/supplier/compliance/fulfillment evidence and the required human reviews exist.
+
+Source: [Grounded supplier PR #54](https://github.com/Bthornton1994/Virtual-Assistant/pull/54), Grounded safety workstream status supplied in the current project record.
+
+## D-005 — QA metadata stays out of Grounded and Production
+
+Date: 2026-08-28  
+Status: active  
+Decision: Supplier-sourcing fixtures, profiles, attempts, reviews, validations, and receipts belong only in Delegation Cloud QA. They must not be written to Grounded Supabase or a Production environment.
+
+Source: [Grounded supplier PR #54](https://github.com/Bthornton1994/Virtual-Assistant/pull/54).
+
+## D-006 — PR #54 remains draft
+
+Date: 2026-08-28  
+Status: active  
+Decision: PR #54 remains draft until its QA evidence is independently reviewed, the Gauntlet impact-review cycle is closed, product-specific human evidence review is complete, and repository release checks are acceptable.
+
+Source: [PR #54](https://github.com/Bthornton1994/Virtual-Assistant/pull/54), QA run `f41e4d68-fe53-4f9c-8a35-bce022af5135`.
+
+## D-007 — Loadout is the first portfolio proving ground
+
+Date: 2026-08-28  
+Status: active  
+Decision: Loadout Catalog Integrity is the first portfolio workstream. Its initial authority is human-reviewed baseline followed by shadow/prepare-only execution. No unsupported catalog claim is promoted.
+
+Source: [portfolio playbook](docs/AUTONOMOUS-PORTFOLIO-EXECUTION-PLAYBOOK.md), Loadout [workstream blueprint](https://github.com/Bthornton1994/Loadout/blob/main/docs/CATALOG-INTEGRITY-WORKSTREAM.md).
