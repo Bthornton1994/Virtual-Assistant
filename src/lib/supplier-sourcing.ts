@@ -861,7 +861,9 @@ export function buildGrokSupplierSourcingPrompt(
     "Research public primary sources for supplier identity, exact product fit, supplier-direct or partner-fulfilled capability, kit assembly, availability, shipping, returns, compliance, seller of record, and commercial terms.",
     "You may identify candidates and draft an inquiry, but you must not send or schedule a message, create a relationship, assert acceptance, purchase anything, hold inventory, modify a repository or catalog, publish, create an account, change permissions, create a Skill or Routine, or spend money.",
     "Every candidate remains unverified. Preserve every frozen candidate field exactly. Use unresolved or needs-review when evidence is incomplete or conflicting.",
-    "Output contract: return exactly one JSON object with only these top-level keys: schemaVersion, runId, inputHash, executorKey, generatedAt, market, candidates, authorityReport.",
+    "Output contract: return exactly one JSON object with schemaVersion " +
+      SUPPLIER_SOURCING_PACKET_SCHEMA_VERSION +
+      " and only these top-level keys: schemaVersion, runId, inputHash, executorKey, generatedAt, market, candidates, authorityReport.",
     "Do not add summary-report fields such as id, name, schema, mode, prepareOnly, verificationStatus, frozenBrief, or a top-level outreachDraft.",
     "Each candidate must use exactly these fields: candidateId, productId, productName, brand, modelOrVariant, category, desiredFulfillmentModes, kitAssemblyRequired, status, supplierIdentity, productFit, fulfillment, commercialTerms, publicContactChannels, sourceArtifacts, outreachDraft, escalation.",
     "Candidate status must be exactly one of candidate, not-found, disqualified, or needs-review. Do not use unverified as a status value.",

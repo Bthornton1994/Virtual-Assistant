@@ -335,7 +335,9 @@ describe("Step 3D submit-before-validate guard", () => {
   });
 
   it("mirrors the guard in transitionWorkstreamRun", () => {
-    expect(primitives).toMatch(/to === "awaiting_verification" && \(await runHasWorkCell\(db, run\.id\)\)/);
+    expect(primitives).toMatch(/to === "awaiting_verification" \|\| to === "verified"/);
+    expect(primitives).toMatch(/await runHasWorkCell\(db, run\.id\)/);
+    expect(primitives).toMatch(/to === "awaiting_verification" && workCellRun/);
     expect(primitives).toMatch(/Run deterministic work-cell validation before submitting it for verification/);
   });
 

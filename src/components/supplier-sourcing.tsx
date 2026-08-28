@@ -381,7 +381,7 @@ export function SupplierSourcingSection({
                           name="expiresAt"
                           type="text"
                           required
-                          defaultValue={new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()}
+                          placeholder="2026-09-04T00:00:00.000Z"
                         />
                       </Field>
                       <p className="text-xs text-muted">

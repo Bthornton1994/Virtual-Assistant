@@ -144,10 +144,10 @@ describe("capability performance review v1", () => {
       expect.arrayContaining([
         "insufficient_implementations",
         "insufficient_total_runs",
-        "insufficient_accepted_outcomes",
         "benchmark_evidence_incomplete",
       ]),
     );
+    expect(result.value.failures).not.toContain("insufficient_accepted_outcomes");
     expect(result.value.implementationReviews[0].eligible).toBe(false);
   });
 
