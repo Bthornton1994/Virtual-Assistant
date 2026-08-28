@@ -1094,6 +1094,7 @@ export type WorkCellBundle = {
   review: { id: string; contentHash: string; payload: CatalogEvidenceReviewV1 } | null;
   validation: WorkCellValidationReport | null;
   rejections: Array<{ id: string; phase: string; declaredExecutorKey: string; hardFailures: string[]; rawOutputHash: string }>;
+  ledgerObservationCount: number;
 };
 
 export async function getRunWorkCell(actor: Actor, runId: string): Promise<WorkCellBundle> {
@@ -1124,6 +1125,9 @@ export async function getRunWorkCell(actor: Actor, runId: string): Promise<WorkC
   const packetRow = find(CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION);
   const reviewRow = find(CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION);
   const validationRow = find(WORK_CELL_VALIDATION_SCHEMA_VERSION);
+  const ledgerObservationCount = artifacts.filter(
+    (row) => asObject(row.payload).schemaVersion === "capability-performance-ledger/v1",
+  ).length;
 
   const rejections = artifacts
     .filter((row) => asObject(row.payload).schemaVersion === WORK_CELL_REJECTION_SCHEMA_VERSION)
@@ -1152,6 +1156,7 @@ export async function getRunWorkCell(actor: Actor, runId: string): Promise<WorkC
       : null,
     validation: validationRow ? (validationRow.payload as unknown as WorkCellValidationReport) : null,
     rejections,
+    ledgerObservationCount,
   };
 }
 
