@@ -150,6 +150,12 @@ begin
     raise exception 'Workstream run tool_cost_micros cannot be lower than recorded executor assignment costs';
   end if;
 
+  -- The run may be submitted with an overage so a failed receipt can preserve
+  -- the truth. Numeric ceilings apply only to authoritative verification.
+  if new.status <> 'verified' then
+    return new;
+  end if;
+
   if governing_envelope ? 'maxHumanMinutes' then
     limit_value := (governing_envelope ->> 'maxHumanMinutes')::numeric;
     if new.human_minutes > limit_value then
