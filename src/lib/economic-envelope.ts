@@ -23,13 +23,14 @@ export type EconomicEnvelopeValidation =
 type LimitDefinition = {
   totalKey: keyof EconomicTotals;
   integer: boolean;
+  legacyKey: string;
 };
 
 const LIMIT_DEFINITIONS: Record<EconomicEnvelopeLimitKey, LimitDefinition> = {
-  maxHumanMinutes: { totalKey: "humanMinutes", integer: false },
-  maxOwnerMinutes: { totalKey: "ownerMinutes", integer: false },
-  maxAiCostMicros: { totalKey: "aiCostMicros", integer: true },
-  maxToolCostMicros: { totalKey: "toolCostMicros", integer: true },
+  maxHumanMinutes: { totalKey: "humanMinutes", integer: false, legacyKey: "max_human_minutes" },
+  maxOwnerMinutes: { totalKey: "ownerMinutes", integer: false, legacyKey: "max_owner_minutes" },
+  maxAiCostMicros: { totalKey: "aiCostMicros", integer: true, legacyKey: "max_ai_cost_micros" },
+  maxToolCostMicros: { totalKey: "toolCostMicros", integer: true, legacyKey: "max_tool_cost_micros" },
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -55,7 +56,8 @@ function validateTotalValue(key: keyof EconomicTotals, value: unknown): string |
  *
  * Existing envelopes may contain non-numeric recording flags such as
  * record_human_minutes. Unknown keys remain accepted for backward compatibility;
- * only the reserved max* keys are interpreted as ceilings.
+ * only the reserved max* keys and their legacy snake_case aliases are
+ * interpreted as ceilings.
  */
 export function validateEconomicEnvelope(input: unknown): EconomicEnvelopeValidation {
   if (!isObject(input)) {
@@ -66,23 +68,36 @@ export function validateEconomicEnvelope(input: unknown): EconomicEnvelopeValida
   const failures: string[] = [];
 
   for (const key of ECONOMIC_ENVELOPE_LIMIT_KEYS) {
-    if (!hasOwn(input, key)) continue;
-
-    const value = input[key];
     const definition = LIMIT_DEFINITIONS[key];
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    const sourceKeys = [key, definition.legacyKey];
+    const values: Array<{ sourceKey: string; value: number }> = [];
+
+    for (const sourceKey of sourceKeys) {
+      if (!hasOwn(input, sourceKey)) continue;
+
+      const value = input[sourceKey];
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        failures.push(
+          definition.integer
+            ? `economicEnvelope.${sourceKey} must be a non-negative integer.`
+            : `economicEnvelope.${sourceKey} must be a finite non-negative number.`,
+        );
+        continue;
+      }
+      if (definition.integer && !Number.isInteger(value)) {
+        failures.push(`economicEnvelope.${sourceKey} must be a non-negative integer.`);
+        continue;
+      }
+      values.push({ sourceKey, value });
+    }
+
+    if (values.length === 2 && values[0].value !== values[1].value) {
       failures.push(
-        definition.integer
-          ? `economicEnvelope.${key} must be a non-negative integer.`
-          : `economicEnvelope.${key} must be a finite non-negative number.`,
+        `economicEnvelope.${key} conflicts with economicEnvelope.${definition.legacyKey}; provide one value or matching values.`,
       );
-      continue;
+    } else if (values.length > 0) {
+      limits[key] = values[0].value;
     }
-    if (definition.integer && !Number.isInteger(value)) {
-      failures.push(`economicEnvelope.${key} must be a non-negative integer.`);
-      continue;
-    }
-    limits[key] = value;
   }
 
   return failures.length ? { ok: false, failures } : { ok: true, limits };
