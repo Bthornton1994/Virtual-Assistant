@@ -3,6 +3,7 @@ import {
   ingestCatalogEvidencePacketAction,
   ingestCatalogEvidenceReviewAction,
   recordWorkCellGauntletReviewsAction,
+  recordWorkCellPerformanceObservationsAction,
   runNativePublicWebPrepareAction,
   runWorkCellValidationAction,
 } from "@/app/actions/work-cell";
@@ -82,7 +83,7 @@ export function WorkCellSection({
   runStatus: string;
   manager: boolean;
 }) {
-  const { manifest, assignments, packet, review, validation, rejections } = bundle;
+  const { manifest, assignments, packet, review, validation, rejections, ledgerObservationCount } = bundle;
   const running = runStatus === "running";
   const awaitingVerification = runStatus === "awaiting_verification";
   const prepareRejected = rejections.some((rejection) => rejection.phase === "prepare");
@@ -513,6 +514,24 @@ export function WorkCellSection({
           <p className="mt-5 border-t border-line pt-4 text-sm text-muted">
             Deterministic validation opens once the independent review has been ingested. Validating a half-built cell would
             produce a report that looks authoritative while describing an incomplete attempt.
+          </p>
+        ) : null}
+
+        {running && manager && validationComplete && ledgerObservationCount === 0 ? (
+          <WorkCellActionForm action={recordWorkCellPerformanceObservationsAction} className="mt-5 space-y-3 border-t border-line pt-4">
+            <input type="hidden" name="runId" value={runId} />
+            <p className="text-sm text-muted">
+              Persists three CS-4 performance observations from the real phase assignments, measured timestamps, and
+              hash-bound artifacts. It records evidence only; it does not calculate a score or change routing.
+            </p>
+            <Button type="submit" variant="secondary">Record performance observations</Button>
+          </WorkCellActionForm>
+        ) : null}
+
+        {ledgerObservationCount > 0 ? (
+          <p className="mt-5 border-t border-line pt-4 text-sm text-muted">
+            {ledgerObservationCount} CS-4 performance observation(s) are recorded as immutable evidence. Aggregated rates
+            remain derived by the pure ledger and are not executor-written.
           </p>
         ) : null}
 

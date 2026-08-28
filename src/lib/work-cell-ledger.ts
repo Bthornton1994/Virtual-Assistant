@@ -20,6 +20,16 @@ const PHASE_CAPABILITY = {
   validate: { capabilityKey: "deterministic_catalog_validation", contractVersion: "catalog-evidence-validation/v1" },
 } as const;
 
+export type WorkCellLedgerPhaseBinding = {
+  assignmentId: string;
+  executorKey: string;
+  sourceArtifactHash: string;
+  humanInterventionMinutes: number;
+  aiCostMicros: number;
+  toolCostMicros: number;
+  latencyMs: number;
+};
+
 /**
  * Map a frozen work cell to CS-4 observations. Does not persist, promote, or
  * let an executor write its own score. Benchmark truth stays null unless supplied.
@@ -33,6 +43,7 @@ export function workCellLedgerObservations(input: {
   aiCostMicrosByPhase?: Partial<Record<"prepare" | "review" | "validate", number>>;
   toolCostMicrosByPhase?: Partial<Record<"prepare" | "review" | "validate", number>>;
   latencyMsByPhase?: Partial<Record<"prepare" | "review" | "validate", number>>;
+  phaseBindings?: Partial<Record<"prepare" | "review" | "validate", WorkCellLedgerPhaseBinding>>;
   catalogReport?: CatalogDecisionReport;
 }): CapabilityPerformanceObservation[] {
   const packetResult = validateCatalogEvidencePacket(input.packet, {
@@ -82,26 +93,29 @@ export function workCellLedgerObservations(input: {
     },
   ];
 
-  return phases.map((item) => ({
-    schemaVersion: CAPABILITY_PERFORMANCE_LEDGER_SCHEMA_VERSION,
-    runId: input.packet.runId,
-    assignmentId: item.assignmentId,
-    capabilityKey: PHASE_CAPABILITY[item.phase].capabilityKey,
-    executorKey: item.executorKey,
-    contractVersion: PHASE_CAPABILITY[item.phase].contractVersion,
-    status,
-    hardGateResult,
-    benchmarkTruth: null,
-    authorityIncident: gate.authorityIncidents.length > 0,
-    evidenceComplete: packetResult.hardGatePass && reviewResult.hardGatePass,
-    correctionRequired: report.decisions.length > 0,
-    rollbackOrRetry: report.hermesRetryUseful,
-    humanInterventionMinutes: input.humanMinutesByPhase?.[item.phase] ?? 0,
-    aiCostMicros: input.aiCostMicrosByPhase?.[item.phase] ?? 0,
-    toolCostMicros: input.toolCostMicrosByPhase?.[item.phase] ?? 0,
-    latencyMs: input.latencyMsByPhase?.[item.phase] ?? 0,
-    outcomeSource: "deterministic_validator",
-    sourceArtifactHash: item.sourceArtifactHash,
-    recordedAt: input.recordedAt,
-  }));
+  return phases.map((item) => {
+    const binding = input.phaseBindings?.[item.phase];
+    return {
+      schemaVersion: CAPABILITY_PERFORMANCE_LEDGER_SCHEMA_VERSION,
+      runId: input.packet.runId,
+      assignmentId: binding?.assignmentId ?? item.assignmentId,
+      capabilityKey: PHASE_CAPABILITY[item.phase].capabilityKey,
+      executorKey: binding?.executorKey ?? item.executorKey,
+      contractVersion: PHASE_CAPABILITY[item.phase].contractVersion,
+      status,
+      hardGateResult,
+      benchmarkTruth: null,
+      authorityIncident: gate.authorityIncidents.length > 0,
+      evidenceComplete: packetResult.hardGatePass && reviewResult.hardGatePass,
+      correctionRequired: report.decisions.length > 0,
+      rollbackOrRetry: report.hermesRetryUseful,
+      humanInterventionMinutes: binding?.humanInterventionMinutes ?? input.humanMinutesByPhase?.[item.phase] ?? 0,
+      aiCostMicros: binding?.aiCostMicros ?? input.aiCostMicrosByPhase?.[item.phase] ?? 0,
+      toolCostMicros: binding?.toolCostMicros ?? input.toolCostMicrosByPhase?.[item.phase] ?? 0,
+      latencyMs: binding?.latencyMs ?? input.latencyMsByPhase?.[item.phase] ?? 0,
+      outcomeSource: "deterministic_validator",
+      sourceArtifactHash: binding?.sourceArtifactHash ?? item.sourceArtifactHash,
+      recordedAt: input.recordedAt,
+    };
+  });
 }

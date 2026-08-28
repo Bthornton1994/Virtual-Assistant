@@ -2,6 +2,7 @@
 
 import { requireOps } from "@/lib/auth";
 import { parseExtractedJson } from "@/lib/work-cell-json";
+import { recordWorkCellPerformanceObservations } from "@/lib/work-cell-ledger-persistence";
 import { AuthzError, DomainError } from "@/lib/domain";
 import {
   freezeWorkCellInputManifest,
@@ -135,6 +136,16 @@ export async function runWorkCellValidationAction(formData: FormData): Promise<W
     const actor = await requireOps();
     // The expected batch comes from the frozen input manifest, never from a form.
     await runWorkCellValidation(actor, String(formData.get("runId") || ""));
+    return { ok: true };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function recordWorkCellPerformanceObservationsAction(formData: FormData): Promise<WorkCellActionResult> {
+  try {
+    const actor = await requireOps();
+    await recordWorkCellPerformanceObservations(actor, String(formData.get("runId") || ""));
     return { ok: true };
   } catch (error) {
     return fail(error);
