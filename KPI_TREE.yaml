@@ -1,0 +1,106 @@
+version: 1
+owner: delegation-cloud
+as_of: 2026-08-28
+
+north_star:
+  key: hands_off_verified_completion
+  definition: "Percentage of eligible recurring outcomes completed correctly, on time, with required evidence, without customer coordination beyond the defined authority and exception policy."
+  current_value: null
+  reason: "No accepted recurring production workstream history has been measured yet."
+
+strategic_metrics:
+  - key: verified_outcome_rate
+    definition: "Verified Outcome Receipts divided by eligible workstream attempts."
+    source: "Delegation Cloud run, review, validation, and receipt records"
+    current_value: null
+    desired_direction: increase
+
+  - key: owner_minutes_per_accepted_outcome
+    definition: "Owner attention minutes required for one accepted outcome."
+    source: "Run/economics ledger"
+    current_value: null
+    desired_direction: decrease_without_quality_loss
+
+  - key: human_delivery_minutes_per_accepted_outcome
+    definition: "Operator and specialist minutes required for one accepted outcome."
+    source: "Run/economics ledger"
+    current_value: null
+    desired_direction: decrease_without_quality_loss
+
+  - key: correction_rate
+    definition: "Accepted outcomes requiring correction after independent review divided by accepted outcomes."
+    source: "Independent review and delivery records"
+    current_value: null
+    desired_direction: decrease
+
+  - key: exception_rate
+    definition: "Attempts requiring classified human escalation divided by attempts."
+    source: "Exception and failure records"
+    current_value: null
+    desired_direction: decrease_only_when_safe
+
+  - key: authority_incident_count
+    definition: "Attempts or artifacts recording unauthorized external, sensitive, financial, publication, permission, or production actions."
+    source: "Authority reports, validation artifacts, and audit events"
+    current_value: 0
+    current_basis: "Latest supplier-sourcing QA authority report"
+    desired_direction: zero
+
+  - key: accepted_workstream_count
+    definition: "Workstreams with independently reviewed accepted outcomes and explicit authority/evidence definitions."
+    source: "Outcome Receipts and workstream records"
+    current_value: null
+    desired_direction: increase_only_with_evidence
+
+  - key: qualified_executor_count
+    definition: "Executor-capability mappings with an explicit qualification decision and manager approval."
+    source: "Capability and qualification registry"
+    current_value: 0
+    current_basis: "Grok supplier researcher/reviewer profiles remain shadow/unqualified; no production adapter is qualified."
+    desired_direction: increase_only_with_evidence
+
+  - key: external_action_count
+    definition: "External messages, purchases, accounts, permissions, catalog writes, or production publications performed by unapproved workstreams."
+    source: "Authority report and audit events"
+    current_value: 0
+    desired_direction: zero
+
+operating_metrics:
+  - key: qa_verified_supplier_runs
+    definition: "Supplier-sourcing attempts ending verified after independent review and deterministic validation."
+    source: "Delegation Cloud QA"
+    current_value: 1
+    current_basis: "Run f41e4d68-fe53-4f9c-8a35-bce022af5135"
+    desired_direction: informational
+
+  - key: supplier_candidates_accepted
+    definition: "Supplier candidates accepted for Grounded outreach or catalog use."
+    source: "Product-specific evidence review"
+    current_value: 0
+    current_basis: "Latest review rejected/not-ready all six candidates"
+    desired_direction: increase_only_after_human_evidence_review
+
+  - key: qa_cycle_closed
+    definition: "Latest QA cycle has completed impact review and formal closeout."
+    source: "Gauntlet cycle"
+    current_value: false
+    current_basis: "Cycle remains impact_review"
+    desired_direction: true
+
+  - key: measured_ai_cost
+    definition: "AI/model cost recorded for every measured run in integer micros."
+    source: "Run economics ledger"
+    current_value: null
+    desired_direction: measured_before_scaling
+
+  - key: measured_tool_cost
+    definition: "External tool/API cost recorded for every measured run in integer micros."
+    source: "Run economics ledger"
+    current_value: null
+    desired_direction: measured_before_scaling
+
+rules:
+  - "Null means not measured or not yet verified; it is never treated as zero."
+  - "A passing technical receipt does not imply business impact or product readiness."
+  - "Autonomy promotion requires a configured workstream-specific policy and human approval."
+  - "Metrics must be reproducible from frozen artifacts and immutable run lineage."
