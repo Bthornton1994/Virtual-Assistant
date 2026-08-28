@@ -14,6 +14,7 @@ import {
   requiresEvidence,
   type WorkstreamRunStatus,
 } from "@/lib/execution-policy";
+import { checkEconomicEnvelope, validateEconomicEnvelope } from "@/lib/economic-envelope";
 import { supabaseServer } from "@/lib/supabase/server";
 
 export type DelegationSpecStatus = "draft" | "active" | "retired";
@@ -301,6 +302,11 @@ export async function createDelegationSpec(
   if (!canAuthorSpec(actor)) throw new AuthzError("Only organization admins or operations managers can author Delegation Specs");
   if (!input.objective.trim()) throw new DomainError("A Delegation Spec requires an objective");
   if (!input.definitionOfDone.length) throw new DomainError("A Delegation Spec requires at least one definition-of-done criterion");
+  const economicEnvelope = input.economicEnvelope ?? {};
+  const economicEnvelopeCheck = validateEconomicEnvelope(economicEnvelope);
+  if (!economicEnvelopeCheck.ok) {
+    throw new DomainError(`Invalid economic envelope: ${economicEnvelopeCheck.failures.join(" ")}`);
+  }
   const db = await persistentDb(actor);
   const { data: workstream, error: workstreamError } = await db
     .from("workstreams")
@@ -338,7 +344,7 @@ export async function createDelegationSpec(
       verification_rules: input.verificationRules,
       exception_policy: input.exceptionPolicy,
       sla: input.sla.trim(),
-      economic_envelope: input.economicEnvelope ?? {},
+      economic_envelope: economicEnvelope,
       data_policy: input.dataPolicy ?? {},
       created_by: actor.id,
     })
@@ -363,6 +369,10 @@ export async function activateDelegationSpec(actor: Actor, specId: string) {
   assertOrgAccess(actor, spec.organizationId);
   if (spec.status !== "draft") throw new DomainError("Only a draft Delegation Spec can be activated");
   if (!spec.workstreamId) throw new DomainError("Step 2 requires a Delegation Spec to belong to a workstream");
+  const economicEnvelopeCheck = validateEconomicEnvelope(spec.economicEnvelope);
+  if (!economicEnvelopeCheck.ok) {
+    throw new DomainError(`Invalid economic envelope: ${economicEnvelopeCheck.failures.join(" ")}`);
+  }
 
   const { data: active, error: activeError } = await db
     .from("delegation_specs")
@@ -479,7 +489,11 @@ export async function transitionWorkstreamRun(
   // verdict, and that verdict needs a completed validation artifact. Validation
   // can only run while the run is 'running', so submitting a half-built work cell
   // would strand it permanently. Mirrors the database trigger of the same name.
-  if (to === "awaiting_verification" && (await runHasWorkCell(db, run.id))) {
+  const workCellRun =
+    to === "awaiting_verification" || to === "verified"
+      ? await runHasWorkCell(db, run.id)
+      : false;
+  if (to === "awaiting_verification" && workCellRun) {
     const { data: validated, error: validatedError } = await db
       .from("run_executor_assignments")
       .select("id, output_artifact_id")
@@ -505,6 +519,62 @@ export async function transitionWorkstreamRun(
     if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new DomainError(`${name} must be zero or greater`);
   }
 
+  const prospectiveTotals = {
+    humanMinutes: patch?.humanMinutes ?? run.humanMinutes,
+    ownerMinutes: patch?.ownerMinutes ?? run.ownerMinutes,
+    aiCostMicros: patch?.aiCostMicros === undefined ? run.aiCostMicros : Math.round(patch.aiCostMicros),
+    toolCostMicros: patch?.toolCostMicros === undefined ? run.toolCostMicros : Math.round(patch.toolCostMicros),
+  };
+  let economicEnvelopeWarning = "";
+
+  if (to === "awaiting_verification" || to === "verified") {
+    if (workCellRun) {
+      const { data: assignments, error: assignmentError } = await db
+        .from("run_executor_assignments")
+        .select("human_minutes, ai_cost_micros, tool_cost_micros")
+        .eq("run_id", run.id);
+      if (assignmentError) throw new DomainError(assignmentError.message);
+
+      const assignmentTotals = (assignments ?? []).reduce(
+        (totals, assignment) => ({
+          humanMinutes: totals.humanMinutes + Number(assignment.human_minutes ?? 0),
+          aiCostMicros: totals.aiCostMicros + Number(assignment.ai_cost_micros ?? 0),
+          toolCostMicros: totals.toolCostMicros + Number(assignment.tool_cost_micros ?? 0),
+        }),
+        { humanMinutes: 0, aiCostMicros: 0, toolCostMicros: 0 },
+      );
+
+      if (prospectiveTotals.humanMinutes < assignmentTotals.humanMinutes) {
+        throw new DomainError("Submitted human minutes cannot be lower than recorded executor assignment costs");
+      }
+      if (prospectiveTotals.aiCostMicros < assignmentTotals.aiCostMicros) {
+        throw new DomainError("Submitted AI cost cannot be lower than recorded executor assignment costs");
+      }
+      if (prospectiveTotals.toolCostMicros < assignmentTotals.toolCostMicros) {
+        throw new DomainError("Submitted tool cost cannot be lower than recorded executor assignment costs");
+      }
+    }
+
+    const { data: specRow, error: specError } = await db
+      .from("delegation_specs")
+      .select("economic_envelope")
+      .eq("id", run.delegationSpecId)
+      .eq("organization_id", run.organizationId)
+      .single();
+    if (specError) throw new DomainError(specError.message);
+
+    const economicCheck = checkEconomicEnvelope(specRow.economic_envelope, prospectiveTotals);
+    if (!economicCheck.ok) {
+      if (to === "verified") {
+        throw new DomainError(
+          `Cannot verify a run outside its economic envelope: ${economicCheck.failures.join(" ")}`,
+        );
+      }
+      economicEnvelopeWarning =
+        `Economic envelope requires a failed verification: ${economicCheck.failures.join(" ")}`;
+    }
+  }
+
   const now = new Date().toISOString();
   const payload: Record<string, unknown> = { status: to };
   if (to === "running" && !run.startedAt) payload.started_at = now;
@@ -514,6 +584,11 @@ export async function transitionWorkstreamRun(
   if (patch?.aiCostMicros !== undefined) payload.ai_cost_micros = Math.round(patch.aiCostMicros);
   if (patch?.toolCostMicros !== undefined) payload.tool_cost_micros = Math.round(patch.toolCostMicros);
   if (patch?.notes !== undefined) payload.notes = patch.notes;
+  if (economicEnvelopeWarning) {
+    payload.notes = [typeof payload.notes === "string" ? payload.notes : "", economicEnvelopeWarning]
+      .filter(Boolean)
+      .join(" ");
+  }
   if (patch?.executorSummary !== undefined) payload.executor_summary = patch.executorSummary;
 
   const { data, error } = await db.from("workstream_runs").update(payload).eq("id", runId).select("*").single();
@@ -613,6 +688,19 @@ export async function verifyWorkstreamRun(
   const { data: specRow, error: specError } = await db.from("delegation_specs").select("*").eq("id", run.delegationSpecId).single();
   if (specError) throw new DomainError(specError.message);
   const spec = mapSpec(specRow as Record<string, unknown>);
+  if (input.verificationStatus === "passed" && input.definitionOfDoneMet) {
+    const economicCheck = checkEconomicEnvelope(spec.economicEnvelope, {
+      humanMinutes: run.humanMinutes,
+      ownerMinutes: run.ownerMinutes,
+      aiCostMicros: run.aiCostMicros,
+      toolCostMicros: run.toolCostMicros,
+    });
+    if (!economicCheck.ok) {
+      throw new DomainError(
+        `Cannot issue a passing Outcome Receipt outside its economic envelope: ${economicCheck.failures.join(" ")}`,
+      );
+    }
+  }
   const { count: evidenceCount, error: evidenceError } = await db
     .from("evidence_artifacts")
     .select("id", { count: "exact", head: true })
