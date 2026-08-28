@@ -1,0 +1,112 @@
+version: 1
+as_of: 2026-08-28
+scope: "Delegation Cloud platform and internal portfolio dogfood"
+default_external_executor_authority: prepare_only
+
+principles:
+  - "Delegation Cloud owns authoritative lifecycle state, evidence bindings, verification gates, metrics, and autonomy decisions."
+  - "Executor output is untrusted evidence until independently reviewed and deterministically validated."
+  - "No authority is inherited from a provider, model, browser runtime, shared computer, or skill format."
+  - "Human approval is required for consequential, external, financial, publication, access, and production actions."
+
+actors:
+  - key: owner
+    may:
+      - define_strategy
+      - approve_workstream
+      - approve_autonomy_policy
+      - approve_external_action
+      - approve_merge
+      - approve_production_promotion
+    may_not_delegate_without_explicit_policy:
+      - mission
+      - material_capital_allocation
+      - strategic_pivot
+      - high_risk_external_commitment
+
+  - key: ops_manager
+    may:
+      - create_or_update_delegation_spec
+      - assign_qualified_executor
+      - request_approval
+      - run_qa
+      - record_impact_review
+      - classify_failure
+      - suspend_or_demote_workstream
+    may_not:
+      - bypass_receipt_guard
+      - grant_unqualified_executor_authority
+      - publish_customer_or_catalog_changes_without_policy
+      - approve_owner_reserved_decisions
+
+  - key: external_executor
+    examples:
+      - Grok
+      - Hermes
+      - other replaceable providers
+    may:
+      - inspect_scoped_inputs
+      - prepare_artifacts
+      - research_public_sources
+      - draft_changes
+      - report_evidence_and_escalations
+    may_not:
+      - own_lifecycle_state
+      - declare_verification
+      - promote_itself
+      - send_external_messages
+      - purchase
+      - create_accounts
+      - change_permissions
+      - publish
+      - merge
+      - make_production_writes
+      - create_or_modify_commercial_relationships
+
+  - key: deterministic_validator
+    may:
+      - validate_schema
+      - validate_hash_bindings
+      - calculate_metrics
+      - reject_invalid_state
+      - determine_receipt_eligibility
+      - record_validation_artifact
+    may_not:
+      - make business-impact claims without evidence
+      - grant executor authority
+      - merge
+      - publish
+      - send
+      - purchase
+
+  - key: independent_reviewer
+    may:
+      - challenge_executor_output
+      - record_defects
+      - record_evidence_gaps
+      - record_authority_incidents
+      - issue_review_verdict
+    may_not:
+      - review_its_own_executor_output_as_independent
+      - change_frozen_inputs
+      - grant authority
+      - publish_or_merge
+
+  - key: ci_and_preview
+    may:
+      - install
+      - lint
+      - typecheck
+      - test
+      - build
+      - preview_smoke_test
+    may_not:
+      - declare business evidence true
+      - promote a workstream
+      - publish externally outside approved deployment policy
+
+release_gates:
+  - "No merge until required repository checks and independent review pass."
+  - "No production promotion until production environment, security, legal, operational, and rollback gates pass."
+  - "No external action until the exact action class, authority grant, evidence, and approval are bound to the run."
+  - "No supplier outreach until product-specific evidence review authorizes it."
