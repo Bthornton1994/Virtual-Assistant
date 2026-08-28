@@ -10,14 +10,16 @@ This guard makes numeric ceilings explicit and fail-closed at the authoritative 
 
 ## Reserved keys
 
-Unknown keys remain accepted for backward compatibility with existing recording flags such as `record_human_minutes`. Only these keys are interpreted as ceilings:
+Unknown keys remain accepted for backward compatibility with existing recording flags such as `record_human_minutes`. The canonical keys below and their legacy snake_case aliases are interpreted as ceilings:
 
-| Key | Meaning | Type |
-| --- | --- | --- |
-| `maxHumanMinutes` | Maximum observed human intervention | Finite non-negative number |
-| `maxOwnerMinutes` | Maximum observed owner intervention | Finite non-negative number |
-| `maxAiCostMicros` | Maximum AI cost in USD micros | Non-negative integer |
-| `maxToolCostMicros` | Maximum tool/API cost in USD micros | Non-negative integer |
+| Canonical key | Accepted legacy alias | Meaning | Type |
+| --- | --- | --- | --- |
+| `maxHumanMinutes` | `max_human_minutes` | Maximum observed human intervention | Finite non-negative number |
+| `maxOwnerMinutes` | `max_owner_minutes` | Maximum observed owner intervention | Finite non-negative number |
+| `maxAiCostMicros` | `max_ai_cost_micros` | Maximum AI cost in USD micros | Non-negative integer |
+| `maxToolCostMicros` | `max_tool_cost_micros` | Maximum tool/API cost in USD micros | Non-negative integer |
+
+If both spellings are present, they must carry the same value. Any other unknown key remains metadata and is not silently treated as a ceiling.
 
 A missing numeric key means that dimension has no declared numeric cap in that spec. It does not grant new authority or authorize spending.
 
@@ -33,7 +35,7 @@ A missing numeric key means that dimension has no declared numeric cap in that s
 
 ## Verification plan
 
-1. Run the pure unit tests for malformed envelopes, legacy flags, boundary equality, overages, and malformed observed totals.
+1. Run the pure unit tests for malformed envelopes, legacy aliases and flags, boundary equality, overages, conflicts, and malformed observed totals.
 2. Apply the migration only to the connected QA project.
 3. Prove in QA that malformed specs are rejected, an over-limit verified transition is rejected, a failed receipt remains possible, and assignment totals cannot be under-reported.
 4. Run security and performance advisors after the DDL.
