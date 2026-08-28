@@ -22,7 +22,7 @@ A review request names:
 Each observation is parsed and hash-validated by the existing ledger schema before aggregation. The review rejects:
 
 - observations for a different capability or contract;
-- duplicate run/implementation/contract identities;
+- duplicate run/implementation/contract or assignment identities;
 - malformed observations;
 - invalid policy thresholds.
 
@@ -44,7 +44,7 @@ If different implementations report different non-null benchmark truth for the s
 
 ## Output boundary
 
-The result is source-bound to:
+The generated result is validated against a strict output schema and hash-bound. It is source-bound to:
 
 - policy key and version;
 - capability and contract;
