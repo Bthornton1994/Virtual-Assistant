@@ -4,10 +4,8 @@ import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import { identifierString } from "@/lib/catalog-evidence-shared";
 import {
   buildCapabilityPerformanceLedger,
-  type CapabilityPerformanceLedgerRow,
-} from "@/lib/capability-performance-ledger";
-import {
   performanceObservationSchema,
+  type CapabilityPerformanceLedgerRow,
   type CapabilityPerformanceObservation,
 } from "@/lib/capability-performance-ledger";
 
@@ -211,6 +209,7 @@ export function reviewCapabilityPerformance(input: {
 
   const bindingFailures: string[] = [];
   const observationIdentity = new Set<string>();
+  const assignmentIdentity = new Set<string>();
   const benchmarkTruthByRun = new Map<string, Set<"accept" | "reject">>();
 
   for (const observation of observations) {
@@ -231,6 +230,10 @@ export function reviewCapabilityPerformance(input: {
       bindingFailures.push("Duplicate run/implementation observation identity detected.");
     }
     observationIdentity.add(identity);
+    if (assignmentIdentity.has(observation.assignmentId)) {
+      bindingFailures.push("Duplicate assignmentId detected.");
+    }
+    assignmentIdentity.add(observation.assignmentId);
 
     if (observation.benchmarkTruth !== null) {
       const truths = benchmarkTruthByRun.get(observation.runId) ?? new Set<"accept" | "reject">();
