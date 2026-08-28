@@ -27,6 +27,22 @@ describe("economic envelope guard", () => {
     }).ok).toBe(true);
   });
 
+  it("accepts legacy snake_case ceiling aliases", () => {
+    const check = validateEconomicEnvelope({
+      max_owner_minutes: 5,
+      max_ai_cost_micros: 100,
+      track_tool_cost_micros: true,
+    });
+
+    expect(check).toEqual({
+      ok: true,
+      limits: {
+        maxOwnerMinutes: 5,
+        maxAiCostMicros: 100,
+      },
+    });
+  });
+
   it("accepts valid ceilings and equality at the boundary", () => {
     const envelope = {
       maxHumanMinutes: 30.5,
@@ -47,7 +63,7 @@ describe("economic envelope guard", () => {
     }).ok).toBe(true);
   });
 
-  it("rejects malformed reserved ceilings while tolerating unrelated metadata", () => {
+  it("rejects malformed reserved ceilings and conflicting aliases", () => {
     const check = validateEconomicEnvelope({
       currency: "USD",
       record_human_minutes: true,
@@ -55,6 +71,7 @@ describe("economic envelope guard", () => {
       maxOwnerMinutes: null,
       maxAiCostMicros: 1.5,
       maxToolCostMicros: -1,
+      max_owner_minutes: 6,
     });
 
     expect(check.ok).toBe(false);
@@ -63,6 +80,7 @@ describe("economic envelope guard", () => {
     expect(failures).toContain("maxOwnerMinutes");
     expect(failures).toContain("maxAiCostMicros");
     expect(failures).toContain("maxToolCostMicros");
+    expect(failures).toContain("conflicts");
   });
 
   it("reports every dimension that exceeds its ceiling", () => {
