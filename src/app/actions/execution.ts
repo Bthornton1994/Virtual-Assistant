@@ -72,6 +72,7 @@ export async function createDelegationSpecAction(formData: FormData) {
       verificationRules: lines(formData, "verificationRules"),
       exceptionPolicy: lines(formData, "exceptionPolicy"),
       sla: String(formData.get("sla") || ""),
+      economicEnvelope: parseObject(formData.get("economicEnvelope"), "Economic envelope"),
     });
   } catch (error) {
     rethrowAction(error);

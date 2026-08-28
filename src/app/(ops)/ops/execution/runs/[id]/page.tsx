@@ -11,6 +11,7 @@ import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import { SupplierSourcingSection } from "@/components/supplier-sourcing";
 import { WorkCellSection } from "@/components/work-cell";
 import { requireOps } from "@/lib/auth";
+import { checkEconomicEnvelope } from "@/lib/economic-envelope";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
 import { getSupplierSourcingRunBundle } from "@/lib/supplier-sourcing-run";
 import { getRunWorkCell } from "@/lib/work-cell";
@@ -44,6 +45,11 @@ function statusTone(status: string): "good" | "bad" | "warn" | "info" | "neutral
   if (status === "awaiting_verification") return "warn";
   if (status === "running") return "info";
   return "neutral";
+}
+
+function declaredLimit(envelope: Record<string, unknown>, key: string, legacyKey: string) {
+  const value = envelope[key] ?? envelope[legacyKey];
+  return typeof value === "number" ? value : null;
 }
 
 export default function ExecutionRunPage({ params }: { params: Promise<{ id: string }> }) {
@@ -111,6 +117,19 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         notes: submitNotes,
       })
     : null;
+  const economicCheck = checkEconomicEnvelope(spec.economicEnvelope, {
+    humanMinutes: run.humanMinutes,
+    ownerMinutes: run.ownerMinutes,
+    aiCostMicros: run.aiCostMicros,
+    toolCostMicros: run.toolCostMicros,
+  });
+  const economicDimensions = [
+    { label: "Human", actual: run.humanMinutes, limit: declaredLimit(spec.economicEnvelope, "maxHumanMinutes", "max_human_minutes"), unit: "min" },
+    { label: "Owner", actual: run.ownerMinutes, limit: declaredLimit(spec.economicEnvelope, "maxOwnerMinutes", "max_owner_minutes"), unit: "min" },
+    { label: "AI", actual: run.aiCostMicros, limit: declaredLimit(spec.economicEnvelope, "maxAiCostMicros", "max_ai_cost_micros"), unit: "micros" },
+    { label: "Tools", actual: run.toolCostMicros, limit: declaredLimit(spec.economicEnvelope, "maxToolCostMicros", "max_tool_cost_micros"), unit: "micros" },
+  ];
+  const hasNumericCeiling = economicDimensions.some((dimension) => dimension.limit !== null);
 
   return (
     <div className="space-y-8">
@@ -126,6 +145,34 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         <ActionClassBadge value={spec.actionClass} />
         <span className="text-xs text-muted">Started {run.startedAt ? new Date(run.startedAt).toLocaleString() : "—"}</span>
       </div>
+
+      <Card className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted">Economic envelope</p>
+            <p className="mt-1 text-sm text-muted">
+              {hasNumericCeiling
+                ? economicCheck.ok
+                  ? "Observed economics are within the declared ceilings."
+                  : "A passing receipt is blocked until the overage is resolved or the run is recorded as failed."
+                : "No numeric ceilings are declared for this spec."}
+            </p>
+          </div>
+          <Badge tone={economicCheck.ok ? "good" : "bad"}>{economicCheck.ok ? "within limits" : "over limit"}</Badge>
+        </div>
+        <div className="mt-4 grid gap-3 text-sm sm:grid-cols-4">
+          {economicDimensions.map((dimension) => (
+            <div key={dimension.label}>
+              <p className="text-muted">{dimension.label}</p>
+              <p className="font-medium">{dimension.actual} {dimension.unit}</p>
+              <p className="text-xs text-muted">{dimension.limit === null ? "No ceiling" : "≤ " + dimension.limit + " " + dimension.unit}</p>
+            </div>
+          ))}
+        </div>
+        {!economicCheck.ok ? (
+          <p className="mt-3 text-xs text-bad">{economicCheck.failures.join(" ")}</p>
+        ) : null}
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="p-5">

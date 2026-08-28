@@ -122,6 +122,7 @@ Payments may stay mocked in the first production deploy. Activate Stripe price I
 - **Least privilege.** Integrations request named scopes. Operators see assigned work, not another tenant’s files.
 - **Bounded authority.** Four action classes. Sensitive execution cannot enter `in_progress` without an explicit customer approval (application + SQL trigger).
 - **Audit.** Login-sensitive events, request create/status, assignments, approvals, external execution, data export, permission changes, integration access, and AI actions write to `audit_events`.
+- **Execution economics.** Delegation Specs may declare numeric ceilings; malformed limits, work-cell cost under-reporting, and over-limit successful verification are rejected at the application and database boundaries. See `docs/ECONOMIC-ENVELOPE-GUARD-V1.md`.
 - **Secrets.** Service-role and model keys never ship to the browser (`src/lib/supabase/admin.ts` refuses `window`).
 - **Out of scope.** Healthcare, legal practice, regulated finance, custody of funds, and silent high-risk actions.
 

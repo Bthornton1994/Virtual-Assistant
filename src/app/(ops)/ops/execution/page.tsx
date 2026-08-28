@@ -126,6 +126,15 @@ export default async function ExecutionLabPage() {
             <Field label="SLA">
               <Input name="sla" placeholder="Complete by 09:00 local time" />
             </Field>
+            <Field
+              label="Economic ceilings (optional)"
+              hint="JSON object. Use maxHumanMinutes, maxOwnerMinutes, maxAiCostMicros, or maxToolCostMicros. Existing recording flags remain allowed."
+            >
+              <Textarea
+                name="economicEnvelope"
+                placeholder={'{"maxHumanMinutes":60,"maxOwnerMinutes":15,"maxAiCostMicros":500000,"maxToolCostMicros":100000}'}
+              />
+            </Field>
             <Field label="Required inputs" hint="One system, record set, or source per line.">
               <Textarea name="requiredInputs" placeholder={"HubSpot pipeline\nAccount owner rules"} />
             </Field>
