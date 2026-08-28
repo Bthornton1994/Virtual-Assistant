@@ -219,6 +219,32 @@ begin
     )
   );
 
+  begin
+    perform public.record_work_cell_ledger_observations(
+      v_run_id,
+      jsonb_set(v_entries, '{0,phase}', 'null'::jsonb, true)
+    );
+    raise exception 'CS4 missing-phase guard did not reject malformed input';
+  exception
+    when others then
+      if sqlerrm <> 'Ledger observation phase must be prepare, review, or validate' then
+        raise;
+      end if;
+  end;
+
+  begin
+    perform public.record_work_cell_ledger_observations(
+      v_run_id,
+      jsonb_set(v_entries, '{0,observation,status}', 'null'::jsonb, true)
+    );
+    raise exception 'CS4 missing-status guard did not reject malformed input';
+  exception
+    when others then
+      if sqlerrm <> 'Ledger observation outcome fields are invalid' then
+        raise;
+      end if;
+  end;
+
   select count(*) into v_count
     from public.record_work_cell_ledger_observations(v_run_id, v_entries);
   if v_count <> 3 then
