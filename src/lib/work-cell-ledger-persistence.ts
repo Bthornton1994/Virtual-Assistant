@@ -1,4 +1,4 @@
-import { AuthzError, DomainError } from "@/lib/domain";
+import { AuthzError, DomainError, type Actor } from "@/lib/domain";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
 import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import {
@@ -82,7 +82,7 @@ export type PersistedWorkCellLedgerResult = {
  * then pass or fail the attempt without changing these observations.
  */
 export async function recordWorkCellPerformanceObservations(
-  actor: { id: string; role: string; source: string },
+  actor: Actor,
   runId: string,
 ): Promise<PersistedWorkCellLedgerResult> {
   managerOnly(actor.role);
@@ -90,7 +90,7 @@ export async function recordWorkCellPerformanceObservations(
     throw new DomainError("Capability performance observations require the persistent Supabase workspace.");
   }
 
-  const bundle = await getWorkstreamRunBundle(actor as never, runId);
+  const bundle = await getWorkstreamRunBundle(actor, runId);
   if (bundle.run.status !== "running") {
     throw new DomainError("Capability performance observations must be recorded before the work-cell run is submitted.");
   }
@@ -100,7 +100,7 @@ export async function recordWorkCellPerformanceObservations(
 
   const existingResult = await db
     .from("evidence_artifacts")
-    .select("id, payload")
+    .select("id, content_hash, payload")
     .eq("run_id", runId)
     .eq("payload->>schemaVersion", "capability-performance-ledger/v1");
   if (existingResult.error) throw new DomainError(existingResult.error.message);
@@ -111,19 +111,34 @@ export async function recordWorkCellPerformanceObservations(
         "This run has a partial capability-performance ledger. It is immutable and requires a new work-cell attempt rather than repair.",
       );
     }
+    const existingObservations = existingRows.map((row, index) => {
+      const parsed = performanceObservationSchema.safeParse(row.payload);
+      if (!parsed.success || verifiedArtifactHash(row, `performance observation ${index + 1}`) !== sha256Hex(parsed.data)) {
+        throw new DomainError("An existing capability-performance observation is invalid or tampered.");
+      }
+      return parsed.data;
+    });
     return {
       persisted: false,
       artifactIds: existingRows.map((row) => String(row.id)),
-      observations: existingRows.map((row) => row.payload as CapabilityPerformanceObservation),
+      observations: existingObservations,
     };
   }
 
-  const workCell = await getRunWorkCell(actor as never, runId);
+  const workCell = await getRunWorkCell(actor, runId);
   const manifest = workCell.manifest;
   const packet = workCell.packet;
   const review = workCell.review;
   if (!manifest || !packet || !review) {
     throw new DomainError("Freeze the manifest and complete prepare plus independent review before recording the performance ledger.");
+  }
+  if (
+    manifest.prepareExecutorKey !== FROZEN_WORK_CELL_EXECUTOR_KEYS.prepare
+    || manifest.reviewExecutorKey !== FROZEN_WORK_CELL_EXECUTOR_KEYS.review
+  ) {
+    throw new DomainError(
+      "The persisted CS-4 adapter only covers the currently frozen Hermes/Grok work-cell executor keys.",
+    );
   }
 
   const validationResult = await db
