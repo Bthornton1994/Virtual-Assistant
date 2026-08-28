@@ -23,8 +23,12 @@ Rows are sorted by capability key, contract version, and executor key. The aggre
 
 ## Authority boundary
 
-The ledger must consume validator or human-QA evidence. An executor must not write its own authoritative performance score. This module has no Supabase client, no network call, and no integration with the current Step 3D assignments.
+The ledger must consume validator or human-QA evidence. An executor must not write its own authoritative performance score. The pure module has no Supabase client, network call, routing behavior, or promotion behavior.
+
+The persisted adapter is deliberately narrower than a score table. It reads the frozen manifest, typed packet/review/validation artifacts, and real completed phase assignments; verifies their hashes and bindings; derives observations through the pure module; and writes exactly three immutable observation artifacts while the run is still running. The database RPC binds each observation to the same run, a real completed assignment, and an existing typed source hash. A partial or duplicate write is rejected. The existing evidence trigger freezes these observations before submission.
+
+Owner minutes and benchmark truth are not inferred into this v1 ledger. Benchmark truth remains null unless a separate validator or human-QA artifact supplies it. Missing timestamps, hashes, assignments, or bindings fail closed.
 
 ## Next gate
 
-Before this ledger is used for qualification or routing, the control plane needs a persisted evidence adapter that preserves source hashes, an explicit benchmark suite, and a review policy for conflicting or incomplete observations.
+Before this ledger is used for qualification or routing, the control plane needs an explicit benchmark suite, a review policy for conflicting or incomplete observations, and enough accepted runs to compare at least two implementations. Persisting an observation does not qualify or promote an executor.
