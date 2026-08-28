@@ -193,6 +193,34 @@ describe("capability performance review v1", () => {
     );
   });
 
+  it("rejects reusing one persisted assignment across implementations", () => {
+    const result = reviewCapabilityPerformance({
+      capabilityKey: "evidence_research",
+      contractVersion: "catalog-evidence-packet/v1",
+      policy: policy({
+        minimumTotalRunsPerImplementation: 1,
+        minimumAcceptedOutcomesPerImplementation: 0,
+        minimumBenchmarkEvaluatedRunsPerImplementation: 1,
+      }),
+      observations: [
+        observation({
+          runId: "first-run",
+          assignmentId: "shared-assignment",
+          executorKey: "hermes-v1",
+          benchmarkTruth: "accept",
+        }),
+        observation({
+          runId: "second-run",
+          assignmentId: "shared-assignment",
+          executorKey: "grok-v1",
+          benchmarkTruth: "accept",
+        }),
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.failures).toContain("Duplicate assignmentId detected.");
+  });
   it("escalates any authority incident even when other thresholds pass", () => {
     const result = reviewCapabilityPerformance({
       capabilityKey: "evidence_research",
