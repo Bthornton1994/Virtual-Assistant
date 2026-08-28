@@ -116,10 +116,11 @@ begin
        or v_observation->>'executorKey' is null
        or v_observation->>'recordedAt' is null
        or v_content_hash is null
-       or v_content_hash !~ '^[0-9a-f]{64}
+       or v_content_hash !~ '^[0-9a-f]{64}$'
+       or v_source_hash is null
+       or v_source_hash !~ '^[0-9a-f]{64}$' then
       raise exception 'Ledger observation identity, provenance, and content hash are invalid';
     end if;
-
     if v_observation->>'status' is null
        or v_observation->>'status' not in ('completed', 'failed', 'blocked', 'inconclusive')
        or v_observation->>'hardGateResult' is null
