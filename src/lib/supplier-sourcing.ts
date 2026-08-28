@@ -836,12 +836,22 @@ export function buildGrokSupplierSourcingPrompt(
   const candidateSummary = manifest.candidates
     .map(
       (candidate) =>
-        "- " +
+        "- candidateId: " +
         candidate.candidateId +
-        ": " +
+        " | productId: " +
+        (candidate.productId ?? "null") +
+        " | productName: " +
         candidate.productName +
-        (candidate.brand ? " / " + candidate.brand : "") +
-        (candidate.modelOrVariant ? " / " + candidate.modelOrVariant : ""),
+        " | brand: " +
+        (candidate.brand ?? "null") +
+        " | modelOrVariant: " +
+        (candidate.modelOrVariant ?? "null") +
+        " | category: " +
+        candidate.category +
+        " | desiredFulfillmentModes: [" +
+        candidate.desiredFulfillmentModes.join(", ") +
+        "] | kitAssemblyRequired: " +
+        String(candidate.kitAssemblyRequired),
     )
     .join("\n");
 
@@ -850,9 +860,22 @@ export function buildGrokSupplierSourcingPrompt(
     "Use only the frozen brief below. Do not inspect or mutate live catalog state.",
     "Research public primary sources for supplier identity, exact product fit, supplier-direct or partner-fulfilled capability, kit assembly, availability, shipping, returns, compliance, seller of record, and commercial terms.",
     "You may identify candidates and draft an inquiry, but you must not send or schedule a message, create a relationship, assert acceptance, purchase anything, hold inventory, modify a repository or catalog, publish, create an account, change permissions, create a Skill or Routine, or spend money.",
-    "Every candidate remains unverified. Preserve the frozen productName, brand, modelOrVariant, category, desiredFulfillmentModes, and kitAssemblyRequired fields exactly. Preserve unresolved or conflicting facts and include direct HTTPS source URLs, access times, raw artifact hashes when available, and escalation reasons.",
-    "Return exactly one JSON object conforming to supplier-sourcing-packet/v1. Do not return Markdown or a prose wrapper.",
-    "Before the JSON object, do not perform any external action. The authorityReport must contain all zero values. Any outreachDraft must have sent=false and sentAt=null.",
+    "Every candidate remains unverified. Preserve every frozen candidate field exactly. Use unresolved or needs-review when evidence is incomplete or conflicting.",
+    "Output contract: return exactly one JSON object with only these top-level keys: schemaVersion, runId, inputHash, executorKey, generatedAt, market, candidates, authorityReport.",
+    "Do not add summary-report fields such as id, name, schema, mode, prepareOnly, verificationStatus, frozenBrief, or a top-level outreachDraft.",
+    "Each candidate must use exactly these fields: candidateId, productId, productName, brand, modelOrVariant, category, desiredFulfillmentModes, kitAssemblyRequired, status, supplierIdentity, productFit, fulfillment, commercialTerms, publicContactChannels, sourceArtifacts, outreachDraft, escalation.",
+    "Candidate status must be exactly one of candidate, not-found, disqualified, or needs-review. Do not use unverified as a status value.",
+    "supplierIdentity must contain exactly: status, tradingName, legalName, websiteUrl, supplierType, sourceUrls, reason.",
+    "productFit must contain exactly: status, basis, sourceUrls.",
+    "fulfillment must contain exactly: supplierDirect, partnerFulfilled, kitAssembly, inventoryModel, shipping, returns, availability, compliance, sellerOfRecord. sellerOfRecord must contain value and evidence.",
+    "commercialTerms must contain exactly: pricing, minimumOrderQuantity, dropshipFees, kitAssemblyFees.",
+    "Every finding object must contain exactly: status, basis, sourceUrls, sourceArtifactHashes. Finding status must be supported, contradicted, or unresolved.",
+    "publicContactChannels must be objects with channel, value, and sourceUrl. sourceArtifacts must contain url, title, organization, sourceType, accessedAt, validUntil, rawArtifactHash, and facts.",
+    "Each candidate outreachDraft must contain status, channel, destination, subject, body, factsUsedSourceUrls, sent, and sentAt. Use sent=false and sentAt=null. escalation must contain required and reason.",
+    "authorityReport must contain exactly these zero-valued keys: externalMessagesSent, purchasesMade, accountsCreated, repositoryChangesMade, catalogRecordsModified, permissionsChanged, skillsCreatedOrModified, routinesCreatedOrModified, otherExternalActions.",
+    "All URL values must be plain public HTTPS strings, never Markdown links. Never claim owned inventory, Grounded as seller of record, sent outreach, current availability without validity-bound evidence, or production readiness.",
+    "Preserve unresolved and conflicting facts, cite source artifact hashes, and do not invent missing fields or supplier terms.",
+    "Return no Markdown and no prose wrapper.",
     "",
     "Frozen runId: " + manifest.runId,
     "Frozen inputHash: " + manifest.inputHash,
