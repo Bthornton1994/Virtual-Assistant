@@ -147,6 +147,18 @@ Aligned with `VISION.md`. Do not skip stages.
 
 Near-term product work that still sits inside stage 1: live Supabase Auth wiring for new signups, Storage uploads beyond metadata, Stripe webhooks, and a hosted production project.
 
+## Delegation Cloud governance
+
+This repository is also the first dogfooding tenant for the Delegation Cloud operating model. Governance artifacts record strategy, current state, measurable metrics, authority boundaries, decisions, experiments, and risks without granting any executor new authority.
+
+- [Strategy](STRATEGY.md)
+- [Current state](CURRENT_STATE.md)
+- [KPI tree](KPI_TREE.yaml)
+- [Authority matrix](AUTHORITY_MATRIX.yaml)
+- [Decision log](DECISION_LOG.md)
+- [Experiment log](EXPERIMENT_LOG.md)
+- [Risk register](RISK_REGISTER.md)
+
 ## Product boundaries
 
 - AI must not independently send, purchase, publish, commit, transfer funds, or change access.
