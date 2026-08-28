@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   reviewCapabilityPerformance,
+  validateCapabilityPerformanceReview,
   type CapabilityPerformanceReviewPolicy,
 } from "@/lib/capability-performance-review";
 import {
@@ -111,6 +112,15 @@ describe("capability performance review v1", () => {
     expect(result.value.requiresManagerApproval).toBe(true);
     expect(result.value.authorityGranted).toBe(false);
     expect(result.value.reviewHash).toHaveLength(64);
+    expect(validateCapabilityPerformanceReview(result.value).ok).toBe(true);
+    const tampered = validateCapabilityPerformanceReview({
+      ...result.value,
+      failures: ["tampered"],
+    });
+    expect(tampered.ok).toBe(false);
+    expect(tampered.ok ? [] : tampered.failures).toContain(
+      "Review reviewHash does not match the deterministic review body.",
+    );
   });
 
   it("keeps incomplete evidence visible instead of treating it as ready", () => {
