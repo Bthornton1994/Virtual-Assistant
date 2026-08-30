@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   hashSupplierSourcingInput,
@@ -323,5 +325,10 @@ describe("supplier sourcing contract", () => {
     expect(prompt).toContain(input.inputHash);
     expect(prompt).toContain("must not send or schedule a message");
     expect(prompt).toContain("supplier-sourcing-packet/v1");
+  });
+
+  it("does not compute approval expiry from Date.now during render", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/components/supplier-sourcing.tsx"), "utf8");
+    expect(source).not.toMatch(/Date\.now\s*\(/);
   });
 });

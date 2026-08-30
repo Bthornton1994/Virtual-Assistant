@@ -91,10 +91,16 @@ export function validateEconomicEnvelope(input: unknown): EconomicEnvelopeValida
       values.push({ sourceKey, value });
     }
 
-    if (values.length === 2 && values[0].value !== values[1].value) {
-      failures.push(
-        `economicEnvelope.${key} conflicts with economicEnvelope.${definition.legacyKey}; provide one value or matching values.`,
-      );
+    const bothPresent = hasOwn(input, key) && hasOwn(input, definition.legacyKey);
+    if (bothPresent) {
+      const matching = values.length === 2 && values[0].value === values[1].value;
+      if (!matching) {
+        failures.push(
+          `economicEnvelope.${key} conflicts with economicEnvelope.${definition.legacyKey}; provide one value or matching values.`,
+        );
+      } else {
+        limits[key] = values[0].value;
+      }
     } else if (values.length > 0) {
       limits[key] = values[0].value;
     }
