@@ -1,3 +1,4 @@
+import { cloneElement, isValidElement, useId } from "react";
 import { cn } from "@/lib/cn";
 import type {
   ButtonHTMLAttributes,
@@ -39,7 +40,7 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return (
     <input
       className={cn(
-        "min-h-11 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none ring-accent/30 transition-[border-color,box-shadow] duration-150 ease-[var(--ease-ui-out)] placeholder:text-muted focus:border-accent focus:ring-2",
+        "min-h-11 w-full rounded-md border border-line bg-surface px-3 text-base text-ink outline-none ring-accent/30 transition-[border-color,box-shadow] duration-150 ease-[var(--ease-ui-out)] placeholder:text-muted focus:border-accent focus:ring-2 sm:text-sm",
         className,
       )}
       {...props}
@@ -51,7 +52,7 @@ export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
   return (
     <textarea
       className={cn(
-        "min-h-28 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none ring-accent/30 transition-[border-color,box-shadow] duration-150 ease-[var(--ease-ui-out)] placeholder:text-muted focus:border-accent focus:ring-2",
+        "min-h-28 w-full rounded-md border border-line bg-surface px-3 py-2 text-base text-ink outline-none ring-accent/30 transition-[border-color,box-shadow] duration-150 ease-[var(--ease-ui-out)] placeholder:text-muted focus:border-accent focus:ring-2 sm:text-sm",
         className,
       )}
       {...props}
@@ -108,10 +109,15 @@ export function Field({
   children: ReactNode;
   hint?: string;
 }) {
+  const generatedId = useId();
+  const child = isValidElement<{ id?: string }>(children) ? children : null;
+  const controlId = child?.props.id ?? generatedId;
+  const control = child ? cloneElement(child, { id: controlId }) : children;
+
   return (
     <div className="space-y-1">
-      <Label>{label}</Label>
-      {children}
+      <Label htmlFor={child ? controlId : undefined}>{label}</Label>
+      {control}
       {hint ? <p className="text-xs text-muted">{hint}</p> : null}
     </div>
   );
