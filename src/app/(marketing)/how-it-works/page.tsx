@@ -23,7 +23,7 @@ export default function HowItWorksPage() {
           Make sure every lead from the conference gets followed up.
         </h1>
         <p className="mt-5 max-w-xl text-lg text-ink-soft">
-          You state the outcome. We own the path. This is a walk-through of a sample request — not a live action in
+          You state the outcome. We own the path. This is a walk-through of a sample request | not a live action in
           anyone’s CRM.
         </p>
       </section>

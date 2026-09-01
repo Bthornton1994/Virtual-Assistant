@@ -49,3 +49,33 @@ Virtual Assistant also vendors Jakub Krehel’s interface-quality skills as a co
 - Keep operational forms and status surfaces readable, keyboard-usable, and resilient at narrow widths.
 
 The vendored files are source material for agents. Project-specific instructions in `AGENTS.md`, `VISION.md`, and the existing design-engineering guidance override them.
+
+## Taste skill and redesign guidance
+
+This repository vendors a focused subset of Leonxlnx's `taste-skill` collection for evidence-backed interface refinement.
+
+### Source
+
+- Upstream: https://github.com/Leonxlnx/taste-skill
+- Pinned source commit: `undefined`
+- License: MIT, see `docs/LEONXLNX-TASTE-SKILL-LICENSE.md`.
+- The pinned core skill is v2 experimental, so agent behavior remains reproducible at this revision.
+- Vendored files:
+  - `.claude/skills/design-taste-frontend/SKILL.md`
+  - `.claude/skills/redesign-existing-projects/SKILL.md`
+
+### How agents use it
+
+- Start with the core skill's design read and the redesign skill's scan, diagnose, and fix sequence.
+- Treat an existing surface as preserve-mode unless an owner explicitly approves an overhaul.
+- Use the core pre-flight for accessibility, mobile collapse, reduced motion, copy clarity, visual hierarchy, and performance. Do not treat its landing-page patterns as requirements for product surfaces.
+- Keep this project's tokens, information architecture, copy voice, data semantics, privacy, safety, and release controls authoritative.
+
+### Project application map
+
+- Design read: preserve-mode marketing experience for founders and technical buyers, with calm operational trust, warm neutrals, deep green, and Geist typography.
+- Review dials: DESIGN_VARIANCE 5, MOTION_INTENSITY 3, VISUAL_DENSITY 4 on marketing routes. These describe the current surface and guide proportionate review; they are not permission to replace the product language or layout.
+- Scope: Apply the core taste rules to marketing routes and the redesign audit to existing interface components. Operational app and ops dashboards remain product surfaces with their own density and authority requirements, not landing-page canvases.
+- Guardrails: Preserve explicit outcome, requested access, approval, logging, verification, and tenant-isolation language. Visual polish must not imply autonomous authority or execution beyond the Delegation Spec.
+
+The upstream collection also contains image-generation, image-to-code, Stitch, legacy v1, and fixed aesthetic preset skills. Those are intentionally not vendored here because they would introduce unrelated assets, dependencies, or visual mandates. The vendored files are source material for agents, and this repository's governing instructions override them.

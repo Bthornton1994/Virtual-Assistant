@@ -16,11 +16,10 @@ export default function HomePage() {
             <h1 className="mt-4 text-4xl font-semibold leading-[1.02] tracking-[-0.04em] sm:text-6xl">
               Give us the work.
               <br />
-              Get back to running your company.
+              Get your time back.
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft">
-              Your managed operations team for the work that keeps pulling you out of your real job. Inbox, scheduling,
-              CRM, research, follow-up, customer operations, reporting, and the hundred little things in between.
+              Your managed operations team for inbox, scheduling, CRM, research, follow-up, customer operations, reporting, and the work between.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link href="/book">
@@ -32,7 +31,6 @@ export default function HomePage() {
                 </Button>
               </Link>
             </div>
-            <p className="mt-5 text-sm text-muted">Humans + AI + automation. You stay in control.</p>
           </div>
           <HeroDashboard />
         </div>
@@ -88,7 +86,7 @@ export default function HomePage() {
         <div className="mx-auto max-w-6xl px-5 py-20">
           <h2 className="text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">What would you hand off right now?</h2>
           <p className="mt-4 max-w-xl text-ink-soft">
-            Type the outcome. We’ll show a sample plan — not a worker profile, and not a live action in your systems.
+            Type the outcome. We’ll show a sample plan | not a worker profile, and not a live action in your systems.
           </p>
           <div className="mt-10">
             <LiveDemo />

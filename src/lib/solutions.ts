@@ -99,7 +99,7 @@ export const SOLUTIONS: SolutionCategory[] = [
     catalogHint: "Onboarding, check-ins, support, renewals, feedback",
     name: "Serve customers",
     problem:
-      "Onboarding, check-ins, and renewals slip because they are important but not urgent — until they are.",
+      "Onboarding, check-ins, and renewals slip because they are important but not urgent | until they are.",
     outcome: "Customers are onboarded, checked on, and prepared for renewal without you holding the checklist.",
     owns: [
       "Onboarding checklists and kickoff packs",

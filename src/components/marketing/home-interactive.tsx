@@ -67,7 +67,7 @@ export function HeroDashboard() {
         {[
           { name: "Sales Operations", state: "Healthy", detail: "18 leads processed · 0 overdue" },
           { name: "Executive Operations", state: "Healthy", detail: "Inbox triaged · 3 decisions needed" },
-          { name: "Client Onboarding", state: "In progress", detail: "Acme onboarding · 8/11 steps" },
+          { name: "Client Onboarding", state: "In progress", detail: "Cascade onboarding · 8/11 steps" },
         ].map((row) => (
           <div key={row.name} className="bg-[#161915] px-5 py-4">
             <p className="text-sm font-medium">{row.name}</p>
@@ -86,14 +86,14 @@ export function HeroDashboard() {
 
 export function PainStream() {
   const items = [
-    "9:02 AM — Reschedule investor call",
-    "9:14 AM — Update CRM",
-    "9:31 AM — Find contractor",
-    "10:06 AM — Chase invoice",
-    "10:44 AM — Research competitor",
-    "11:17 AM — Follow up with prospect",
-    "11:46 AM — Prepare afternoon meeting",
-    "12:08 PM — Fix onboarding spreadsheet",
+    "9:02 AM | Reschedule investor call",
+    "9:14 AM | Update CRM",
+    "9:31 AM | Find contractor",
+    "10:06 AM | Chase invoice",
+    "10:44 AM | Research competitor",
+    "11:17 AM | Follow up with prospect",
+    "11:46 AM | Prepare afternoon meeting",
+    "12:08 PM | Fix onboarding spreadsheet",
   ];
   return (
     <ol className="relative mx-auto max-w-lg font-mono text-sm sm:text-base">
