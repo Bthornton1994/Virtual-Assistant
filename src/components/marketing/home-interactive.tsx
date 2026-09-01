@@ -36,11 +36,11 @@ export function HeroDashboard() {
         <div>
           <p className="text-xs text-white/50">Good morning, Elena</p>
           <p className="mt-1 text-[11px] uppercase tracking-[0.16em] text-white/40">Hours returned</p>
-          <p className="font-mono text-3xl tracking-tight">14.2</p>
+          <p className="font-mono tabular-nums text-3xl tracking-tight">14.2</p>
         </div>
         <div className="hidden text-right text-xs text-white/45 sm:block">
           <p>Decisions needed</p>
-          <p className="mt-1 font-mono text-lg text-[#e8d5a3]">3</p>
+          <p className="mt-1 font-mono tabular-nums text-lg text-[#e8d5a3]">3</p>
         </div>
       </div>
       <form
@@ -159,7 +159,7 @@ export function LiveDemo() {
         <div className="mt-8 overflow-hidden rounded-2xl bg-accent text-accent-fg">
           <div className="border-b border-white/10 px-6 py-5">
             <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">{plan.system}</p>
-            <h3 className="mt-2 text-2xl font-semibold tracking-tight">{plan.title}</h3>
+            <h3 className="mt-2 text-balance text-2xl font-semibold tracking-tight">{plan.title}</h3>
           </div>
           <div className="grid gap-8 px-6 py-6 lg:grid-cols-[1.1fr_0.9fr]">
             <div>
@@ -214,8 +214,8 @@ export function OperationsCatalog() {
       </div>
       <div className="min-w-0">
         <p className="text-[11px] uppercase tracking-[0.16em] text-muted">{item.catalogHint}</p>
-        <h3 className="mt-2 text-3xl font-semibold tracking-tight">{item.outcome}</h3>
-        <p className="mt-3 max-w-2xl text-ink-soft">{item.problem}</p>
+        <h3 className="mt-2 text-balance text-3xl font-semibold tracking-tight">{item.outcome}</h3>
+        <p className="mt-3 max-w-2xl text-pretty text-ink-soft">{item.problem}</p>
         <div className="mt-8 grid gap-8 md:grid-cols-2">
           <div>
             <p className="text-[11px] uppercase tracking-[0.16em] text-muted">We own</p>

@@ -81,7 +81,7 @@ function DemoBanner() {
 
 export function AppShell({ actor, children }: { actor: Actor; children: ReactNode }) {
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex min-h-[100dvh] flex-col">
       {actor.source === "demo" ? <DemoBanner /> : null}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <SideNav items={appNav} actor={actor} home="/app/dashboard" />
@@ -93,7 +93,7 @@ export function AppShell({ actor, children }: { actor: Actor; children: ReactNod
 
 export function OpsShell({ actor, children }: { actor: Actor; children: ReactNode }) {
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex min-h-[100dvh] flex-col">
       {actor.source === "demo" ? <DemoBanner /> : null}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <SideNav items={opsNav} actor={actor} home="/ops/dashboard" />
