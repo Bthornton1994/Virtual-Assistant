@@ -162,7 +162,7 @@ export default function HomePage() {
 
       <section className="bg-ink text-accent-fg">
         <div className="mx-auto max-w-6xl px-5 py-24">
-          <h2 className="text-balance max-w-3xl text-3xl font-semibold" leading-[1.08] tracking-[-0.03em] sm:text-5xl">
+          <h2 className="text-balance max-w-3xl text-3xl font-semibold leading-[1.08] tracking-[-0.03em] sm:text-5xl">
             Imagine opening your laptop tomorrow
             <br />
             and the work has already moved forward.
