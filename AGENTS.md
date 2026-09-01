@@ -87,3 +87,9 @@ For substantial engineering work:
 These principles improve execution quality but grant no authority. They never authorize a merge, Production deployment, Production database or environment write, customer or vendor message, purchase, account or permission change, destructive action, public publication, Skill/Routine promotion, or autonomy increase that the governing repository and Delegation Spec have not already authorized.
 
 See `docs/ENGINEERING-EXECUTION-PRINCIPLES.md` for the full standard and its relationship to the Gauntlet, evidence, Skills, and earned autonomy.
+
+## UI design engineering skills
+
+For UI or interaction work, read `docs/DESIGN_ENGINEERING.md` and `.claude/skills/emil-design-eng/SKILL.md` before editing. Use the supporting `animate`, `review-animations`, `improve-animations`, `find-animation-opportunities`, `animation-vocabulary`, `apple-design`, `pick-ui-library`, and `prototype` skills when the task calls for implementation, review, planning, vocabulary, gesture/material guidance, library selection, or genuine variant exploration.
+
+The project's existing vision, security, privacy, accessibility, safety, data, and release rules remain authoritative. These skills guide interface craft and never authorize a merge, deployment, data write, external communication, or product-behavior change.

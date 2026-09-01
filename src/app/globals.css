@@ -14,6 +14,9 @@
   --accent-hover: #0f2420;
   --accent-fg: #f4f7f5;
   --gold: #b0894a;
+  --ease-ui-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-ui-spatial: cubic-bezier(0.32, 0.72, 0, 1);
+  --motion-fast: 160ms;
   --good: #1d6b45;
   --good-bg: #e8f4ec;
   --warn: #8a5a10;
@@ -86,7 +89,7 @@ body {
 }
 
 .dc-rise {
-  animation: dc-rise 0.7s ease both;
+  animation: dc-rise 0.48s var(--ease-ui-out) both;
 }
 
 body {
@@ -105,4 +108,21 @@ select {
 
 a {
   color: inherit;
+}
+
+/* Emil design engineering polish */
+:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

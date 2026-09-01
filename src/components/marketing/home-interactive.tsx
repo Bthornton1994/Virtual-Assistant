@@ -20,7 +20,11 @@ export function HeroDashboard() {
     const next = text.trim();
     if (!next) return;
     window.dispatchEvent(new CustomEvent("dc:handoff", { detail: next }));
-    document.getElementById("live-demo")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById("live-demo")?.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "start",
+    });
   }
 
   return (
@@ -97,7 +101,7 @@ export function PainStream() {
         <li
           key={item}
           className="border-l border-line py-3 pl-5 text-ink-soft"
-          style={{ animation: `dc-rise 0.6s ease ${i * 0.08}s both` }}
+          style={{ animation: `dc-rise 0.48s var(--ease-ui-out) ${i * 0.08}s both` }}
         >
           {item}
         </li>
@@ -112,7 +116,10 @@ export function LiveDemo() {
   const [submitted, setSubmitted] = useState<string | null>(null);
 
   useEffect(() => {
-    const id = window.setInterval(() => setIndex((n) => (n + 1) % ROTATE.length), 3800);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const id = reduceMotion
+      ? undefined
+      : window.setInterval(() => setIndex((n) => (n + 1) % ROTATE.length), 3800);
     const onHandoff = (event: Event) => {
       const detail = (event as CustomEvent<string>).detail;
       setValue(detail);
@@ -120,7 +127,7 @@ export function LiveDemo() {
     };
     window.addEventListener("dc:handoff", onHandoff);
     return () => {
-      window.clearInterval(id);
+      if (id !== undefined) window.clearInterval(id);
       window.removeEventListener("dc:handoff", onHandoff);
     };
   }, []);
@@ -195,8 +202,9 @@ export function OperationsCatalog() {
             key={s.slug}
             type="button"
             onClick={() => setActive(s.slug)}
+            aria-pressed={active === s.slug}
             className={cn(
-              "shrink-0 rounded-full px-4 py-2 text-left text-sm lg:rounded-lg",
+              "flex min-h-11 shrink-0 items-center rounded-full px-4 py-2 text-left text-sm transition-[transform,background-color,color] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] lg:rounded-lg",
               active === s.slug ? "bg-accent text-accent-fg" : "bg-transparent text-ink-soft hover:text-ink",
             )}
           >

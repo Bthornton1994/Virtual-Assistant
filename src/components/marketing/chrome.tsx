@@ -44,44 +44,61 @@ export function MarketingHeader() {
         </div>
         <button
           type="button"
-          className="flex h-10 w-10 items-center justify-center rounded-md md:hidden"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-md transition-[background-color,transform] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] md:hidden"
           aria-label={open ? "Close menu" : "Open menu"}
           onClick={() => setOpen((v) => !v)}
         >
           <span className="sr-only">Menu</span>
           <span className="flex w-5 flex-col gap-1.5">
-            <span className={cn("h-px w-full bg-ink transition", open && "translate-y-[3.5px] rotate-45")} />
-            <span className={cn("h-px w-full bg-ink transition", open && "-translate-y-[3.5px] -rotate-45")} />
+            <span className={cn("h-px w-full bg-ink transition-[transform] duration-150 ease-[var(--ease-ui-out)]", open && "translate-y-[3.5px] rotate-45")} />
+            <span className={cn("h-px w-full bg-ink transition-[transform] duration-150 ease-[var(--ease-ui-out)]", open && "-translate-y-[3.5px] -rotate-45")} />
           </span>
         </button>
       </div>
-      {open ? (
-        <div className="fixed inset-0 top-16 z-40 bg-[color:var(--bg)] md:hidden">
-          <nav className="flex flex-col gap-1 px-5 py-6">
-            {links.map((l) => (
-              <Link
-                key={l.href}
-                href={l.href}
-                className="rounded-lg px-2 py-3 text-lg"
-                onClick={() => setOpen(false)}
-              >
-                {l.label}
-              </Link>
-            ))}
-            <Link href="/security" className="rounded-lg px-2 py-3 text-lg" onClick={() => setOpen(false)}>
-              Security
+      <div
+        className={cn(
+          "fixed inset-0 top-16 z-40 bg-[color:var(--bg)]/95 backdrop-blur-sm transition-[opacity,visibility] duration-200 ease-[var(--ease-ui-spatial)] md:hidden",
+          open ? "visible opacity-100" : "invisible pointer-events-none opacity-0",
+        )}
+        aria-hidden={!open}
+      >
+        <nav
+          className={cn(
+            "flex flex-col gap-1 px-5 py-6 transition-transform duration-200 ease-[var(--ease-ui-spatial)]",
+            open ? "translate-y-0" : "-translate-y-2",
+          )}
+        >
+          {links.map((l) => (
+            <Link
+              key={l.href}
+              href={l.href}
+              className="flex min-h-11 items-center rounded-lg px-2 py-3 text-lg transition-[background-color,color] duration-150 ease-[var(--ease-ui-out)] hover:bg-black/5"
+              onClick={() => setOpen(false)}
+            >
+              {l.label}
             </Link>
-            <Link href="/login" className="rounded-lg px-2 py-3 text-lg" onClick={() => setOpen(false)}>
-              Log in
-            </Link>
-            <Link href="/book" className="mt-4" onClick={() => setOpen(false)}>
-              <Button className="w-full" size="lg">
-                Start Delegating
-              </Button>
-            </Link>
-          </nav>
-        </div>
-      ) : null}
+          ))}
+          <Link
+            href="/security"
+            className="flex min-h-11 items-center rounded-lg px-2 py-3 text-lg transition-[background-color,color] duration-150 ease-[var(--ease-ui-out)] hover:bg-black/5"
+            onClick={() => setOpen(false)}
+          >
+            Security
+          </Link>
+          <Link
+            href="/login"
+            className="flex min-h-11 items-center rounded-lg px-2 py-3 text-lg transition-[background-color,color] duration-150 ease-[var(--ease-ui-out)] hover:bg-black/5"
+            onClick={() => setOpen(false)}
+          >
+            Log in
+          </Link>
+          <Link href="/book" className="mt-4" onClick={() => setOpen(false)}>
+            <Button className="w-full" size="lg">
+              Start Delegating
+            </Button>
+          </Link>
+        </nav>
+      </div>
     </header>
   );
 }
