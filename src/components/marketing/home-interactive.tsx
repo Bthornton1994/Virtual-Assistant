@@ -156,7 +156,7 @@ export function LiveDemo() {
         </div>
       </form>
       {plan ? (
-        <div className="mt-8 overflow-hidden rounded-2xl bg-accent text-accent-fg">
+        <div key={submitted} className="dc-rise mt-8 overflow-hidden rounded-2xl bg-accent text-accent-fg">
           <div className="border-b border-white/10 px-6 py-5">
             <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">{plan.system}</p>
             <h3 className="mt-2 text-balance text-2xl font-semibold tracking-tight">{plan.title}</h3>
@@ -212,7 +212,7 @@ export function OperationsCatalog() {
           </button>
         ))}
       </div>
-      <div className="min-w-0">
+      <div key={item.slug} className="dc-rise min-w-0">
         <p className="text-[11px] uppercase tracking-[0.16em] text-muted">{item.catalogHint}</p>
         <h3 className="mt-2 text-balance text-3xl font-semibold tracking-tight">{item.outcome}</h3>
         <p className="mt-3 max-w-2xl text-pretty text-ink-soft">{item.problem}</p>
