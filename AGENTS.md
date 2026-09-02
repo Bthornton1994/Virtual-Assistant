@@ -117,3 +117,10 @@ For UI work, use the vendored `ui-skills-root` routing layer to select the small
 These files are vendored from `https://github.com/ibelick/ui-skills` at commit `f2dadf221a166a79606b337d08ce0b04d0d2bfd9` and are reference material, not a runtime dependency. Existing Emil, Jakub, and Leon guidance, `VISION.md`, Delegation Specs, security, tenant isolation, and release controls remain authoritative.
 
 Apply this guidance to marketing routes and shared UI primitives. Preserve operational density and explicit outcome, access, approval, logging, verification, and tenant-isolation language. UI polish must not imply autonomous authority or hidden execution.
+
+
+## External agent stack from linked Grok and Cursor setup
+
+For UI, copy, source verification, and completion claims, read `docs/EXTERNAL-AGENT-SKILLS.md` and load only the smallest relevant vendored skill. Use `frontend-ui-engineering` for interface implementation, `source-driven-development` for framework-specific decisions, `no-ai-slop` for visible copy, `no-ai-design-slop` for product-specific UI audits, and `verification-before-completion` before claiming a fix or passing check.
+
+Apply this stack to marketing routes, shared UI primitives, and responsive navigation. Existing project vision, product boundaries, security, privacy, accessibility, methodology, tenant isolation, and release controls remain authoritative. The vendored files are source material, not runtime dependencies, and they do not authorize autonomous execution, production access, external actions, merges, or deployments.

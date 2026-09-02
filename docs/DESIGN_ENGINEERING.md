@@ -99,3 +99,13 @@ The upstream collection also contains image-generation, image-to-code, Stitch, l
 - Scope: marketing routes, shared UI primitives, and responsive navigation.
 - Preserve: outcome, access, approval, logging, verification, tenant-isolation, and Delegation Spec language.
 - Exclude: operational authority changes, autonomous execution claims, customer-data behavior, and dashboard rewrites.
+
+
+## External UI and copy quality gates
+
+- Use the existing design system and the smallest relevant skill from `docs/EXTERNAL-AGENT-SKILLS.md`; do not introduce a parallel visual system.
+- Use `no-ai-design-slop` as a removal-first review. Preserve product-specific identity, useful density, honest placeholders, and explicit states.
+- Use `no-ai-slop` for visible copy. Preserve supported claims and approved disclaimers; do not add invented proof or inflated outcomes.
+- Use `frontend-ui-engineering` for keyboard access, responsive behavior, loading, empty, error, and focus states.
+- Use `source-driven-development` for framework-specific changes and `verification-before-completion` before completion claims.
+- Scope: marketing routes and shared UI primitives. Product behavior, data handling, scoring, benefits, commerce, authority, and release gates remain outside this design layer.
