@@ -128,3 +128,7 @@ Apply this stack to marketing routes, shared UI primitives, and responsive navig
 ## External repository references
 
 For linked repository discovery posts, read `docs/EXTERNAL-AGENT-REPOSITORIES.md` before evaluating a new dependency, context store, agent runtime, model proxy, or UI reference. It records dispositions only. Do not install or enable a listed system without a separate architecture, license, data-authority, safety, and verification review. Existing project documents remain authoritative.
+
+## Design contract
+
+Read `DESIGN.md` together with `docs/DESIGN_ENGINEERING.md`, `AGENTS.md`, and the governing project documents before UI work. `DESIGN.md` is the compact design contract for product intent, responsive states, accessibility, truthful copy, and verification. It does not authorize product-behavior, data, scoring, commerce, external-action, merge, or deployment changes.
