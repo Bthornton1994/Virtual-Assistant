@@ -13,14 +13,13 @@ export default function HomePage() {
             <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">
               Your business shouldn’t run through you
             </p>
-            <h1 className="mt-4 text-4xl font-semibold leading-[1.02] tracking-[-0.04em] sm:text-6xl">
+            <h1 className="mt-4 text-balance text-4xl font-semibold leading-[1.02] tracking-[-0.04em] sm:text-6xl">
               Give us the work.
               <br />
-              Get back to running your company.
+              Get your time back.
             </h1>
-            <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft">
-              Your managed operations team for the work that keeps pulling you out of your real job. Inbox, scheduling,
-              CRM, research, follow-up, customer operations, reporting, and the hundred little things in between.
+            <p className="mt-6 max-w-xl text-pretty text-lg leading-relaxed text-ink-soft">
+              Your managed operations team for inbox, scheduling, CRM, research, follow-up, customer operations, reporting, and the work between.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link href="/book">
@@ -32,7 +31,6 @@ export default function HomePage() {
                 </Button>
               </Link>
             </div>
-            <p className="mt-5 text-sm text-muted">Humans + AI + automation. You stay in control.</p>
           </div>
           <HeroDashboard />
         </div>
@@ -40,7 +38,7 @@ export default function HomePage() {
 
       <section className="border-y border-line bg-bg-elevated">
         <div className="mx-auto max-w-6xl px-5 py-20">
-          <h2 className="max-w-xl text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">
+          <h2 className="text-balance max-w-xl text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">
             You probably didn’t start your company to do this.
           </h2>
           <div className="mt-12 grid gap-12 lg:grid-cols-[1fr_0.8fr] lg:items-end">
@@ -55,7 +53,7 @@ export default function HomePage() {
       </section>
 
       <section className="mx-auto max-w-6xl px-5 py-20">
-        <h2 className="max-w-2xl text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">
+        <h2 className="text-balance max-w-2xl text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">
           Not another assistant you have to manage.
         </h2>
         <div className="mt-12 grid overflow-hidden rounded-2xl md:grid-cols-2">
@@ -86,9 +84,9 @@ export default function HomePage() {
 
       <section className="border-y border-line bg-surface">
         <div className="mx-auto max-w-6xl px-5 py-20">
-          <h2 className="text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">What would you hand off right now?</h2>
+          <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">What would you hand off right now?</h2>
           <p className="mt-4 max-w-xl text-ink-soft">
-            Type the outcome. We’ll show a sample plan — not a worker profile, and not a live action in your systems.
+            Type the outcome. We’ll show a sample plan | not a worker profile, and not a live action in your systems.
           </p>
           <div className="mt-10">
             <LiveDemo />
@@ -97,7 +95,7 @@ export default function HomePage() {
       </section>
 
       <section className="mx-auto max-w-6xl px-5 py-20">
-        <h2 className="text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">The work we take on</h2>
+        <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">The work we take on</h2>
         <p className="mt-4 max-w-xl text-ink-soft">
           Not a menu of job titles. The categories of work that quietly become a founder’s week.
         </p>
@@ -108,7 +106,7 @@ export default function HomePage() {
 
       <section className="border-t border-line bg-bg-elevated">
         <div className="mx-auto max-w-6xl px-5 py-20">
-          <h2 className="text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">You stay in control.</h2>
+          <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">You stay in control.</h2>
           <div className="mt-12 grid gap-5 lg:grid-cols-2">
             <div className="overflow-hidden rounded-2xl bg-[#111410] text-[#f4f2ec] shadow-[0_20px_50px_rgba(17,20,16,0.18)]">
               <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs text-white/45">
@@ -164,7 +162,7 @@ export default function HomePage() {
 
       <section className="bg-ink text-accent-fg">
         <div className="mx-auto max-w-6xl px-5 py-24">
-          <h2 className="max-w-3xl text-3xl font-semibold leading-[1.08] tracking-[-0.03em] sm:text-5xl">
+          <h2 className="text-balance max-w-3xl text-3xl font-semibold leading-[1.08] tracking-[-0.03em] sm:text-5xl">
             Imagine opening your laptop tomorrow
             <br />
             and the work has already moved forward.

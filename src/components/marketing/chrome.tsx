@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -15,6 +16,7 @@ const links = [
 
 export function MarketingHeader() {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
 
   useEffect(() => {
     document.body.style.overflow = open ? "hidden" : "";
@@ -23,16 +25,38 @@ export function MarketingHeader() {
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
   return (
     <header className="sticky top-0 z-40 border-b border-line/70 bg-[color:var(--bg)]/90 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
         <Wordmark />
         <nav className="hidden items-center gap-7 text-sm text-ink-soft md:flex">
-          {links.map((l) => (
-            <Link key={l.href} href={l.href} className="hover:text-ink">
-              {l.label}
-            </Link>
-          ))}
+          {links.map((l) => {
+            const current = pathname === l.href || pathname.startsWith(`${l.href}/`);
+            return (
+              <Link
+                key={l.href}
+                href={l.href}
+                aria-current={current ? "page" : undefined}
+                className={cn(
+                  "relative transition-colors duration-150 ease-[var(--ease-ui-out)]",
+                  current
+                    ? "text-ink after:absolute after:-bottom-2 after:left-0 after:right-0 after:h-px after:bg-[color:var(--gold)]"
+                    : "text-ink-soft hover:text-ink",
+                )}
+              >
+                {l.label}
+              </Link>
+            );
+          })}
         </nav>
         <div className="hidden items-center gap-4 md:flex">
           <Link href="/login" className="text-sm text-ink-soft hover:text-ink">
@@ -44,44 +68,64 @@ export function MarketingHeader() {
         </div>
         <button
           type="button"
-          className="flex h-10 w-10 items-center justify-center rounded-md md:hidden"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-md transition-[background-color,transform] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] md:hidden"
           aria-label={open ? "Close menu" : "Open menu"}
+          aria-expanded={open}
+          aria-controls="marketing-mobile-menu"
           onClick={() => setOpen((v) => !v)}
         >
           <span className="sr-only">Menu</span>
           <span className="flex w-5 flex-col gap-1.5">
-            <span className={cn("h-px w-full bg-ink transition", open && "translate-y-[3.5px] rotate-45")} />
-            <span className={cn("h-px w-full bg-ink transition", open && "-translate-y-[3.5px] -rotate-45")} />
+            <span className={cn("h-px w-full bg-ink transition-[transform] duration-150 ease-[var(--ease-ui-out)]", open && "translate-y-[3.5px] rotate-45")} />
+            <span className={cn("h-px w-full bg-ink transition-[transform] duration-150 ease-[var(--ease-ui-out)]", open && "-translate-y-[3.5px] -rotate-45")} />
           </span>
         </button>
       </div>
-      {open ? (
-        <div className="fixed inset-0 top-16 z-40 bg-[color:var(--bg)] md:hidden">
-          <nav className="flex flex-col gap-1 px-5 py-6">
-            {links.map((l) => (
+      <div
+        id="marketing-mobile-menu"
+        className={cn(
+          "fixed inset-0 top-16 z-40 bg-[color:var(--bg)]/95 backdrop-blur-sm transition-[opacity,visibility] duration-200 ease-[var(--ease-ui-spatial)] md:hidden",
+          open ? "visible opacity-100" : "invisible pointer-events-none opacity-0",
+        )}
+        aria-hidden={!open}
+      >
+        <nav
+          className={cn(
+            "flex flex-col gap-1 px-5 py-6 transition-transform duration-200 ease-[var(--ease-ui-spatial)]",
+            open ? "translate-y-0" : "-translate-y-2",
+          )}
+        >
+          {links.map((l) => {
+            const current = pathname === l.href || pathname.startsWith(`${l.href}/`);
+            return (
               <Link
                 key={l.href}
                 href={l.href}
-                className="rounded-lg px-2 py-3 text-lg"
+                aria-current={current ? "page" : undefined}
+                className={cn(
+                  "flex min-h-11 items-center rounded-lg px-2 py-3 text-lg transition-[background-color,color] duration-150 ease-[var(--ease-ui-out)]",
+                  current ? "bg-black/5 text-ink" : "text-ink-soft hover:bg-black/5 hover:text-ink",
+                )}
                 onClick={() => setOpen(false)}
               >
                 {l.label}
               </Link>
-            ))}
-            <Link href="/security" className="rounded-lg px-2 py-3 text-lg" onClick={() => setOpen(false)}>
-              Security
-            </Link>
-            <Link href="/login" className="rounded-lg px-2 py-3 text-lg" onClick={() => setOpen(false)}>
-              Log in
-            </Link>
-            <Link href="/book" className="mt-4" onClick={() => setOpen(false)}>
-              <Button className="w-full" size="lg">
-                Start Delegating
-              </Button>
-            </Link>
-          </nav>
-        </div>
-      ) : null}
+            );
+          })}
+          <Link
+            href="/login"
+            className="flex min-h-11 items-center rounded-lg px-2 py-3 text-lg transition-[background-color,color] duration-150 ease-[var(--ease-ui-out)] hover:bg-black/5"
+            onClick={() => setOpen(false)}
+          >
+            Log in
+          </Link>
+          <Link href="/book" className="mt-4" onClick={() => setOpen(false)}>
+            <Button className="w-full" size="lg">
+              Start Delegating
+            </Button>
+          </Link>
+        </nav>
+      </div>
     </header>
   );
 }

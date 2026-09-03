@@ -15,7 +15,7 @@ const items = [
   },
   {
     title: "Bounded authority",
-    body: "Sensitive execution cannot enter in-progress without an approved approval — in application code and in a database trigger.",
+    body: "Sensitive execution cannot enter in-progress without an approved approval | in application code and in a database trigger.",
   },
   {
     title: "Audit trail",

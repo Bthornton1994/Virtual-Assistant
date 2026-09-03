@@ -1,3 +1,4 @@
+import { cloneElement, isValidElement, useId } from "react";
 import { cn } from "@/lib/cn";
 import type {
   ButtonHTMLAttributes,
@@ -20,9 +21,9 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors disabled:opacity-50",
-        size === "sm" && "h-8 px-2.5 text-xs",
-        size === "md" && "h-10 px-3.5 text-sm",
+        "inline-flex min-h-11 items-center justify-center gap-2 rounded-md font-medium transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-50",
+        size === "sm" && "min-h-11 px-2.5 text-xs",
+        size === "md" && "min-h-11 px-3.5 text-sm",
         size === "lg" && "h-12 px-5 text-[15px]",
         variant === "primary" && "bg-accent text-accent-fg hover:bg-accent-hover",
         variant === "secondary" && "border border-line-strong bg-surface text-ink hover:bg-bg-elevated",
@@ -39,7 +40,7 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return (
     <input
       className={cn(
-        "h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none ring-accent/30 placeholder:text-muted focus:border-accent focus:ring-2",
+        "min-h-11 w-full rounded-md border border-line bg-surface px-3 text-base text-ink outline-none ring-accent/30 transition-[border-color,box-shadow] duration-150 ease-[var(--ease-ui-out)] placeholder:text-muted focus:border-accent focus:ring-2 sm:text-sm",
         className,
       )}
       {...props}
@@ -51,7 +52,7 @@ export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
   return (
     <textarea
       className={cn(
-        "min-h-28 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none ring-accent/30 placeholder:text-muted focus:border-accent focus:ring-2",
+        "min-h-28 w-full rounded-md border border-line bg-surface px-3 py-2 text-base text-ink outline-none ring-accent/30 transition-[border-color,box-shadow] duration-150 ease-[var(--ease-ui-out)] placeholder:text-muted focus:border-accent focus:ring-2 sm:text-sm",
         className,
       )}
       {...props}
@@ -108,10 +109,15 @@ export function Field({
   children: ReactNode;
   hint?: string;
 }) {
+  const generatedId = useId();
+  const child = isValidElement<{ id?: string }>(children) ? children : null;
+  const controlId = child?.props.id ?? generatedId;
+  const control = child ? cloneElement(child, { id: controlId }) : children;
+
   return (
     <div className="space-y-1">
-      <Label>{label}</Label>
-      {children}
+      <Label htmlFor={child ? controlId : undefined}>{label}</Label>
+      {control}
       {hint ? <p className="text-xs text-muted">{hint}</p> : null}
     </div>
   );

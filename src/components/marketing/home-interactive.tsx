@@ -20,7 +20,11 @@ export function HeroDashboard() {
     const next = text.trim();
     if (!next) return;
     window.dispatchEvent(new CustomEvent("dc:handoff", { detail: next }));
-    document.getElementById("live-demo")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById("live-demo")?.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "start",
+    });
   }
 
   return (
@@ -32,11 +36,11 @@ export function HeroDashboard() {
         <div>
           <p className="text-xs text-white/50">Good morning, Elena</p>
           <p className="mt-1 text-[11px] uppercase tracking-[0.16em] text-white/40">Hours returned</p>
-          <p className="font-mono text-3xl tracking-tight">14.2</p>
+          <p className="font-mono tabular-nums text-3xl tracking-tight">14.2</p>
         </div>
         <div className="hidden text-right text-xs text-white/45 sm:block">
           <p>Decisions needed</p>
-          <p className="mt-1 font-mono text-lg text-[#e8d5a3]">3</p>
+          <p className="mt-1 font-mono tabular-nums text-lg text-[#e8d5a3]">3</p>
         </div>
       </div>
       <form
@@ -63,7 +67,7 @@ export function HeroDashboard() {
         {[
           { name: "Sales Operations", state: "Healthy", detail: "18 leads processed · 0 overdue" },
           { name: "Executive Operations", state: "Healthy", detail: "Inbox triaged · 3 decisions needed" },
-          { name: "Client Onboarding", state: "In progress", detail: "Acme onboarding · 8/11 steps" },
+          { name: "Client Onboarding", state: "In progress", detail: "Cascade onboarding · 8/11 steps" },
         ].map((row) => (
           <div key={row.name} className="bg-[#161915] px-5 py-4">
             <p className="text-sm font-medium">{row.name}</p>
@@ -82,14 +86,14 @@ export function HeroDashboard() {
 
 export function PainStream() {
   const items = [
-    "9:02 AM — Reschedule investor call",
-    "9:14 AM — Update CRM",
-    "9:31 AM — Find contractor",
-    "10:06 AM — Chase invoice",
-    "10:44 AM — Research competitor",
-    "11:17 AM — Follow up with prospect",
-    "11:46 AM — Prepare afternoon meeting",
-    "12:08 PM — Fix onboarding spreadsheet",
+    "9:02 AM | Reschedule investor call",
+    "9:14 AM | Update CRM",
+    "9:31 AM | Find contractor",
+    "10:06 AM | Chase invoice",
+    "10:44 AM | Research competitor",
+    "11:17 AM | Follow up with prospect",
+    "11:46 AM | Prepare afternoon meeting",
+    "12:08 PM | Fix onboarding spreadsheet",
   ];
   return (
     <ol className="relative mx-auto max-w-lg font-mono text-sm sm:text-base">
@@ -97,7 +101,7 @@ export function PainStream() {
         <li
           key={item}
           className="border-l border-line py-3 pl-5 text-ink-soft"
-          style={{ animation: `dc-rise 0.6s ease ${i * 0.08}s both` }}
+          style={{ animation: `dc-rise 0.48s var(--ease-ui-out) ${i * 0.08}s both` }}
         >
           {item}
         </li>
@@ -112,7 +116,10 @@ export function LiveDemo() {
   const [submitted, setSubmitted] = useState<string | null>(null);
 
   useEffect(() => {
-    const id = window.setInterval(() => setIndex((n) => (n + 1) % ROTATE.length), 3800);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const id = reduceMotion
+      ? undefined
+      : window.setInterval(() => setIndex((n) => (n + 1) % ROTATE.length), 3800);
     const onHandoff = (event: Event) => {
       const detail = (event as CustomEvent<string>).detail;
       setValue(detail);
@@ -120,7 +127,7 @@ export function LiveDemo() {
     };
     window.addEventListener("dc:handoff", onHandoff);
     return () => {
-      window.clearInterval(id);
+      if (id !== undefined) window.clearInterval(id);
       window.removeEventListener("dc:handoff", onHandoff);
     };
   }, []);
@@ -149,10 +156,10 @@ export function LiveDemo() {
         </div>
       </form>
       {plan ? (
-        <div className="mt-8 overflow-hidden rounded-2xl bg-accent text-accent-fg">
+        <div key={submitted} className="dc-rise mt-8 overflow-hidden rounded-2xl bg-accent text-accent-fg">
           <div className="border-b border-white/10 px-6 py-5">
             <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">{plan.system}</p>
-            <h3 className="mt-2 text-2xl font-semibold tracking-tight">{plan.title}</h3>
+            <h3 className="mt-2 text-balance text-2xl font-semibold tracking-tight">{plan.title}</h3>
           </div>
           <div className="grid gap-8 px-6 py-6 lg:grid-cols-[1.1fr_0.9fr]">
             <div>
@@ -195,8 +202,9 @@ export function OperationsCatalog() {
             key={s.slug}
             type="button"
             onClick={() => setActive(s.slug)}
+            aria-pressed={active === s.slug}
             className={cn(
-              "shrink-0 rounded-full px-4 py-2 text-left text-sm lg:rounded-lg",
+              "flex min-h-11 shrink-0 items-center rounded-full px-4 py-2 text-left text-sm transition-[transform,background-color,color] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] lg:rounded-lg",
               active === s.slug ? "bg-accent text-accent-fg" : "bg-transparent text-ink-soft hover:text-ink",
             )}
           >
@@ -204,10 +212,10 @@ export function OperationsCatalog() {
           </button>
         ))}
       </div>
-      <div className="min-w-0">
+      <div key={item.slug} className="dc-rise min-w-0">
         <p className="text-[11px] uppercase tracking-[0.16em] text-muted">{item.catalogHint}</p>
-        <h3 className="mt-2 text-3xl font-semibold tracking-tight">{item.outcome}</h3>
-        <p className="mt-3 max-w-2xl text-ink-soft">{item.problem}</p>
+        <h3 className="mt-2 text-balance text-3xl font-semibold tracking-tight">{item.outcome}</h3>
+        <p className="mt-3 max-w-2xl text-pretty text-ink-soft">{item.problem}</p>
         <div className="mt-8 grid gap-8 md:grid-cols-2">
           <div>
             <p className="text-[11px] uppercase tracking-[0.16em] text-muted">We own</p>

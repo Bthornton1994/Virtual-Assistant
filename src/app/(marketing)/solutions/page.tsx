@@ -12,7 +12,7 @@ export default function SolutionsPage() {
         The work that keeps becoming your job.
       </h1>
       <p className="mt-5 max-w-2xl text-lg text-ink-soft">
-        Pick the part of the week you want back. We take ownership of the path — not a seat you have to manage.
+        Pick the part of the week you want back. We take ownership of the path | not a seat you have to manage.
       </p>
       <div className="mt-16 divide-y divide-line border-y border-line">
         {SOLUTIONS.map((s) => (
