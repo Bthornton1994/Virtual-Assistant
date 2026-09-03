@@ -110,13 +110,6 @@ export function MarketingHeader() {
             );
           })}
           <Link
-            href="/security"
-            className="flex min-h-11 items-center rounded-lg px-2 py-3 text-lg transition-[background-color,color] duration-150 ease-[var(--ease-ui-out)] hover:bg-black/5"
-            onClick={() => setOpen(false)}
-          >
-            Security
-          </Link>
-          <Link
             href="/login"
             className="flex min-h-11 items-center rounded-lg px-2 py-3 text-lg transition-[background-color,color] duration-150 ease-[var(--ease-ui-out)] hover:bg-black/5"
             onClick={() => setOpen(false)}
