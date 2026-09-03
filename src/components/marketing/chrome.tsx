@@ -70,6 +70,8 @@ export function MarketingHeader() {
           type="button"
           className="flex min-h-11 min-w-11 items-center justify-center rounded-md transition-[background-color,transform] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] md:hidden"
           aria-label={open ? "Close menu" : "Open menu"}
+          aria-expanded={open}
+          aria-controls="marketing-mobile-menu"
           onClick={() => setOpen((v) => !v)}
         >
           <span className="sr-only">Menu</span>
@@ -80,6 +82,7 @@ export function MarketingHeader() {
         </button>
       </div>
       <div
+        id="marketing-mobile-menu"
         className={cn(
           "fixed inset-0 top-16 z-40 bg-[color:var(--bg)]/95 backdrop-blur-sm transition-[opacity,visibility] duration-200 ease-[var(--ease-ui-spatial)] md:hidden",
           open ? "visible opacity-100" : "invisible pointer-events-none opacity-0",
