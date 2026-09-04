@@ -107,6 +107,20 @@ export function planMemoryConsolidation(
   );
   const matched = [...new Set([...sameIdentity, ...sameClaim].map((memory) => memory.memoryId))].sort();
 
+  const unresolvedConflicts = [...sameIdentity, ...sameClaim].filter(
+    (memory) => memory.status === "conflicted",
+  );
+  if (unresolvedConflicts.length > 0) {
+    return {
+      ok: true,
+      schemaVersion: MEMORY_CONSOLIDATION_SCHEMA_VERSION,
+      action: "review_conflict",
+      candidate,
+      matchedMemoryIds: matched,
+      reason: "An unresolved conflict set already covers this logical claim.",
+    };
+  }
+
   if (sameIdentity.some((memory) => memory.memoryHash === candidate.memoryHash)) {
     return {
       ok: true,
