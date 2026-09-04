@@ -123,7 +123,7 @@ begin
     raise exception 'The execution event constraint must allow memory_context_bound';
   end if;
 end;
-$;
+$$;
 
 select
   'memory_control_plane_v1_structural_proof' as proof,
