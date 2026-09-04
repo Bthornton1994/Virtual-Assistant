@@ -709,7 +709,8 @@ begin
      ) is distinct from row(
        old.memory_run_id, old.memory_assignment_id,
        old.memory_execution_context_hash, old.memory_context_hash,
-       old.memory_read_receipt_hash, old.memory_selected_ids, old.memory_selected_refs
+       old.memory_read_receipt_hash, old.memory_binding_hash,
+       old.memory_selected_ids, old.memory_selected_refs
      ) then
     if old.memory_binding_hash is not null then
       raise exception 'Execution memory binding is immutable after attachment';
