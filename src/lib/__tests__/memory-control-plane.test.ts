@@ -123,13 +123,14 @@ describe("memory control plane", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.failures.join("; "));
 
-    expect(result.context.items.map((item) => item.memory.memoryId)).toEqual([
-      "run-memory",
-      "organization-memory",
-    ]);
+    expect(result.context.items.map((item) => item.memory.memoryId)).toEqual(["run-memory"]);
     expect(result.context.items[0].selectionReason).toBe("exact_scope_and_subject");
-    expect(result.context.items[1].selectionReason).toBe("broader_scope_and_subject");
-    expect(result.context.readReceipt.selected).toHaveLength(2);
+    expect(result.context.readReceipt.selected).toHaveLength(1);
+    expect(result.context.readReceipt.excluded).toContainEqual({
+      memoryId: "organization-memory",
+      reason: "shadowed_by_specific_scope",
+      detail: "A more specific scoped memory was selected for this claim.",
+    });
     expect(result.context.readReceipt.excluded).toContainEqual({
       memoryId: "other-organization",
       reason: "wrong_organization",
