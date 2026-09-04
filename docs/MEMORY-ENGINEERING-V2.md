@@ -338,3 +338,17 @@ Memory may influence a run only when:
 - cold/warm evaluation shows a measurable benefit without unacceptable safety or privacy regression.
 
 This is aligned with Delegation Cloud's existing doctrine: customer outcomes, explicit authority, proof-carrying work, independent review, measured economics, tenant isolation, and earned autonomy. It does not change any product boundary for Grounded, CareReserve, Manipulation Score, or Three White Lights.
+
+## Production readiness boundary
+
+The pure memory contracts are now paired with a server-only persistence boundary on this branch:
+
+- 20260904120000_memory_control_plane_persistence_v1.sql adds append-only memory revisions, latest-revision reads, same-tenant evidence binding, and controlled erasure.
+- memory-persistence.ts is the only application adapter. It validates the typed memory, sends canonical hash-excluded bytes to the database, rejects demo-mode persistence, authorizes final-state transitions, and compiles reads from the latest persisted snapshot.
+- The database refuses direct browser grants, rejects a memory whose source artifact ID, schema version, content hash, or organization does not match an existing evidence artifact, and rejects revision gaps or forged supersedesHash lineage.
+- Execution Runtime claims may use claim_execution_step_with_memory. The wrapper stores the execution-context hash, memory-context hash, read-receipt hash, binding hash, run and assignment identifiers, and selected memory IDs in the same transaction as the lease claim. A half-bound claim rolls back.
+- Erasure removes all clear memory payloads and revisions for one memory ID and retains only a non-sensitive tombstone with hashes and counts. Shared evidence artifacts are intentionally not deleted by this function; their own retention and erasure policy must be applied separately.
+
+This is repository-ready, not an assertion that Production is live. The database migration and QA proof still require a dedicated Delegation Cloud QA project and a separately mapped Production project. The release remains blocked until the migration is applied in QA, the structural proof passes, an isolated fixture proves persist/read/latest-revision/erasure behavior, the competing-worker and expired-lease tests pass with the bound receipt, and the environment has backups, logs, alerts, and rollback evidence. The currently visible Supabase project is not an established Delegation Cloud environment and must not be used for this verification.
+
+The trust claim is deliberately narrow: hashes prove canonical integrity and lineage; they do not prove that a human claim is true or that an external source is authoritative. Source-artifact existence and content-hash matching are checked at persistence time, while truth, approval, and authority remain governed by the active Delegation Spec, deterministic validators, and accountable operators.
