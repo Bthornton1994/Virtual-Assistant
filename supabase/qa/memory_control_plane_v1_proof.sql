@@ -92,8 +92,10 @@ begin
     join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public'
       and c.relname = 'execution_attempts'
-      and a.attname = 'memory_binding_hash'
+      and a.attname in ('memory_binding_hash', 'memory_selected_refs')
       and not a.attisdropped
+    group by c.relname
+    having count(*) = 2
   ) then
     raise exception 'Execution attempts must carry memory_binding_hash';
   end if;
