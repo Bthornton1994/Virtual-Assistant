@@ -51,7 +51,7 @@ function memory(overrides: MemoryOverrides = {}) {
       recordedBy: "owner-001",
       approverId: null,
     },
-    reviewAfter: "2026-09-01T00:00:00Z",
+    reviewAfter: "2026-09-15T00:00:00Z",
     expiresAt: "2026-10-01T00:00:00Z",
     expiredAt: null,
     invalidatedAt: null,
