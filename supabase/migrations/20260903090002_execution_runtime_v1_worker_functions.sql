@@ -1,13 +1,8 @@
 -- Execution Runtime v1 claim RPC.
 --
--- Supabase's migration transport rejects this function's raw statement even
--- though PostgreSQL accepts it. Execute the static definition inside one
--- transaction so the tracked migration still installs the same function and
--- grants atomically.
+-- Select the step columns and executor kind into one record. PostgreSQL does
+-- not permit a row-typed variable as one item in a multi-target INTO list.
 
-do $migration$
-begin
-  execute $claim_function$
 create or replace function public.claim_execution_step(
   p_worker_id text,
   p_capability_key text,
@@ -30,12 +25,11 @@ language plpgsql
 set search_path = public
 as $$
 declare
-  v_step public.execution_plan_steps%rowtype;
+  v_step record;
   v_plan public.execution_plans%rowtype;
   v_attempt_id uuid;
   v_expires timestamptz;
   v_attempt_number integer;
-  v_executor_kind text;
 begin
   if current_user <> 'service_role' then raise exception 'Execution runtime mutations require the service role'; end if;
   if p_worker_id is null or p_worker_id !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$' then raise exception 'Invalid worker id'; end if;
@@ -43,7 +37,7 @@ begin
   if p_lease_token_hash is null or p_lease_token_hash !~ '^[0-9a-f]{64}$' then raise exception 'Invalid lease token hash'; end if;
   if p_lease_seconds < 30 or p_lease_seconds > 3600 then raise exception 'Lease must be between 30 and 3600 seconds'; end if;
 
-  select s, ep.executor_kind into v_step, v_executor_kind
+  select s.*, ep.executor_kind into v_step
     from public.execution_plan_steps s
     join public.execution_plans p on p.id = s.plan_id
     join public.workstream_runs wr on wr.id = s.run_id and wr.status = 'running'
@@ -96,7 +90,7 @@ begin
            'mayOwnAuthoritativeState', false,
            'stepKey', v_step.step_key
          ),
-         p_worker_id, v_executor_kind,
+         p_worker_id, v_step.executor_kind,
          v_step.input_artifact_ids, now()
   returning id into v_attempt_id;
 
@@ -113,7 +107,7 @@ begin
   return query select v_attempt_id, v_step.plan_id, v_step.id, v_step.run_id,
     v_step.step_key, v_step.capability_key, v_step.action_class,
     jsonb_build_object('planHash', v_plan.plan_hash, 'executorKey', p_worker_id,
-      'executorKind', v_executor_kind, 'authoritySnapshot',
+      'executorKind', v_step.executor_kind, 'authoritySnapshot',
       jsonb_build_object('actionClass', v_step.action_class,
         'dataSensitivity', v_step.data_sensitivity,
         'requiresHumanApproval', v_step.requires_human_approval,
@@ -121,16 +115,8 @@ begin
         'mayOwnAuthoritativeState', false)),
     v_expires, v_attempt_number;
 end;
-$$;
+$$;;
 
 revoke all on function public.claim_execution_step(text, text, text, integer) from public, anon, authenticated;
-$claim_function$;
-  execute $claim_revoke$
-revoke all on function public.claim_execution_step(text, text, text, integer) from public, anon, authenticated;
 grant execute on function public.claim_execution_step(text, text, text, integer) to service_role;
-$claim_revoke$;
-  execute $claim_grant$
 grant execute on function public.claim_execution_step(text, text, text, integer) to service_role;
-$claim_grant$;
-end;
-$migration$;
