@@ -663,7 +663,6 @@ export function validateMemoryContext(input: unknown): MemoryContextValidationRe
       return;
     }
 
-    const expectedAdvisory = memory.status === "candidate";
     if (parsedItem.data.advisory !== expectedAdvisory) {
       failures.push("Context item " + index + " has an incorrect advisory label.");
     }
