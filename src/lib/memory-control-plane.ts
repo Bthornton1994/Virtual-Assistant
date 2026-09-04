@@ -246,23 +246,12 @@ function subjectMatch(
 function selectionReason(
   scopeRank: number,
   subject: "exact_subject" | "prefix",
-  request: MemoryAccessRequest,
 ): SelectedMemoryRef["selectionReason"] {
   const broad = scopeRank <= scopeSpecificity("organization");
   if (!broad && subject === "exact_subject") return "exact_scope_and_subject";
   if (!broad && subject === "prefix") return "exact_scope_and_prefix";
   if (broad && subject === "exact_subject") return "broader_scope_and_subject";
   return "broader_scope_and_prefix";
-}
-
-function sameLogicalClaim(left: OperationalMemory, right: OperationalMemory): boolean {
-  return (
-    left.kind === right.kind &&
-    left.subjectKey === right.subjectKey &&
-    left.scope.organizationId === right.scope.organizationId &&
-    left.scope.scopeKind === right.scope.scopeKind &&
-    left.scope.scopeKey === right.scope.scopeKey
-  );
 }
 
 function receiptHash(body: Omit<MemoryReadReceipt, "receiptHash">): string {
@@ -293,9 +282,11 @@ function buildReceipt(
   return { ...body, receiptHash: receiptHash(body) };
 }
 
-export function validateMemoryReadReceipt(input: unknown): MemoryCompilationResult["ok"] extends true
-  ? never
-  : { ok: true; value: MemoryReadReceipt } | { ok: false; failures: string[] } {
+export type MemoryReceiptValidationResult =
+  | { ok: true; value: MemoryReadReceipt }
+  | { ok: false; failures: string[] };
+
+export function validateMemoryReadReceipt(input: unknown): MemoryReceiptValidationResult {
   const parsed = memoryReadReceiptSchema.safeParse(input);
   if (!parsed.success) return { ok: false, failures: issueMessages(parsed.error.issues, "Receipt ") };
   const { receiptHash: storedHash, ...body } = parsed.data;
@@ -477,7 +468,7 @@ export function compileMemoryContext(
     const candidateItems = [...selectedItems, {
       memory: item.memory,
       advisory: item.advisory,
-      selectionReason: selectionReason(item.scopeRank, item.matchReason, request),
+      selectionReason: selectionReason(item.scopeRank, item.matchReason),
       scopeRank: item.scopeRank,
     }];
     const serialized = canonicalJsonStringify({
