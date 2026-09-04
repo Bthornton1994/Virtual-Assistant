@@ -53,3 +53,17 @@ supplier message. The operator handoff is documented in
 `docs/GROK-BOT-SUPPLIER-SOURCING-RUNBOOK.md`; the current database guard also
 rejects outreach approval before a verified Outcome Receipt and rejects sent
 delivery results until a connector is qualified.
+
+## Software Factory Run Manager
+
+The Software Factory lane adds one active internal capability:
+
+- `software_factory_run_management` — govern software work requests through
+  Delegation Specs, Workstream Runs, structured task packets, human-mediated
+  worker handoffs, hashed evidence, owner approval gates, and Outcome Receipts.
+
+`software_repository_read`, `software_change_prepare`, and
+`software_change_verify` remain `proposed`. They now declare Software Factory
+contracts but have no qualified executor mapping. Grok Bot and Cursor Cloud
+Agent are not connected. Default action class is `prepare_only`. See
+`docs/SOFTWARE-FACTORY-RUN-MANAGER-V1.md`.
