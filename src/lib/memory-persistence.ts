@@ -17,8 +17,10 @@ import {
   type MemoryCompilationResult,
 } from "@/lib/memory-control-plane";
 import {
+  createOperationalMemory,
   validateOperationalMemory,
   type OperationalMemory,
+  type OperationalMemoryInput,
 } from "@/lib/operational-memory";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -50,11 +52,18 @@ export type OperationalMemoryErasure = {
  * Builds the exact bytes sent to the database persistence RPC.
  *
  * The database receives the full validated memory plus the hash-excluded
- * canonical body. It recomputes memoryHash from those bytes, which prevents a
- * caller from storing a valid-looking payload under a mismatched digest.
+ * canonical body. Capture callers may send a body without a digest; this
+ * boundary computes it. If a caller supplies a digest, it must still validate
+ * against the canonical body so no caller can override the database verifier.
  */
 export function memoryPersistenceEnvelope(input: unknown): MemoryPersistenceEnvelope {
-  const checked = validateOperationalMemory(input);
+  const hasSuppliedHash =
+    typeof input === "object" &&
+    input !== null &&
+    Object.prototype.hasOwnProperty.call(input, "memoryHash");
+  const checked = hasSuppliedHash
+    ? validateOperationalMemory(input)
+    : createOperationalMemory(input as OperationalMemoryInput);
   if (!checked.ok) {
     throw new DomainError(
       "Cannot persist invalid operational memory: " + checked.failures.join(" "),
