@@ -556,3 +556,151 @@ export function serializeMemoryContext(context: MemoryContext): string {
     contextHash: context.contextHash,
   });
 }
+
+export type MemoryContextValidationResult =
+  | { ok: true; value: MemoryContext }
+  | { ok: false; failures: string[] };
+
+export function validateMemoryContext(input: unknown): MemoryContextValidationResult {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, failures: ["Memory context must be an object."] };
+  }
+
+  const raw = input as Record<string, unknown>;
+  const parsedRequest = memoryAccessRequestSchema.safeParse(raw.request);
+  if (!parsedRequest.success) {
+    return { ok: false, failures: issueMessages(parsedRequest.error.issues, "Context request ") };
+  }
+  if (raw.schemaVersion !== MEMORY_CONTEXT_SCHEMA_VERSION) {
+    return { ok: false, failures: ["Context schemaVersion is not supported."] };
+  }
+  if (!Array.isArray(raw.items)) {
+    return { ok: false, failures: ["Context items must be an array."] };
+  }
+  if (typeof raw.contextHash !== "string" || !/^[a-f0-9]{64}$/.test(raw.contextHash)) {
+    return { ok: false, failures: ["Context contextHash must be a SHA-256 value."] };
+  }
+
+  const request = parsedRequest.data;
+  const items: MemoryContextItem[] = [];
+  const failures: string[] = [];
+  const itemSchema = z
+    .object({
+      memory: z.unknown(),
+      advisory: z.boolean(),
+      selectionReason: z.enum([
+        "exact_scope_and_subject",
+        "exact_scope_and_prefix",
+        "broader_scope_and_subject",
+        "broader_scope_and_prefix",
+      ]),
+      scopeRank: z.number().int().min(0),
+    })
+    .strict();
+
+  raw.items.forEach((rawItem, index) => {
+    const parsedItem = itemSchema.safeParse(rawItem);
+    if (!parsedItem.success) {
+      failures.push(...issueMessages(parsedItem.error.issues, "Context item " + index + " "));
+      return;
+    }
+
+    const checkedMemory = validateOperationalMemory(parsedItem.data.memory);
+    if (!checkedMemory.ok) {
+      failures.push(...checkedMemory.failures.map((failure) => "Context item " + index + " " + failure));
+      return;
+    }
+
+    const memory = checkedMemory.value;
+    if (memory.status !== "candidate" && memory.status !== "verified") {
+      failures.push("Context item " + index + " has a non-retrievable status.");
+      return;
+    }
+
+    const expectedRank = matchingScopeRank(memory, request);
+    const matchedSubject = subjectMatch(memory, request);
+    if (expectedRank === null || matchedSubject === null) {
+      failures.push("Context item " + index + " is outside the request scope or subject policy.");
+      return;
+    }
+
+    const expectedAdvisory = memory.status === "candidate";
+    if (parsedItem.data.advisory !== expectedAdvisory) {
+      failures.push("Context item " + index + " has an incorrect advisory label.");
+    }
+    if (parsedItem.data.scopeRank !== expectedRank) {
+      failures.push("Context item " + index + " has an incorrect scope rank.");
+    }
+    if (
+      parsedItem.data.selectionReason !==
+      selectionReason(expectedRank, matchedSubject.reason)
+    ) {
+      failures.push("Context item " + index + " has an incorrect selection reason.");
+    }
+
+    items.push({
+      memory,
+      advisory: parsedItem.data.advisory,
+      selectionReason: parsedItem.data.selectionReason,
+      scopeRank: parsedItem.data.scopeRank,
+    });
+  });
+
+  if (failures.length > 0) return { ok: false, failures };
+
+  const expectedContextHash = sha256Hex({
+    schemaVersion: MEMORY_CONTEXT_SCHEMA_VERSION,
+    request,
+    items,
+  });
+  if (expectedContextHash !== raw.contextHash) {
+    return { ok: false, failures: ["Context contextHash does not match the canonical context body."] };
+  }
+
+  const checkedReceipt = validateMemoryReadReceipt(raw.readReceipt);
+  if (!checkedReceipt.ok) {
+    return { ok: false, failures: checkedReceipt.failures.map((failure) => "Context receipt " + failure) };
+  }
+  const receipt = checkedReceipt.value;
+  if (receipt.blocked) {
+    return { ok: false, failures: ["A blocked memory read cannot be bound as executable context."] };
+  }
+  if (receipt.requestHash !== sha256Hex(request)) {
+    return { ok: false, failures: ["Context receipt requestHash does not match the context request."] };
+  }
+  if (receipt.contextHash !== raw.contextHash) {
+    return { ok: false, failures: ["Context receipt contextHash does not match the context."] };
+  }
+
+  const expectedSelected: SelectedMemoryRef[] = items.map((item) => ({
+    memoryId: item.memory.memoryId,
+    revision: item.memory.revision,
+    memoryHash: item.memory.memoryHash,
+    kind: item.memory.kind,
+    subjectKey: item.memory.subjectKey,
+    scopeKind: item.memory.scope.scopeKind,
+    scopeKey: item.memory.scope.scopeKey,
+    sensitivity: item.memory.sensitivity,
+    status: item.memory.status as "candidate" | "verified",
+    advisory: item.advisory,
+    selectionReason: item.selectionReason,
+    scopeRank: item.scopeRank,
+  }));
+  if (
+    canonicalJsonStringify(receipt.selected) !==
+    canonicalJsonStringify(expectedSelected)
+  ) {
+    return { ok: false, failures: ["Context receipt selected references do not match context items."] };
+  }
+
+  return {
+    ok: true,
+    value: {
+      schemaVersion: MEMORY_CONTEXT_SCHEMA_VERSION,
+      request,
+      items,
+      contextHash: raw.contextHash,
+      readReceipt: receipt,
+    },
+  };
+}
