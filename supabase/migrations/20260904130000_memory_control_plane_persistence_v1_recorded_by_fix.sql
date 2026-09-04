@@ -311,8 +311,8 @@ begin
   end if;
 
   select * into v_existing
-  from public.operational_memory_records
-  where organization_id = v_org_id and memory_hash = v_memory_hash
+  from public.operational_memory_records r
+  where r.organization_id = v_org_id and r.memory_hash = v_memory_hash
   limit 1;
   if found then
     if v_existing.canonical_body is distinct from p_canonical_body then
@@ -333,9 +333,9 @@ begin
     raise exception 'Memory revision must be the next append-only revision';
   end if;
   if v_revision > 1 and not exists (
-    select 1 from public.operational_memory_records
-    where organization_id = v_org_id
-      and memory_id = v_memory_id
+    select 1 from public.operational_memory_records r
+    where r.organization_id = v_org_id
+      and r.memory_id = v_memory_id
       and revision = v_revision - 1
       and memory_hash = v_supersedes_hash
   ) then
