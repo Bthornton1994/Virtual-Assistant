@@ -190,6 +190,12 @@ The compiler must:
 
 The compiler returns structured data. It does not generate hidden prose instructions. An adapter may serialize the result for a model, but the serialized context must preserve the distinction between verified facts, advisory candidates, source references, and unresolved uncertainty.
 
+### Trust model and honest limits
+
+A memory hash, read-receipt hash, or execution-binding hash is an integrity and lineage check. It detects a changed object when the trusted reference is known; it is not a signature, an authorization decision, or proof that the cited source artifact exists. The persistence boundary must load source artifacts through an authorized organization-scoped data path, verify their hashes and ownership, and reject caller-supplied provenance that cannot be resolved.
+
+The context validator replays the deterministic compiler over the selected records. This catches broad-plus-specific scope smuggling, duplicate selection, order drift, stale policy, and budget violations. It still cannot establish source truth by itself. Runtime integration must bind the validated context to a trusted execution record before any model or executor can consume it.
+
 ## Write and lifecycle model
 
 Candidate -> verified -> retrieved
@@ -286,7 +292,7 @@ Embeddings may become an implementation detail of candidate discovery or retriev
 
 ### Stage A: pure contract and compiler
 
-This branch strengthens the CS-11 pure contract, adds reject-by-default capture and deterministic consolidation planning, and adds deterministic memory-context compilation. It is provider-neutral, network-free, and independently testable.
+This branch strengthens the CS-11 pure contract, adds reject-by-default capture and deterministic consolidation planning, and adds deterministic memory-context compilation. It is provider-neutral, network-free, and independently testable. It also adds a narrow execution-binding seam: only a verified, production memory context with matching run and assignment identifiers can be bound to an immutable execution context. This is a contract for the next runtime stage, not a claim that the live runtime already persists or consumes memory.
 
 ### Stage B: QA persistence
 
