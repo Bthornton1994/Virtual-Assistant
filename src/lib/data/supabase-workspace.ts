@@ -419,7 +419,7 @@ export class SupabaseWorkspaceRepository {
         request.assignedOperatorId
           ? db.from("operators").select("*").eq("id", request.assignedOperatorId).maybeSingle()
           : Promise.resolve({ data: null, error: null }),
-        db.from("execution_plans").select("*").eq("request_id", id).maybeSingle(),
+        db.from("execution_plan_snapshots_legacy").select("*").eq("request_id", id).maybeSingle(),
         db.from("audit_events").select("*").eq("entity_id", id).order("created_at", { ascending: false }),
       ]);
     const commentRows = (comments.data ?? []).filter((c) => {
@@ -650,7 +650,7 @@ export class SupabaseWorkspaceRepository {
         owner: "operator" as const,
       }));
     }
-    await db.from("execution_plans").insert({ request_id: requestId, organization_id: organizationId, plan });
+    await db.from("execution_plan_snapshots_legacy").insert({ request_id: requestId, organization_id: organizationId, plan });
     await db.from("request_steps").insert(
       plan.steps.map((step, i) => ({
         organization_id: organizationId,
@@ -948,11 +948,11 @@ export class SupabaseWorkspaceRepository {
         sort_order: i + 1,
       })),
     );
-    const { data: planRow } = await db.from("execution_plans").select("*").eq("request_id", requestId).maybeSingle();
+    const { data: planRow } = await db.from("execution_plan_snapshots_legacy").select("*").eq("request_id", requestId).maybeSingle();
     if (planRow) {
       const plan = planRow.plan as ExecutionPlan;
       plan.steps = steps.filter(Boolean).map((title) => ({ title, detail: "Revised by customer", owner: "operator" as const }));
-      await db.from("execution_plans").update({ plan }).eq("request_id", requestId);
+      await db.from("execution_plan_snapshots_legacy").update({ plan }).eq("request_id", requestId);
     }
     return this.getRequestBundle(actor, requestId);
   }
@@ -990,7 +990,7 @@ export class SupabaseWorkspaceRepository {
     if (!open?.length) {
       const req = await this.getRequest(actor, row.request_id);
       await db.from("requests").update({ missing_context: [], status: "awaiting_plan_approval", updated_at: nowIso() }).eq("id", req.id);
-      const { data: plan } = await db.from("execution_plans").select("plan").eq("request_id", req.id).maybeSingle();
+      const { data: plan } = await db.from("execution_plan_snapshots_legacy").select("plan").eq("request_id", req.id).maybeSingle();
       await this.createApprovalRecord(actor, req, {
         kind: "execution_plan",
         action: "Approve execution plan",
