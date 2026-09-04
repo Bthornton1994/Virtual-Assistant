@@ -460,6 +460,15 @@ begin
 
   perform pg_advisory_xact_lock(hashtextextended(v_org_id::text || ':' || v_memory_id, 0));
 
+  if exists (
+    select 1
+    from public.operational_memory_erasures e
+    where e.organization_id = v_org_id
+      and e.memory_id_hash = encode(extensions.digest(v_memory_id, 'sha256'), 'hex')
+  ) then
+    raise exception 'Operational memory ID was erased and cannot be reused';
+  end if;
+
   select * into v_existing
   from public.operational_memory_records
   where organization_id = v_org_id and memory_hash = v_memory_hash
