@@ -510,6 +510,20 @@ begin
   )
   returning id into v_record_id;
 
+  insert into public.audit_events (
+    organization_id, actor_id, action, entity_type, entity_id, metadata
+  ) values (
+    v_org_id, null, 'memory.updated', 'operational_memory',
+    encode(extensions.digest(v_memory_id, 'sha256'), 'hex'),
+    jsonb_build_object(
+      'memoryIdHash', encode(extensions.digest(v_memory_id, 'sha256'), 'hex'),
+      'memoryHash', v_memory_hash,
+      'revision', v_revision,
+      'status', v_status,
+      'recordedBy', v_recorded_by
+    )
+  );
+
   return query select v_record_id, v_org_id, v_memory_id, v_revision, v_memory_hash;
 end;
 $$;
@@ -617,6 +631,19 @@ begin
     v_artifact_count, p_reason, p_requested_by
   )
   returning id into v_erasure_id;
+
+  insert into public.audit_events (
+    organization_id, actor_id, action, entity_type, entity_id, metadata
+  ) values (
+    p_organization_id, null, 'memory.updated', 'operational_memory_erasure',
+    v_memory_id_hash,
+    jsonb_build_object(
+      'memoryIdHash', v_memory_id_hash,
+      'erasureId', v_erasure_id,
+      'erasedRevisionCount', v_revision_count,
+      'sourceArtifactRefCount', v_artifact_count
+    )
+  );
 
   delete from public.operational_memory_records
   where organization_id = p_organization_id and memory_id = p_memory_id;
