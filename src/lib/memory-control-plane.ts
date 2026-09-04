@@ -28,6 +28,7 @@ export const MEMORY_EXCLUSION_REASONS = [
   "unresolved_conflict",
   "not_yet_observed",
   "expired",
+  "review_due",
   "duplicate_same_value",
   "shadowed_by_specific_scope",
   "budget_exceeded",
@@ -377,6 +378,12 @@ export function compileMemoryContext(
       excludedRecords.push(excluded(memory.memoryId, "expired", "Memory is expired at the request asOf time."));
       continue;
     }
+    if (memory.reviewAfter !== null && Date.parse(memory.reviewAfter) <= asOf) {
+      excludedRecords.push(
+        excluded(memory.memoryId, "review_due", "Memory requires review before it can be used at the request asOf time."),
+      );
+      continue;
+    }
 
     const advisory = memory.status === "candidate";
     if (memory.status !== "verified" && !(advisory && request.mode === "shadow" && request.allowCandidates)) {
@@ -612,9 +619,41 @@ export function validateMemoryContext(input: unknown): MemoryContextValidationRe
     }
 
     const memory = checkedMemory.value;
+    if (memory.scope.organizationId !== request.organizationId) {
+      failures.push("Context item " + index + " belongs to another organization.");
+      return;
+    }
+    if (!request.allowedKinds.includes(memory.kind)) {
+      failures.push("Context item " + index + " uses a disallowed memory kind.");
+      return;
+    }
+    if (!request.allowedSensitivities.includes(memory.sensitivity)) {
+      failures.push("Context item " + index + " uses a disallowed sensitivity.");
+      return;
+    }
     if (memory.status !== "candidate" && memory.status !== "verified") {
       failures.push("Context item " + index + " has a non-retrievable status.");
       return;
+    }
+    const asOf = Date.parse(request.asOf);
+    if (Date.parse(memory.provenance.observedAt) > asOf) {
+      failures.push("Context item " + index + " was observed after the request asOf time.");
+      return;
+    }
+    if (memory.expiresAt !== null && Date.parse(memory.expiresAt) <= asOf) {
+      failures.push("Context item " + index + " is expired at the request asOf time.");
+      return;
+    }
+    if (memory.reviewAfter !== null && Date.parse(memory.reviewAfter) <= asOf) {
+      failures.push("Context item " + index + " is due for review at the request asOf time.");
+      return;
+    }
+    const expectedAdvisory = memory.status === "candidate";
+    if (request.mode === "production" && memory.status !== "verified") {
+      failures.push("Context item " + index + " is not verified for production.");
+    }
+    if (memory.status === "candidate" && !(request.mode === "shadow" && request.allowCandidates)) {
+      failures.push("Context item " + index + " is a candidate outside shadow mode.");
     }
 
     const expectedRank = matchingScopeRank(memory, request);
