@@ -2,8 +2,8 @@
 -- Run only against the dedicated QA/Preview Supabase project after applying
 -- 20260904120000_memory_control_plane_persistence_v1.sql.
 -- This proof is intentionally read-only. The end-to-end write/read/erase probe
--- belongs in an isolated project fixture because the persistence RPC requires
--- real same-tenant organizations, runs, assignments, and evidence artifacts.
+-- is in memory_control_plane_v1_persistence_proof.sql and requires the mapped
+-- QA fixture's same-tenant organization, run, and evidence artifact.
 
 do $$
 declare
