@@ -163,6 +163,7 @@ describe("memory control plane", () => {
   it("excludes expired, invalidated, and overly sensitive memories", () => {
     const expired = verified({
       memoryId: "expired-memory",
+      reviewAfter: "2026-08-25T21:00:00Z",
       expiresAt: "2026-08-31T23:59:59Z",
     });
     const invalidatedResult = invalidateOperationalMemory(
