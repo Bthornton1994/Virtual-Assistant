@@ -231,8 +231,8 @@ begin
   where organization_id = v_org_id
     and entity_type in ('operational_memory', 'operational_memory_erasure')
     and entity_id = encode(extensions.digest(v_memory_id, 'sha256'), 'hex');
-  if v_audit_count <> 2 then
-    raise exception 'QA_PROOF_FAILED: persistence plus erasure did not emit two audit events';
+  if v_audit_count <> 3 then
+    raise exception 'QA_PROOF_FAILED: two persistence revisions plus erasure did not emit three audit events';
   end if;
 
   begin
