@@ -48,6 +48,19 @@ begin
        and c.key = s.capability_key and c.status = 'active'
    where p.status in ('frozen', 'running')
      and s.capability_key = p_capability_key
+     and case coalesce(ep.authority_envelope->>'actionClass', '')
+       when 'prepare_only' then 0
+       when 'low_risk_execution' then 1
+       when 'external_execution' then 2
+       when 'sensitive_execution' then 3
+       else -1
+     end >= case s.action_class
+       when 'prepare_only' then 0
+       when 'low_risk_execution' then 1
+       when 'external_execution' then 2
+       when 'sensitive_execution' then 3
+       else 99
+     end
      and s.status = 'ready'
      and s.available_at <= now()
      and s.deadline_at > now()
