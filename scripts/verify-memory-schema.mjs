@@ -27,7 +27,6 @@ const requiredMigrationFragments = [
   "erase_operational_memory(",
   "claim_execution_step_with_memory(",
   "memory_selected_refs",
-  "memory_context_bound",
   "current_user <> 'service_role'",
   "Every source artifact reference must resolve to the same-tenant immutable evidence artifact",
   "Memory revision must be the next append-only revision",
@@ -36,6 +35,16 @@ const requiredMigrationFragments = [
   "insert into public.audit_events",
   "'memory.updated'",
   "'memoryIdHash'",
+];
+
+const requiredMigrationFunctions = [
+  "enforce_operational_memory_record_invariants",
+  "enforce_operational_memory_erasure_invariants",
+  "persist_operational_memory",
+  "read_operational_memories",
+  "erase_operational_memory",
+  "enforce_execution_attempt_memory_binding",
+  "claim_execution_step_with_memory",
 ];
 
 const forbiddenMigrationFragments = [
@@ -65,6 +74,13 @@ const requiredFixtureFragments = [
 const failures = [];
 for (const fragment of requiredMigrationFragments) {
   if (!migration.includes(fragment)) failures.push("Migration missing: " + fragment);
+}
+for (const functionName of requiredMigrationFunctions) {
+  const definition = "create or replace function public." + functionName + "(";
+  const count = migration.split(definition).length - 1;
+  if (count !== 1) {
+    failures.push("Migration must define exactly one " + functionName + " function, found " + count);
+  }
 }
 for (const fragment of forbiddenMigrationFragments) {
   if (migration.includes(fragment)) failures.push("Migration exposes forbidden surface: " + fragment);
