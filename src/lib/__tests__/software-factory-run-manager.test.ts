@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { AuthzError, type Actor } from "@/lib/domain";
 import {
+  SOFTWARE_FACTORY_EVIDENCE_KIND_TO_ARTIFACT_KIND,
+  isProjectedEvidenceArtifact,
+  isProjectedOutcomeReceipt,
+  projectSoftwareFactoryEvidenceArtifact,
+  projectSoftwareFactoryOutcomeReceipt,
+} from "@/lib/software-factory-projection";
+import {
   SOFTWARE_FACTORY_ACTION_CLASS,
   SOFTWARE_FACTORY_CAPABILITY_KEY,
   SOFTWARE_FACTORY_CONNECTORS,
+  SOFTWARE_FACTORY_CURSOR_EXECUTION_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_EVIDENCE_SCHEMA_VERSION,
   SOFTWARE_FACTORY_INTAKE_SCHEMA_VERSION,
   SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_RECEIPT_SCHEMA_VERSION,
   canTransitionSoftwareFactory,
+  freezeEvidenceRecord,
   packetClaimsSelfAuthorization,
   softwareFactoryConnectorCatalog,
   validateSoftwareFactoryPacket,
@@ -28,6 +39,7 @@ import {
   softwareFactoryAuditHistory,
   softwareFactoryProblems,
   submitSoftwareWorkRequest,
+  trackCursorCloudAgentExecution,
   transitionSoftwareFactoryRun,
   type SoftwareFactoryStore,
 } from "@/lib/software-factory-store";
@@ -580,5 +592,178 @@ describe("Loadout SF-LOAD-001 proof workflow", () => {
     );
     expect(mergeAfter.ok).toBe(false);
     expect(getSoftwareFactoryRun(store, manager, opened.run.id).mergePerformed).toBe(false);
+    expect(store.outcomeReceipts).toHaveLength(1);
+    expect(store.outcomeReceipts[0]?.runId).toBe(opened.workstreamRun.id);
+    expect(store.outcomeReceipts[0]?.actionsTaken).toContain("no_merge");
+    expect(store.evidenceArtifacts.some((row) => row.sourceUri === "https://github.com/Bthornton1994/Loadout/pull/26")).toBe(
+      true,
+    );
+  });
+});
+
+describe("Software Factory remaining control-plane gates", () => {
+  it("supports cancelled, rejected, and deferred terminal transitions", () => {
+    const terminals = ["cancelled", "rejected", "deferred"] as const;
+    for (const status of terminals) {
+      const store = createSoftwareFactoryStore();
+      const opened = openRun(store);
+      const result = transitionSoftwareFactoryRun(store, manager, opened.run.id, status, `evt-${status}`, NOW);
+      expect(result.ok).toBe(true);
+      expect(getSoftwareFactoryRun(store, manager, opened.run.id).lifecycleStatus).toBe(status);
+    }
+  });
+
+  it("detects unverifiable evidence", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    attachSoftwareFactoryEvidence(
+      store,
+      operator,
+      opened.run.id,
+      evidence("browser", {
+        summary: "Screenshot missing",
+        conclusion: "cannot verify browser behavior",
+      }),
+      "evt-unverifiable",
+      NOW,
+    );
+    const problems = softwareFactoryProblems(store, opened.run.id, NOW);
+    expect(problems.some((problem) => problem.class === "unverifiable")).toBe(true);
+  });
+
+  it("refuses Cursor tracking without an approved connector and records it when one exists", () => {
+    const missing = createSoftwareFactoryStore();
+    const opened = openRun(missing);
+    const refused = trackCursorCloudAgentExecution(
+      missing,
+      manager,
+      opened.run.id,
+      {
+        schemaVersion: SOFTWARE_FACTORY_CURSOR_EXECUTION_SCHEMA_VERSION,
+        cursorAgentRef: "bc-test",
+        status: "completed",
+        summary: "Agent claimed the Loadout PR was done.",
+        evidenceUris: [],
+        claimsSuccess: true,
+        mutatesRepository: false,
+        mergePerformed: false,
+      },
+      "evt-cursor-missing",
+      NOW,
+    );
+    expect(refused.ok).toBe(false);
+    expect(refused.ok ? "" : refused.failures.join(" ")).toMatch(/No approved Cursor Cloud Agent connector/);
+
+    const available = createSoftwareFactoryStore({
+      connectors: softwareFactoryConnectorCatalog().map((row) =>
+        row.key === "cursor_cloud_agent" ? { ...row, available: true } : row,
+      ),
+    });
+    const tracked = openRun(available);
+    const recorded = trackCursorCloudAgentExecution(
+      available,
+      manager,
+      tracked.run.id,
+      {
+        schemaVersion: SOFTWARE_FACTORY_CURSOR_EXECUTION_SCHEMA_VERSION,
+        cursorAgentRef: "bc-test",
+        status: "completed",
+        summary: "Cursor reported completion; this is evidence only.",
+        evidenceUris: ["https://cursor.com/agents/bc-test"],
+        claimsSuccess: true,
+        mutatesRepository: false,
+        mergePerformed: false,
+      },
+      "evt-cursor-tracked",
+      NOW,
+    );
+    expect(recorded.ok).toBe(true);
+    const cursorEvidence = available.evidenceArtifacts.find((row) => row.payload.factoryKind === "cursor_execution");
+    expect(cursorEvidence?.kind).toBe("observation");
+    expect(getSoftwareFactoryRun(available, manager, tracked.run.id).lifecycleStatus).not.toBe("accepted");
+    expect(issueSoftwareFactoryOutcomeReceipt(available, manager, tracked.run.id, "evt-cursor-receipt", NOW).ok).toBe(
+      false,
+    );
+  });
+
+  it("projects factory evidence and receipts onto canonical evidence_artifacts and Outcome Receipts", () => {
+    expect(SOFTWARE_FACTORY_EVIDENCE_KIND_TO_ARTIFACT_KIND.pull_request).toBe("source");
+    expect(SOFTWARE_FACTORY_EVIDENCE_KIND_TO_ARTIFACT_KIND.cursor_execution).toBe("observation");
+    expect(SOFTWARE_FACTORY_EVIDENCE_KIND_TO_ARTIFACT_KIND.task_packet).toBe("other");
+
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    attachSoftwareFactoryEvidence(
+      store,
+      operator,
+      opened.run.id,
+      evidence("pull_request"),
+      "evt-pr-project",
+      NOW,
+    );
+    const artifacts = store.evidenceArtifacts.filter(isProjectedEvidenceArtifact);
+    expect(artifacts.some((item) => item.kind === "source" && item.sourceUri?.includes("pull/26"))).toBe(true);
+    expect(artifacts.every((item) => item.runId === opened.workstreamRun.id)).toBe(true);
+
+    const frozen = freezeEvidenceRecord({
+      evidenceId: "ev-direct-pr",
+      kind: "pull_request",
+      summary: "Direct projection of historical Loadout PR evidence.",
+      sourceUri: "https://github.com/Bthornton1994/Loadout/pull/26",
+      conclusion: "pass",
+      satisfiedCriteria: [],
+      recordedAt: NOW,
+      mutatesRepository: false,
+    });
+    expect(frozen.ok).toBe(true);
+    if (!frozen.ok) throw new Error(frozen.failures.join(" "));
+
+    const projectedEvidence = projectSoftwareFactoryEvidenceArtifact({
+      factoryRun: getSoftwareFactoryRun(store, manager, opened.run.id),
+      evidence: frozen.value,
+      actor: operator,
+      now: NOW,
+    });
+    expect(isProjectedEvidenceArtifact(projectedEvidence)).toBe(true);
+    if (!isProjectedEvidenceArtifact(projectedEvidence)) throw new Error("expected evidence artifact");
+    expect(projectedEvidence.kind).toBe("source");
+    expect(projectedEvidence.payload.schemaVersion).toBe(SOFTWARE_FACTORY_EVIDENCE_SCHEMA_VERSION);
+    expect(projectedEvidence.payload.mutatesRepository).toBe(false);
+
+    const projectedReceipt = projectSoftwareFactoryOutcomeReceipt({
+      factoryRun: getSoftwareFactoryRun(store, manager, opened.run.id),
+      receipt: {
+        schemaVersion: SOFTWARE_FACTORY_RECEIPT_SCHEMA_VERSION,
+        receiptId: "receipt-projected",
+        factoryRunId: opened.run.id,
+        workstreamRunId: opened.workstreamRun.id,
+        taskId: "SF-LOAD-001",
+        verificationStatus: "failed",
+        definitionOfDoneMet: false,
+        lifecycleStatus: "awaiting_owner",
+        summary: "Owner merge approval recorded. Merge was not performed.",
+        packetHash: "a".repeat(64),
+        evidenceHashes: [frozen.value.contentHash],
+        ownerDecisionIds: [],
+        unresolvedBlockers: ["Merge remains blocked"],
+        authorityIncidents: 0,
+        mergePerformed: false,
+        repositoryMutated: false,
+        verifiedAt: NOW,
+      },
+      actor: manager,
+      now: NOW,
+    });
+    expect(isProjectedOutcomeReceipt(projectedReceipt)).toBe(true);
+    if (!isProjectedOutcomeReceipt(projectedReceipt)) throw new Error("expected outcome receipt");
+    expect(projectedReceipt.actionsTaken).toEqual([
+      "prepare_only",
+      "no_merge",
+      "no_deploy",
+      "no_secret_change",
+      "no_github_mutation",
+    ]);
+    expect(projectedReceipt.verificationStatus).toBe("failed");
+    expect(projectedReceipt.runId).toBe(opened.workstreamRun.id);
   });
 });

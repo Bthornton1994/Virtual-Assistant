@@ -173,6 +173,17 @@ language plpgsql
 set search_path = public
 as $$
 begin
+  if tg_op = 'INSERT' then
+    if new.action_class <> 'prepare_only' or new.may_own_authoritative_state or new.merge_performed then
+      raise exception 'Software Factory v1 remains prepare_only and cannot record a performed merge'
+        using errcode = '23514';
+    end if;
+    if new.lifecycle_status = 'accepted' then
+      raise exception 'Accepted cannot be inserted; it requires an owner decision and Outcome Receipt'
+        using errcode = '23514';
+    end if;
+    return new;
+  end if;
   if new.organization_id is distinct from old.organization_id
      or new.task_id is distinct from old.task_id
      or new.created_by is distinct from old.created_by
@@ -217,7 +228,7 @@ end;
 $$;
 
 create trigger trg_protect_software_factory_run
-  before update on public.software_factory_runs
+  before insert or update on public.software_factory_runs
   for each row execute function public.protect_software_factory_run();
 
 create or replace function public.protect_software_factory_approval()

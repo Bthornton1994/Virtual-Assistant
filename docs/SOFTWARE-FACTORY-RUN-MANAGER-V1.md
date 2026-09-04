@@ -29,9 +29,12 @@ No agent, model, tool, CLI, MCP, Grok Bot, or Cursor runtime is product authorit
 - Packet: `software-factory-packet/v1`
 - Inspection: `software-factory-inspection/v1`
 - Handoff: `software-factory-handoff/v1`
+- Cursor execution: `software-factory-cursor-execution/v1` (evidence only; never authoritative)
 - Evidence: `software-factory-evidence/v1`
 - Owner decision: `software-factory-owner-decision/v1`
 - Receipt: `software-factory-receipt/v1`
+
+Factory evidence and receipts project onto the existing `evidence_artifacts` and `outcome_receipts` shapes in `src/lib/software-factory-projection.ts`. GitHub, Grok, and Cursor never become a parallel source of truth.
 
 Every packet carries `STATUS`, `TASK_ID`, `REPOSITORY`, `BASE_BRANCH`, `OBJECTIVE`, `BACKGROUND`, `IN_SCOPE`, `OUT_OF_SCOPE`, `ACCEPTANCE_CRITERIA`, `VERIFICATION`, `DEPENDENCIES`, `RISK`, `APPROVAL_REQUIRED`, and `HANDOFF_NOTES`.
 
@@ -66,7 +69,7 @@ If authority is missing, the run creates an approval request and pauses. Even an
 ## Connector limitations
 
 - **Grok Bot:** no approved connector. PM work uses a human-mediated handoff.
-- **Cursor Cloud Agent:** no approved connector. Developer coordination uses a human-mediated handoff. Execution tracking is recorded only when an approved connector exists.
+- **Cursor Cloud Agent:** no approved connector by default. Developer coordination uses a human-mediated handoff. When an approved connector exists, `trackCursorCloudAgentExecution` records hashed `cursor_execution` evidence. A Cursor success claim never Accepts the run.
 - **GitHub Issues write:** unavailable. Do not work around with a PAT or unapproved secret. The Workstream Run is the canonical board.
 - **GitHub evidence:** available as a provider only. Historical PR/CI observations may be attached. Live repository mutation is not authorized.
 
@@ -74,7 +77,7 @@ If authority is missing, the run creates an approval request and pauses. Even an
 
 Additive tables `software_factory_runs`, `software_factory_events`, and `software_factory_approvals` bind to existing `delegation_specs` and `workstream_runs`. Evidence remains in `evidence_artifacts`. Receipts remain in `outcome_receipts` when a persistent workspace applies the overlay.
 
-The in-memory store in `src/lib/software-factory-store.ts` is the executable vertical slice used by tests. The SQL migration is not applied to Production by this change.
+The in-memory store in `src/lib/software-factory-store.ts` is the executable vertical slice used by tests. It writes factory evidence and receipts and also projects them onto `EvidenceArtifact` / `OutcomeReceipt`. The SQL migration is not applied to Production by this change. The QA fixture `supabase/qa/software_factory_loadout_sf_load_001.sql` creates a demonstration Workstream Run and Software Factory overlay for SF-LOAD-001, attaches historical Loadout PR #26 as evidence, and leaves the run at `awaiting_owner`.
 
 ## Loadout proof
 

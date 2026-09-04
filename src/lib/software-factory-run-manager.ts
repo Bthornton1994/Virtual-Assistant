@@ -23,6 +23,7 @@ export const SOFTWARE_FACTORY_INTAKE_SCHEMA_VERSION = "software-factory-intake/v
 export const SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION = "software-factory-packet/v1" as const;
 export const SOFTWARE_FACTORY_INSPECTION_SCHEMA_VERSION = "software-factory-inspection/v1" as const;
 export const SOFTWARE_FACTORY_HANDOFF_SCHEMA_VERSION = "software-factory-handoff/v1" as const;
+export const SOFTWARE_FACTORY_CURSOR_EXECUTION_SCHEMA_VERSION = "software-factory-cursor-execution/v1" as const;
 export const SOFTWARE_FACTORY_EVIDENCE_SCHEMA_VERSION = "software-factory-evidence/v1" as const;
 export const SOFTWARE_FACTORY_OWNER_DECISION_SCHEMA_VERSION = "software-factory-owner-decision/v1" as const;
 export const SOFTWARE_FACTORY_RECEIPT_SCHEMA_VERSION = "software-factory-receipt/v1" as const;
@@ -378,6 +379,20 @@ export const softwareFactoryHandoffSchema = z
     }
   });
 export type SoftwareFactoryHandoff = z.infer<typeof softwareFactoryHandoffSchema>;
+
+export const softwareFactoryCursorExecutionSchema = z
+  .object({
+    schemaVersion: z.literal(SOFTWARE_FACTORY_CURSOR_EXECUTION_SCHEMA_VERSION),
+    cursorAgentRef: identifierString,
+    status: z.enum(["queued", "running", "blocked", "completed", "failed", "unavailable"]),
+    summary: nonEmptyString,
+    evidenceUris: z.array(z.string()),
+    claimsSuccess: z.boolean(),
+    mutatesRepository: z.literal(false),
+    mergePerformed: z.literal(false),
+  })
+  .strict();
+export type SoftwareFactoryCursorExecution = z.infer<typeof softwareFactoryCursorExecutionSchema>;
 
 export const softwareFactoryEvidenceRecordSchema = z
   .object({

@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { AuthzError, DomainError, type Actor } from "@/lib/domain";
+import type { EvidenceArtifact, OutcomeReceipt } from "@/lib/execution-primitives";
 import { canTransitionWorkstreamRun } from "@/lib/execution-policy";
 import {
   SOFTWARE_FACTORY_ACTION_CLASS,
+  SOFTWARE_FACTORY_CONNECTORS,
   SOFTWARE_FACTORY_OWNER_DECISION_SCHEMA_VERSION,
   canIssueSoftwareFactoryReceipt,
   canOperateSoftwareFactory,
@@ -18,6 +20,7 @@ import {
   mapFactoryStatusToWorkstreamRun,
   rejectSecrets,
   softwareFactoryConnectorCatalog,
+  softwareFactoryCursorExecutionSchema,
   softwareFactoryHandoffSchema,
   softwareFactoryInspectionSchema,
   softwareFactoryOwnerDecisionSchema,
@@ -26,6 +29,8 @@ import {
   validateSoftwareFactoryPacket,
   type SoftwareFactoryApprovalKind,
   type SoftwareFactoryApprovalRequest,
+  type SoftwareFactoryConnectorStatus,
+  type SoftwareFactoryCursorExecution,
   type SoftwareFactoryDelegationSpec,
   type SoftwareFactoryEvent,
   type SoftwareFactoryEvidenceRecord,
@@ -42,8 +47,15 @@ import {
   type SoftwareFactoryWorkerRole,
   buildSoftwareFactoryReceipt,
 } from "@/lib/software-factory-run-manager";
+import {
+  isProjectedEvidenceArtifact,
+  isProjectedOutcomeReceipt,
+  projectSoftwareFactoryEvidenceArtifact,
+  projectSoftwareFactoryOutcomeReceipt,
+} from "@/lib/software-factory-projection";
 
 export type SoftwareFactoryStore = {
+  connectorCatalog: SoftwareFactoryConnectorStatus[];
   runs: Map<string, SoftwareFactoryRun>;
   runsByOrgTask: Map<string, string>;
   specs: Map<string, SoftwareFactoryDelegationSpec>;
@@ -51,22 +63,19 @@ export type SoftwareFactoryStore = {
   events: SoftwareFactoryEvent[];
   eventsById: Map<string, SoftwareFactoryEvent>;
   evidenceByRun: Map<string, SoftwareFactoryEvidenceRecord[]>;
+  evidenceArtifacts: EvidenceArtifact[];
   approvals: Map<string, SoftwareFactoryApprovalRequest>;
   receipts: Map<string, SoftwareFactoryReceipt>;
+  outcomeReceipts: OutcomeReceipt[];
   inspections: Map<string, SoftwareFactoryInspection[]>;
   handoffs: Map<string, SoftwareFactoryHandoff[]>;
 };
 
-export type SoftwareFactoryCommandResult<T> = SoftwareFactoryResult<T> & {
-  duplicate?: boolean;
-};
-
-function orgTaskKey(organizationId: string, taskId: string) {
-  return `${organizationId}::${taskId}`;
-}
-
-export function createSoftwareFactoryStore(): SoftwareFactoryStore {
+export function createSoftwareFactoryStore(options: {
+  connectors?: SoftwareFactoryConnectorStatus[];
+} = {}): SoftwareFactoryStore {
   return {
+    connectorCatalog: options.connectors ?? softwareFactoryConnectorCatalog(),
     runs: new Map(),
     runsByOrgTask: new Map(),
     specs: new Map(),
@@ -74,11 +83,21 @@ export function createSoftwareFactoryStore(): SoftwareFactoryStore {
     events: [],
     eventsById: new Map(),
     evidenceByRun: new Map(),
+    evidenceArtifacts: [],
     approvals: new Map(),
     receipts: new Map(),
+    outcomeReceipts: [],
     inspections: new Map(),
     handoffs: new Map(),
   };
+}
+
+export type SoftwareFactoryCommandResult<T> = SoftwareFactoryResult<T> & {
+  duplicate?: boolean;
+};
+
+function orgTaskKey(organizationId: string, taskId: string) {
+  return `${organizationId}::${taskId}`;
 }
 
 function fail<T>(failures: string | string[]): SoftwareFactoryCommandResult<T> {
@@ -118,6 +137,25 @@ function requireRun(store: SoftwareFactoryStore, actor: Actor, factoryRunId: str
 
 function evidenceFor(store: SoftwareFactoryStore, factoryRunId: string): SoftwareFactoryEvidenceRecord[] {
   return store.evidenceByRun.get(factoryRunId) ?? [];
+}
+
+function rememberFactoryEvidence(
+  store: SoftwareFactoryStore,
+  actor: Actor,
+  run: SoftwareFactoryRun,
+  evidence: SoftwareFactoryEvidenceRecord,
+  now: string,
+) {
+  store.evidenceByRun.set(run.id, [...evidenceFor(store, run.id), evidence]);
+  const projected = projectSoftwareFactoryEvidenceArtifact({
+    factoryRun: run,
+    evidence,
+    actor,
+    now,
+  });
+  if (isProjectedEvidenceArtifact(projected)) {
+    store.evidenceArtifacts.push(projected);
+  }
 }
 
 function approvalsFor(store: SoftwareFactoryStore, factoryRunId: string): SoftwareFactoryApprovalRequest[] {
@@ -236,7 +274,7 @@ export function submitSoftwareWorkRequest(
     packet: null,
     packetHash: null,
     version: 1,
-    connectors: softwareFactoryConnectorCatalog(),
+    connectors: store.connectorCatalog.map((row) => ({ ...row })),
     createdAt: now,
     updatedAt: now,
   };
@@ -417,7 +455,7 @@ export function inspectSoftwareFactoryRepository(
     mutatesRepository: false,
   });
   if (evidence.ok) {
-    store.evidenceByRun.set(factoryRunId, [...evidenceFor(store, factoryRunId), evidence.value]);
+    rememberFactoryEvidence(store, actor, run, evidence.value, now);
   }
   rememberEvent(store, {
     eventId,
@@ -478,7 +516,7 @@ export function produceSoftwareFactoryPacket(
     mutatesRepository: false,
   });
   if (packetEvidence.ok) {
-    store.evidenceByRun.set(factoryRunId, [...evidenceFor(store, factoryRunId), packetEvidence.value]);
+    rememberFactoryEvidence(store, actor, run, packetEvidence.value, now);
   }
   rememberEvent(store, {
     eventId,
@@ -535,7 +573,7 @@ export function recordSoftwareFactoryHandoff(
     recordedAt: now,
     mutatesRepository: false,
   });
-  if (evidence.ok) store.evidenceByRun.set(factoryRunId, [...evidenceFor(store, factoryRunId), evidence.value]);
+  if (evidence.ok) rememberFactoryEvidence(store, actor, run, evidence.value, now);
   rememberEvent(store, {
     eventId,
     factoryRunId,
@@ -593,7 +631,7 @@ export function attachSoftwareFactoryEvidence(
   const run = requireRun(store, actor, factoryRunId);
   const frozen = freezeEvidenceRecord({ ...evidenceInput, recordedAt: evidenceInput.recordedAt ?? now });
   if (!frozen.ok) return frozen;
-  store.evidenceByRun.set(factoryRunId, [...evidenceFor(store, factoryRunId), frozen.value]);
+  rememberFactoryEvidence(store, actor, run, frozen.value, now);
   rememberEvent(store, {
     eventId,
     factoryRunId,
@@ -757,7 +795,7 @@ export function recordSoftwareFactoryOwnerDecision(
     recordedAt: now,
     mutatesRepository: false,
   });
-  if (evidence.ok) store.evidenceByRun.set(factoryRunId, [...evidenceFor(store, factoryRunId), evidence.value]);
+  if (evidence.ok) rememberFactoryEvidence(store, actor, run, evidence.value, now);
   rememberEvent(store, {
     eventId,
     factoryRunId,
@@ -843,6 +881,65 @@ export function attemptSoftwareFactoryForbiddenAction(
   return fail([message]);
 }
 
+export function trackCursorCloudAgentExecution(
+  store: SoftwareFactoryStore,
+  actor: Actor,
+  factoryRunId: string,
+  reportInput: unknown,
+  eventId: string,
+  now: string,
+): SoftwareFactoryCommandResult<SoftwareFactoryCursorExecution> {
+  const duplicate = duplicateEvent<SoftwareFactoryCursorExecution>(store, eventId);
+  if (duplicate) return duplicate;
+  if (!canOperateSoftwareFactory(actor)) {
+    return fail("Only operations staff can record Cursor Cloud Agent execution.");
+  }
+  const run = requireRun(store, actor, factoryRunId);
+  const connector = run.connectors.find((row) => row.key === "cursor_cloud_agent");
+  if (!connector?.available) {
+    return fail(SOFTWARE_FACTORY_CONNECTORS.cursor_cloud_agent.limitation);
+  }
+  const parsed = softwareFactoryCursorExecutionSchema.safeParse(reportInput);
+  if (!parsed.success) {
+    return fail(parsed.error.issues.map((issue) => "Cursor execution " + issue.message));
+  }
+  const secrets = rejectSecrets(parsed.data, "Cursor execution");
+  if (secrets.length) return fail(secrets);
+  const evidence = freezeEvidenceRecord({
+    evidenceId: randomUUID(),
+    kind: "cursor_execution",
+    summary: parsed.data.summary,
+    sourceUri: parsed.data.evidenceUris[0] ?? null,
+    conclusion: parsed.data.claimsSuccess
+      ? "executor_claimed_success_not_authoritative"
+      : parsed.data.status,
+    satisfiedCriteria: [],
+    recordedAt: now,
+    mutatesRepository: false,
+  });
+  if (evidence.ok) rememberFactoryEvidence(store, actor, run, evidence.value, now);
+  rememberEvent(store, {
+    eventId,
+    factoryRunId,
+    organizationId: run.organizationId,
+    actorId: actor.id,
+    actorRole: actor.role,
+    type: "cursor_execution_tracked",
+    fromStatus: run.lifecycleStatus,
+    toStatus: run.lifecycleStatus,
+    sourceRef: `cursor:${parsed.data.cursorAgentRef}`,
+    payload: {
+      result: parsed.data,
+      authoritative: false,
+      message: parsed.data.claimsSuccess
+        ? "Cursor claimed success. Delegation Cloud did not accept the run from that claim."
+        : "Cursor execution recorded as evidence only.",
+    },
+    createdAt: now,
+  });
+  return ok(parsed.data);
+}
+
 export function issueSoftwareFactoryOutcomeReceipt(
   store: SoftwareFactoryStore,
   actor: Actor,
@@ -880,6 +977,15 @@ export function issueSoftwareFactoryOutcomeReceipt(
   bump(run, now);
   syncWorkstreamRun(store, run);
   store.receipts.set(factoryRunId, built.value);
+  const canonical = projectSoftwareFactoryOutcomeReceipt({
+    factoryRun: run,
+    receipt: built.value,
+    actor,
+    now,
+  });
+  if (isProjectedOutcomeReceipt(canonical)) {
+    store.outcomeReceipts.push(canonical);
+  }
   rememberEvent(store, {
     eventId,
     factoryRunId,

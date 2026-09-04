@@ -47,9 +47,11 @@ describe("Software Factory Run Manager schema", () => {
     expect(migration).toContain("check (may_own_authoritative_state = false)");
     expect(migration).toContain("check (merge_performed = false)");
     expect(migration).toContain("Software Factory events are append-only");
-    expect(migration).toContain("Accepted requires owner acceptance recorded outside the task packet");
+    expect(migration).toContain("Accepted cannot be inserted; it requires an owner decision and Outcome Receipt");
+    expect(migration).toContain("before insert or update on public.software_factory_runs");
     expect(migration).toContain("unique (organization_id, task_id)");
-    expect(migration).toContain("unique (idempotency_key)");
+    expect(migration).toContain("references public.workstream_runs (id, organization_id)");
+    expect(migration).toContain("references public.delegation_specs (id, organization_id)");
   });
 
   it("records the Loadout proof as evidence-only and does not mutate GitHub", () => {
@@ -58,9 +60,31 @@ describe("Software Factory Run Manager schema", () => {
       "utf8",
     );
     expect(fixture).toContain("https://github.com/Bthornton1994/Loadout/pull/26");
-    expect(fixture).toContain("false as merge_performed");
+    expect(fixture).toContain("insert into public.workstream_runs");
+    expect(fixture).toContain("insert into public.evidence_artifacts");
+    expect(fixture).toContain("insert into public.software_factory_runs");
+    expect(fixture).toContain("'awaiting_owner'");
+    expect(fixture).toContain("software-factory-packet/v1");
+    expect(fixture).toContain("4ba8a8bc0b8cc53232d2f4722209aaf2130d73915165e976f8d118f2110127c9");
+    expect(fixture).toContain("factoryKind', 'task_packet'");
+    expect(fixture).not.toMatch(/status:\s*'accepted'/);
+    expect(fixture).not.toMatch(/lifecycle_status,\s*'accepted'/);
+    expect(fixture).toContain("githubIssuesWrite");
+    expect(fixture).toContain("Northline QA fixture not present");
     expect(fixture).not.toMatch(/insert into public\.requests/i);
-    expect(fixture).toContain("false as github_issues_write_available");
     expect(fixture).not.toMatch(/create table/i);
+  });
+
+  it("projects factory artifacts onto existing evidence_artifacts and outcome_receipts", () => {
+    const projection = readFileSync(
+      resolve(process.cwd(), "src/lib/software-factory-projection.ts"),
+      "utf8",
+    );
+    expect(projection).toContain("EvidenceArtifact");
+    expect(projection).toContain("OutcomeReceipt");
+    expect(projection).toContain("prepare_only");
+    expect(projection).toContain("no_merge");
+    expect(projection).toContain('cursor_execution: "observation"');
+    expect(projection).toContain('pull_request: "source"');
   });
 });
