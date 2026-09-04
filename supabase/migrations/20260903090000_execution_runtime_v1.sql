@@ -39,6 +39,13 @@ create index execution_plans_org_status_idx
   on public.execution_plans (organization_id, status, created_at desc);
 create index execution_plans_run_idx
   on public.execution_plans (run_id, plan_version desc);
+  on public.execution_plans (created_by);
+create index if not exists execution_plans_delegation_spec_idx
+  on public.execution_plans (delegation_spec_id);
+create index if not exists execution_plans_frozen_by_idx
+  on public.execution_plans (frozen_by);
+
+create index if not exists execution_plan_steps_plan_org_idx
 
 create table public.execution_plan_steps (
   id uuid primary key default gen_random_uuid(),
