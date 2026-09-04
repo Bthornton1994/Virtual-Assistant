@@ -1,6 +1,6 @@
 # Memory Engineering v2: Delegation Cloud Memory Control Plane
 
-Status: preview architecture and pure-code implementation on branch agent/memory-control-plane-v1
+Status: repository implementation on branch agent/memory-control-plane-v1; live QA/Production certification pending dedicated Supabase mapping
 
 ## Decision
 
