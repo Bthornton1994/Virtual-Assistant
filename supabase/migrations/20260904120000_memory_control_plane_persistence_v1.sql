@@ -789,10 +789,13 @@ begin
     select 1
     from jsonb_array_elements(p_memory_selected_refs) selected(ref)
     where jsonb_typeof(selected.ref) <> 'object'
+       or selected.ref->>'memoryId' is null
        or char_length(selected.ref->>'memoryId') not between 1 and 128
        or selected.ref->>'memoryId' <> btrim(selected.ref->>'memoryId')
+       or selected.ref->>'revision' is null
        or selected.ref->>'revision' !~ '^[0-9]+$'
        or (selected.ref->>'revision')::integer < 1
+       or selected.ref->>'memoryHash' is null
        or selected.ref->>'memoryHash' !~ '^[0-9a-f]{64}$'
   ) then
     raise exception 'Memory binding selectedMemoryRefs contains an invalid memoryId, revision, or memoryHash';
