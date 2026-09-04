@@ -30,6 +30,7 @@ const memoryPatches = [
 const memorySource = [memoryMigration, ...memoryPatches].join("\n");
 const structuralProof = read("../supabase/qa/memory_control_plane_v1_proof.sql");
 const persistenceProof = read("../supabase/qa/memory_control_plane_v1_persistence_proof.sql");
+const runtimeProof = read("../supabase/qa/execution_runtime_v1_proof.sql");
 
 const requiredFragments = [
   [compatibility, "alter table public.execution_plans", "legacy compatibility relation"],
@@ -75,6 +76,13 @@ const requiredFragments = [
   [persistenceProof, "two persistence revisions plus erasure did not emit three audit events", "revision audit proof"],
   [persistenceProof, "erased memory ID was allowed to be reused", "non-resurrection proof"],
   [persistenceProof, "transaction rolled back", "fixture rollback documentation"],
+  [runtimeFunctions, "authority_envelope->>'actionClass'", "executor authority ceiling"],
+  [runtimeProof, "execution_runtime_v1_fixture", "runtime transactional proof marker"],
+  [runtimeProof, "FOR UPDATE", "runtime lock proof"],
+  [runtimeProof, "reap_execution_leases", "runtime reaper proof"],
+  [runtimeProof, "decide_execution_approval", "runtime approval proof"],
+  [runtimeProof, "prepare-only executor claimed an approved external step", "runtime authority proof"],
+  [runtimeProof, "__QA_RUNTIME_PROOF_ROLLBACK__", "runtime fixture rollback marker"],
 ];
 
 const runtimeFunctionNames = [
@@ -148,6 +156,7 @@ const report = {
   runtimeSchemaLength: runtimeSchema.length,
   runtimeIndexLength: runtimeIndexMigration.length,
   runtimeFunctionFiles: runtimeFunctionFiles.length,
+  runtimeProofLength: runtimeProof.length,
   memorySourceLength: memorySource.length,
   requiredChecks: requiredFragments.length,
   failures,
