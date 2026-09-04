@@ -8,6 +8,7 @@ import {
   OPERATIONAL_MEMORY_SCHEMA_VERSION,
   createOperationalMemory,
   invalidateOperationalMemory,
+  recordMemoryConflict,
   type OperationalMemory,
   type OperationalMemoryInput,
 } from "@/lib/operational-memory";
@@ -175,6 +176,26 @@ describe("memory pipeline", () => {
     if (!result.ok) throw new Error(result.failures.join("; "));
     expect(result.action).toBe("review_conflict");
     expect(result.matchedMemoryIds).toEqual(["existing-memory"]);
+  });
+
+  it("does not dedupe a candidate against an unresolved conflict set", () => {
+    const conflict = recordMemoryConflict([
+      create({ memoryId: "conflict-left", value: { nextStepRequired: true } }),
+      create({ memoryId: "conflict-right", value: { nextStepRequired: false } }),
+    ]);
+    expect(conflict.ok).toBe(true);
+    if (!conflict.ok) throw new Error(conflict.failures.join("; "));
+
+    const candidate = create({
+      memoryId: "new-memory",
+      value: { nextStepRequired: true },
+    });
+    const result = planMemoryConsolidation(candidate, conflict.value.memories);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.failures.join("; "));
+    expect(result.action).toBe("review_conflict");
+    expect(result.reason).toContain("unresolved conflict");
   });
 
   it("allows a new candidate after an old claim is invalidated", () => {
