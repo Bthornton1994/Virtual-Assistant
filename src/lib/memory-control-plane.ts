@@ -307,16 +307,6 @@ function excluded(memoryId: string | null, reason: MemoryExclusionReason, detail
   return { memoryId, reason, detail };
 }
 
-function conflictKey(memory: OperationalMemory): string {
-  return [
-    memory.kind,
-    memory.subjectKey,
-    memory.scope.organizationId,
-    memory.scope.scopeKind,
-    memory.scope.scopeKey,
-  ].join("\u001f");
-}
-
 export function compileMemoryContext(
   requestInput: unknown,
   inputs: readonly unknown[],
@@ -407,10 +397,8 @@ export function compileMemoryContext(
   for (const item of eligible) {
     const scopePartition =
       item.memory.scope.scopeKind === "entity"
-        ? item.memory.scope.scopeKind + ":" + item.memory.scope.scopeKey
-        : item.memory.scope.scopeKind === "run" || item.memory.scope.scopeKind === "assignment"
-          ? "execution"
-          : "organization";
+        ? "entity:" + item.memory.scope.scopeKey
+        : "shared";
     const key = [item.memory.kind, item.memory.subjectKey, item.memory.scope.organizationId, scopePartition].join("\u001f");
     const group = logicalGroups.get(key) ?? [];
     group.push(item);
