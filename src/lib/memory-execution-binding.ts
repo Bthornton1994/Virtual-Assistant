@@ -14,6 +14,14 @@ import {
 export const MEMORY_EXECUTION_BINDING_SCHEMA_VERSION =
   "memory-execution-binding/v1" as const;
 
+const selectedMemoryRefSchema = z
+  .object({
+    memoryId: identifierString,
+    revision: z.number().int().min(1),
+    memoryHash: sha256HexSchema,
+  })
+  .strict();
+
 const memoryExecutionBindingBodySchema = z
   .object({
     schemaVersion: z.literal(MEMORY_EXECUTION_BINDING_SCHEMA_VERSION),
@@ -23,8 +31,26 @@ const memoryExecutionBindingBodySchema = z
     runId: identifierString,
     assignmentId: identifierString,
     selectedMemoryIds: z.array(identifierString).max(100),
+    selectedMemoryRefs: z.array(selectedMemoryRefSchema).max(100),
   })
-  .strict();
+  .strict()
+  .superRefine((binding, context) => {
+    const refIds = binding.selectedMemoryRefs.map((ref) => ref.memoryId);
+    if (new Set(refIds).size !== refIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["selectedMemoryRefs"],
+        message: "selectedMemoryRefs must not contain duplicate memory IDs.",
+      });
+    }
+    if (JSON.stringify(binding.selectedMemoryIds) !== JSON.stringify(refIds)) {
+      context.addIssue({
+        code: "custom",
+        path: ["selectedMemoryIds"],
+        message: "selectedMemoryIds must exactly match selectedMemoryRefs.",
+      });
+    }
+  });
 
 export const memoryExecutionBindingSchema = memoryExecutionBindingBodySchema
   .extend({
@@ -120,6 +146,11 @@ export function bindMemoryContextToExecution(
   }
   if (failures.length > 0) return { ok: false, failures };
 
+  const selectedMemoryRefs = compiled.items.map((item) => ({
+    memoryId: item.memory.memoryId,
+    revision: item.memory.revision,
+    memoryHash: item.memory.memoryHash,
+  }));
   const body = {
     schemaVersion: MEMORY_EXECUTION_BINDING_SCHEMA_VERSION,
     executionContextHash: context.contextHash,
@@ -127,7 +158,8 @@ export function bindMemoryContextToExecution(
     memoryReadReceiptHash: compiled.readReceipt.receiptHash,
     runId: context.runId,
     assignmentId: context.assignmentId,
-    selectedMemoryIds: compiled.items.map((item) => item.memory.memoryId),
+    selectedMemoryIds: selectedMemoryRefs.map((ref) => ref.memoryId),
+    selectedMemoryRefs,
   };
   const binding = {
     ...body,
