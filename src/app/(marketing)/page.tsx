@@ -2,12 +2,12 @@ import Link from "next/link";
 import { HeroDashboard, LiveDemo, OperationsCatalog, PainStream } from "@/components/marketing/home-interactive";
 import { Button } from "@/components/ui";
 
-export const metadata = { title: "Give us the work. Get your time back." };
+export const metadata = { title: "Delegate the result. Keep the authority." };
 
 export default function HomePage() {
   return (
-    <>
-      <section className="relative overflow-hidden">
+    <main className="dc-home">
+      <section className="dc-section dc-hero relative overflow-hidden">
         <div className="mx-auto grid max-w-6xl gap-12 px-5 pb-20 pt-14 lg:grid-cols-[0.95fr_1.05fr] lg:items-end lg:pt-20">
           <div className="dc-rise">
             <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">
@@ -104,7 +104,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="border-t border-line bg-bg-elevated">
+      <section className="dc-section dc-control-section border-t border-line bg-bg-elevated">
         <div className="mx-auto max-w-6xl px-5 py-20">
           <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">You stay in control.</h2>
           <div className="mt-12 grid gap-5 lg:grid-cols-2">
@@ -184,6 +184,6 @@ export default function HomePage() {
           </Link>
         </div>
       </section>
-    </>
+    </main>
   );
 }
