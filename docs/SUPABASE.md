@@ -17,12 +17,14 @@ Applied to QA:
 - split Execution Runtime v1 schema and RPC migrations;
 - memory control-plane persistence and ordered compatibility patches;
 - covering indexes for runtime foreign keys.
+- executor authority-ceiling enforcement in the worker claim RPC.
 
 Verified in QA:
 
 - structural proof passed at 2026-09-04 22:01 UTC, including RLS, browser-role denial, service-role grants, invariants, atomic binding, and `memory_context_bound` compatibility;
 - disposable persistence proof passed with two revisions, idempotency, lineage, audit emission, erasure, non-resurrection, and source-artifact preservation;
-- all disposable run, artifact, memory, tombstone, and audit sentinel rows were rolled back and remain absent.
+- disposable Execution Runtime proof passed for idempotent plan creation, duplicate-claim prevention, lease heartbeat credential checks, completion, terminal failure, expiry reaping, cancellation, approval release, and fail-closed executor/spec authority checks;
+- all disposable runtime, run, artifact, memory, tombstone, and audit sentinel rows were rolled back and remain absent.
 
 No Production Supabase project is mapped, migrated, or changed. The QA project must not be treated as Production.
 
@@ -71,6 +73,8 @@ psql "$QA_DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f supabase/qa/memory_control_plane_v1_proof.sql
 psql "$QA_DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f supabase/qa/memory_control_plane_v1_persistence_proof.sql
+psql "$QA_DATABASE_URL" -v ON_ERROR_STOP=1 \\
+  -f supabase/qa/execution_runtime_v1_proof.sql
 ```
 
 The memory tables are intentionally server-only: browser roles receive no direct table grants, and the RPCs enforce organization ownership, source-artifact identity, append-only revisions, erasure tombstones, and atomic execution binding. The structural proof is read-only. The disposable end-to-end fixture must run only in the mapped QA project inside an explicit rollback transaction before promotion.
