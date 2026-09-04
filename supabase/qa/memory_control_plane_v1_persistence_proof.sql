@@ -92,7 +92,19 @@ begin
     'purpose', 'persistence',
     'nonce', 'c7e5-memory-proof'
   );
-  v_source_hash := encode(extensions.digest(v_source_payload::text, 'sha256'), 'hex');
+  v_source_hash := encode(
+    extensions.digest(
+      concat_ws(
+        '|',
+        'source',
+        'Disposable memory control-plane source artifact',
+        'qa://memory-control-plane/v1',
+        v_source_payload::text
+      ),
+      'sha256'
+    ),
+    'hex'
+  );
 
   insert into public.evidence_artifacts (
     id, organization_id, run_id, kind, summary, source_uri,
