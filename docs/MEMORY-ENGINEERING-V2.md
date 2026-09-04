@@ -10,7 +10,7 @@ It should not implement a generic "remember everything" feature, an unbounded tr
 
 This builds on the existing CS-11 Operational Memory Contract. It does not replace VISION.md, the Delegation Spec, the Executor Envelope, the Evidence Artifact plane, Outcome Receipts, the Gauntlet, or the capability registry.
 
-The X post that prompted this work is useful as a design prompt, but the full article could not be retrieved directly from X in this review. The design below is therefore based on the indexed post excerpts and outline, the existing repository contracts, and independent memory and agent-security research. It does not claim that every detail is present in the post.
+The full page text was supplied for this review, so the article's five-stage pipeline and illustrative code are now directly considered. The Python examples are treated as design sketches, not production authority. The Delegation Cloud adaptation below keeps the useful separation of concerns while replacing heuristic capture, fuzzy authority decisions, and access-based reinforcement with typed contracts, provenance, explicit approval, and fail-closed retrieval.
 
 Sources:
 
@@ -42,6 +42,62 @@ Evidence remains the source of proof. A memory may summarize or index evidence, 
 A run checkpoint is state, not memory. State allows a run to resume. Memory survives the run and may influence later work.
 
 An executor may propose memory. It may not promote, invalidate, resolve conflicts, or grant memory authority to itself.
+
+## Applying the five-stage pipeline
+
+The supplied page describes five separate operations: capture, consolidate, retrieve, reconcile, and decay. Delegation Cloud adopts the separation, but changes the authority model for a high-trust managed-outcomes platform.
+
+### 1. Capture
+
+Capture is a rejection system first. A caller submits an explicit typed proposal with a durability class and a structured operational-memory body. Ephemeral material is discarded. Durable or expiring material can become a candidate only after schema, provenance, scope, sensitivity, and retention checks.
+
+The capture boundary never infers durable memory from phrases such as "I prefer" or "I always." It never accepts a pre-hashed or pre-approved artifact from the capture caller. Every accepted proposal starts as a candidate with no approver.
+
+Implementation: `src/lib/memory-capture.ts`.
+
+### 2. Consolidate
+
+Consolidation uses an exact logical claim key: organization, memory kind, subject, claim, and exact scope. An identical active value is idempotently skipped. A different active value becomes a reviewable conflict. Invalid existing records block the plan instead of being silently ignored.
+
+Fuzzy text similarity can help a future review queue find possible related claims, but it cannot merge, supersede, or establish authority. Structured values and source evidence must drive those decisions.
+
+Implementation: `src/lib/memory-consolidation.ts`.
+
+### 3. Retrieve
+
+Retrieval is policy-first. The memory compiler validates organization, run or workstream scope, requested subjects, allowed kinds, sensitivity, status, freshness, expiry, contradiction state, and context budgets before any optional semantic ranking is considered.
+
+Embeddings may help discover candidates later. They cannot bypass the compiler, become the source of truth, or change action authority. Production context is verified-only; candidate context is labeled advisory and limited to shadow mode.
+
+Implementation: `src/lib/memory-control-plane.ts`.
+
+### 4. Reconcile
+
+Reconciliation is not "newer wins." A newer statement may be malicious, mistaken, or less authoritative than an older approved decision. Active disagreements remain blocked until an accountable approver resolves the conflict and the losing lineage is invalidated explicitly.
+
+The operational-memory lifecycle functions implement this through immutable revisions, conflict sets, explicit resolution, invalidation, and expiry.
+
+Implementation: `src/lib/operational-memory.ts`.
+
+### 5. Decay
+
+Decay is implemented first as eligibility, review, expiry, retention, and archival policy. Retrieval count is not allowed to increase authority because that creates a self-reinforcing loop in which frequently retrieved guesses become harder to remove.
+
+A future retention worker may archive terminal records, but archival must preserve audit lineage and must not be confused with user-requested deletion. Deletion requires separate cache and index verification.
+
+This interpretation retains the article's insight that memory must let go, while avoiding arbitrary confidence constants and popularity-based reinforcement until there is measured evidence for them.
+
+### What the illustrative code gets right and wrong
+
+The page correctly separates capture, consolidation, retrieval, reconciliation, and decay. Its sample code is useful for explaining the shape, but it is not sufficient as a security or authority implementation:
+
+- Phrase-based capture can miss durable facts, accept sarcasm, and confuse temporary statements with policy.
+- `SequenceMatcher` and keyword contradiction pairs are not reliable identity or truth tests for structured operational claims.
+- A fixed confidence of `0.8` has no demonstrated calibration.
+- Recency and a one-day threshold do not prove that a new fact supersedes an approved one.
+- Incrementing `access_count` on retrieval rewards popularity and can amplify poisoned or self-generated memory.
+- The cosine-similarity example does not show tenant filtering, policy enforcement, zero-vector handling, provenance binding, or deletion behavior.
+- Mutable in-memory lists are illustrative only and do not provide durable audit, concurrency, or recovery guarantees.
 
 ## Whiteboard
 
@@ -230,7 +286,7 @@ Embeddings may become an implementation detail of candidate discovery or retriev
 
 ### Stage A: pure contract and compiler
 
-This branch strengthens the CS-11 pure contract and adds deterministic memory-context compilation. It is provider-neutral, network-free, and independently testable.
+This branch strengthens the CS-11 pure contract, adds reject-by-default capture and deterministic consolidation planning, and adds deterministic memory-context compilation. It is provider-neutral, network-free, and independently testable.
 
 ### Stage B: QA persistence
 
