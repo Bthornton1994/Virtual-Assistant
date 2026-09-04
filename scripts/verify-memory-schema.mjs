@@ -8,9 +8,14 @@ const proofPath = new URL(
   "../supabase/qa/memory_control_plane_v1_proof.sql",
   import.meta.url,
 );
+const fixtureProofPath = new URL(
+  "../supabase/qa/memory_control_plane_v1_persistence_proof.sql",
+  import.meta.url,
+);
 
 const migration = readFileSync(migrationPath, "utf8");
 const proof = readFileSync(proofPath, "utf8");
+const fixtureProof = readFileSync(fixtureProofPath, "utf8");
 
 const requiredMigrationFragments = [
   "alter table public.operational_memory_records enable row level security",
@@ -48,6 +53,15 @@ const requiredProofFragments = [
   "memory_binding_hash",
 ];
 
+const requiredFixtureFragments = [
+  "set local role service_role",
+  "persist_operational_memory",
+  "read_operational_memories",
+  "erase_operational_memory",
+  "latest revision",
+  "transaction rolled back",
+];
+
 const failures = [];
 for (const fragment of requiredMigrationFragments) {
   if (!migration.includes(fragment)) failures.push("Migration missing: " + fragment);
@@ -58,12 +72,19 @@ for (const fragment of forbiddenMigrationFragments) {
 for (const fragment of requiredProofFragments) {
   if (!proof.includes(fragment)) failures.push("QA proof missing: " + fragment);
 }
+for (const fragment of requiredFixtureFragments) {
+  if (!fixtureProof.toLowerCase().includes(fragment.toLowerCase())) {
+    failures.push("Transactional QA fixture missing: " + fragment);
+  }
+}
 
 const report = {
   migration: migrationPath.pathname,
   proof: proofPath.pathname,
+  fixtureProof: fixtureProofPath.pathname,
   requiredMigrationFragments: requiredMigrationFragments.length,
   requiredProofFragments: requiredProofFragments.length,
+  requiredFixtureFragments: requiredFixtureFragments.length,
   failures,
 };
 
