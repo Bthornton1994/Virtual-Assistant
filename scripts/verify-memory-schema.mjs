@@ -30,6 +30,7 @@ const requiredMigrationFragments = [
   "current_user <> 'service_role'",
   "Every source artifact reference must resolve to the same-tenant immutable evidence artifact",
   "Memory revision must be the next append-only revision",
+  "Operational memory ID was erased and cannot be reused",
   "old.memory_read_receipt_hash, old.memory_binding_hash",
   "memory_context_bound",
   "insert into public.audit_events",
@@ -69,6 +70,7 @@ const requiredFixtureFragments = [
   "erase_operational_memory",
   "latest revision",
   "transaction rolled back",
+  "erased memory ID was allowed to be reused",
 ];
 
 const failures = [];
