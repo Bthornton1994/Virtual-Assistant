@@ -55,7 +55,6 @@ create table public.operational_memory_records (
   unique (organization_id, memory_id, revision),
   unique (organization_id, memory_hash),
   unique (id, organization_id),
-  foreign key (organization_id) references public.organizations(id) on delete cascade,
   check (
     (status <> 'verified' or approver_id is not null)
     and (status <> 'candidate' or approver_id is null)
@@ -640,7 +639,8 @@ alter table public.execution_attempts
   add column if not exists memory_context_hash text,
   add column if not exists memory_read_receipt_hash text,
   add column if not exists memory_binding_hash text,
-  add column if not exists memory_selected_ids jsonb not null default '[]'::jsonb;
+  add column if not exists memory_selected_ids jsonb not null default '[]'::jsonb,
+  add column if not exists memory_selected_refs jsonb not null default '[]'::jsonb;
 
 alter table public.execution_attempts
   add constraint execution_attempts_memory_hashes_check check (
@@ -652,6 +652,7 @@ alter table public.execution_attempts
       and memory_read_receipt_hash is null
       and memory_binding_hash is null
       and memory_selected_ids = '[]'::jsonb
+      and memory_selected_refs = '[]'::jsonb
     )
     or (
       memory_run_id is not null
@@ -661,9 +662,15 @@ alter table public.execution_attempts
       and memory_read_receipt_hash is not null
       and memory_binding_hash is not null
       and jsonb_typeof(memory_selected_ids) = 'array'
+      and jsonb_typeof(memory_selected_refs) = 'array'
       and case
         when jsonb_typeof(memory_selected_ids) = 'array'
           then jsonb_array_length(memory_selected_ids) <= 100
+        else false
+      end
+      and case
+        when jsonb_typeof(memory_selected_refs) = 'array'
+          then jsonb_array_length(memory_selected_refs) <= 100
         else false
       end
     )
@@ -698,12 +705,12 @@ begin
        new.memory_run_id, new.memory_assignment_id,
        new.memory_execution_context_hash, new.memory_context_hash,
        new.memory_read_receipt_hash, new.memory_binding_hash,
-       new.memory_selected_ids
+       new.memory_selected_ids, new.memory_selected_refs
      ) is distinct from row(
        old.memory_run_id, old.memory_assignment_id,
        old.memory_execution_context_hash, old.memory_context_hash,
        old.memory_read_receipt_hash, old.memory_binding_hash,
-       old.memory_selected_ids
+       old.memory_selected_ids, old.memory_selected_refs
      ) then
     if old.memory_binding_hash is not null then
       raise exception 'Execution memory binding is immutable after attachment';
@@ -727,7 +734,7 @@ create or replace function public.claim_execution_step_with_memory(
   p_memory_context_hash text,
   p_memory_read_receipt_hash text,
   p_memory_binding_hash text,
-  p_memory_selected_ids jsonb,
+  p_memory_selected_refs jsonb,
   p_lease_seconds integer default 300
 )
 returns table (
@@ -747,7 +754,8 @@ returns table (
   memory_context_hash text,
   memory_read_receipt_hash text,
   memory_binding_hash text,
-  memory_selected_ids jsonb
+  memory_selected_ids jsonb,
+  memory_selected_refs jsonb
 )
 language plpgsql
 set search_path = public
@@ -755,6 +763,7 @@ as $$
 declare
   v_claim record;
   v_organization_id uuid;
+  v_memory_selected_ids jsonb;
 begin
   if current_user <> 'service_role' then
     raise exception 'Execution runtime mutations require the service role';
@@ -771,27 +780,19 @@ begin
      or p_memory_binding_hash is null or p_memory_binding_hash !~ '^[0-9a-f]{64}$' then
     raise exception 'Memory binding hashes must be lowercase SHA-256 values';
   end if;
-  if p_memory_selected_ids is null or jsonb_typeof(p_memory_selected_ids) <> 'array' then
-    raise exception 'Memory binding selectedMemoryIds must be an array';
+  if p_memory_selected_refs is null or jsonb_typeof(p_memory_selected_refs) <> 'array' then
+    raise exception 'Memory binding selectedMemoryRefs must be an array';
   end if;
-  if jsonb_array_length(p_memory_selected_ids) > 100 then
-    raise exception 'Memory binding selectedMemoryIds exceeds the limit';
+  if jsonb_array_length(p_memory_selected_refs) > 100 then
+    raise exception 'Memory binding selectedMemoryRefs exceeds the limit';
   end if;
   if exists (
     select 1
-    from jsonb_array_elements_text(p_memory_selected_ids) selected(memory_id)
-    where char_length(selected.memory_id) not between 1 and 128
-       or selected.memory_id <> btrim(selected.memory_id)
-  ) then
-    raise exception 'Memory binding selectedMemoryIds contains an invalid identifier';
-  end if;
-  if (
-    select count(*) from jsonb_array_elements_text(p_memory_selected_ids)
-  ) <> (
-    select count(distinct value) from jsonb_array_elements_text(p_memory_selected_ids)
-  ) then
-    raise exception 'Memory binding selectedMemoryIds must be unique';
-  end if;
+    from jsonb_array_elements(p_memory_selected_refs) selected(ref)
+    where jsonb_typeof(selected.ref) <> 'object'
+       or char_length(selected.ref->>'memoryId') not between 1 and 128
+       or selected.ref->>'memoryId' <> btrim(selected.ref->>'memoryId')
+       or selected.ref->>'revision' !~ '^[0-9]+
 
   select claim.*
     into v_claim
@@ -814,7 +815,117 @@ begin
   end if;
   if exists (
     select 1
-    from jsonb_array_elements_text(p_memory_selected_ids) selected(memory_id)
+    from jsonb_array_elements(p_memory_selected_refs) selected(ref)
+    where not exists (
+      select 1
+      from public.operational_memory_records r
+      where r.organization_id = v_organization_id
+        and r.memory_id = selected.ref->>'memoryId'
+        and r.revision = (selected.ref->>'revision')::integer
+        and r.memory_hash = selected.ref->>'memoryHash'
+        and r.status = 'verified'
+        and (r.expires_at is null or r.expires_at > now())
+        and (r.review_after is null or r.review_after > now())
+        and not exists (
+          select 1 from public.operational_memory_erasures e
+          where e.organization_id = r.organization_id
+            and e.memory_id_hash = encode(extensions.digest(r.memory_id, 'sha256'), 'hex')
+        )
+        and not exists (
+          select 1
+          from public.operational_memory_records newer
+          where newer.organization_id = r.organization_id
+            and newer.memory_id = r.memory_id
+            and newer.revision > r.revision
+        )
+    )
+  ) then
+    raise exception 'Every selected memory reference must resolve to the latest verified, non-erased revision in the same organization';
+  end if;
+
+  perform set_config('app.execution_memory_binding_authorized', 'true', true);
+  update public.execution_attempts
+     set memory_run_id = p_memory_run_id,
+         memory_assignment_id = p_memory_assignment_id,
+         memory_execution_context_hash = p_memory_execution_context_hash,
+         memory_context_hash = p_memory_context_hash,
+         memory_read_receipt_hash = p_memory_read_receipt_hash,
+         memory_binding_hash = p_memory_binding_hash,
+         memory_selected_ids = v_memory_selected_ids,
+         memory_selected_refs = p_memory_selected_refs
+   where id = v_claim.attempt_id
+     and status = 'running'
+     and worker_id = p_worker_id
+     and lease_token_hash = p_lease_token_hash;
+  if not found then
+    raise exception 'Claimed execution attempt disappeared before memory binding';
+  end if;
+
+  insert into public.execution_events (
+    organization_id, plan_id, step_id, attempt_id, event_type,
+    actor_kind, actor_ref, payload
+  ) values (
+    v_organization_id, v_claim.plan_id, v_claim.step_id, v_claim.attempt_id,
+    'memory_context_bound', 'worker', p_worker_id,
+    jsonb_build_object(
+      'memoryRunId', p_memory_run_id,
+      'memoryAssignmentId', p_memory_assignment_id,
+      'memoryExecutionContextHash', p_memory_execution_context_hash,
+      'memoryContextHash', p_memory_context_hash,
+      'memoryReadReceiptHash', p_memory_read_receipt_hash,
+      'memoryBindingHash', p_memory_binding_hash,
+      'selectedMemoryIds', v_memory_selected_ids,
+      'selectedMemoryRefs', p_memory_selected_refs
+    )
+  );
+
+  return query
+  select v_claim.attempt_id, v_claim.plan_id, v_claim.step_id, v_claim.run_id,
+    v_claim.step_key, v_claim.capability_key, v_claim.action_class,
+    v_claim.executor_context, v_claim.lease_expires_at, v_claim.attempt_number,
+    p_memory_run_id, p_memory_assignment_id, p_memory_execution_context_hash,
+    p_memory_context_hash, p_memory_read_receipt_hash, p_memory_binding_hash,
+    v_memory_selected_ids, p_memory_selected_refs;
+end;
+$$;
+
+revoke all on function public.claim_execution_step_with_memory(
+  text, text, text, text, text, text, text, text, text, jsonb, integer
+) from public, anon, authenticated;
+grant execute on function public.claim_execution_step_with_memory(
+  text, text, text, text, text, text, text, text, text, jsonb, integer
+) to service_role;
+
+comment on table public.operational_memory_records is
+  'Append-only, server-only revisions for operational-memory/v1. The latest revision is the only effective record.';
+comment on table public.operational_memory_erasures is
+  'Tombstones for controlled memory erasure. The clear memory identifier and payload are intentionally not retained.';
+
+       or (selected.ref->>'revision')::integer < 1
+       or selected.ref->>'memoryHash' !~ '^[0-9a-f]{64}
+
+  select claim.*
+    into v_claim
+  from public.claim_execution_step(
+    p_worker_id,
+    p_capability_key,
+    p_lease_token_hash,
+    p_lease_seconds
+  ) claim;
+  if not found then
+    return;
+  end if;
+
+  select organization_id into v_organization_id
+  from public.execution_attempts
+  where id = v_claim.attempt_id;
+
+  if p_memory_run_id <> v_claim.run_id::text then
+    raise exception 'Memory binding runId does not match the claimed Workstream Run';
+  end if;
+  if exists (
+    select 1
+    from jsonb_array_elements_text(p_memory_selected_refs) selected(memory_id)
     where not exists (
       select 1
       from public.operational_memory_records r
@@ -838,7 +949,7 @@ begin
          memory_context_hash = p_memory_context_hash,
          memory_read_receipt_hash = p_memory_read_receipt_hash,
          memory_binding_hash = p_memory_binding_hash,
-         memory_selected_ids = p_memory_selected_ids
+         memory_selected_ids = p_memory_selected_refs
    where id = v_claim.attempt_id
      and status = 'running'
      and worker_id = p_worker_id
@@ -860,7 +971,7 @@ begin
       'memoryContextHash', p_memory_context_hash,
       'memoryReadReceiptHash', p_memory_read_receipt_hash,
       'memoryBindingHash', p_memory_binding_hash,
-      'selectedMemoryIds', p_memory_selected_ids
+      'selectedMemoryIds', p_memory_selected_refs
     )
   );
 
@@ -870,7 +981,118 @@ begin
     v_claim.executor_context, v_claim.lease_expires_at, v_claim.attempt_number,
     p_memory_run_id, p_memory_assignment_id, p_memory_execution_context_hash,
     p_memory_context_hash, p_memory_read_receipt_hash, p_memory_binding_hash,
-    p_memory_selected_ids;
+    p_memory_selected_refs;
+end;
+$$;
+
+revoke all on function public.claim_execution_step_with_memory(
+  text, text, text, text, text, text, text, text, text, jsonb, integer
+) from public, anon, authenticated;
+grant execute on function public.claim_execution_step_with_memory(
+  text, text, text, text, text, text, text, text, text, jsonb, integer
+) to service_role;
+
+comment on table public.operational_memory_records is
+  'Append-only, server-only revisions for operational-memory/v1. The latest revision is the only effective record.';
+comment on table public.operational_memory_erasures is
+  'Tombstones for controlled memory erasure. The clear memory identifier and payload are intentionally not retained.';
+
+  ) then
+    raise exception 'Memory binding selectedMemoryRefs contains an invalid memoryId, revision, or memoryHash';
+  end if;
+  if (
+    select count(*) from jsonb_array_elements(p_memory_selected_refs)
+  ) <> (
+    select count(distinct selected.ref->>'memoryId')
+    from jsonb_array_elements(p_memory_selected_refs) selected(ref)
+  ) then
+    raise exception 'Memory binding selectedMemoryRefs must be unique';
+  end if;
+  select coalesce(
+    jsonb_agg(to_jsonb(selected.ref->>'memoryId') order by selected.ordinality),
+    '[]'::jsonb
+  )
+  into v_memory_selected_ids
+  from jsonb_array_elements(p_memory_selected_refs) with ordinality selected(ref, ordinality);
+
+  select claim.*
+    into v_claim
+  from public.claim_execution_step(
+    p_worker_id,
+    p_capability_key,
+    p_lease_token_hash,
+    p_lease_seconds
+  ) claim;
+  if not found then
+    return;
+  end if;
+
+  select organization_id into v_organization_id
+  from public.execution_attempts
+  where id = v_claim.attempt_id;
+
+  if p_memory_run_id <> v_claim.run_id::text then
+    raise exception 'Memory binding runId does not match the claimed Workstream Run';
+  end if;
+  if exists (
+    select 1
+    from jsonb_array_elements_text(p_memory_selected_refs) selected(memory_id)
+    where not exists (
+      select 1
+      from public.operational_memory_records r
+      where r.organization_id = v_organization_id
+        and r.memory_id = selected.memory_id
+        and not exists (
+          select 1 from public.operational_memory_erasures e
+          where e.organization_id = r.organization_id
+            and e.memory_id_hash = encode(extensions.digest(r.memory_id, 'sha256'), 'hex')
+        )
+    )
+  ) then
+    raise exception 'Every selected memory must exist in the same organization and not be erased';
+  end if;
+
+  perform set_config('app.execution_memory_binding_authorized', 'true', true);
+  update public.execution_attempts
+     set memory_run_id = p_memory_run_id,
+         memory_assignment_id = p_memory_assignment_id,
+         memory_execution_context_hash = p_memory_execution_context_hash,
+         memory_context_hash = p_memory_context_hash,
+         memory_read_receipt_hash = p_memory_read_receipt_hash,
+         memory_binding_hash = p_memory_binding_hash,
+         memory_selected_ids = p_memory_selected_refs
+   where id = v_claim.attempt_id
+     and status = 'running'
+     and worker_id = p_worker_id
+     and lease_token_hash = p_lease_token_hash;
+  if not found then
+    raise exception 'Claimed execution attempt disappeared before memory binding';
+  end if;
+
+  insert into public.execution_events (
+    organization_id, plan_id, step_id, attempt_id, event_type,
+    actor_kind, actor_ref, payload
+  ) values (
+    v_organization_id, v_claim.plan_id, v_claim.step_id, v_claim.attempt_id,
+    'memory_context_bound', 'worker', p_worker_id,
+    jsonb_build_object(
+      'memoryRunId', p_memory_run_id,
+      'memoryAssignmentId', p_memory_assignment_id,
+      'memoryExecutionContextHash', p_memory_execution_context_hash,
+      'memoryContextHash', p_memory_context_hash,
+      'memoryReadReceiptHash', p_memory_read_receipt_hash,
+      'memoryBindingHash', p_memory_binding_hash,
+      'selectedMemoryIds', p_memory_selected_refs
+    )
+  );
+
+  return query
+  select v_claim.attempt_id, v_claim.plan_id, v_claim.step_id, v_claim.run_id,
+    v_claim.step_key, v_claim.capability_key, v_claim.action_class,
+    v_claim.executor_context, v_claim.lease_expires_at, v_claim.attempt_number,
+    p_memory_run_id, p_memory_assignment_id, p_memory_execution_context_hash,
+    p_memory_context_hash, p_memory_read_receipt_hash, p_memory_binding_hash,
+    p_memory_selected_refs;
 end;
 $$;
 
