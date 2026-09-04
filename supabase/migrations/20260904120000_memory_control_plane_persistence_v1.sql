@@ -252,9 +252,9 @@ begin
   if p_memory->>'claim' is null or char_length(p_memory->>'claim') not between 1 and 2000 then
     raise exception 'Invalid operational memory claim';
   end if;
-  if p_memory->>'recordedBy' is null
-     or char_length(p_memory->>'recordedBy') not between 1 and 128
-     or p_memory->>'recordedBy' <> btrim(p_memory->>'recordedBy') then
+  if p_memory #>> '{provenance,recordedBy}' is null
+     or char_length(p_memory #>> '{provenance,recordedBy}') not between 1 and 128
+     or p_memory #>> '{provenance,recordedBy}' <> btrim(p_memory #>> '{provenance,recordedBy}') then
     raise exception 'Invalid operational memory recordedBy';
   end if;
 
