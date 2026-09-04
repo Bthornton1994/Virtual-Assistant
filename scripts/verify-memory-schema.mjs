@@ -125,8 +125,8 @@ for (const fragment of [
   "v_step record;",
   "select s.*, ep.executor_kind into v_step",
   "v_canonical_body_v2",
-  "'revision":2",
-  "'supersedesHash":null",
+  'revision":2',
+  'supersedesHash":null',
 ]) {
   if (!memorySource.includes(fragment) && !persistenceProof.includes(fragment)) {
     failures.push("Regression guard missing: " + fragment);
