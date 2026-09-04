@@ -220,6 +220,7 @@ describe("memory control plane", () => {
       [],
     );
     expect(duplicateRequest.ok).toBe(false);
+    if (duplicateRequest.ok) throw new Error("Expected duplicate selectors to be rejected.");
     expect(duplicateRequest.receipt).toBeNull();
     expect(duplicateRequest.failures.join(" ")).toContain("scopeSelectors");
 
