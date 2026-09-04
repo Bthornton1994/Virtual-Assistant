@@ -1,6 +1,13 @@
 -- Execution Runtime v1 claim RPC.
--- The schema and governance RPCs are installed by the prior migrations.
+--
+-- Supabase's migration transport rejects this function's raw statement even
+-- though PostgreSQL accepts it. Execute the static definition inside one
+-- transaction so the tracked migration still installs the same function and
+-- grants atomically.
 
+do $migration$
+begin
+  execute $claim_function$
 create or replace function public.claim_execution_step(
   p_worker_id text,
   p_capability_key text,
@@ -117,4 +124,13 @@ end;
 $$;
 
 revoke all on function public.claim_execution_step(text, text, text, integer) from public, anon, authenticated;
+$claim_function$;
+  execute $claim_revoke$
+revoke all on function public.claim_execution_step(text, text, text, integer) from public, anon, authenticated;
 grant execute on function public.claim_execution_step(text, text, text, integer) to service_role;
+$claim_revoke$;
+  execute $claim_grant$
+grant execute on function public.claim_execution_step(text, text, text, integer) to service_role;
+$claim_grant$;
+end;
+$migration$;
