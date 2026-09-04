@@ -209,6 +209,26 @@ export const operationalMemorySchema = memoryBodySchema
     if (memory.kind === "working" && !["run", "assignment"].includes(memory.scope.scopeKind)) {
       issue(["scope", "scopeKind"], "working memory must be scoped to a run or assignment");
     }
+    if (
+      memory.scope.scopeKind === "run" &&
+      memory.provenance.sourceRunId !== null &&
+      memory.provenance.sourceRunId !== memory.scope.scopeKey
+    ) {
+      issue(
+        ["provenance", "sourceRunId"],
+        "sourceRunId must match a run-scoped memory scope when supplied",
+      );
+    }
+    if (
+      memory.scope.scopeKind === "assignment" &&
+      memory.provenance.sourceAssignmentId !== null &&
+      memory.provenance.sourceAssignmentId !== memory.scope.scopeKey
+    ) {
+      issue(
+        ["provenance", "sourceAssignmentId"],
+        "sourceAssignmentId must match an assignment-scoped memory scope when supplied",
+      );
+    }
 
     if (memory.revision === 1 && memory.supersedesHash !== null) {
       issue(["supersedesHash"], "revision 1 cannot supersede another memory revision");
@@ -499,6 +519,29 @@ export function resolveMemoryConflict(
   const first = memories[0];
   if (memories.some((memory) => memory.conflictSetId !== first.conflictSetId)) {
     return { ok: false, failures: ["All memories must belong to the same conflict set."] };
+  }
+  for (const memory of memories.slice(1)) {
+    if (memory.kind !== first.kind) failures.push("All memories must share the same logical claim kind.");
+    if (memory.subjectKey !== first.subjectKey) failures.push("All memories must share the same logical claim subject.");
+    if (memory.claim !== first.claim) failures.push("All memories must share the same logical claim.");
+    if (
+      memory.scope.organizationId !== first.scope.organizationId ||
+      memory.scope.scopeKind !== first.scope.scopeKind ||
+      memory.scope.scopeKey !== first.scope.scopeKey
+    ) {
+      failures.push("All memories must share the same logical claim scope.");
+    }
+  }
+  if (failures.length > 0) return { ok: false, failures };
+
+  const expectedConflictSetId = sha256Hex({
+    memoryIds: memories.map((memory) => memory.memoryId).sort(),
+    kind: first.kind,
+    subjectKey: first.subjectKey,
+    scope: first.scope,
+  });
+  if (first.conflictSetId !== expectedConflictSetId) {
+    return { ok: false, failures: ["Conflict inputs do not cover the complete conflict set."] };
   }
 
   const winner = memories.find((memory) => memory.memoryId === winnerMemoryId);
