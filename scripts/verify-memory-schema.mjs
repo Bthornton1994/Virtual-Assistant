@@ -26,6 +26,7 @@ const requiredMigrationFragments = [
   "current_user <> 'service_role'",
   "Every source artifact reference must resolve to the same-tenant immutable evidence artifact",
   "Memory revision must be the next append-only revision",
+  "old.memory_read_receipt_hash, old.memory_binding_hash",
 ];
 
 const forbiddenMigrationFragments = [
