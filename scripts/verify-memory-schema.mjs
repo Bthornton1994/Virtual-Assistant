@@ -21,6 +21,7 @@ const requiredMigrationFragments = [
   "read_operational_memories(",
   "erase_operational_memory(",
   "claim_execution_step_with_memory(",
+  "memory_selected_refs",
   "memory_context_bound",
   "current_user <> 'service_role'",
   "Every source artifact reference must resolve to the same-tenant immutable evidence artifact",
