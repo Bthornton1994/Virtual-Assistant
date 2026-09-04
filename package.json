@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "verify": "npm run lint && npm run typecheck && npm test && npm run build"
+    "verify:memory-schema": "node scripts/verify-memory-schema.mjs",
+    "verify": "npm run verify:memory-schema && npm run lint && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
