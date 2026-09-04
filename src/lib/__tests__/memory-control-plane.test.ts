@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compileMemoryContext,
   serializeMemoryContext,
+  validateMemoryContext,
   validateMemoryReadReceipt,
   type MemoryAccessRequest,
 } from "@/lib/memory-control-plane";
@@ -206,6 +207,55 @@ describe("memory control plane", () => {
     expect(result.receipt?.blocked).toBe(true);
     expect(result.receipt?.selected).toHaveLength(0);
     expect(result.receipt?.excluded.every((item) => item.reason === "unresolved_conflict")).toBe(true);
+  });
+
+  it("rejects duplicate policy selectors and review-due memory", () => {
+    const duplicateRequest = compileMemoryContext(
+      request({
+        scopeSelectors: [
+          { scopeKind: "organization", scopeKey: "org-001" },
+          { scopeKind: "organization", scopeKey: "org-001" },
+        ],
+      }),
+      [],
+    );
+    expect(duplicateRequest.ok).toBe(false);
+    expect(duplicateRequest.receipt).toBeNull();
+    expect(duplicateRequest.failures.join(" ")).toContain("scopeSelectors");
+
+    const reviewDue = verified({
+      memoryId: "review-due-memory",
+      reviewAfter: "2026-08-31T23:59:59Z",
+    });
+    const result = compileMemoryContext(request({ requireAtLeastOne: false }), [reviewDue]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.failures.join("; "));
+    expect(result.context.items).toHaveLength(0);
+    expect(result.context.readReceipt.excluded[0].reason).toBe("review_due");
+  });
+
+  it("enforces the final serialized context budget", () => {
+    const oversized = verified({
+      memoryId: "oversized-memory",
+      value: { nextStepRequired: true, notes: "x".repeat(4_000) },
+    });
+    const result = compileMemoryContext(
+      request({ maxContextBytes: 512, requireAtLeastOne: false }),
+      [oversized],
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.failures.join("; "));
+    expect(result.context.items).toHaveLength(0);
+    expect(result.context.readReceipt.excluded[0].reason).toBe("budget_exceeded");
+
+    const normal = compileMemoryContext(request(), [verified({ memoryId: "normal-memory" })]);
+    expect(normal.ok).toBe(true);
+    if (!normal.ok) throw new Error(normal.failures.join("; "));
+    expect(new TextEncoder().encode(serializeMemoryContext(normal.context)).byteLength).toBeLessThanOrEqual(
+      request().maxContextBytes,
+    );
+    expect(validateMemoryContext(normal.context).ok).toBe(true);
   });
 
   it("rejects a read request that tries to widen a run scope", () => {
