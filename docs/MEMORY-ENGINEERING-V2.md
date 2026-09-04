@@ -294,13 +294,13 @@ Embeddings may become an implementation detail of candidate discovery or retriev
 
 This branch strengthens the CS-11 pure contract, adds reject-by-default capture and deterministic consolidation planning, and adds deterministic memory-context compilation. It is provider-neutral, network-free, and independently testable. It also adds a narrow execution-binding seam: only a verified, production memory context with matching run and assignment identifiers can be bound to an immutable execution context. This is a contract for the next runtime stage, not a claim that the live runtime already persists or consumes memory.
 
-### Stage B: QA persistence
+### Stage B: QA persistence (repository implementation complete)
 
-Persist immutable memory revisions through a Delegation Cloud-owned data boundary. Bind each record to real organization-scoped source artifacts. Add RLS, append-only lifecycle events, deletion handling, and database proofs. Apply only to QA or a Supabase branch.
+The repository now persists immutable memory revisions through a Delegation Cloud-owned RPC boundary, binds each record to real organization-scoped source artifacts, enables RLS, records append-only lifecycle/audit events, and implements controlled erasure. The migration must still be applied only to a dedicated QA project or Supabase branch before it can be certified.
 
-### Stage C: execution integration
+### Stage C: execution integration (repository implementation complete)
 
-Attach a compiled memory read receipt to a Workstream Run or Execution Attempt. The executor sees only the compiled context. The runtime records memory hashes and exclusion/block reasons. No memory read grants action authority.
+The runtime wrapper now claims a lease and attaches the compiled memory receipt, exact selected memory revisions/hashes, and binding hashes in one transaction. The executor sees only the compiled context. The event constraint accepts the binding receipt, and no memory read grants action authority. Live certification still requires a dedicated QA fixture with competing-worker, expiry, rollback, and bound-receipt assertions.
 
 ### Stage D: proof and bakeoff
 
@@ -347,7 +347,7 @@ The pure memory contracts are now paired with a server-only persistence boundary
 - memory-persistence.ts is the only application adapter. It validates the typed memory, sends canonical hash-excluded bytes to the database, rejects demo-mode persistence, authorizes final-state transitions, and compiles reads from the latest persisted snapshot.
 - The database refuses direct browser grants, rejects a memory whose source artifact ID, schema version, content hash, or organization does not match an existing evidence artifact, and rejects revision gaps or forged supersedesHash lineage.
 - Execution Runtime claims may use claim_execution_step_with_memory. The wrapper stores the execution-context hash, memory-context hash, read-receipt hash, binding hash, run and assignment identifiers, and exact selected memory IDs, revisions, and hashes in the same transaction as the lease claim. It refuses a reference that is no longer the latest verified, non-expired revision. A half-bound claim rolls back.
-- Erasure removes all clear memory payloads and revisions for one memory ID and retains only a non-sensitive tombstone with hashes and counts. Shared evidence artifacts are intentionally not deleted by this function; their own retention and erasure policy must be applied separately.
+- Erasure removes all clear memory payloads and revisions for one memory ID and retains only a non-sensitive tombstone with hashes and counts. The persistence and erasure RPCs also write audit events using the memory-ID hash, never the clear identifier. Shared evidence artifacts are intentionally not deleted by this function; their own retention and erasure policy must be applied separately.
 
 This is repository-ready, not an assertion that Production is live. The database migration and QA proof still require a dedicated Delegation Cloud QA project and a separately mapped Production project. The release remains blocked until the migration is applied in QA, the structural proof passes, an isolated fixture proves persist/read/latest-revision/erasure behavior, the competing-worker and expired-lease tests pass with the bound receipt, and the environment has backups, logs, alerts, and rollback evidence. The currently visible Supabase project is not an established Delegation Cloud environment and must not be used for this verification.
 
