@@ -1,6 +1,6 @@
 # Memory Engineering v2: Delegation Cloud Memory Control Plane
 
-Status: repository implementation on branch agent/memory-control-plane-v1; live QA/Production certification pending dedicated Supabase mapping
+Status: repository implementation on branch agent/memory-control-plane-v1; QA certified on `qbvmtgaphvpwpwemplje`; Production go-live remains separately gated
 
 ## Decision
 
@@ -292,15 +292,15 @@ Embeddings may become an implementation detail of candidate discovery or retriev
 
 ### Stage A: pure contract and compiler
 
-This branch strengthens the CS-11 pure contract, adds reject-by-default capture and deterministic consolidation planning, and adds deterministic memory-context compilation. It is provider-neutral, network-free, and independently testable. It also adds a narrow execution-binding seam: only a verified, production memory context with matching run and assignment identifiers can be bound to an immutable execution context. This is a contract for the next runtime stage, not a claim that the live runtime already persists or consumes memory.
+This branch strengthens the CS-11 pure contract, adds reject-by-default capture and deterministic consolidation planning, and adds deterministic memory-context compilation. It is provider-neutral, network-free, and independently testable. It also adds a narrow execution-binding seam: only a verified, production memory context with matching run and assignment identifiers can be bound to an immutable execution context. The live QA project now exercises this boundary; Production remains separately gated.
 
 ### Stage B: QA persistence (repository implementation complete)
 
-The repository now persists immutable memory revisions through a Delegation Cloud-owned RPC boundary, binds each record to real organization-scoped source artifacts, enables RLS, records append-only lifecycle/audit events, and implements controlled erasure. The migration must still be applied only to a dedicated QA project or Supabase branch before it can be certified.
+The repository persists immutable memory revisions through a Delegation Cloud-owned RPC boundary, binds each record to real organization-scoped source artifacts, enables RLS with explicit browser-deny policies, records append-only lifecycle/audit events, and implements controlled erasure. The migration chain is applied to dedicated QA project `qbvmtgaphvpwpwemplje`; structural and disposable persistence proofs pass, with all sentinel data rolled back.
 
 ### Stage C: execution integration (repository implementation complete)
 
-The runtime wrapper now claims a lease and attaches the compiled memory receipt, exact selected memory revisions/hashes, and binding hashes in one transaction. The executor sees only the compiled context. The event constraint accepts the binding receipt, and no memory read grants action authority. Live certification still requires a dedicated QA fixture with competing-worker, expiry, rollback, and bound-receipt assertions.
+The runtime wrapper claims a lease and attaches the compiled memory receipt, exact selected memory revisions/hashes, and binding hashes in one transaction. The executor sees only the compiled context. The event constraint accepts the binding receipt, and no memory read grants action authority. The runtime schema, lifecycle RPCs, claim RPC, and foreign-key indexes are installed and structurally verified in QA. Competing-worker, expiry, rollback, and bound-receipt workload tests remain a go-live gate.
 
 ### Stage D: proof and bakeoff
 
@@ -349,6 +349,6 @@ The pure memory contracts are now paired with a server-only persistence boundary
 - Execution Runtime claims may use claim_execution_step_with_memory. The wrapper stores the execution-context hash, memory-context hash, read-receipt hash, binding hash, run and assignment identifiers, and exact selected memory IDs, revisions, and hashes in the same transaction as the lease claim. It refuses a reference that is no longer the latest verified, non-expired revision. A half-bound claim rolls back.
 - Erasure removes all clear memory payloads and revisions for one memory ID and retains only a non-sensitive tombstone with hashes and counts. The persistence and erasure RPCs also write audit events using the memory-ID hash, never the clear identifier. Shared evidence artifacts are intentionally not deleted by this function; their own retention and erasure policy must be applied separately.
 
-This is repository-ready, not an assertion that Production is live. The database migration and QA proofs still require a dedicated Delegation Cloud QA project and a separately mapped Production project. Run the structural proof and the transactional fixture in `supabase/qa/memory_control_plane_v1_proof.sql` and `supabase/qa/memory_control_plane_v1_persistence_proof.sql`. The release remains blocked until those proofs pass, the competing-worker and expired-lease tests pass with the bound receipt, and the environment has backups, logs, alerts, and rollback evidence. The currently visible Supabase project is not an established Delegation Cloud environment and must not be used for this verification.
+This is QA-certified repository work, not an assertion that Production is live. Project `qbvmtgaphvpwpwemplje` is the dedicated healthy QA/Preview database in `us-east-2`. Run the structural proof and the transactional fixture in `supabase/qa/memory_control_plane_v1_proof.sql` and `supabase/qa/memory_control_plane_v1_persistence_proof.sql` only against that QA project or an equivalent isolated branch. Production remains blocked until a separate Production project is mapped, the competing-worker/expired-lease/rollback/bound-receipt tests pass, backups and restore evidence exist, logs and alerts are configured, and the remaining project-level security lints are resolved or formally accepted.
 
 The trust claim is deliberately narrow: hashes prove canonical integrity and lineage; they do not prove that a human claim is true or that an external source is authoritative. Source-artifact existence and content-hash matching are checked at persistence time, while truth, approval, and authority remain governed by the active Delegation Spec, deterministic validators, and accountable operators.
