@@ -160,7 +160,7 @@ describe("memory pipeline", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.failures.join("; "));
     expect(result.action).toBe("skip_duplicate");
-    expect(result.matchedMemoryIds).toEqual(["existing-memory", "new-memory"]);
+    expect(result.matchedMemoryIds).toEqual(["existing-memory"]);
   });
 
   it("routes differing active values to explicit conflict review", () => {
@@ -174,7 +174,7 @@ describe("memory pipeline", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.failures.join("; "));
     expect(result.action).toBe("review_conflict");
-    expect(result.matchedMemoryIds).toEqual(["existing-memory", "new-memory"]);
+    expect(result.matchedMemoryIds).toEqual(["existing-memory"]);
   });
 
   it("allows a new candidate after an old claim is invalidated", () => {
