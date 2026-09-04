@@ -164,6 +164,12 @@ begin
     '"A QA memory requires a reviewable next step."',
     '"A QA memory remains scoped to its organization."'
   );
+  v_canonical_body_v2 := replace(v_canonical_body_v2, '"revision":1', '"revision":2');
+  v_canonical_body_v2 := replace(
+    v_canonical_body_v2,
+    '"supersedesHash":null',
+    format('"supersedesHash":%s', to_json(v_memory_hash)::text)
+  );
   v_memory_v2 := jsonb_set(v_memory, '{claim}', to_jsonb('A QA memory remains scoped to its organization.'::text));
   v_memory_v2 := jsonb_set(v_memory_v2, '{revision}', to_jsonb(2), true);
   v_memory_v2 := jsonb_set(v_memory_v2, '{supersedesHash}', to_jsonb(v_memory_hash), true);
