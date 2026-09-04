@@ -223,20 +223,20 @@ begin
     end if;
   end if;
   if v_scope_kind = 'run' and not exists (
-    select 1 from public.workstream_runs
-    where id = v_scope_key::uuid and organization_id = v_org_id
+    select 1 from public.workstream_runs wr
+    where wr.id = v_scope_key::uuid and wr.organization_id = v_org_id
   ) then
     raise exception 'Run-scoped memory must reference a run in the same organization';
   end if;
   if v_scope_kind = 'assignment' and not exists (
-    select 1 from public.run_executor_assignments
-    where id = v_scope_key::uuid and organization_id = v_org_id
+    select 1 from public.run_executor_assignments rea
+    where rea.id = v_scope_key::uuid and rea.organization_id = v_org_id
   ) then
     raise exception 'Assignment-scoped memory must reference an assignment in the same organization';
   end if;
   if v_scope_kind = 'workstream' and not exists (
-    select 1 from public.workstreams
-    where id = v_scope_key::uuid and organization_id = v_org_id
+    select 1 from public.workstreams ws
+    where ws.id = v_scope_key::uuid and ws.organization_id = v_org_id
   ) then
     raise exception 'Workstream-scoped memory must reference a workstream in the same organization';
   end if;
@@ -246,8 +246,8 @@ begin
       raise exception 'sourceRunId must be a UUID at the persistence boundary';
     end if;
     if not exists (
-      select 1 from public.workstream_runs
-      where id = v_source_run_id::uuid and organization_id = v_org_id
+      select 1 from public.workstream_runs wr
+      where wr.id = v_source_run_id::uuid and wr.organization_id = v_org_id
     ) then
       raise exception 'sourceRunId must reference a run in the same organization';
     end if;
@@ -257,8 +257,8 @@ begin
       raise exception 'sourceAssignmentId must be a UUID at the persistence boundary';
     end if;
     if not exists (
-      select 1 from public.run_executor_assignments
-      where id = v_source_assignment_id::uuid and organization_id = v_org_id
+      select 1 from public.run_executor_assignments rea
+      where rea.id = v_source_assignment_id::uuid and rea.organization_id = v_org_id
     ) then
       raise exception 'sourceAssignmentId must reference an assignment in the same organization';
     end if;
@@ -336,8 +336,8 @@ begin
     select 1 from public.operational_memory_records r
     where r.organization_id = v_org_id
       and r.memory_id = v_memory_id
-      and revision = v_revision - 1
-      and memory_hash = v_supersedes_hash
+      and r.revision = v_revision - 1
+      and r.memory_hash = v_supersedes_hash
   ) then
     raise exception 'Memory revision must supersede the immediately previous hash';
   end if;
