@@ -50,6 +50,8 @@ const requiredFragments = [
 
   [memorySource, "alter table public.operational_memory_records enable row level security", "memory RLS"],
   [memorySource, "alter table public.operational_memory_erasures enable row level security", "erasure RLS"],
+  [memorySource, "operational_memory_records_client_deny", "explicit memory browser deny policy"],
+  [memorySource, "operational_memory_erasures_client_deny", "explicit erasure browser deny policy"],
   [memorySource, "trg_operational_memory_record_invariants", "memory record invariants"],
   [memorySource, "trg_operational_memory_erasure_invariants", "erasure invariants"],
   [memorySource, "persist_operational_memory(", "memory persistence RPC"],
