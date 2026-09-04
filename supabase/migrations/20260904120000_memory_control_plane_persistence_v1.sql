@@ -110,6 +110,19 @@ revoke all on public.operational_memory_records, public.operational_memory_erasu
 grant select, insert, delete on public.operational_memory_records to service_role;
 grant select, insert on public.operational_memory_erasures to service_role;
 
+-- Explicit deny policies document that these relations are server-only.
+-- service_role bypasses RLS; browser roles receive no table grants and no rows.
+create policy operational_memory_records_client_deny
+  on public.operational_memory_records
+  for all to anon, authenticated
+  using (false)
+  with check (false);
+create policy operational_memory_erasures_client_deny
+  on public.operational_memory_erasures
+  for all to anon, authenticated
+  using (false)
+  with check (false);
+
 create or replace function public.enforce_operational_memory_record_invariants()
 returns trigger
 language plpgsql
