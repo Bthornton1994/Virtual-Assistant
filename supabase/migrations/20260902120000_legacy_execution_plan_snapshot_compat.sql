@@ -52,6 +52,9 @@ begin
 
     comment on table public.execution_plan_snapshots_legacy is
       'Legacy request-scoped plan snapshots retained for compatibility. Execution Runtime v1 uses public.execution_plans.';
+
+  create index if not exists execution_plan_snapshots_legacy_organization_idx
+    on public.execution_plan_snapshots_legacy (organization_id);
   end if;
 end;
 $$;
