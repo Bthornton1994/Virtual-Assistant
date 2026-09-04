@@ -199,9 +199,17 @@ function mapPlan(row: RuntimeRow): ExecutionPlanRecord {
 function mapMemoryBinding(row: RuntimeRow): MemoryExecutionBinding | null {
   if (row.memory_binding_hash === null || row.memory_binding_hash === undefined) return null;
 
-  const selectedMemoryIds = Array.isArray(row.memory_selected_ids)
-    ? row.memory_selected_ids
+  const selectedMemoryRefs = Array.isArray(row.memory_selected_refs)
+    ? row.memory_selected_refs
     : [];
+  const parsedRefs = selectedMemoryRefs.map((rawRef) => {
+    const ref = asObject(rawRef);
+    return {
+      memoryId: String(ref.memoryId ?? ""),
+      revision: Number(ref.revision),
+      memoryHash: String(ref.memoryHash ?? ""),
+    };
+  });
   const checked = validateMemoryExecutionBinding({
     schemaVersion: "memory-execution-binding/v1",
     executionContextHash: String(row.memory_execution_context_hash ?? ""),
@@ -209,7 +217,8 @@ function mapMemoryBinding(row: RuntimeRow): MemoryExecutionBinding | null {
     memoryReadReceiptHash: String(row.memory_read_receipt_hash ?? ""),
     runId: String(row.memory_run_id ?? ""),
     assignmentId: String(row.memory_assignment_id ?? ""),
-    selectedMemoryIds: selectedMemoryIds.map(String),
+    selectedMemoryIds: parsedRefs.map((ref) => ref.memoryId),
+    selectedMemoryRefs: parsedRefs,
     bindingHash: String(row.memory_binding_hash),
   });
   if (!checked.ok) {
@@ -426,7 +435,7 @@ export async function claimExecutionStep(input: {
         p_memory_context_hash: memoryBinding.memoryContextHash,
         p_memory_read_receipt_hash: memoryBinding.memoryReadReceiptHash,
         p_memory_binding_hash: memoryBinding.bindingHash,
-        p_memory_selected_ids: memoryBinding.selectedMemoryIds,
+        p_memory_selected_refs: memoryBinding.selectedMemoryRefs,
         p_lease_seconds: leaseSeconds,
       }
     : {
