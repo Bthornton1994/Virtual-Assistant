@@ -9,9 +9,7 @@ import {
   MEMORY_SCOPE_KINDS,
   MEMORY_SENSITIVITIES,
   validateOperationalMemory,
-  type MemoryKind,
   type MemoryScopeKind,
-  type MemorySensitivity,
   type OperationalMemory,
 } from "@/lib/operational-memory";
 
@@ -31,6 +29,7 @@ export const MEMORY_EXCLUSION_REASONS = [
   "not_yet_observed",
   "expired",
   "duplicate_same_value",
+  "shadowed_by_specific_scope",
   "budget_exceeded",
 ] as const;
 
@@ -376,21 +375,22 @@ export function compileMemoryContext(
       excludedRecords.push(excluded(memory.memoryId, "unresolved_conflict", "Conflicted memory cannot enter compiled context."));
       continue;
     }
-    const advisory = memory.status === "candidate";
-    if (memory.status !== "verified" && !(advisory && request.mode === "shadow" && request.allowCandidates)) {
-      excludedRecords.push(excluded(memory.memoryId, "status_not_allowed", "Only verified memory is allowed in this execution mode."));
-      continue;
-    }
-
-    if (
-      memory.status === "expired" ||
-      (memory.expiresAt !== null && Date.parse(memory.expiresAt) <= asOf)
-    ) {
+    if (memory.status === "expired") {
       excludedRecords.push(excluded(memory.memoryId, "expired", "Memory is expired at the request asOf time."));
       continue;
     }
     if (memory.status === "invalidated" || memory.status === "archived") {
       excludedRecords.push(excluded(memory.memoryId, "status_not_allowed", "Memory is not active."));
+      continue;
+    }
+    if (memory.expiresAt !== null && Date.parse(memory.expiresAt) <= asOf) {
+      excludedRecords.push(excluded(memory.memoryId, "expired", "Memory is expired at the request asOf time."));
+      continue;
+    }
+
+    const advisory = memory.status === "candidate";
+    if (memory.status !== "verified" && !(advisory && request.mode === "shadow" && request.allowCandidates)) {
+      excludedRecords.push(excluded(memory.memoryId, "status_not_allowed", "Only verified memory is allowed in this execution mode."));
       continue;
     }
 
@@ -403,49 +403,72 @@ export function compileMemoryContext(
     });
   }
 
-  const groups = new Map<string, EligibleMemory[]>();
+  const logicalGroups = new Map<string, EligibleMemory[]>();
   for (const item of eligible) {
-    const key = conflictKey(item.memory);
-    const group = groups.get(key) ?? [];
+    const scopePartition =
+      item.memory.scope.scopeKind === "entity"
+        ? item.memory.scope.scopeKind + ":" + item.memory.scope.scopeKey
+        : item.memory.scope.scopeKind === "run" || item.memory.scope.scopeKind === "assignment"
+          ? "execution"
+          : "organization";
+    const key = [item.memory.kind, item.memory.subjectKey, item.memory.scope.organizationId, scopePartition].join("\u001f");
+    const group = logicalGroups.get(key) ?? [];
     group.push(item);
-    groups.set(key, group);
+    logicalGroups.set(key, group);
   }
 
-  for (const [key, group] of groups) {
-    const valueHashes = new Set(group.map((item) => sha256Hex(item.memory.value)));
+  const effectiveEligible: EligibleMemory[] = [];
+  for (const [key, group] of logicalGroups) {
+    const highestScopeRank = Math.max(...group.map((item) => item.scopeRank));
+    const highestScope = group.filter((item) => item.scopeRank === highestScopeRank);
+    for (const broader of group.filter((item) => item.scopeRank < highestScopeRank)) {
+      excludedRecords.push(
+        excluded(
+          broader.memory.memoryId,
+          "shadowed_by_specific_scope",
+          "A more specific scoped memory was selected for this claim.",
+        ),
+      );
+    }
+
+    const valueHashes = new Set(highestScope.map((item) => sha256Hex(item.memory.value)));
     if (valueHashes.size > 1) {
-      for (const item of group) {
+      for (const item of highestScope) {
         excludedRecords.push(
-          excluded(item.memory.memoryId, "unresolved_conflict", "Multiple active values exist for one logical memory claim."),
+          excluded(item.memory.memoryId, "unresolved_conflict", "Multiple active values exist for one effective memory claim."),
         );
       }
       return {
         ok: false,
-        failures: [`Memory compiler blocked on unresolved values for claim ${key}.`],
+        failures: ["Memory compiler blocked on unresolved values for claim " + key + "."],
         receipt: buildReceipt(request, [], excludedRecords, true, null),
       };
     }
-  }
 
-  for (const group of groups.values()) {
-    group.sort((left, right) => {
+    highestScope.sort((left, right) => {
       return (
-        right.scopeRank - left.scopeRank ||
-        right.subjectRank - left.subjectRank ||
         Number(left.advisory) - Number(right.advisory) ||
         Date.parse(right.memory.provenance.observedAt) - Date.parse(left.memory.provenance.observedAt) ||
         right.memory.revision - left.memory.revision ||
         left.memory.memoryId.localeCompare(right.memory.memoryId)
       );
     });
-    for (const duplicate of group.slice(1)) {
-      const index = eligible.indexOf(duplicate);
-      if (index >= 0) eligible.splice(index, 1);
-      excludedRecords.push(
-        excluded(duplicate.memory.memoryId, "duplicate_same_value", "A more specific or fresher equivalent memory was selected."),
-      );
+    if (highestScope.length > 0) {
+      effectiveEligible.push(highestScope[0]);
+      for (const duplicate of highestScope.slice(1)) {
+        excludedRecords.push(
+          excluded(
+            duplicate.memory.memoryId,
+            "duplicate_same_value",
+            "An equivalent memory at the same effective scope was deduplicated.",
+          ),
+        );
+      }
     }
   }
+
+  eligible.length = 0;
+  eligible.push(...effectiveEligible);
 
   eligible.sort((left, right) => {
     return (
