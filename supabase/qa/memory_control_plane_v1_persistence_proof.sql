@@ -229,6 +229,15 @@ begin
     raise exception 'QA_PROOF_FAILED: persistence plus erasure did not emit two audit events';
   end if;
 
+  begin
+    perform public.persist_operational_memory(v_memory, v_canonical_body);
+    raise exception 'QA_PROOF_FAILED: an erased memory ID was allowed to be reused';
+  exception when others then
+    if sqlerrm not like 'Operational memory ID was erased and cannot be reused' then
+      raise;
+    end if;
+  end;
+
   select e.erasure_id, e.erased_revision_count
     into v_second_erasure_id, v_second_erased_count
   from public.erase_operational_memory(
