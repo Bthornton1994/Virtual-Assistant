@@ -192,8 +192,27 @@ describe("operational memory v1", () => {
   });
 
   it("rejects impossible retention, scope, and chronology combinations", () => {
-    const indefinite = create({ retentionClass: "indefinite", expiresAt: "2026-10-01T00:00:00Z" });
-    expect(indefinite).toBeDefined();
+    const indefinite = createOperationalMemory(
+      memory({ retentionClass: "indefinite", expiresAt: "2026-10-01T00:00:00Z" }),
+    );
+    expect(indefinite.ok).toBe(false);
+    expect(indefinite.ok ? [] : indefinite.failures.join(" ")).toContain("indefinite");
+
+    const workingOrganization = createOperationalMemory(
+      memory({ kind: "working" }),
+    );
+    expect(workingOrganization.ok).toBe(false);
+    expect(workingOrganization.ok ? [] : workingOrganization.failures.join(" ")).toContain(
+      "working memory must be scoped",
+    );
+
+    const backwardsReview = createOperationalMemory(
+      memory({ reviewAfter: "2026-08-25T19:00:00Z" }),
+    );
+    expect(backwardsReview.ok).toBe(false);
+    expect(backwardsReview.ok ? [] : backwardsReview.failures.join(" ")).toContain(
+      "reviewAfter must not precede",
+    );
   });
 
   it("requires run provenance for executor output", () => {
