@@ -166,6 +166,52 @@ describe("operational memory v1", () => {
     expect(identicalValue.ok ? [] : identicalValue.failures.join(" ")).toContain("different values");
   });
 
+  it("rejects mismatched scoped provenance and mixed conflict claims", () => {
+    const mismatched = createOperationalMemory({
+      ...memory({
+        scope: { organizationId: "org-001", scopeKind: "run", scopeKey: "run-001" },
+        retentionClass: "run",
+      }),
+      provenance: {
+        ...memory().provenance,
+        sourceKind: "executor_output",
+        sourceRunId: "run-002",
+      },
+    });
+    expect(mismatched.ok).toBe(false);
+    expect(mismatched.ok ? [] : mismatched.failures.join(" ")).toContain(
+      "sourceRunId must match",
+    );
+
+    const conflict = recordMemoryConflict([
+      create({ memoryId: "memory-left", value: { nextStepRequired: true } }),
+      create({ memoryId: "memory-right", value: { nextStepRequired: false } }),
+    ]);
+    expect(conflict.ok).toBe(true);
+    if (!conflict.ok) throw new Error(conflict.failures.join("; "));
+
+    const original = conflict.value.memories[1];
+    const { memoryHash: _memoryHash, ...body } = original;
+    const forged = createOperationalMemory({
+      ...body,
+      claim: "A different claim is being smuggled into the conflict set.",
+    });
+    expect(forged.ok).toBe(true);
+    if (!forged.ok) throw new Error(forged.failures.join("; "));
+
+    const resolved = resolveMemoryConflict(
+      [conflict.value.memories[0], forged.value],
+      "memory-left",
+      "manager-001",
+      "2026-09-02T00:00:00Z",
+      "Should not resolve mixed claims.",
+    );
+    expect(resolved.ok).toBe(false);
+    expect(resolved.ok ? [] : resolved.failures.join(" ")).toContain(
+      "same logical claim",
+    );
+  });
+
   it("only expires after the declared deadline and supports explicit invalidation", () => {
     const beforeDeadline = expireOperationalMemory(create(), "2026-09-30T00:00:00Z");
     expect(beforeDeadline.ok).toBe(false);
