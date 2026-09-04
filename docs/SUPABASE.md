@@ -60,6 +60,8 @@ npx supabase link --project-ref <qa-ref>
 npx supabase db push
 psql "$QA_DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f supabase/qa/memory_control_plane_v1_proof.sql
+psql "$QA_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/qa/memory_control_plane_v1_persistence_proof.sql
 ```
 
 The memory tables are intentionally server-only: browser roles receive no direct table grants, and the RPCs enforce organization ownership, source-artifact identity, append-only revisions, erasure tombstones, and atomic execution binding. The proof above is read-only; the disposable end-to-end fixture must run in the mapped QA project inside an explicit rollback transaction before promotion.
