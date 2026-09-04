@@ -21,9 +21,9 @@ Applied to QA:
 
 Verified in QA:
 
-- structural proof passed at 2026-09-04 22:01 UTC, including RLS, browser-role denial, service-role grants, invariants, atomic binding, and `memory_context_bound` compatibility;
+- structural proof passed at 2026-09-04 22:12 UTC, including RLS, browser-role denial, service-role grants, invariants, atomic binding, and `memory_context_bound` compatibility;
 - disposable persistence proof passed with two revisions, idempotency, lineage, audit emission, erasure, non-resurrection, and source-artifact preservation;
-- disposable Execution Runtime proof passed for idempotent plan creation, duplicate-claim prevention, lease heartbeat credential checks, completion, terminal failure, expiry reaping, cancellation, approval release, and fail-closed executor/spec authority checks;
+- disposable Execution Runtime proof passed at 2026-09-04 22:26 UTC for idempotent plan creation, duplicate-claim prevention, lease heartbeat credential checks, completion, terminal failure, expiry reaping, cancellation, approval release, and fail-closed executor/spec authority checks;
 - all disposable runtime, run, artifact, memory, tombstone, and audit sentinel rows were rolled back and remain absent.
 
 No Production Supabase project is mapped, migrated, or changed. The QA project must not be treated as Production.
