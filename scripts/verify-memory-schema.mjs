@@ -4,6 +4,10 @@ const read = (relativePath) => readFileSync(new URL(relativePath, import.meta.ur
 
 const compatibility = read("../supabase/migrations/20260902120000_legacy_execution_plan_snapshot_compat.sql");
 const runtimeSchema = read("../supabase/migrations/20260903090000_execution_runtime_v1.sql");
+const runtimeIndexMigration = read(
+  "../supabase/migrations/20260904160000_execution_runtime_v1_foreign_key_indexes.sql",
+);
+const runtimeSource = [runtimeSchema, runtimeIndexMigration].join("\n");
 const runtimeFunctionFiles = [
   "20260903090001_execution_runtime_v1_functions.sql",
   "20260903090002_execution_runtime_v1_worker_functions.sql",
@@ -38,11 +42,11 @@ const requiredFragments = [
   [runtimeSchema, "create table public.execution_approval_requests", "approval table"],
   [runtimeSchema, "create table public.execution_events", "append-only event table"],
   [runtimeSchema, "alter table public.execution_events enable row level security", "runtime event RLS"],
-  [runtimeSchema, "execution_plans_created_by_idx", "plan FK index"],
-  [runtimeSchema, "execution_plan_steps_plan_org_idx", "step composite FK index"],
-  [runtimeSchema, "execution_attempts_plan_org_idx", "attempt composite FK index"],
-  [runtimeSchema, "execution_approval_plan_org_idx", "approval composite FK index"],
-  [runtimeSchema, "execution_events_attempt_org_idx", "event composite FK index"],
+  [runtimeSource, "execution_plans_created_by_idx", "plan FK index"],
+  [runtimeSource, "execution_plan_steps_plan_org_idx", "step composite FK index"],
+  [runtimeSource, "execution_attempts_plan_org_idx", "attempt composite FK index"],
+  [runtimeSource, "execution_approval_plan_org_idx", "approval composite FK index"],
+  [runtimeSource, "execution_events_attempt_org_idx", "event composite FK index"],
 
   [memorySource, "alter table public.operational_memory_records enable row level security", "memory RLS"],
   [memorySource, "alter table public.operational_memory_erasures enable row level security", "erasure RLS"],
@@ -128,7 +132,7 @@ for (const fragment of [
   'revision":2',
   'supersedesHash":null',
 ]) {
-  if (!memorySource.includes(fragment) && !persistenceProof.includes(fragment)) {
+  if (!memorySource.includes(fragment) && !runtimeFunctions.includes(fragment) && !persistenceProof.includes(fragment)) {
     failures.push("Regression guard missing: " + fragment);
   }
 }
@@ -140,6 +144,7 @@ if (!persistenceProof.includes("memory_control_plane_v1_persistence_fixture")) {
 const report = {
   compatibilityLength: compatibility.length,
   runtimeSchemaLength: runtimeSchema.length,
+  runtimeIndexLength: runtimeIndexMigration.length,
   runtimeFunctionFiles: runtimeFunctionFiles.length,
   memorySourceLength: memorySource.length,
   requiredChecks: requiredFragments.length,
