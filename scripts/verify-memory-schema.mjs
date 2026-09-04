@@ -78,7 +78,7 @@ const requiredFragments = [
   [persistenceProof, "transaction rolled back", "fixture rollback documentation"],
   [runtimeFunctions, "authority_envelope->>'actionClass'", "executor authority ceiling"],
   [runtimeProof, "execution_runtime_v1_fixture", "runtime transactional proof marker"],
-  [runtimeProof, "FOR UPDATE", "runtime lock proof"],
+  [runtimeFunctions, "FOR UPDATE SKIP LOCKED", "runtime lock proof"],
   [runtimeProof, "reap_execution_leases", "runtime reaper proof"],
   [runtimeProof, "decide_execution_approval", "runtime approval proof"],
   [runtimeProof, "prepare-only executor claimed an approved external step", "runtime authority proof"],
