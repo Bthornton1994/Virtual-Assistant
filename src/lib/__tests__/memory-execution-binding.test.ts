@@ -165,6 +165,13 @@ describe("memory execution binding", () => {
     expect(binding.value.runId).toBe("run-001");
     expect(binding.value.assignmentId).toBe("assignment-001");
     expect(binding.value.selectedMemoryIds).toEqual(["memory-001"]);
+    expect(binding.value.selectedMemoryRefs).toEqual([
+      {
+        memoryId: "memory-001",
+        revision: 1,
+        memoryHash: memory().memoryHash,
+      },
+    ]);
     expect(validateMemoryExecutionBinding(binding.value).ok).toBe(true);
   });
 
