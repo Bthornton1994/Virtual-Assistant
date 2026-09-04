@@ -38,3 +38,9 @@ Scope is explicit so customer-specific knowledge cannot silently become global k
 This slice does not add a vector database, retrieval ranking, automatic promotion, cross-tenant sharing, entity resolution, or a memory write path. It does not let an executor turn its own context into organization policy.
 
 The next integration should store these artifacts through the existing evidence/provenance plane and make every promotion or invalidation reviewable.
+
+## V2 control-plane extension
+
+The V2 design and pure compiler live in docs/MEMORY-ENGINEERING-V2.md and src/lib/memory-control-plane.ts.
+
+The compiler accepts an explicit, organization-bound read request and returns only scoped, fresh, policy-compatible memory. It blocks unresolved active contradictions, keeps candidates out of production mode, applies item and context budgets, and emits a hash-bound read receipt. This is still a pure, network-free slice. QA persistence and execution-runtime integration remain separate rollout gates.
