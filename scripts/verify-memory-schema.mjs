@@ -61,6 +61,8 @@ const requiredProofFragments = [
   "role_table_grants",
   "claim_execution_step_with_memory",
   "memory_binding_hash",
+  "pg_get_constraintdef",
+  "memory_context_bound",
 ];
 
 const requiredFixtureFragments = [
