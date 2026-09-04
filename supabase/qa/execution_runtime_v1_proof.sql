@@ -27,6 +27,7 @@ declare
   v_manager_id uuid := 'c0b2ab6c-c56d-4435-89fd-f972ce552609';
   v_spec_id uuid := '37bf390f-43bf-48db-af38-63fab1a91ac9';
   v_workstream_id uuid := '2a984b48-3601-4cd4-90b4-0efa9183a4ab';
+  v_approval_workstream_id uuid := 'd7a00005-0000-4000-8000-000000000005';
   v_approval_spec_id uuid := 'd7a00005-0000-4000-8000-000000000004';
   v_run_lifecycle uuid := 'd7a00001-0000-4000-8000-000000000001';
   v_plan_lifecycle uuid := 'd7a00001-0000-4000-8000-000000000002';
@@ -114,15 +115,13 @@ begin
     )
     or exists (
       select 1
-      from public.delegation_specs
-      where id = v_approval_spec_id
+      from public.workstreams
+      where id = v_approval_workstream_id
     )
     or exists (
       select 1
       from public.delegation_specs
-      where organization_id = v_org_id
-        and workstream_id = v_workstream_id
-        and version = v_spec_version + 1
+      where id = v_approval_spec_id
     ) then
       raise exception 'Execution Runtime QA sentinel IDs or version already exist; refusing to run';
     end if;
@@ -462,6 +461,18 @@ begin
     -- Approval path: use a temporary higher-authority Spec only within the
     -- rollback-isolated proof. The prepare-only worker must still be unable
     -- to claim the approved external step.
+    insert into public.workstreams (
+      id, organization_id, name, objective, sla,
+      recurring_tasks, metrics, owner_user_id, status,
+      health_score, hours_returned
+    ) values (
+      v_approval_workstream_id, v_org_id,
+      'Disposable Execution Runtime approval workstream',
+      'Disposable approval-path QA fixture',
+      'qa-only',
+      '{}'::jsonb, '{}'::jsonb, v_manager_id, 'active', 0, 0
+    );
+
     insert into public.delegation_specs (
       id, organization_id, workstream_id, version, status,
       objective, definition_of_done, trigger_description, required_inputs,
@@ -470,7 +481,7 @@ begin
       created_by, activated_by, activated_at
     )
     select
-      v_approval_spec_id, ds.organization_id, ds.workstream_id, ds.version + 1,
+      v_approval_spec_id, ds.organization_id, v_approval_workstream_id, 1,
       'active', ds.objective, ds.definition_of_done, ds.trigger_description,
       ds.required_inputs, 'external_execution', ds.authority_rules,
       ds.approval_points, ds.verification_rules, ds.exception_policy,
@@ -483,7 +494,7 @@ begin
       id, organization_id, workstream_id, delegation_spec_id,
       status, initiated_by
     ) values (
-      v_run_approval, v_org_id, v_workstream_id, v_approval_spec_id,
+      v_run_approval, v_org_id, v_approval_workstream_id, v_approval_spec_id,
       'planned', v_manager_id
     );
     update public.workstream_runs
@@ -492,7 +503,7 @@ begin
 
     perform public.create_execution_plan(
       v_plan_approval, v_org_id, v_run_approval, v_approval_spec_id,
-      1, v_spec_version + 1, repeat('9', 64),
+      1, 1, repeat('9', 64),
       'Disposable Execution Runtime approval proof',
       'external_execution', '{"proof":"execution-runtime-v1"}'::jsonb,
       v_approval_steps, now(), v_manager_id
@@ -582,4 +593,4 @@ rollback;
 select
   'execution_runtime_v1_fixture' as proof,
   true as passed,
-  'transaction rolled back; disposable runs, plans, attempts, approvals, events, and temporary authority spec were not retained' as isolation;
+  'transaction rolled back; disposable runs, plans, attempts, approvals, events, and temporary workstream, authority spec, and runtime rows were not retained' as isolation;
