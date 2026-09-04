@@ -632,6 +632,22 @@ grant execute on function public.erase_operational_memory(uuid, text, text, text
 -- context. This is deliberately written by a wrapper around the existing
 -- claim RPC so the claim, binding, and event commit atomically or roll back
 -- together. No worker can begin from a half-bound attempt.
+-- The base runtime migration predates this event and has a closed event-type
+-- check, so widen it before the wrapper can emit the binding receipt.
+alter table public.execution_events
+  drop constraint if exists execution_events_event_type_check;
+
+alter table public.execution_events
+  add constraint execution_events_event_type_check check (event_type in (
+    'plan_proposed', 'plan_frozen', 'plan_started', 'plan_blocked',
+    'plan_completed', 'plan_failed', 'plan_cancelled', 'stage_ready',
+    'stage_blocked', 'attempt_started', 'attempt_heartbeat',
+    'attempt_succeeded', 'attempt_failed', 'attempt_expired',
+    'retry_scheduled', 'approval_requested', 'approval_approved',
+    'approval_rejected', 'stage_cancelled', 'queue_refreshed',
+    'memory_context_bound'
+  ));
+
 alter table public.execution_attempts
   add column if not exists memory_run_id text,
   add column if not exists memory_assignment_id text,
