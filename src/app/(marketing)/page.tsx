@@ -36,7 +36,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="border-y border-line bg-bg-elevated">
+      <section className="dc-section dc-origin border-y border-line bg-bg-elevated">
         <div className="mx-auto max-w-6xl px-5 py-20">
           <h2 className="text-balance max-w-xl text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">
             You probably didn’t start your company to do this.
@@ -52,7 +52,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-5 py-20">
+      <section className="dc-section dc-compare mx-auto max-w-6xl px-5 py-20">
         <h2 className="text-balance max-w-2xl text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">
           Not another assistant you have to manage.
         </h2>
@@ -82,11 +82,11 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="border-y border-line bg-surface">
+      <section className="dc-section dc-live-demo-section border-y border-line bg-surface">
         <div className="mx-auto max-w-6xl px-5 py-20">
           <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">What would you hand off right now?</h2>
           <p className="mt-4 max-w-xl text-ink-soft">
-            Type the outcome. We’ll show a sample plan | not a worker profile, and not a live action in your systems.
+            Type the outcome. We’ll show a sample plan, not a worker profile or a live action in your systems.
           </p>
           <div className="mt-10">
             <LiveDemo />
@@ -94,7 +94,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-5 py-20">
+      <section className="dc-section dc-catalog-section mx-auto max-w-6xl px-5 py-20">
         <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">The work we take on</h2>
         <p className="mt-4 max-w-xl text-ink-soft">
           Not a menu of job titles. The categories of work that quietly become a founder’s week.
@@ -160,7 +160,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="bg-ink text-accent-fg">
+      <section className="dc-section dc-final-cta bg-ink text-accent-fg">
         <div className="mx-auto max-w-6xl px-5 py-24">
           <h2 className="text-balance max-w-3xl text-3xl font-semibold leading-[1.08] tracking-[-0.03em] sm:text-5xl">
             Imagine opening your laptop tomorrow
