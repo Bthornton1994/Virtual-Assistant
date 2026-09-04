@@ -26,6 +26,10 @@ Verified in QA:
 
 No Production Supabase project is mapped, migrated, or changed. The QA project must not be treated as Production.
 
+## Advisor status
+
+The final QA advisor pass reports no security lint for the memory tables and no unindexed-foreign-key lint for the new runtime relations. The remaining QA warnings are pre-existing project-level items: exposed `SECURITY DEFINER` helper functions used by existing RLS policies, disabled leaked-password protection, broad legacy permissive-policy findings, and unused indexes on newly installed relations before workload exists. Resolve or formally accept those items before Production go-live; this release does not silently alter unrelated authorization helpers.
+
 ## Required mapping
 
 | Environment | Purpose | Vercel env | Notes |
