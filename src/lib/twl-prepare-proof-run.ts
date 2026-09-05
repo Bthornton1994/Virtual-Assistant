@@ -8,7 +8,6 @@ import {
   fetchPublicPullRequestMetadata,
   parsePublicPullRequestTarget,
   type GithubJsonFetcher,
-  type PublicPullRequestTarget,
 } from "@/lib/public-github-pr";
 import { supabaseServer } from "@/lib/supabase/server";
 import {
@@ -127,7 +126,7 @@ export async function assignTwlPrepareProofWorker(
 export async function attachTwlPrepareProofPrEvidence(
   actor: Actor,
   runId: string,
-  targetInput: Partial<PublicPullRequestTarget> = {},
+  targetInput: { owner?: string; repo?: string; pullNumber?: string | number } = {},
   fetchJson?: GithubJsonFetcher,
 ) {
   if (!canOperate(actor)) throw new AuthzError("Only operations staff can attach public PR evidence.");
@@ -189,7 +188,7 @@ export async function attachTwlPrepareProofPrEvidence(
 }
 
 export function previewTwlPrepareProof(bundle: {
-  spec: { actionClass: string; requiredInputs: string[] };
+  spec: { actionClass: string; requiredInputs: readonly string[] };
   run: { executorSummary: Record<string, unknown> };
   evidence: EvidenceArtifact[];
   actorRole: string;
@@ -203,7 +202,7 @@ export function previewTwlPrepareProof(bundle: {
 }
 
 export function acceptGateForTwlPrepareProof(bundle: {
-  spec: { actionClass: string; requiredInputs: string[] };
+  spec: { actionClass: string; requiredInputs: readonly string[] };
   run: { executorSummary: Record<string, unknown> };
   evidence: EvidenceArtifact[];
   actorRole: string;

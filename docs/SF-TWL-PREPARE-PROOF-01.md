@@ -33,6 +33,8 @@ npx tsx scripts/twl-prepare-proof-oneshot.ts
 
 This GETs the public PR, prints number / head / base / CI / HTML URL / payload hash, and runs the fail-closed Accept cases. It does not write Supabase, GitHub, or Production.
 
+If `Bthornton1994/three-white-lights` #35 is not visible to unauthenticated GET (GitHub returns 404 for private or missing repos), the script uses public fallback `octocat/Hello-World` #1. The staff attach form still defaults to PR #35; an operator can point it at any public pull.
+
 ### 2. Durable QA run (env-gated)
 
 Execution Lab refuses the demo store. You need the dedicated QA Supabase project (`qbvmtgaphvpwpwemplje`) and a staff session.

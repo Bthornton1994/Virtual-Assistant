@@ -28,7 +28,7 @@ export function TwlPrepareProofSection({
   actorRole,
   operators,
 }: {
-  spec: { actionClass: string; requiredInputs: string[] };
+  spec: { actionClass: string; requiredInputs: readonly string[] };
   run: WorkstreamRun;
   evidence: EvidenceArtifact[];
   actorRole: string;

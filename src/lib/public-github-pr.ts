@@ -6,6 +6,13 @@ export const TWL_DEFAULT_PR_TARGET = {
   pullNumber: 35,
 } as const;
 
+/** Used only when the intended target is not visible to unauthenticated GET. */
+export const TWL_PUBLIC_FALLBACK_PR_TARGET = {
+  owner: "octocat",
+  repo: "Hello-World",
+  pullNumber: 1,
+} as const;
+
 export type PublicPullRequestTarget = {
   owner: string;
   repo: string;
@@ -127,7 +134,9 @@ export async function fetchPublicPullRequestMetadata(
 
   const pullResponse = await fetchJson(pullUrl);
   if (pullResponse.status === 404) {
-    throw new Error("Public pull request was not found. Confirm the repository is public and the number is open or recently closed.");
+    throw new Error(
+      "Public pull request was not found. GitHub returns 404 for private repos to anonymous GET. Use a public owner/repo/number.",
+    );
   }
   if (pullResponse.status < 200 || pullResponse.status >= 300) {
     throw new Error(`Public GitHub pull request read failed with HTTP ${pullResponse.status}.`);

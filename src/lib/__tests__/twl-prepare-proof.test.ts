@@ -68,7 +68,7 @@ function prEvidence(overrides: Record<string, unknown> = {}) {
   });
 }
 
-function accept(evidence: Array<{ kind: string; contentHash: string | null; payload: Record<string, unknown>; summary?: string }>, role = "ops_manager") {
+function accept(evidence: Array<{ kind: "observation" | "source" | "other"; contentHash: string | null; payload: Record<string, unknown>; summary?: string }>, role = "ops_manager") {
   return evaluateTwlPrepareProofAccept({
     spec,
     evidence,

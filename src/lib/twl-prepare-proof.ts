@@ -115,7 +115,7 @@ export const TWL_PREPARE_PROOF_SPEC = {
   },
 } as const;
 
-export function isTwlPrepareProofSpec(spec: { requiredInputs: string[] }) {
+export function isTwlPrepareProofSpec(spec: { requiredInputs: readonly string[] }) {
   return spec.requiredInputs.some((input) => input.toLowerCase() === TWL_PREPARE_PROOF_INPUT);
 }
 
@@ -300,7 +300,8 @@ export type TwlEvidenceLike = Pick<EvidenceArtifact, "kind" | "contentHash" | "p
 };
 
 function omitHash(payload: Record<string, unknown>) {
-  const { payloadHash: _payloadHash, ...rest } = payload;
+  const rest = { ...payload };
+  delete rest.payloadHash;
   return rest;
 }
 
@@ -390,7 +391,7 @@ export function routeTwlPrepareProofRelease(input: {
 }
 
 export function evaluateTwlPrepareProofAccept(input: {
-  spec: { actionClass: string; requiredInputs: string[] };
+  spec: { actionClass: string; requiredInputs: readonly string[] };
   evidence: TwlEvidenceLike[];
   actorRole: string;
   executorSummary?: Record<string, unknown>;
@@ -543,7 +544,7 @@ export function evaluateTwlPrepareProofAccept(input: {
 }
 
 export function summarizeTwlPrepareProof(input: {
-  spec: { actionClass: string; requiredInputs: string[] };
+  spec: { actionClass: string; requiredInputs: readonly string[] };
   evidence: TwlEvidenceLike[];
   actorRole: string;
   executorSummary?: Record<string, unknown>;

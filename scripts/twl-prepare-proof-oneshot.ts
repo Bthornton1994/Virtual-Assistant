@@ -5,7 +5,9 @@
  */
 import {
   TWL_DEFAULT_PR_TARGET,
+  TWL_PUBLIC_FALLBACK_PR_TARGET,
   fetchPublicPullRequestMetadata,
+  type PublicPullRequestTarget,
 } from "../src/lib/public-github-pr";
 import {
   TWL_PREPARE_PROOF_AGENT_REPORT_SCHEMA,
@@ -31,7 +33,25 @@ function check(name: string, ok: boolean, detail = "") {
   console.error(`FAIL  ${name}${detail ? `: ${detail}` : ""}`);
 }
 
-const metadata = await fetchPublicPullRequestMetadata(TWL_DEFAULT_PR_TARGET);
+async function readPublicPr(): Promise<{ target: PublicPullRequestTarget; metadata: Awaited<ReturnType<typeof fetchPublicPullRequestMetadata>>; fallback: boolean }> {
+  try {
+    const metadata = await fetchPublicPullRequestMetadata(TWL_DEFAULT_PR_TARGET);
+    return { target: TWL_DEFAULT_PR_TARGET, metadata, fallback: false };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `Intended target ${TWL_DEFAULT_PR_TARGET.owner}/${TWL_DEFAULT_PR_TARGET.repo}#${TWL_DEFAULT_PR_TARGET.pullNumber} is not visible to unauthenticated GET (${message}).`,
+    );
+    console.warn(
+      `Using public fallback ${TWL_PUBLIC_FALLBACK_PR_TARGET.owner}/${TWL_PUBLIC_FALLBACK_PR_TARGET.repo}#${TWL_PUBLIC_FALLBACK_PR_TARGET.pullNumber}. The staff attach form still defaults to the intended target.`,
+    );
+    const metadata = await fetchPublicPullRequestMetadata(TWL_PUBLIC_FALLBACK_PR_TARGET);
+    return { target: TWL_PUBLIC_FALLBACK_PR_TARGET, metadata, fallback: true };
+  }
+}
+
+async function main() {
+const { metadata, fallback } = await readPublicPr();
 const sealed = sealTwlPrepareProofPayload({
   schemaVersion: TWL_PREPARE_PROOF_PR_SCHEMA,
   owner: metadata.owner,
@@ -53,6 +73,7 @@ const sealed = sealTwlPrepareProofPayload({
 });
 
 console.log("Public PR metadata");
+console.log(`  target     ${fallback ? "public fallback (intended repo not anonymously visible)" : "intended"}`);
 console.log(`  number     ${metadata.pullNumber}`);
 console.log(`  head       ${metadata.headSha}`);
 console.log(`  base       ${metadata.baseSha}`);
@@ -141,3 +162,9 @@ if (failures.length) {
 
 console.log("\nLocal one-shot passed. For a durable QA run see docs/SF-TWL-PREPARE-PROOF-01.md.");
 console.log("QA path: apply supabase/qa/sf_twl_prepare_proof_01.sql, then /ops/execution.");
+}
+
+void main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+});
