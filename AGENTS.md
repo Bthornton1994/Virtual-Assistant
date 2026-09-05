@@ -58,6 +58,20 @@ Treat explicit authority, required approvals, least-privilege access, organizati
 
 Only edit `VISION.md` when the task explicitly authorizes a governing decision change. Small fixes need no formal vision analysis, but they must preserve these boundaries. Report validation and any remaining vision tension before handoff.
 
+## Software Factory model economy
+
+Canonical pins live in `docs/SOFTWARE-FACTORY-MODEL-ECONOMY-V1.md` and the three project agents under `.cursor/agents/`. Do not add more Software Factory agents unless an owner decision changes that policy.
+
+- Default implementer: `grok-4.6` (`.cursor/agents/sf-implementer.md`)
+- Strategic planners: `claude-fable-5-1` and `gpt-5.6-sol` — rare, read-only, manually invoked. Choose exactly one when escalation is justified. Never dual by default.
+- Planner escalation is limited to architectural ambiguity, cross-repo work, security, high-risk change, authority/permissions/data/economics/core simulation, major stage or product decision, missing sequence, or substantial rework risk.
+- Do not auto-delegate planners. Forbidden triggers include “use proactively”, “always use”, “every task”, “run before implementation”, and “run after every change”.
+- Verification stays on the existing Software Factory and repository process. Planners are not for routine verify.
+
+Software Factory task reports must include `REQUESTED_MODEL`, `ACTUAL_MODEL`, `PLANNER_ESCALATION` (reason or `NOT REQUIRED`), and `MODEL_ROUTING_EXCEPTION` when the requested model was not the model that ran.
+
+These names are control-plane pins and execution provenance. They do not become durable workstream semantics or a source of authority.
+
 ## Engineering execution principles
 
 The portfolio engineering standard is tool-agnostic. Apply it whether the work is performed in Cursor, Claude Code, Codex, GitHub tooling, another agent runtime, or by a human engineer. No runtime-specific command or plugin is required.
