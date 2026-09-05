@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition, type ReactNode } from "react";
-import type { WorkCellActionResult } from "@/app/actions/work-cell";
+type ActionResult = { ok: true } | { ok: false; error: string };
 
 /**
  * Work-cell mutations must run inside a transition. A Server Component
@@ -15,7 +15,7 @@ export function WorkCellActionForm({
   children,
   className,
 }: {
-  action: (formData: FormData) => Promise<WorkCellActionResult>;
+  action: (formData: FormData) => Promise<ActionResult>;
   children: ReactNode;
   className?: string;
 }) {

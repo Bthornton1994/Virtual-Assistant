@@ -16,6 +16,7 @@ import {
 } from "@/lib/execution-policy";
 import { checkEconomicEnvelope, validateEconomicEnvelope } from "@/lib/economic-envelope";
 import { supabaseServer } from "@/lib/supabase/server";
+import { evaluateTwlPrepareProofAccept, isTwlPrepareProofSpec } from "@/lib/twl-prepare-proof";
 
 export type DelegationSpecStatus = "draft" | "active" | "retired";
 export type EvidenceKind =
@@ -708,6 +709,25 @@ export async function verifyWorkstreamRun(
   if (evidenceError) throw new DomainError(evidenceError.message);
   if (input.verificationStatus === "passed" && requiresEvidence(spec.verificationRules) && !evidenceCount) {
     throw new DomainError("This Delegation Spec requires evidence before a run can pass verification");
+  }
+  if (isTwlPrepareProofSpec(spec) && input.verificationStatus === "passed") {
+    const { data: evidenceRows, error: twlEvidenceError } = await db
+      .from("evidence_artifacts")
+      .select("*")
+      .eq("run_id", runId)
+      .order("created_at", { ascending: true });
+    if (twlEvidenceError) throw new DomainError(twlEvidenceError.message);
+    const twlVerdict = evaluateTwlPrepareProofAccept({
+      spec,
+      evidence: (evidenceRows ?? []).map((row) => mapEvidence(row as Record<string, unknown>)),
+      actorRole: actor.role,
+      executorSummary: run.executorSummary,
+    });
+    if (!twlVerdict.canAccept) {
+      throw new DomainError(
+        `This prepare-only proof cannot be accepted: ${twlVerdict.failures.join(" ")}`,
+      );
+    }
   }
 
   const finalStatus = finalRunStatusForReceipt(input.verificationStatus, input.definitionOfDoneMet);

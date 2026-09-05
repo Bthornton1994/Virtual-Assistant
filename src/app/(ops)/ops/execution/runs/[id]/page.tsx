@@ -9,12 +9,15 @@ import {
 import { ActionClassBadge, PageHeader } from "@/components/product";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import { SupplierSourcingSection } from "@/components/supplier-sourcing";
+import { TwlPrepareProofSection } from "@/components/twl-prepare-proof";
 import { WorkCellSection } from "@/components/work-cell";
 import { requireOps } from "@/lib/auth";
 import { checkEconomicEnvelope } from "@/lib/economic-envelope";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
 import { getSupplierSourcingRunBundle } from "@/lib/supplier-sourcing-run";
+import { isTwlPrepareProofSpec } from "@/lib/twl-prepare-proof";
 import { getRunWorkCell } from "@/lib/work-cell";
+import { getWorkspace } from "@/lib/workspace";
 import {
   correctiveActionFromPacket,
   draftWorkCellReceipt,
@@ -75,6 +78,8 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
   }
 
   const { run, spec, evidence, receipt } = await getWorkstreamRunBundle(actor, id);
+  const twlPrepareProof = isTwlPrepareProofSpec(spec);
+  const operators = twlPrepareProof ? await getWorkspace(actor).listOperators(actor) : [];
   const supplierRun =
     spec.objective.toLowerCase().includes("supplier sourcing") ||
     spec.requiredInputs.some((input) => input.toLowerCase() === "supplier-sourcing-input/v1");
@@ -235,6 +240,14 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
           runId={run.id}
           runStatus={run.status}
           manager={manager}
+        />
+      ) : twlPrepareProof ? (
+        <TwlPrepareProofSection
+          spec={spec}
+          run={run}
+          evidence={evidence}
+          actorRole={actor.role}
+          operators={operators}
         />
       ) : (
         <WorkCellSection
