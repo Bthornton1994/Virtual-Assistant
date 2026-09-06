@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { randomBytes } from "node:crypto";
 
-const disposableEmail = "pr67-076ad943802b@delegation-test.cloud";
+const disposableEmail = "bthornton9415+pr67-076ad943802b@gmail.com";
 const seededRunId = process.env.QA_TWL_RUN_ID || "";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "";
