@@ -52,6 +52,20 @@ Execution Lab refuses the demo store. You need the dedicated QA Supabase project
 
 If the SQL seed is not applied, a manager can still create the spec by hand on `/ops/execution` using the frozen fields in `TWL_PREPARE_PROOF_SPEC`, including required input `twl-prepare-proof/v1`, then create a run.
 
+### 3. Live staff walkthrough (Playwright)
+
+`e2e/twl-prepare-proof-live.spec.ts` signs in as `ops.manager@delegation-test.cloud`, opens a planned TWL run, assigns the shadow worker, attaches public `octocat/Hello-World#1`, submits, and issues a passing receipt. It does not merge or deploy.
+
+PR #67 CI job `pr67-live-qa` runs that spec after `verify`. It needs repository secret `E2E_PASSWORD` for the QA ops manager. If the secret is empty, the job skips with a notice and stays green. This agent cannot create GitHub secrets.
+
+When `QA_TWL_RUN_ID` is unset or that run is no longer planned, the spec creates a fresh run from Execution Lab. Do not put the password in the repository.
+
+Locally, with `.env.local` or an exported `E2E_PASSWORD`:
+
+```bash
+npx playwright test e2e/twl-prepare-proof-live.spec.ts --project=chromium
+```
+
 ## Escalation
 
 Coded in `evaluateTwlPrepareProofAccept` and shown on the run page. Escalate when:

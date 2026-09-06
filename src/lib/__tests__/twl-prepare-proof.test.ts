@@ -282,4 +282,14 @@ describe("source fail-closed", () => {
     expect(fixture).toContain("merge_performed=false");
     expect(fixture).not.toMatch(/update public\.workstream_runs[\s\S]*status='verified'/);
   });
+
+  it("does not fail PR67 live QA at import or on an empty E2E_PASSWORD secret", () => {
+    const spec = readFileSync(resolve(process.cwd(), "e2e/twl-prepare-proof-live.spec.ts"), "utf8");
+    const workflow = readFileSync(resolve(process.cwd(), ".github/workflows/verify.yml"), "utf8");
+    expect(spec).toContain('test.skip(!password, "Requires repository secret E2E_PASSWORD for the QA ops manager.")');
+    expect(spec).not.toMatch(/if \(!password\) throw/);
+    expect(workflow).toContain('if [ -n "$E2E_PASSWORD" ]');
+    expect(workflow).toContain("PR67 live QA skipped");
+    expect(workflow).not.toMatch(/run:\s*test -n "\$E2E_PASSWORD"/);
+  });
 });

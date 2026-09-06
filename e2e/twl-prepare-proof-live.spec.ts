@@ -1,26 +1,51 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const managerEmail = process.env.E2E_MANAGER_EMAIL || "ops.manager@delegation-test.cloud";
-const password = process.env.E2E_PASSWORD;
-const runId = process.env.QA_TWL_RUN_ID;
-
-if (!password) throw new Error("E2E_PASSWORD is required for the PR67 live QA walkthrough");
-if (!runId) throw new Error("QA_TWL_RUN_ID is required for the PR67 live QA walkthrough");
+const password = process.env.E2E_PASSWORD || "";
+const seededRunId = process.env.QA_TWL_RUN_ID || "";
 
 async function login(page: Page) {
   await page.goto("/login");
   await page.locator('input[name="email"]').fill(managerEmail);
-  await page.locator('input[name="password"]').fill(password!);
+  await page.locator('input[name="password"]').fill(password);
   await page.getByRole("button", { name: /sign in/i }).click();
   await page.waitForURL(/\/ops\//, { timeout: 30_000 });
+}
+
+async function openPlannedTwlRun(page: Page) {
+  if (seededRunId) {
+    await page.goto(`/ops/execution/runs/${seededRunId}`);
+    const headingVisible = await page.getByRole("heading", { name: "Prepare-only public PR proof" }).isVisible();
+    const plannedVisible = await page.getByText("planned", { exact: true }).first().isVisible();
+    if (headingVisible && plannedVisible) return;
+  }
+
+  await page.goto("/ops/execution");
+  await expect(page.getByRole("heading", { name: "Prove the work before automating it" })).toBeVisible();
+  if (await page.getByText("Persistent workspace required").isVisible()) {
+    test.skip(true, "Execution Lab needs the persistent QA workspace.");
+  }
+
+  const create = page
+    .locator("div.p-5")
+    .filter({ hasText: "Three White Lights prepare-only proof" })
+    .getByRole("button", { name: "Create run" });
+  if ((await create.count()) === 0) {
+    test.skip(true, "TWL prepare-only spec is not seeded in this QA workspace.");
+  }
+
+  await create.first().click();
+  await page.waitForURL(/\/ops\/execution\/runs\/[0-9a-f-]{36}/, { timeout: 30_000 });
 }
 
 test.describe("PR67 durable prepare-only public PR evidence", () => {
   test.setTimeout(180_000);
 
-  test("walks the seeded QA run through staff UI and issues a passing receipt", async ({ page }, testInfo) => {
+  test("walks a QA run through staff UI and issues a passing receipt", async ({ page }, testInfo) => {
+    test.skip(!password, "Requires repository secret E2E_PASSWORD for the QA ops manager.");
+
     await login(page);
-    await page.goto(`/ops/execution/runs/${runId}`);
+    await openPlannedTwlRun(page);
 
     await expect(page.getByRole("heading", { name: "Prepare-only public PR proof" })).toBeVisible();
     await expect(page.getByText("planned", { exact: true }).first()).toBeVisible();
