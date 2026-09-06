@@ -27,35 +27,19 @@ jobs:
     env:
       NEXT_PUBLIC_SUPABASE_URL: https://qbvmtgaphvpwpwemplje.supabase.co
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_Tl55fEkqLrElRf2O4j_Z6g_Vpi6qi6y
-      E2E_MANAGER_EMAIL: ops.manager@delegation-test.cloud
-      E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
       QA_TWL_RUN_ID: c0607157-e9a9-4887-b17b-d8a34934f864
     steps:
       - uses: actions/checkout@v4
-      - name: Check QA credential
-        id: qa
-        run: |
-          if [ -n "$E2E_PASSWORD" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=PR67 live QA skipped::Repository secret E2E_PASSWORD is empty. Add it for ops.manager@delegation-test.cloud to run the staff UI walkthrough. Product verify already ran. This job does not fail closed on a missing secret."
-          fi
-      - if: steps.qa.outputs.ready == 'true'
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - if: steps.qa.outputs.ready == 'true'
-        run: npm ci
-      - if: steps.qa.outputs.ready == 'true'
-        run: npm run build
-      - if: steps.qa.outputs.ready == 'true'
-        run: npx playwright install --with-deps chromium
-      - if: steps.qa.outputs.ready == 'true'
-        run: npx playwright test e2e/twl-prepare-proof-live.spec.ts --project=chromium
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test e2e/twl-prepare-proof-live.spec.ts --project=chromium
       - uses: actions/upload-artifact@v4
-        if: always() && steps.qa.outputs.ready == 'true'
+        if: always()
         with:
           name: pr67-live-qa
           path: test-results/
