@@ -51,6 +51,12 @@ function receipt(output: string) {
   return softwareContextReceiptSchema.parse(parsed.receipt);
 }
 
+function nativeTypeStripArgs() {
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  const flagRequired = (major === 22 && minor >= 6 && minor < 18) || (major === 23 && minor < 6);
+  return flagRequired && !process.execArgv.includes("--experimental-strip-types") ? ["--experimental-strip-types"] : [];
+}
+
 describe("software context CLI: actual Git boundary", () => {
   it("reads an immutable blob, not dirty working-tree content, without mutations", () => {
     const f = fixture();
@@ -68,7 +74,7 @@ describe("software context CLI: actual Git boundary", () => {
   it("runs as a real Node command with structured stdout and no dynamic install", () => {
     const f = fixture();
     f.invoke();
-    const result = spawnSync(process.execPath, [resolve("scripts/software-context-shunt.mjs"), ...f.args], { encoding: "utf8", timeout: 15000 });
+    const result = spawnSync(process.execPath, [...nativeTypeStripArgs(), resolve("scripts/software-context-shunt.mjs"), ...f.args], { encoding: "utf8", timeout: 15000 });
     expect(result.status).toBe(0);
     expect(receipt(result.stdout).excerpts[0].text).toBe("targetMarker = original;\n");
     const output: unknown = JSON.parse(result.stdout);

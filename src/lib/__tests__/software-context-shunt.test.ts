@@ -42,6 +42,7 @@ describe("software context shunt: exact retrieval and honest measurement", () =>
     expect(result.receipt.sources).toEqual([{ path: request.paths[0], sha256: sha256Text(text), bytes: Buffer.byteLength(text) }]);
     expect(result.contentHash).toBe(sha256Hex(result.receipt));
     expect(softwareContextReceiptSchema.safeParse(result.receipt).success).toBe(true);
+    expect(result.receipt).toMatchObject({ resultRole: "locator_only", decisionReadiness: "not_assessed" });
     expect(result.receipt.mayOwnAuthoritativeState).toBe(false);
     expect(result.receipt.contentIsUntrusted).toBe(true);
   });
@@ -88,6 +89,11 @@ describe("software context shunt: exact retrieval and honest measurement", () =>
     const result = successful(run({ ...request, selection: { kind: "search", query: "absentMarker", contextLines: 0 } }));
     expect(result.receipt).toMatchObject({ status: "no_match", nextAction: "broaden_authorized_search", excerpts: [] });
     expect(result.receipt.sources).toHaveLength(1);
+  });
+
+  it("does not let a complete literal match masquerade as a debugging result", () => {
+    const result = run({ ...request, taskKind: "debugging", selection: { kind: "search", query: "content_hash", contextLines: 2 } });
+    expect(result).toMatchObject({ ok: false, code: "DIRECT_REQUIRED" });
   });
 
   it("does not silently clamp an out-of-range requested line", () => {

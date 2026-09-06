@@ -4,7 +4,7 @@ Status: implemented local pilot; registry **proposed**. Not qualified for automa
 
 ## Outcome and architecture
 
-Return a bounded, exact answer to a **literal source lookup** without feeding whole files into an agent. Keep the original source available for reasoning and review. This is the first measurable subset of the proposed context shunt, not a claim to solve all Software Factory usage.
+Return a bounded, exact **locator result** for a literal source lookup without feeding whole files into an agent. Keep the original source available for reasoning and review. This is the first measurable subset of the proposed context shunt, not a claim to solve all Software Factory usage.
 
 **Vision: aligns with constraints.** Applies `VISION.md` sections *Use the right executor for each step*, *Capability sovereignty*, *Authority is explicit and bounded*, and *Manual first, automation after proof*. Source-linked extraction is native; future inference/retrieval providers remain replaceable. Quality and authority do not trade away for cheaper context.
 
@@ -22,6 +22,7 @@ The implementation extends the **CS-5 context-provider experiment boundary**, no
 - Case-sensitive literal search plus 0–20 context lines, or one exact 1-based line interval in one file. No regex execution, semantic summary, code generation, source writes, network access, or model calls.
 - Up to 32 explicit regular-file paths; 1 MiB per file and 4 MiB total input. Response budget 2–32 KiB, including the full minified JSON envelope, hashes and metrics.
 - Source path, full 40-character Git commit, source SHA-256, snapshot hash, request hash, scope hash and policy version remain inspectable. CRLF, tabs, Unicode, BOM and final-newline state are preserved.
+- Every successful receipt is explicitly `resultRole: "locator_only"` and `decisionReadiness: "not_assessed"`. `complete` means all matching literal windows fit the response budget, never that a code investigation, diagnosis or decision is complete.
 - Overlapping search windows are merged. A budget-constrained response returns an intact prefix of windows, an omitted-window count, `partial`, and a narrowing action. It never silently cuts a window or labels a partial result complete.
 - `no_match` means only that the literal was absent from the named files, not that a behavior, caller, dependency or defect does not exist.
 - Judgment tasks (debugging, architecture, security and design review) return `DIRECT_REQUIRED`; no cheap model or silent fallback is launched. An incidental locator call may be useful, but the reasoning task still needs the original context.
@@ -29,6 +30,8 @@ The implementation extends the **CS-5 context-provider experiment boundary**, no
 - If a receipt is no smaller than the source, use an ordinary targeted read. This is not a replacement for `rg`, exact line reads, or native context already supplied efficiently.
 
 `DIRECT_REQUIRED` is a routing decision, **not an owner blocker**. Continue through the existing authorized read/reasoning workflow. Missing local objects, no-match and partial results need a bounded technical continuation; they do not justify removing approvals, inventing new scope, or asking the owner to run routine tools.
+
+The first Cursor A/B trial exposed the key failure mode: a receipt can contain every requested `content_hash` match while still omitting enough surrounding code to reveal an envelope/hash mismatch. That is a valid **negative qualification result**, not a defect to hide with a larger default window. Consumers must use `taskKind: "debugging"` for diagnosis, honor `DIRECT_REQUIRED`, and treat a `locator_only` receipt as a map to the original source. In an authorized local checkout, `rg` or `git grep` may be the cheaper locator when it is already available; the CLI's setup and process overhead must be included in any economics comparison.
 
 ## Authority and privacy boundary
 
@@ -44,12 +47,14 @@ The optional process-local cache has 8 entries by default, capped at 32, and can
 
 ## Run once in an existing authorized checkout
 
-Requires Node 22.18+ or Node 24+ and Git supporting `--no-lazy-fetch`. CI already selects Node 22. No added dependency or paid account is required; use the existing lockfile installation.
+Requires Node 22.6+ with native type stripping and Git 2.45+ supporting `--no-lazy-fetch`. The npm scripts pass `--experimental-strip-types` for Node 22.6 through 22.17; Node 22.18 and later enable type stripping by default. Node's built-in support strips erasable types only, does not type-check, and does not apply `tsconfig` path aliases. No added dependency or paid account is required; use the existing lockfile installation. Git's `--no-lazy-fetch` option was introduced in Git 2.45; older Git versions fail closed rather than risking an implicit promisor fetch.
 
 ```sh
 npm run context:read -- --help
 npm run context:read -- --repo /absolute/approved/checkout --scope /absolute/scope.json --request /absolute/request.json
 npm run context:benchmark
+# Direct invocation outside npm on Node 22.6–22.17:
+node --experimental-strip-types scripts/software-context-shunt.mjs --repo /absolute/approved/checkout --scope /absolute/scope.json --request /absolute/request.json
 ```
 
 For machine consumption, invoke `node scripts/software-context-shunt.mjs ...` directly so npm's banner does not mix with JSON stdout. The adapter writes only stdout; the surrounding approved workflow decides whether/how to persist evidence. It does not write files to the checkout.
@@ -92,21 +97,21 @@ Scope, constructed by the trusted local operator/adapter, not the executor's out
 
 | Exit | Meaning | Next action |
 | --- | --- | --- |
-| 0 | Complete literal lookup (or explicit `--help`) | Inspect cited originals before consequential decisions; not an Outcome Receipt |
-| 2 | Invalid/unavailable input, policy refusal or direct read required | Read `code`; correct only within existing scope or use the ordinary authorized path |
+| 0 | Complete literal-match coverage (or explicit `--help`) | Inspect cited originals before consequential decisions; `resultRole` remains `locator_only`; not an Outcome Receipt |
+| 2 | Invalid/unavailable input, policy refusal, unsupported Git safety capability or direct read required | Read `code`; correct only within existing scope or use the ordinary authorized path |
 | 3 | Partial coverage or no literal match | Narrow the request / broaden only within authorized paths; do not claim task completion |
 
 ## Evidence and rollout
 
 The receipt is a candidate payload for existing `evidence_artifacts`, with `contentHash` equal to the canonical hash of `receipt`. No persistence path, new table, lifecycle transition or automatic ingestion is added here. The outer cache/measurement envelope is not the hashed receipt; consumers must revalidate/recompute imported metrics rather than treating agent reports as trusted economics. Hashes prove content identity, not truth, approval, independence, merge eligibility or owner acceptance.
 
-The benchmark reports full-read bytes, complete receipt bytes, targeted excerpt text bytes, request/scope sizes, startup stderr, core cold/warm latency and real CLI latency. The percentage is calculated **outside** the response so it cannot distort self-referential size measurement. Known local test cases are not unseen CS-5 qualification. Output-byte reduction is not measured billed-token savings, total provider cost, reduced Grok weekly allowance, owner time saved, or unchanged model-answer quality.
+The benchmark reports full-read bytes, complete receipt bytes, targeted excerpt text bytes, request/scope sizes, startup stderr, core cold/warm latency and real CLI latency. The percentage is calculated **outside** the response so it cannot distort self-referential size measurement. Known local test cases are not unseen CS-5 qualification. The Cursor A/B result above is a negative developer-usefulness observation and does not qualify the helper for debugging context. Output-byte reduction is not measured billed-token savings, total provider cost, reduced Grok weekly allowance, owner time saved, or unchanged model-answer quality.
 
 Roll out in this order:
 
 1. Independently review this PR and run `npm run verify` plus the context benchmark. Preserve all existing merge and deployment decisions.
-2. After the normal merge gate, CoS selects one existing read-only lookup in an authenticated Cursor checkout. No new bot, routine, service, secret or model setting.
-3. Compare the old retrieval path with this helper on the **same** task: correctness/recall, total input and output context, tool calls, time, retries and available actual provider usage. Include discovery/setup overhead. Keep unknown usage unknown.
+2. After the normal merge gate, CoS selects one existing **locator-only** task in an authenticated Cursor checkout. No new bot, routine, service, secret or model setting.
+3. Compare the old retrieval path with this helper on the **same** task: correctness/recall, total input and output context, tool calls, time, retries and available actual provider usage. Include discovery/setup overhead. Keep unknown usage unknown. Any debugging, architecture, security or design judgment must remain on the direct path even if the locator finds matches.
 4. Use the helper only where that comparison is worthwhile. Record one evidence result to PM; suppress unchanged ACK/status fan-out using existing standing orders.
 5. Only after proof, consider a separately approved adapter that supplies trusted scope and persists to existing evidence infrastructure. Do not activate `software_context_shunt`, add qualified executor mappings, deploy globally or introduce bulk-reader model routing based on this smoke benchmark.
 
@@ -115,5 +120,6 @@ Rollback for the local pilot is simply to stop invoking the CLI and clear any in
 ## Primary implementation references
 
 - [Spotify Portal/shunt article](https://engineering.atspotify.com/2026/9/portal-by-spotify-cut-my-claude-code-token-usage-by-90): reference-only inspiration, not an installed dependency or transferable 90% claim.
-- [Node native TypeScript](https://nodejs.org/api/typescript.html#type-stripping): explicit `.ts` imports plus `allowImportingTsExtensions` under the existing `noEmit` configuration avoid adding an execution package. No model/runtime replatforming.
+- [Node 22.14 native TypeScript](https://nodejs.org/download/release/v22.14.0/docs/api/typescript.html#type-stripping) and [Node 22.18 native TypeScript](https://nodejs.org/download/release/v22.18.0/docs/api/typescript.html#type-stripping): explicit `.ts` imports plus `allowImportingTsExtensions` under the existing `noEmit` configuration avoid adding an execution package. No model/runtime replatforming.
 - [Node execFileSync](https://nodejs.org/api/child_process.html#child_processexecfilesyncfile-args-options), [TextDecoder](https://nodejs.org/api/util.html#new-textdecoderencoding-options), [Git cat-file](https://git-scm.com/docs/git-cat-file), [Git ls-tree](https://git-scm.com/docs/git-ls-tree), [Git no-lazy-fetch](https://git-scm.com/docs/git#Documentation/git.txt---no-lazy-fetch), [Zod strict objects](https://zod.dev/api#strictobject).
+- [Git 2.45 release notes](https://github.com/git/git/blob/master/Documentation/RelNotes/2.45.0.adoc): records the introduction of `git --no-lazy-fetch`.

@@ -53,7 +53,7 @@ export type SoftwareContextScope = z.infer<typeof softwareContextScopeSchema>;
 
 const sourceSchema = z.object({ path: sourcePath, text: z.string().max(MAX_CONTEXT_SOURCE_BYTES), sha256: hash }).strict();
 export type SoftwareContextSource = z.infer<typeof sourceSchema>;
-export type ContextShuntFailure = { ok: false; code: "INVALID_INPUT" | "SCOPE_MISMATCH" | "SCOPE_EXPIRED" | "SENSITIVE_INPUT" | "DIRECT_REQUIRED" | "SOURCE_MISMATCH" | "INPUT_TOO_LARGE" | "BUDGET_TOO_SMALL"; reason: string };
+export type ContextShuntFailure = { ok: false; code: "INVALID_INPUT" | "SCOPE_MISMATCH" | "SCOPE_EXPIRED" | "SENSITIVE_INPUT" | "DIRECT_REQUIRED" | "SOURCE_MISMATCH" | "INPUT_TOO_LARGE" | "BUDGET_TOO_SMALL" | "RUNTIME_UNAVAILABLE"; reason: string };
 type Excerpt = { path: string; startLine: number; endLine: number; text: string };
 const count = z.number().int().min(0);
 export const softwareContextReceiptSchema = z.object({
@@ -62,6 +62,7 @@ export const softwareContextReceiptSchema = z.object({
   policyVersion: z.literal(CONTEXT_SHUNT_POLICY_VERSION),
   ...bindingShape,
   scopeHash: hash, requestHash: hash, operation: z.enum(["search", "lines"]), repositorySnapshotHash: hash,
+  resultRole: z.literal("locator_only"), decisionReadiness: z.literal("not_assessed"),
   sources: z.array(z.object({ path: sourcePath, sha256: hash, bytes: count }).strict()).min(1).max(32),
   status: z.enum(["complete", "partial", "no_match"]),
   coverage: z.object({ matchedWindows: count, returnedWindows: count, omittedWindows: count, semantics: z.literal("literal_lookup_only") }).strict(),
@@ -201,6 +202,7 @@ export function createSoftwareContextShunt(maxCacheEntries = 8) {
         organizationId: request.organizationId, assignmentId: request.assignmentId,
         repository: request.repository, revision: request.revision,
         scopeHash, requestHash, operation: request.selection.kind, repositorySnapshotHash, sources: manifest,
+        resultRole: "locator_only", decisionReadiness: "not_assessed",
         status: excerpts.length ? "complete" : "no_match",
         coverage: { matchedWindows: excerpts.length, returnedWindows: excerpts.length, omittedWindows: 0, semantics: "literal_lookup_only" },
         excerpts,

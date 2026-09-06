@@ -12,7 +12,7 @@ import {
   MAX_CONTEXT_SOURCE_BYTES, MAX_CONTEXT_INPUT_BYTES,
 } from "../src/lib/software-context-shunt.ts";
 
-const USAGE = "node scripts/software-context-shunt.mjs --repo REPOSITORY_DIR --scope SCOPE_JSON --request REQUEST_JSON";
+const USAGE = "node --experimental-strip-types scripts/software-context-shunt.mjs --repo REPOSITORY_DIR --scope SCOPE_JSON --request REQUEST_JSON";
 
 function readJson(path) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -53,6 +53,14 @@ export function runSoftwareContextCli(args) {
     // Credentials are not requested, emitted, or transferred into another process.
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SystemRoot"].includes(key)));
     Object.assign(env, { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" });
+    try {
+      execFileSync("git", ["--no-lazy-fetch", "--version"], {
+        env, shell: false, timeout: 5000, maxBuffer: 4096,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      return { exitCode: 2, output: JSON.stringify({ ok: false, code: "RUNTIME_UNAVAILABLE", reason: "This adapter requires Git with --no-lazy-fetch support; no fallback is permitted." }) };
+    }
     const git = (...gitArgs) => {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("Read deadline exceeded");
