@@ -7,13 +7,16 @@ const migration = readFileSync(
   "utf8",
 );
 const runWriter = readFileSync(resolve(process.cwd(), "src/lib/twl-prepare-proof-run.ts"), "utf8");
+const contract = readFileSync(resolve(process.cwd(), "src/lib/twl-prepare-proof.ts"), "utf8");
 
 describe("SF-TWL-PREPARE-PROOF-01 database hardening", () => {
   it("reserves the typed evidence schemas for database-owned writers", () => {
     expect(migration).toContain("trg_twl_prepare_proof_artifact_writer");
-    expect(migration).toContain("twl-prepare-proof-assignment/v1 is reserved for the database assignment writer");
-    expect(migration).toContain("twl-prepare-proof-pr/v1 is reserved for the database public-GitHub reader");
     expect(migration).toContain("twl_prepare_proof_one_reserved_artifact_per_run_idx");
+    expect(migration).toContain("drop policy if exists evidence_artifacts_insert");
+    expect(migration).toContain("coalesce(payload->>'schemaVersion', '') not in");
+    expect(migration).toContain("Reserved TWL proof evidence must be written by its database-owned writer");
+    expect(migration).toContain("current_user <> 'postgres'");
   });
 
   it("derives assignment evidence and performs the public GitHub GET inside the database boundary", () => {
@@ -23,6 +26,7 @@ describe("SF-TWL-PREPARE-PROOF-01 database hardening", () => {
     expect(migration).toContain("requestedMethod', 'GET'");
     expect(migration).toContain("mutatesRepository', false");
     expect(migration).toContain("mergePerformed', false");
+    expect(migration).toContain("'workerUserId'");
     expect(runWriter).toContain('db.rpc("twl_prepare_proof_assign_worker"');
     expect(runWriter).toContain('db.rpc("twl_prepare_proof_attach_public_pr"');
     expect(runWriter).not.toContain("addEvidenceArtifact");
@@ -37,6 +41,8 @@ describe("SF-TWL-PREPARE-PROOF-01 database hardening", () => {
     expect(migration).toContain("TWL assignment evidence envelope hash mismatch");
     expect(migration).toContain("TWL public PR payload hash mismatch");
     expect(migration).toContain("TWL public PR evidence envelope hash mismatch");
+    expect(contract).toContain("workerUserId: z.string().uuid().nullable().optional()");
+    expect(contract).toContain("parsed.data.workerUserId === input.verifierId");
   });
 
   it("keeps anonymous and public callers away from the reserved writer RPCs", () => {
