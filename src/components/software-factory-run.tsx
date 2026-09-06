@@ -16,7 +16,6 @@ import {
   SOFTWARE_FACTORY_FORBIDDEN_ACTIONS,
   SOFTWARE_FACTORY_RUN_INPUT,
   SOFTWARE_FACTORY_TRANSITIONS,
-  type SoftwareFactoryLifecycleStatus,
 } from "@/lib/software-factory-run-manager";
 import type { WorkstreamRun } from "@/lib/execution-primitives";
 
