@@ -8,6 +8,7 @@ const migration = readFileSync(
 );
 const runWriter = readFileSync(resolve(process.cwd(), "src/lib/twl-prepare-proof-run.ts"), "utf8");
 const contract = readFileSync(resolve(process.cwd(), "src/lib/twl-prepare-proof.ts"), "utf8");
+const execution = readFileSync(resolve(process.cwd(), "src/lib/execution-primitives.ts"), "utf8");
 
 describe("SF-TWL-PREPARE-PROOF-01 database hardening", () => {
   it("reserves the typed evidence schemas for database-owned writers", () => {
@@ -17,6 +18,7 @@ describe("SF-TWL-PREPARE-PROOF-01 database hardening", () => {
     expect(migration).toContain("coalesce(payload->>'schemaVersion', '') not in");
     expect(migration).toContain("Reserved TWL proof evidence must be written by its database-owned writer");
     expect(migration).toContain("current_user <> 'postgres'");
+    expect(execution).toContain("Reserved TWL proof evidence must be created by its guarded assignment or public-GitHub writer");
   });
 
   it("derives assignment evidence and performs the public GitHub GET inside the database boundary", () => {
@@ -43,6 +45,7 @@ describe("SF-TWL-PREPARE-PROOF-01 database hardening", () => {
     expect(migration).toContain("TWL public PR evidence envelope hash mismatch");
     expect(contract).toContain("workerUserId: z.string().uuid().nullable().optional()");
     expect(contract).toContain("parsed.data.workerUserId === input.verifierId");
+    expect(execution).toContain("verifierId: actor.id");
   });
 
   it("keeps anonymous and public callers away from the reserved writer RPCs", () => {
