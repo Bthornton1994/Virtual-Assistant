@@ -61,14 +61,12 @@ describe("Software Factory Run Manager schema", () => {
     );
     expect(fixture).toContain("https://github.com/Bthornton1994/Loadout/pull/26");
     expect(fixture).toContain("insert into public.workstream_runs");
-    expect(fixture).toContain("insert into public.evidence_artifacts");
     expect(fixture).toContain("insert into public.software_factory_runs");
-    expect(fixture).toContain("'awaiting_owner'");
-    expect(fixture).toContain("software-factory-packet/v1");
-    expect(fixture).toContain("4ba8a8bc0b8cc53232d2f4722209aaf2130d73915165e976f8d118f2110127c9");
-    expect(fixture).toContain("factoryKind', 'task_packet'");
-    expect(fixture).not.toMatch(/status:\s*'accepted'/);
+    expect(fixture).toContain("software-factory-run/v1");
+    expect(fixture).toContain("'intake'");
+    expect(fixture).not.toContain("insert into public.evidence_artifacts");
     expect(fixture).not.toMatch(/lifecycle_status,\s*'accepted'/);
+    expect(fixture).not.toMatch(/'awaiting_owner'/);
     expect(fixture).toContain("githubIssuesWrite");
     expect(fixture).toContain("Northline QA fixture not present");
     expect(fixture).not.toMatch(/insert into public\.requests/i);

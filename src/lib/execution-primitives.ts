@@ -22,6 +22,21 @@ import {
   evaluateTwlPrepareProofAccept,
   isTwlPrepareProofSpec,
 } from "@/lib/twl-prepare-proof";
+import {
+  SOFTWARE_FACTORY_ACTION_CLASS,
+  SOFTWARE_FACTORY_EVIDENCE_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_OWNER_DECISION_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION,
+  evaluateAcceptance,
+  isReservedSoftwareFactoryEvidenceSchema,
+  isSoftwareFactorySpec,
+  type SoftwareFactoryApprovalRequest,
+  type SoftwareFactoryEvidenceKind,
+  type SoftwareFactoryEvidenceRecord,
+  type SoftwareFactoryLifecycleStatus,
+  type SoftwareFactoryPacket,
+  type SoftwareFactoryRun,
+} from "@/lib/software-factory-run-manager";
 
 export type DelegationSpecStatus = "draft" | "active" | "retired";
 export type EvidenceKind =
@@ -184,6 +199,75 @@ function mapEvidence(row: Record<string, unknown>): EvidenceArtifact {
     observedAt: String(row.observed_at),
     createdBy: (row.created_by as string) ?? null,
     createdAt: String(row.created_at),
+  };
+}
+
+function mapSoftwareFactoryRun(row: Record<string, unknown>): SoftwareFactoryRun {
+  const packet = row.packet && typeof row.packet === "object" && !Array.isArray(row.packet)
+    ? (row.packet as SoftwareFactoryPacket)
+    : null;
+  return {
+    id: String(row.id),
+    organizationId: String(row.organization_id),
+    taskId: String(row.task_id),
+    workstreamRunId: (row.workstream_run_id as string) ?? null,
+    delegationSpecId: (row.delegation_spec_id as string) ?? null,
+    lifecycleStatus: row.lifecycle_status as SoftwareFactoryLifecycleStatus,
+    actionClass: SOFTWARE_FACTORY_ACTION_CLASS,
+    mayOwnAuthoritativeState: false,
+    mergeAuthorizedForHuman: Boolean(row.merge_authorized_for_human),
+    mergePerformed: false,
+    repository: String(row.repository),
+    baseBranch: String(row.base_branch),
+    frozenInScope: asStringArray(row.frozen_in_scope),
+    frozenAcceptanceCriteria: asStringArray(row.frozen_acceptance_criteria),
+    packet,
+    packetHash: (row.packet_hash as string) ?? null,
+    version: Number(row.version ?? 1),
+    connectors: Array.isArray(row.connector_status) ? (row.connector_status as SoftwareFactoryRun["connectors"]) : [],
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapSoftwareFactoryApproval(row: Record<string, unknown>): SoftwareFactoryApprovalRequest {
+  return {
+    id: String(row.id),
+    organizationId: String(row.organization_id),
+    factoryRunId: String(row.factory_run_id),
+    kind: row.kind as SoftwareFactoryApprovalRequest["kind"],
+    status: row.status as SoftwareFactoryApprovalRequest["status"],
+    requestedBy: String(row.requested_by ?? ""),
+    decidedBy: (row.decided_by as string) ?? null,
+    rationale: String(row.rationale ?? ""),
+    sourceRefs: asStringArray(row.source_refs),
+    packetHash: (row.packet_hash as string) ?? null,
+    createdAt: String(row.created_at),
+    decidedAt: (row.decided_at as string) ?? null,
+  };
+}
+
+function factoryEvidenceRecordFromArtifact(row: EvidenceArtifact): SoftwareFactoryEvidenceRecord | null {
+  const payload = row.payload;
+  const factoryKind = (
+    payload.schemaVersion === SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION
+      ? "task_packet"
+      : payload.schemaVersion === SOFTWARE_FACTORY_OWNER_DECISION_SCHEMA_VERSION
+        ? "owner_decision"
+        : payload.factoryKind
+  ) as SoftwareFactoryEvidenceKind | undefined;
+  if (!factoryKind) return null;
+  return {
+    schemaVersion: SOFTWARE_FACTORY_EVIDENCE_SCHEMA_VERSION,
+    evidenceId: row.id,
+    kind: factoryKind,
+    summary: row.summary,
+    sourceUri: row.sourceUri,
+    conclusion: String(payload.conclusion ?? ""),
+    satisfiedCriteria: asStringArray(payload.satisfiedCriteria),
+    contentHash: String(payload.contentHash ?? row.contentHash ?? "0".repeat(64)),
+    recordedAt: typeof payload.recordedAt === "string" ? payload.recordedAt : row.observedAt,
+    mutatesRepository: false,
   };
 }
 
@@ -624,6 +708,9 @@ export async function addEvidenceArtifact(
   ) {
     throw new DomainError("Reserved TWL proof evidence must be created by its guarded assignment or public-GitHub writer");
   }
+  if (isReservedSoftwareFactoryEvidenceSchema(payload.schemaVersion)) {
+    throw new DomainError("Reserved Software Factory evidence must be created by its guarded packet or owner-decision writer");
+  }
   const contentHash = createHash("sha256")
     .update(JSON.stringify({ kind: input.kind, summary: input.summary.trim(), sourceUri: input.sourceUri ?? null, payload }))
     .digest("hex");
@@ -735,6 +822,44 @@ export async function verifyWorkstreamRun(
       throw new DomainError(
         `This prepare-only proof cannot be accepted: ${twlVerdict.failures.join(" ")}`,
       );
+    }
+  }
+  if (isSoftwareFactorySpec(spec) && input.verificationStatus === "passed") {
+    const { data: factoryRow, error: factoryError } = await db
+      .from("software_factory_runs")
+      .select("*")
+      .eq("workstream_run_id", runId)
+      .maybeSingle();
+    if (factoryError) throw new DomainError(factoryError.message);
+    if (!factoryRow) {
+      throw new DomainError("A Software Factory overlay is required before a passing receipt.");
+    }
+    const { data: approvalRows, error: approvalError } = await db
+      .from("software_factory_approvals")
+      .select("*")
+      .eq("factory_run_id", factoryRow.id);
+    if (approvalError) throw new DomainError(approvalError.message);
+    const { data: factoryEvidenceRows, error: factoryEvidenceError } = await db
+      .from("evidence_artifacts")
+      .select("*")
+      .eq("run_id", runId)
+      .order("created_at", { ascending: true });
+    if (factoryEvidenceError) throw new DomainError(factoryEvidenceError.message);
+    const factoryRun = mapSoftwareFactoryRun(factoryRow as Record<string, unknown>);
+    const factoryVerdict = evaluateAcceptance({
+      run: factoryRun,
+      evidence: (factoryEvidenceRows ?? []).map((row) => mapEvidence(row as Record<string, unknown>)
+        ).flatMap((row) => {
+          const mapped = factoryEvidenceRecordFromArtifact(row);
+          return mapped ? [mapped] : [];
+        }),
+      approvals: (approvalRows ?? []).map((row) => mapSoftwareFactoryApproval(row as Record<string, unknown>)),
+      now: new Date().toISOString(),
+      actorRole: actor.role,
+      verifierId: actor.id,
+    });
+    if (!factoryVerdict.ok) {
+      throw new DomainError(`This Software Factory run cannot be accepted: ${factoryVerdict.failures.join(" ")}`);
     }
   }
 

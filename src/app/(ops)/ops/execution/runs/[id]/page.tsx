@@ -9,11 +9,14 @@ import {
 import { ActionClassBadge, PageHeader } from "@/components/product";
 import { Badge, Button, Card, Field, Input, Textarea } from "@/components/ui";
 import { SupplierSourcingSection } from "@/components/supplier-sourcing";
+import { SoftwareFactorySection } from "@/components/software-factory-run";
 import { TwlPrepareProofSection } from "@/components/twl-prepare-proof";
 import { WorkCellSection } from "@/components/work-cell";
 import { requireOps } from "@/lib/auth";
 import { checkEconomicEnvelope } from "@/lib/economic-envelope";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
+import { getSoftwareFactoryOverlay } from "@/lib/software-factory-persist";
+import { isSoftwareFactorySpec } from "@/lib/software-factory-run-manager";
 import { getSupplierSourcingRunBundle } from "@/lib/supplier-sourcing-run";
 import { isTwlPrepareProofSpec } from "@/lib/twl-prepare-proof";
 import { getRunWorkCell } from "@/lib/work-cell";
@@ -79,6 +82,8 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
 
   const { run, spec, evidence, receipt } = await getWorkstreamRunBundle(actor, id);
   const twlPrepareProof = isTwlPrepareProofSpec(spec);
+  const softwareFactory = isSoftwareFactorySpec(spec);
+  const softwareFactoryOverlay = softwareFactory ? await getSoftwareFactoryOverlay(actor, id) : null;
   const operators = twlPrepareProof ? await getWorkspace(actor).listOperators(actor) : [];
   const supplierRun =
     spec.objective.toLowerCase().includes("supplier sourcing") ||
@@ -249,6 +254,8 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
           actorRole={actor.role}
           operators={operators}
         />
+      ) : softwareFactory ? (
+        <SoftwareFactorySection run={run} overlay={softwareFactoryOverlay} />
       ) : (
         <WorkCellSection
           bundle={workCell}

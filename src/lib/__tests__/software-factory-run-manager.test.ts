@@ -16,8 +16,12 @@ import {
   SOFTWARE_FACTORY_INTAKE_SCHEMA_VERSION,
   SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION,
   SOFTWARE_FACTORY_RECEIPT_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_RUN_INPUT,
   canTransitionSoftwareFactory,
+  evaluateAcceptance,
   freezeEvidenceRecord,
+  hashSoftwareFactoryPacket,
+  isSoftwareFactorySpec,
   packetClaimsSelfAuthorization,
   softwareFactoryConnectorCatalog,
   validateSoftwareFactoryPacket,
@@ -765,5 +769,92 @@ describe("Software Factory remaining control-plane gates", () => {
     ]);
     expect(projectedReceipt.verificationStatus).toBe("failed");
     expect(projectedReceipt.runId).toBe(opened.workstreamRun.id);
+  });
+});
+
+describe("Software Factory reserved-writer accept gates", () => {
+  it("detects the software-factory-run/v1 spec marker", () => {
+    expect(isSoftwareFactorySpec({ requiredInputs: [SOFTWARE_FACTORY_RUN_INPUT] })).toBe(true);
+    expect(isSoftwareFactorySpec({ requiredInputs: ["twl-prepare-proof/v1"] })).toBe(false);
+  });
+
+  it("rejects a stale packet hash, an operator verifier, and provider-only evidence", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    advanceToAwaitingOwner(store, opened.run.id);
+    const run = getSoftwareFactoryRun(store, manager, opened.run.id);
+    const evidence = store.evidenceByRun.get(opened.run.id) ?? [];
+    const approvals = [...store.approvals.values()].filter((row) => row.factoryRunId === opened.run.id);
+
+    expect(
+      evaluateAcceptance({
+        run: { ...run, packetHash: "a".repeat(64) },
+        evidence,
+        approvals,
+        now: NOW,
+      }).failures.join(" "),
+    ).toMatch(/packet hash/);
+
+    expect(
+      evaluateAcceptance({
+        run,
+        evidence,
+        approvals,
+        now: NOW,
+        actorRole: "operator",
+        verifierId: operator.id,
+      }).ok,
+    ).toBe(false);
+
+    const ownerDecision = recordSoftwareFactoryOwnerDecision(
+      store,
+      owner,
+      opened.run.id,
+      {
+        kind: "owner_acceptance",
+        status: "approved",
+        rationale: "Owner accepts the frozen packet.",
+        sourceRefs: ["governance:owner-acceptance"],
+      },
+      "evt-owner-hash-gate",
+      NOW,
+    );
+    expect(ownerDecision.ok).toBe(true);
+    const afterOwner = [...store.approvals.values()].filter((row) => row.factoryRunId === opened.run.id);
+    expect(
+      evaluateAcceptance({
+        run: getSoftwareFactoryRun(store, manager, opened.run.id),
+        evidence,
+        approvals: afterOwner,
+        now: NOW,
+        actorRole: "ops_manager",
+        verifierId: owner.id,
+      }).failures.join(" "),
+    ).toMatch(/cannot issue its Outcome Receipt/);
+
+    const providerOnly = freezeEvidenceRecord({
+      evidenceId: "ev-agent-only",
+      kind: "agent_report",
+      summary: "Cursor said this was done and should be accepted.",
+      sourceUri: null,
+      conclusion: "executor_claimed_success_not_authoritative",
+      satisfiedCriteria: [],
+      recordedAt: NOW,
+      mutatesRepository: false,
+    });
+    expect(providerOnly.ok).toBe(true);
+    if (!providerOnly.ok) throw new Error(providerOnly.failures.join(" "));
+    expect(
+      evaluateAcceptance({
+        run,
+        evidence: [providerOnly.value],
+        approvals: afterOwner,
+        now: NOW,
+        actorRole: "ops_manager",
+        verifierId: manager.id,
+      }).failures.join(" "),
+    ).toMatch(/provider success claim or agent report/);
+
+    expect(hashSoftwareFactoryPacket(run.packet!)).toBe(run.packetHash);
   });
 });

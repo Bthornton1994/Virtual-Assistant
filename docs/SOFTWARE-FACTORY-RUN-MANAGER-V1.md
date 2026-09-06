@@ -77,7 +77,17 @@ If authority is missing, the run creates an approval request and pauses. Even an
 
 Additive tables `software_factory_runs`, `software_factory_events`, and `software_factory_approvals` bind to existing `delegation_specs` and `workstream_runs`. Evidence remains in `evidence_artifacts`. Receipts remain in `outcome_receipts` when a persistent workspace applies the overlay.
 
-The in-memory store in `src/lib/software-factory-store.ts` is the executable vertical slice used by tests. It writes factory evidence and receipts and also projects them onto `EvidenceArtifact` / `OutcomeReceipt`. The SQL migration is not applied to Production by this change. The QA fixture `supabase/qa/software_factory_loadout_sf_load_001.sql` creates a demonstration Workstream Run and Software Factory overlay for SF-LOAD-001, attaches historical Loadout PR #26 as evidence, and leaves the run at `awaiting_owner`.
+The in-memory store in `src/lib/software-factory-store.ts` remains the unit-test vertical slice. Persistent QA/staff operation uses reserved SECURITY DEFINER writers in `supabase/migrations/20260906210000_software_factory_control_plane_hardening.sql` and the staff surface on `/ops/execution`.
+
+Typed authoritative artifacts:
+
+- packet freeze (`software-factory-packet/v1`) is written only by `software_factory_freeze_packet`
+- owner acceptance is written only by `software_factory_record_owner_decision` and must come from an organization owner or member
+- Accepted is written only when a passing Outcome Receipt survives `enforce_software_factory_receipt`
+
+Authenticated clients cannot insert or update `software_factory_runs` or `software_factory_approvals` directly. Generic evidence insert cannot impersonate the reserved packet or owner-decision schemas. The TWL reserved schemas stay reserved.
+
+The SQL migrations are not applied to Production by this change. The QA fixture `supabase/qa/software_factory_loadout_sf_load_001.sql` creates a demonstration Delegation Spec marked `software-factory-run/v1`, a planned Workstream Run, and a Software Factory overlay at `intake`. It does not Accept the run and does not mutate Loadout.
 
 ## Loadout proof
 

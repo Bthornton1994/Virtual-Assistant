@@ -19,6 +19,7 @@ import {
 import type { WorkstreamRunStatus } from "@/lib/execution-policy";
 
 export const SOFTWARE_FACTORY_CAPABILITY_KEY = "software_factory_run_management" as const;
+export const SOFTWARE_FACTORY_RUN_INPUT = "software-factory-run/v1" as const;
 export const SOFTWARE_FACTORY_INTAKE_SCHEMA_VERSION = "software-factory-intake/v1" as const;
 export const SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION = "software-factory-packet/v1" as const;
 export const SOFTWARE_FACTORY_INSPECTION_SCHEMA_VERSION = "software-factory-inspection/v1" as const;
@@ -206,6 +207,22 @@ export function canTransitionSoftwareFactory(
 
 export function isSoftwareFactoryTerminal(status: SoftwareFactoryLifecycleStatus): boolean {
   return (SOFTWARE_FACTORY_TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
+export function isSoftwareFactorySpec(spec: { requiredInputs: readonly string[] }) {
+  return spec.requiredInputs.some((input) => input.toLowerCase() === SOFTWARE_FACTORY_RUN_INPUT);
+}
+
+export const SOFTWARE_FACTORY_RESERVED_EVIDENCE_SCHEMAS = [
+  SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_OWNER_DECISION_SCHEMA_VERSION,
+] as const;
+
+export function isReservedSoftwareFactoryEvidenceSchema(schemaVersion: unknown): boolean {
+  return (
+    schemaVersion === SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION ||
+    schemaVersion === SOFTWARE_FACTORY_OWNER_DECISION_SCHEMA_VERSION
+  );
 }
 
 export function mapFactoryStatusToWorkstreamRun(
@@ -711,19 +728,38 @@ export function evaluateAcceptance(input: {
   evidence: readonly SoftwareFactoryEvidenceRecord[];
   approvals: readonly SoftwareFactoryApprovalRequest[];
   now: string;
+  actorRole?: Role;
+  verifierId?: string;
 }): AcceptanceEvaluation {
   const failures: string[] = [];
+  if (input.actorRole === "operator" || input.actorRole === "client_admin" || input.actorRole === "client_member") {
+    failures.push("Only an operations manager can issue a Software Factory Outcome Receipt.");
+  }
   if (input.run.lifecycleStatus !== "awaiting_owner") {
     failures.push("Acceptance is only available from awaiting_owner.");
   }
   if (!input.run.packet || !input.run.packetHash) {
     failures.push("A frozen task packet is required before acceptance.");
   }
+  if (input.run.packet && input.run.packetHash) {
+    const recomputed = hashSoftwareFactoryPacket(input.run.packet);
+    if (recomputed !== input.run.packetHash) {
+      failures.push("Frozen packet hash does not match the packet payload.");
+    }
+  }
   const ownerAcceptance = input.approvals.find(
     (row) => row.kind === "owner_acceptance" && row.status === "approved" && row.packetHash === input.run.packetHash,
   );
   if (!ownerAcceptance) {
     failures.push("Explicit owner acceptance must be recorded outside the task packet.");
+  }
+  if (input.verifierId && ownerAcceptance?.decidedBy === input.verifierId) {
+    failures.push("The owner who accepted this packet cannot issue its Outcome Receipt.");
+  }
+  const providerOnly = input.evidence.length > 0
+    && input.evidence.every((row) => row.kind === "agent_report" || row.kind === "cursor_execution");
+  if (providerOnly) {
+    failures.push("A provider success claim or agent report cannot accept the run.");
   }
   if (input.run.packet) {
     const satisfied = new Set(input.evidence.flatMap((row) => row.satisfiedCriteria));
