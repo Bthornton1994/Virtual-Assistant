@@ -292,16 +292,18 @@ describe("source fail-closed", () => {
       .map((name) => readFileSync(resolve(process.cwd(), "supabase/migrations", name), "utf8"))
       .join("\n");
     expect(liveSpec).toContain('const disposableEmail = "bthornton9415+pr67-076ad943802b@gmail.com"');
-    expect(liveSpec).toContain("auth.auth.signUp");
-    expect(liveSpec).toContain('claim.rpc("pr67_claim_qa_ops")');
-    expect(liveSpec).toContain("Disposable QA signup requires email confirmation");
+    expect(liveSpec).toContain('rpc("pr67_provision_qa_ops"');
+    expect(liveSpec).not.toContain("auth.auth.signUp");
     expect(liveSpec).not.toContain("E2E_PASSWORD");
     expect(workflow).not.toContain("E2E_PASSWORD");
     expect(workflow).toContain("npx playwright test e2e/twl-prepare-proof-live.spec.ts --project=chromium");
     expect(claim).toContain("northline-consulting-test");
     expect(claim).toContain("bthornton9415+pr67-076ad943802b@gmail.com");
+    expect(claim).toContain("pr67_provision_qa_ops");
     expect(claim).toContain("ops_manager");
     expect(claim).toContain("revoke all on function public.pr67_claim_qa_ops() from anon");
+    expect(claim).not.toContain("mailer_autoconfirm");
     expect(migrations).not.toContain("pr67_claim_qa_ops");
+    expect(migrations).not.toContain("pr67_provision_qa_ops");
   });
 });

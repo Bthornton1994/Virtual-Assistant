@@ -13,27 +13,11 @@ async function provisionDisposableManager() {
   }
 
   const password = `${randomBytes(24).toString("base64url")}Aa1!`;
-  const auth = createClient(supabaseUrl, publishableKey, {
+  const qa = createClient(supabaseUrl, publishableKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const { data, error } = await auth.auth.signUp({
-    email: disposableEmail,
-    password,
-    options: { data: { name: "PR67 disposable QA manager" } },
-  });
-  if (error) throw new Error(`Disposable QA signup failed: ${error.message}`);
-  if (!data.session) {
-    throw new Error(
-      "Disposable QA signup requires email confirmation. Stop here; do not weaken Auth. Gmail is the fallback for confirmation.",
-    );
-  }
-
-  const claim = createClient(supabaseUrl, publishableKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: `Bearer ${data.session.access_token}` } },
-  });
-  const { error: claimError } = await claim.rpc("pr67_claim_qa_ops");
-  if (claimError) throw new Error(`Disposable QA role claim failed: ${claimError.message}`);
+  const { error } = await qa.rpc("pr67_provision_qa_ops", { p_password: password });
+  if (error) throw new Error(`Disposable QA provision failed: ${error.message}`);
 
   return { email: disposableEmail, password };
 }

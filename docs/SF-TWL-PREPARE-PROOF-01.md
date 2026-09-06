@@ -54,11 +54,13 @@ If the SQL seed is not applied, a manager can still create the spec by hand on `
 
 ### 3. Live staff walkthrough (Playwright)
 
-`e2e/twl-prepare-proof-live.spec.ts` signs up disposable identity `pr67-076ad943802b@delegation-test.cloud`, claims `ops_manager` through QA-only RPC `pr67_claim_qa_ops`, opens a planned TWL run, assigns the shadow worker, attaches public `octocat/Hello-World#1`, submits, and issues a passing receipt. It does not merge or deploy.
+`e2e/twl-prepare-proof-live.spec.ts` provisions disposable identity `bthornton9415+pr67-076ad943802b@gmail.com` through QA-only RPC `pr67_provision_qa_ops`, signs in, opens a planned TWL run, assigns the shadow worker, attaches public `octocat/Hello-World#1`, submits, and issues a passing receipt. It does not merge or deploy.
+
+Public Auth signup cannot be used here: `delegation-test.cloud` is rejected as an invalid mailbox, QA Auth has `mailer_autoconfirm=false`, and confirmation mail is rate-limited. The provision RPC writes a confirmed auth user and operator row without sending mail and without changing Auth settings.
 
 PR #67 CI job `pr67-live-qa` runs that spec after `verify`. It uses the QA publishable key only. It does not read `E2E_PASSWORD` or a service-role key.
 
-`supabase/qa/pr67_claim_qa_ops.sql` is the source of the claim RPC. It is not a Production migration. It refuses unless the Northline QA fixture exists, and it admits only that disposable email after Auth confirmation. Do not weaken Auth to make signup skip confirmation.
+`supabase/qa/pr67_claim_qa_ops.sql` is the source of the provision and claim RPCs. It is not a Production migration. It refuses unless the Northline QA fixture exists, and it admits only that disposable email. Do not enable project-wide autoconfirm.
 
 When `QA_TWL_RUN_ID` is unset or that run is no longer planned, the spec creates a fresh run from Execution Lab.
 
