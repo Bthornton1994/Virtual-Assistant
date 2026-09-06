@@ -247,6 +247,7 @@ const assignmentSchema = z
     schemaVersion: z.literal(TWL_PREPARE_PROOF_ASSIGNMENT_SCHEMA),
     workerKind: z.enum(["human_operator", "shadow"]),
     workerKey: identifierString,
+    workerUserId: z.string().uuid().nullable().optional(),
     displayName: nonEmptyString,
     mayOwnAccept: z.literal(false),
     actionClass: z.literal("prepare_only"),
@@ -394,6 +395,7 @@ export function evaluateTwlPrepareProofAccept(input: {
   spec: { actionClass: string; requiredInputs: readonly string[] };
   evidence: TwlEvidenceLike[];
   actorRole: string;
+  verifierId?: string;
   executorSummary?: Record<string, unknown>;
 }): TwlPrepareProofAcceptVerdict {
   const failures: string[] = [];
@@ -438,6 +440,15 @@ export function evaluateTwlPrepareProofAccept(input: {
       }
       if (parsed.data.mayOwnAccept !== false) {
         failures.push("Assigned worker cannot own Accept.");
+        addReason(reasons, "worker_attempted_accept");
+      }
+      if (
+        parsed.data.workerKind === "human_operator" &&
+        parsed.data.workerUserId &&
+        input.verifierId &&
+        parsed.data.workerUserId === input.verifierId
+      ) {
+        failures.push("The assigned worker cannot issue their own Outcome Receipt.");
         addReason(reasons, "worker_attempted_accept");
       }
     }
@@ -547,6 +558,7 @@ export function summarizeTwlPrepareProof(input: {
   spec: { actionClass: string; requiredInputs: readonly string[] };
   evidence: TwlEvidenceLike[];
   actorRole: string;
+  verifierId?: string;
   executorSummary?: Record<string, unknown>;
 }) {
   const assignment = input.evidence.find((item) => item.payload.schemaVersion === TWL_PREPARE_PROOF_ASSIGNMENT_SCHEMA);
