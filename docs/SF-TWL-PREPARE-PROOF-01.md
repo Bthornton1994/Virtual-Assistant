@@ -1,6 +1,6 @@
 # SF-TWL-PREPARE-PROOF-01
 
-Status: QA-only prepare-only proof
+Status: **QA proof complete**
 
 `VISION.md` sections: **Authority is explicit and bounded**, **Quality assurance is part of delivery**, **Manual first, automation after proof**, **Capability sovereignty**.
 
@@ -21,68 +21,105 @@ Typed source: `src/lib/twl-prepare-proof.ts`
 - Only an operations manager or platform admin may issue an Outcome Receipt, and only after deterministic checks pass
 - Release route is `hold`, `ready_for_human_review`, or `escalate` — never merge or deploy
 
-Default evidence target: public repo `Bthornton1994/three-white-lights` PR #35.
+## Public GitHub target decision
 
-## How to run the one-shot proof
+The originally named target, `Bthornton1994/three-white-lights#35`, is in a private repository and therefore cannot satisfy an anonymous public-GET evidence contract. This is expected fail-closed behavior, not a reader defect.
 
-### 1. Local contract check (no QA credentials)
+The completed proof deliberately used public `octocat/Hello-World#1`. The staff attach form remains parameterized so any genuinely public pull request can be supplied without changing the authority model.
+
+## Completed live QA evidence
+
+The browser walkthrough passed on PR #67 commit `8a716579dee395984bbdc0edf2b26c4c7178cd01` in GitHub Actions run `34046413737`.
+
+- Standard `verify` job: passed `npm ci`, lint, typecheck, unit tests, and production build.
+- `pr67-live-qa` job: passed the production build and Playwright staff-session walkthrough.
+- Playwright started a durable run from `/ops/execution`, assigned the prepare-only shadow worker, attached public PR evidence, submitted for independent verification, and issued a passing Outcome Receipt.
+- No merge or deployment was authorized or performed by the proof path.
+
+Durable QA record:
+
+- Verified run: `aea1a4aa-9f33-40bf-86df-ce8ad618d060`
+- Final run status: `verified`
+- Action class: `prepare_only`
+- Required evidence count: `2`
+- Outcome Receipt: `2c41f158-9626-4716-a22e-f4a8c33fe343`
+- Receipt result: `passed`
+- Definition of done: met
+- QA score: `100`
+- Exceptions: none
+- Unresolved decisions: none
+
+Assignment evidence:
+
+- Kind: `observation`
+- Schema: `twl-prepare-proof-assignment/v1`
+- Worker: `sf-twl-prepare-proof-shadow-v1`
+- `mayOwnAccept=false`
+- Evidence content hash: `46c7507fb809e4423207f5e37721c9d8de11bc8bc8614defbc042171848b7f66`
+- Sealed payload hash: `ca9ffffee9aec5c8fe38245a2e1e179a9dd4191e2df7d2536b5833b987b51c37`
+
+Public PR source evidence:
+
+- Kind: `source`
+- Schema: `twl-prepare-proof-pr/v1`
+- Target: `octocat/Hello-World#1`
+- Request method: `GET`
+- `mutatesRepository=false`
+- `mergePerformed=false`
+- Evidence content hash: `2f7c429d4683b8a6ba29a9aa5935625d1f8f951bce4cffe1984384c436866b96`
+- Sealed payload hash: `d09d943c53b42c72482ef945cad726980bf6a29965c545667abba5c48bfcb853`
+
+## Cleanup after proof
+
+The live walkthrough used a temporary QA-only staff-provisioning harness solely to obtain an authenticated staff browser session. It was not part of the product authority model.
+
+After the passing receipt was independently confirmed:
+
+- both temporary QA provisioning/claim functions were dropped from the QA database;
+- the disposable staff session was invalidated;
+- the disposable operator was set inactive with zero capacity and its Auth identity was banned;
+- the earlier incomplete QA run was marked `cancelled` rather than left `running`;
+- the one-shot Playwright harness, QA provisioning SQL, and PR-specific CI job were removed from the final branch.
+
+The verified run, its two evidence artifacts, their hashes, and the Outcome Receipt remain durable QA evidence.
+
+## Reproduction without the retired harness
+
+### Local contract check
 
 ```bash
 npx tsx scripts/twl-prepare-proof-oneshot.ts
 ```
 
-This GETs the public PR, prints number / head / base / CI / HTML URL / payload hash, and runs the fail-closed Accept cases. It does not write Supabase, GitHub, or Production.
+This performs GET-only public PR reading and the fail-closed Accept checks. It does not write Supabase, GitHub, or Production. If the private default target is not anonymously visible, it uses the public fallback.
 
-If `Bthornton1994/three-white-lights` #35 is not visible to unauthenticated GET (GitHub returns 404 for private or missing repos), the script uses public fallback `octocat/Hello-World` #1. The staff attach form still defaults to PR #35; an operator can point it at any public pull.
+### Durable QA run
 
-### 2. Durable QA run (env-gated)
+1. Apply `supabase/qa/sf_twl_prepare_proof_01.sql` only to the dedicated QA workspace. The seed refuses to run without the known Northline QA fixture and QA ops-manager account.
+2. Sign in with a normal authorized QA staff account and open `/ops/execution`.
+3. Start the planned run.
+4. Assign a human operator or the shadow worker. Neither can Accept alone.
+5. Attach metadata from a genuinely public pull request.
+6. Freeze and submit for verification.
+7. Have an operations manager or platform admin issue the Outcome Receipt.
 
-Execution Lab refuses the demo store. You need the dedicated QA Supabase project (`qbvmtgaphvpwpwemplje`) and a staff session.
-
-1. In the QA SQL editor, run `supabase/qa/sf_twl_prepare_proof_01.sql`.
-   - Refuses to run unless organization slug `northline-consulting-test` and `ops.manager@delegation-test.cloud` exist.
-   - Creates the workstream, active Delegation Spec, shadow executor profile, and one `planned` run if none is open.
-2. Sign in as QA ops staff and open `/ops/execution`.
-3. Open the planned run. Status is on that page and in the recent-runs list.
-4. Start the run.
-5. Assign the shadow worker or a human operator. Neither can Accept alone.
-6. Attach public PR evidence. Defaults to `Bthornton1994/three-white-lights` #35. The server action GETs metadata only and hashes it into `evidence_artifacts`.
-7. Freeze and submit for verification.
-8. An operations manager issues the Outcome Receipt. Passing is blocked unless the hashed PR evidence and assignment are present. An agent report is not enough.
-
-If the SQL seed is not applied, a manager can still create the spec by hand on `/ops/execution` using the frozen fields in `TWL_PREPARE_PROOF_SPEC`, including required input `twl-prepare-proof/v1`, then create a run.
-
-### 3. Live staff walkthrough (Playwright)
-
-`e2e/twl-prepare-proof-live.spec.ts` provisions disposable identity `bthornton9415+pr67-076ad943802b@gmail.com` through QA-only RPC `pr67_provision_qa_ops`, signs in, opens a planned TWL run, assigns the shadow worker, attaches public `octocat/Hello-World#1`, submits, and issues a passing receipt. It does not merge or deploy.
-
-Public Auth signup cannot be used here: `delegation-test.cloud` is rejected as an invalid mailbox, QA Auth has `mailer_autoconfirm=false`, and confirmation mail is rate-limited. The provision RPC writes a confirmed auth user and operator row without sending mail and without changing Auth settings.
-
-PR #67 CI job `pr67-live-qa` runs that spec after `verify`. It uses the QA publishable key only. It does not read `E2E_PASSWORD` or a service-role key.
-
-`supabase/qa/pr67_claim_qa_ops.sql` is the source of the provision and claim RPCs. It is not a Production migration. It refuses unless the Northline QA fixture exists, and it admits only that disposable email. Do not enable project-wide autoconfirm.
-
-When `QA_TWL_RUN_ID` is unset or that run is no longer planned, the spec creates a fresh run from Execution Lab.
-
-```bash
-npx playwright test e2e/twl-prepare-proof-live.spec.ts --project=chromium
-```
+No disposable self-provisioning function is retained. Future live browser replays must use normal QA staff authentication or another explicitly reviewed, short-lived harness.
 
 ## Escalation
 
-Coded in `evaluateTwlPrepareProofAccept` and shown on the run page. Escalate when:
+`evaluateTwlPrepareProofAccept` escalates when:
 
-- required evidence is missing or the payload hash no longer matches
-- evidence claims `mutatesRepository=true` or `merge_performed=true`
-- a write or merge GitHub path is requested
-- an agent report is offered as the sole Accept basis
-- the assigned worker tries to Accept
+- required evidence is missing or the payload hash no longer matches;
+- evidence claims `mutatesRepository=true` or `merge_performed=true`;
+- a write or merge GitHub path is requested;
+- an agent report is offered as the sole Accept basis;
+- the assigned worker tries to Accept.
 
 Do not auto-advance. Do not merge.
 
 ## Release routing
 
-`routeTwlPrepareProofRelease` returns hold, ready-for-human-review, or escalate. `mergePerformed` and `deployAuthorized` stay false. A passing receipt still does not merge or deploy.
+`routeTwlPrepareProofRelease` returns `hold`, `ready_for_human_review`, or `escalate`. `mergePerformed` and `deployAuthorized` remain false. A passing receipt still does not merge or deploy.
 
 ## Out of scope
 
