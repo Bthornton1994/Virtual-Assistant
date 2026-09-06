@@ -144,6 +144,10 @@ begin
 end;
 $$;
 
+-- Replay-safe: QA already installed this trigger via connected-API version
+-- 20260906191128. A later repository push of this file must not fail on
+-- "trigger already exists".
+drop trigger if exists trg_twl_prepare_proof_artifact_writer on public.evidence_artifacts;
 create trigger trg_twl_prepare_proof_artifact_writer
   before insert on public.evidence_artifacts
   for each row execute function public.enforce_twl_prepare_proof_artifact_writer();
@@ -552,6 +556,10 @@ begin
 end;
 $$;
 
+-- Replay-safe: QA already installed this trigger via connected-API version
+-- 20260906191128. A later repository push of this file must not fail on
+-- "trigger already exists".
+drop trigger if exists trg_twl_prepare_proof_receipt_gate on public.outcome_receipts;
 create trigger trg_twl_prepare_proof_receipt_gate
   before insert on public.outcome_receipts
   for each row execute function public.enforce_twl_prepare_proof_receipt();

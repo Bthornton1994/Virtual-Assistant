@@ -113,6 +113,8 @@ QA inspection also confirmed:
 - reserved-artifact singleton index present;
 - `evidence_artifacts_insert` RLS explicitly excludes both reserved TWL schemas.
 
+QA recorded this control set through the connected migration API as version `20260906191128` (`twl_prepare_proof_database_hardening`). The repository file remains `20260906190000_twl_prepare_proof_hardening.sql`. Both TWL triggers are created after `DROP TRIGGER IF EXISTS`, so a later normal push of the repository migration is replay-safe and cannot fail on duplicate triggers.
+
 ## Reproduction
 
 ### Local contract check

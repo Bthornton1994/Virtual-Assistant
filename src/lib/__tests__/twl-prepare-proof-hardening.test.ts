@@ -11,6 +11,21 @@ const contract = readFileSync(resolve(process.cwd(), "src/lib/twl-prepare-proof.
 const execution = readFileSync(resolve(process.cwd(), "src/lib/execution-primitives.ts"), "utf8");
 
 describe("SF-TWL-PREPARE-PROOF-01 database hardening", () => {
+  it("is replay-safe when QA already applied the connected-API version", () => {
+    expect(migration).toContain(
+      "drop trigger if exists trg_twl_prepare_proof_artifact_writer on public.evidence_artifacts;",
+    );
+    expect(migration).toContain(
+      "drop trigger if exists trg_twl_prepare_proof_receipt_gate on public.outcome_receipts;",
+    );
+    expect(migration.indexOf("drop trigger if exists trg_twl_prepare_proof_artifact_writer")).toBeLessThan(
+      migration.indexOf("create trigger trg_twl_prepare_proof_artifact_writer"),
+    );
+    expect(migration.indexOf("drop trigger if exists trg_twl_prepare_proof_receipt_gate")).toBeLessThan(
+      migration.indexOf("create trigger trg_twl_prepare_proof_receipt_gate"),
+    );
+  });
+
   it("reserves the typed evidence schemas for database-owned writers", () => {
     expect(migration).toContain("trg_twl_prepare_proof_artifact_writer");
     expect(migration).toContain("twl_prepare_proof_one_reserved_artifact_per_run_idx");
