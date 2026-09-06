@@ -1,16 +1,39 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const migration = readFileSync(
-  resolve(process.cwd(), "supabase/migrations/20260906190000_twl_prepare_proof_hardening.sql"),
-  "utf8",
+const migrationPath = resolve(
+  process.cwd(),
+  "supabase/migrations/20260906191128_twl_prepare_proof_database_hardening.sql",
 );
+const migration = readFileSync(migrationPath, "utf8");
 const runWriter = readFileSync(resolve(process.cwd(), "src/lib/twl-prepare-proof-run.ts"), "utf8");
 const contract = readFileSync(resolve(process.cwd(), "src/lib/twl-prepare-proof.ts"), "utf8");
 const execution = readFileSync(resolve(process.cwd(), "src/lib/execution-primitives.ts"), "utf8");
 
 describe("SF-TWL-PREPARE-PROOF-01 database hardening", () => {
+  it("matches the QA schema_migrations version so ordinary db push is not divergent", () => {
+    expect(basename(migrationPath)).toBe("20260906191128_twl_prepare_proof_database_hardening.sql");
+    expect(
+      existsSync(resolve(process.cwd(), "supabase/migrations/20260906190000_twl_prepare_proof_hardening.sql")),
+    ).toBe(false);
+  });
+
+  it("is replay-safe if the SQL is re-executed against existing triggers", () => {
+    expect(migration).toContain(
+      "drop trigger if exists trg_twl_prepare_proof_artifact_writer on public.evidence_artifacts;",
+    );
+    expect(migration).toContain(
+      "drop trigger if exists trg_twl_prepare_proof_receipt_gate on public.outcome_receipts;",
+    );
+    expect(migration.indexOf("drop trigger if exists trg_twl_prepare_proof_artifact_writer")).toBeLessThan(
+      migration.indexOf("create trigger trg_twl_prepare_proof_artifact_writer"),
+    );
+    expect(migration.indexOf("drop trigger if exists trg_twl_prepare_proof_receipt_gate")).toBeLessThan(
+      migration.indexOf("create trigger trg_twl_prepare_proof_receipt_gate"),
+    );
+  });
+
   it("reserves the typed evidence schemas for database-owned writers", () => {
     expect(migration).toContain("trg_twl_prepare_proof_artifact_writer");
     expect(migration).toContain("twl_prepare_proof_one_reserved_artifact_per_run_idx");
