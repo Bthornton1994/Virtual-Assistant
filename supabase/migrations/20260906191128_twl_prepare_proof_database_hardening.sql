@@ -1,5 +1,9 @@
 -- SF-TWL-PREPARE-PROOF-01 database-boundary hardening.
 --
+-- Filename version 20260906191128 matches the QA schema_migrations row
+-- `twl_prepare_proof_database_hardening`, so ordinary `supabase db push`
+-- treats this as already applied there.
+--
 -- Adversarial review found three alternate paths around the application gate:
 -- 1. an ops manager could insert an Outcome Receipt directly;
 -- 2. generic evidence insertion could impersonate the reserved TWL schemas;
@@ -144,9 +148,8 @@ begin
 end;
 $$;
 
--- Replay-safe: QA already installed this trigger via connected-API version
--- 20260906191128. A later repository push of this file must not fail on
--- "trigger already exists".
+-- Replay-safe if this SQL is re-executed against a database that already
+-- has the trigger (local leftover, include-all, or a prior apply).
 drop trigger if exists trg_twl_prepare_proof_artifact_writer on public.evidence_artifacts;
 create trigger trg_twl_prepare_proof_artifact_writer
   before insert on public.evidence_artifacts
@@ -556,9 +559,8 @@ begin
 end;
 $$;
 
--- Replay-safe: QA already installed this trigger via connected-API version
--- 20260906191128. A later repository push of this file must not fail on
--- "trigger already exists".
+-- Replay-safe if this SQL is re-executed against a database that already
+-- has the trigger (local leftover, include-all, or a prior apply).
 drop trigger if exists trg_twl_prepare_proof_receipt_gate on public.outcome_receipts;
 create trigger trg_twl_prepare_proof_receipt_gate
   before insert on public.outcome_receipts

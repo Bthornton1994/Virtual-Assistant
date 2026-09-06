@@ -71,7 +71,7 @@ A final re-review after the original proof identified three P1 control-plane byp
 2. The generic evidence path could accept arbitrary JSON that declared a reserved TWL `schemaVersion`, allowing self-authored evidence to resemble an assignment or GitHub observation.
 3. Verification checked the verifier's role but not whether the verifier was the same human operator frozen into the assignment.
 
-These findings were valid. PR #67 was not merged. They are closed by `supabase/migrations/20260906190000_twl_prepare_proof_hardening.sql`.
+These findings were valid. PR #67 was not merged. They are closed by `supabase/migrations/20260906191128_twl_prepare_proof_database_hardening.sql`.
 
 ## Database-boundary hardening
 
@@ -113,7 +113,7 @@ QA inspection also confirmed:
 - reserved-artifact singleton index present;
 - `evidence_artifacts_insert` RLS explicitly excludes both reserved TWL schemas.
 
-QA recorded this control set through the connected migration API as version `20260906191128` (`twl_prepare_proof_database_hardening`). The repository file remains `20260906190000_twl_prepare_proof_hardening.sql`. Both TWL triggers are created after `DROP TRIGGER IF EXISTS`, so a later normal push of the repository migration is replay-safe and cannot fail on duplicate triggers.
+QA recorded this control set through the connected migration API as version `20260906191128` (`twl_prepare_proof_database_hardening`). The repository file uses that same version and name, so ordinary `supabase db push` treats it as already applied on QA and does not re-run it. Both TWL triggers are still created after `DROP TRIGGER IF EXISTS`, so the SQL itself remains idempotent if it is re-executed.
 
 ## Reproduction
 
