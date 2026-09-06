@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -286,6 +286,11 @@ describe("source fail-closed", () => {
   it("keeps PR67 live QA disposable and independent of stored credentials", () => {
     const liveSpec = readFileSync(resolve(process.cwd(), "e2e/twl-prepare-proof-live.spec.ts"), "utf8");
     const workflow = readFileSync(resolve(process.cwd(), ".github/workflows/verify.yml"), "utf8");
+    const claim = readFileSync(resolve(process.cwd(), "supabase/qa/pr67_claim_qa_ops.sql"), "utf8");
+    const migrations = readdirSync(resolve(process.cwd(), "supabase/migrations"))
+      .filter((name) => name.endsWith(".sql"))
+      .map((name) => readFileSync(resolve(process.cwd(), "supabase/migrations", name), "utf8"))
+      .join("\n");
     expect(liveSpec).toContain('const disposableEmail = "pr67-076ad943802b@delegation-test.cloud"');
     expect(liveSpec).toContain("auth.auth.signUp");
     expect(liveSpec).toContain('claim.rpc("pr67_claim_qa_ops")');
@@ -293,5 +298,10 @@ describe("source fail-closed", () => {
     expect(liveSpec).not.toContain("E2E_PASSWORD");
     expect(workflow).not.toContain("E2E_PASSWORD");
     expect(workflow).toContain("npx playwright test e2e/twl-prepare-proof-live.spec.ts --project=chromium");
+    expect(claim).toContain("northline-consulting-test");
+    expect(claim).toContain("pr67-076ad943802b@delegation-test.cloud");
+    expect(claim).toContain("ops_manager");
+    expect(claim).toContain("revoke all on function public.pr67_claim_qa_ops() from anon");
+    expect(migrations).not.toContain("pr67_claim_qa_ops");
   });
 });

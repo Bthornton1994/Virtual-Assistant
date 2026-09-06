@@ -54,13 +54,13 @@ If the SQL seed is not applied, a manager can still create the spec by hand on `
 
 ### 3. Live staff walkthrough (Playwright)
 
-`e2e/twl-prepare-proof-live.spec.ts` signs in as `ops.manager@delegation-test.cloud`, opens a planned TWL run, assigns the shadow worker, attaches public `octocat/Hello-World#1`, submits, and issues a passing receipt. It does not merge or deploy.
+`e2e/twl-prepare-proof-live.spec.ts` signs up disposable identity `pr67-076ad943802b@delegation-test.cloud`, claims `ops_manager` through QA-only RPC `pr67_claim_qa_ops`, opens a planned TWL run, assigns the shadow worker, attaches public `octocat/Hello-World#1`, submits, and issues a passing receipt. It does not merge or deploy.
 
-PR #67 CI job `pr67-live-qa` runs that spec after `verify`. It needs repository secret `E2E_PASSWORD` for the QA ops manager. If the secret is empty, the job skips with a notice and stays green. This agent cannot create GitHub secrets.
+PR #67 CI job `pr67-live-qa` runs that spec after `verify`. It uses the QA publishable key only. It does not read `E2E_PASSWORD` or a service-role key.
 
-When `QA_TWL_RUN_ID` is unset or that run is no longer planned, the spec creates a fresh run from Execution Lab. Do not put the password in the repository.
+`supabase/qa/pr67_claim_qa_ops.sql` is the source of the claim RPC. It is not a Production migration. It refuses unless the Northline QA fixture exists, and it admits only that disposable email after Auth confirmation. Do not weaken Auth to make signup skip confirmation.
 
-Locally, with `.env.local` or an exported `E2E_PASSWORD`:
+When `QA_TWL_RUN_ID` is unset or that run is no longer planned, the spec creates a fresh run from Execution Lab.
 
 ```bash
 npx playwright test e2e/twl-prepare-proof-live.spec.ts --project=chromium
