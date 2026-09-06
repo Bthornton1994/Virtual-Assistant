@@ -6,9 +6,10 @@
 -- 3. a manager assigned as the human worker could verify their own work.
 --
 -- This migration makes those states unreachable at the database boundary.
--- Reserved evidence is written only by purpose-built RPCs. Public GitHub PR
--- evidence is fetched by PostgreSQL itself over anonymous HTTPS GET, so a
--- caller cannot substitute self-authored JSON for an observed public PR.
+-- Reserved evidence is written only by purpose-built SECURITY DEFINER RPCs.
+-- Authenticated callers are denied the reserved schemaVersion values by RLS.
+-- Public GitHub PR evidence is fetched by PostgreSQL itself over anonymous HTTPS
+-- GET, so a caller cannot substitute self-authored JSON for observed metadata.
 
 create extension if not exists http with schema extensions;
 
@@ -93,9 +94,24 @@ create unique index if not exists twl_prepare_proof_one_reserved_artifact_per_ru
     'twl-prepare-proof-pr/v1'
   );
 
--- Generic evidence writes may never impersonate the reserved schemas. The only
--- valid insertion path is one of the SECURITY DEFINER functions below, which
--- sets a transaction-local writer marker immediately before the insert.
+-- The generic evidence path remains available for ordinary evidence, but it may
+-- not impersonate either reserved TWL control-plane schema. The SECURITY DEFINER
+-- writers below execute as the migration owner and therefore do not depend on
+-- this authenticated RLS policy to persist their validated rows.
+drop policy if exists evidence_artifacts_insert on public.evidence_artifacts;
+create policy evidence_artifacts_insert on public.evidence_artifacts
+  for insert to authenticated
+  with check (
+    public.is_platform_staff()
+    and coalesce(payload->>'schemaVersion', '') not in (
+      'twl-prepare-proof-assignment/v1',
+      'twl-prepare-proof-pr/v1'
+    )
+  );
+
+-- Defense in depth for trusted SQL paths that do not traverse authenticated RLS.
+-- A direct authenticated insert executes as role authenticated; the dedicated
+-- SECURITY DEFINER functions below execute as their postgres owner.
 create or replace function public.enforce_twl_prepare_proof_artifact_writer()
 returns trigger
 language plpgsql
@@ -103,7 +119,6 @@ set search_path = ''
 as $$
 declare
   v_schema text := new.payload->>'schemaVersion';
-  v_writer text := current_setting('app.twl_prepare_proof_writer', true);
 begin
   if v_schema not in ('twl-prepare-proof-assignment/v1', 'twl-prepare-proof-pr/v1') then
     return new;
@@ -113,16 +128,12 @@ begin
     raise exception 'Reserved TWL proof evidence may only be attached to an SF-TWL-PREPARE-PROOF-01 run';
   end if;
 
-  if v_schema = 'twl-prepare-proof-assignment/v1' and v_writer is distinct from 'assignment' then
-    raise exception 'twl-prepare-proof-assignment/v1 is reserved for the database assignment writer';
+  if current_user <> 'postgres' then
+    raise exception 'Reserved TWL proof evidence must be written by its database-owned writer';
   end if;
 
-  if v_schema = 'twl-prepare-proof-pr/v1' and v_writer is distinct from 'public_pr' then
-    raise exception 'twl-prepare-proof-pr/v1 is reserved for the database public-GitHub reader';
-  end if;
-
-  if new.created_by is distinct from auth.uid() then
-    raise exception 'Reserved TWL proof evidence must be attributed to the authenticated caller';
+  if new.created_by is null then
+    raise exception 'Reserved TWL proof evidence requires an authenticated creator';
   end if;
 
   if new.content_hash is null or new.content_hash !~ '^[0-9a-f]{64}$' then
@@ -154,6 +165,7 @@ declare
   v_run_status text;
   v_display_name text;
   v_worker_key text;
+  v_worker_user_id uuid;
   v_now_text text;
   v_summary text;
   v_payload jsonb;
@@ -182,17 +194,18 @@ begin
       raise exception 'The TWL shadow worker does not accept a caller-supplied operator id';
     end if;
     v_worker_key := 'sf-twl-prepare-proof-shadow-v1';
+    v_worker_user_id := null;
     v_display_name := 'SF-TWL prepare-only shadow';
   elsif p_worker_kind = 'human_operator' then
     if p_worker_key is null then
       raise exception 'A human TWL proof assignment requires an operator id';
     end if;
-    select o.id::text, o.name
-      into v_worker_key, v_display_name
+    select o.id::text, o.user_id, o.name
+      into v_worker_key, v_worker_user_id, v_display_name
       from public.operators o
      where o.id = p_worker_key
        and o.status = 'active';
-    if v_worker_key is null then
+    if v_worker_key is null or v_worker_user_id is null then
       raise exception 'The selected TWL proof operator is not active or does not exist';
     end if;
   else
@@ -204,6 +217,7 @@ begin
     'schemaVersion', 'twl-prepare-proof-assignment/v1',
     'workerKind', p_worker_kind,
     'workerKey', v_worker_key,
+    'workerUserId', case when v_worker_user_id is null then null else to_jsonb(v_worker_user_id::text) end,
     'displayName', v_display_name,
     'mayOwnAccept', false,
     'actionClass', 'prepare_only',
@@ -228,7 +242,6 @@ begin
     'payload', v_payload
   ));
 
-  perform set_config('app.twl_prepare_proof_writer', 'assignment', true);
   insert into public.evidence_artifacts (
     organization_id, run_id, request_id, kind, summary, source_uri,
     content_hash, payload, created_by
@@ -236,7 +249,6 @@ begin
     v_org_id, p_run_id, v_request_id, 'observation', v_summary, null,
     v_content_hash, v_payload, v_actor
   ) returning id into v_artifact_id;
-  perform set_config('app.twl_prepare_proof_writer', '', true);
 
   return v_artifact_id;
 end;
@@ -331,10 +343,10 @@ begin
   if v_html_url is null or lower(v_html_url) <> lower(format('https://github.com/%s/%s/pull/%s', p_owner, p_repo, p_pull_number)) then
     raise exception 'GitHub PR response HTML URL did not match the requested public pull';
   end if;
-  if v_head_sha is null or v_head_sha !~ '^[0-9a-fA-F]{40}$' then
+  if coalesce(v_head_sha, '') !~ '^[0-9a-fA-F]{40}$' then
     raise exception 'GitHub PR response did not contain a valid head SHA';
   end if;
-  if v_base_sha is null or v_base_sha !~ '^[0-9a-fA-F]{40}$' then
+  if coalesce(v_base_sha, '') !~ '^[0-9a-fA-F]{40}$' then
     raise exception 'GitHub PR response did not contain a valid base SHA';
   end if;
   if coalesce(length(btrim(v_title)), 0) = 0 or coalesce(length(btrim(v_state)), 0) = 0 then
@@ -385,7 +397,6 @@ begin
     'payload', v_payload
   ));
 
-  perform set_config('app.twl_prepare_proof_writer', 'public_pr', true);
   insert into public.evidence_artifacts (
     organization_id, run_id, request_id, kind, summary, source_uri,
     content_hash, payload, created_by
@@ -393,7 +404,6 @@ begin
     v_org_id, p_run_id, v_request_id, 'source', v_summary, v_html_url,
     v_content_hash, v_payload, v_actor
   ) returning id into v_artifact_id;
-  perform set_config('app.twl_prepare_proof_writer', '', true);
 
   return v_artifact_id;
 end;
@@ -483,23 +493,29 @@ begin
 
   if v_assignment.payload->>'workerKind' = 'human_operator' then
     begin
-      select o.user_id into v_worker_user_id
-        from public.operators o
-       where o.id = (v_assignment.payload->>'workerKey')::uuid
-         and o.name = v_assignment.payload->>'displayName'
-         and o.status = 'active';
+      v_worker_user_id := (v_assignment.payload->>'workerUserId')::uuid;
     exception when invalid_text_representation then
-      raise exception 'TWL human assignment workerKey is not a valid operator id';
+      raise exception 'TWL human assignment workerUserId is not a valid user id';
     end;
     if v_worker_user_id is null then
-      raise exception 'TWL human assignment is not bound to an active operator';
+      raise exception 'TWL human assignment requires a frozen workerUserId';
+    end if;
+    if not exists (
+      select 1
+        from public.operators o
+       where o.id = (v_assignment.payload->>'workerKey')::uuid
+         and o.user_id = v_worker_user_id
+         and o.name = v_assignment.payload->>'displayName'
+    ) then
+      raise exception 'TWL human assignment no longer matches its frozen operator identity';
     end if;
     if v_worker_user_id = new.verified_by then
       raise exception 'The assigned TWL worker cannot issue their own Outcome Receipt';
     end if;
   elsif v_assignment.payload->>'workerKind' = 'shadow' then
-    if v_assignment.payload->>'workerKey' is distinct from 'sf-twl-prepare-proof-shadow-v1' then
-      raise exception 'TWL shadow assignment used an unknown worker key';
+    if v_assignment.payload->>'workerKey' is distinct from 'sf-twl-prepare-proof-shadow-v1'
+       or v_assignment.payload->'workerUserId' <> 'null'::jsonb then
+      raise exception 'TWL shadow assignment used an invalid frozen identity';
     end if;
   else
     raise exception 'TWL assignment workerKind is invalid';
@@ -513,9 +529,9 @@ begin
      or v_pr.source_uri is distinct from v_pr.payload->>'htmlUrl' then
     raise exception 'TWL public PR artifact failed deterministic validation';
   end if;
-  if v_pr.payload->>'headSha' !~ '^[0-9a-fA-F]{40}$'
-     or v_pr.payload->>'baseSha' !~ '^[0-9a-fA-F]{40}$'
-     or v_pr.payload->>'htmlUrl' !~ '^https://github[.]com/[^/]+/[^/]+/pull/[0-9]+$' then
+  if coalesce(v_pr.payload->>'headSha', '') !~ '^[0-9a-fA-F]{40}$'
+     or coalesce(v_pr.payload->>'baseSha', '') !~ '^[0-9a-fA-F]{40}$'
+     or coalesce(v_pr.payload->>'htmlUrl', '') !~ '^https://github[.]com/[^/]+/[^/]+/pull/[0-9]+$' then
     raise exception 'TWL public PR artifact contains invalid source metadata';
   end if;
   v_expected_hash := public.twl_prepare_proof_sha256(v_pr.payload - 'payloadHash');
