@@ -117,7 +117,7 @@ const { data: created, error: createErr } = await clientAdmin.client
   .single();
 if (createErr) throw createErr;
 
-await clientAdmin.client.from("execution_plans").insert({
+await clientAdmin.client.from("execution_plan_snapshots_legacy").insert({
   request_id: created.id,
   organization_id: northline.id,
   plan: {

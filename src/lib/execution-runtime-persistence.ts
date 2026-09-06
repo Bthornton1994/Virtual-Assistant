@@ -1,5 +1,3 @@
-import "server-only";
-
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   AuthzError,
@@ -16,6 +14,10 @@ import {
   type ExecutionPlanInput,
 } from "@/lib/execution-runtime";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  validateMemoryExecutionBinding,
+  type MemoryExecutionBinding,
+} from "@/lib/memory-execution-binding";
 
 /**
  * Server-only persistence boundary for Execution Runtime v1.
@@ -71,6 +73,7 @@ export type ExecutionClaim = {
   executorContext: RuntimeRow;
   leaseExpiresAt: string;
   attemptNumber: number;
+  memoryBinding: MemoryExecutionBinding | null;
 };
 
 export type ExecutionApprovalDecision = "approved" | "rejected";
@@ -193,6 +196,40 @@ function mapPlan(row: RuntimeRow): ExecutionPlanRecord {
   };
 }
 
+function mapMemoryBinding(row: RuntimeRow): MemoryExecutionBinding | null {
+  if (row.memory_binding_hash === null || row.memory_binding_hash === undefined) return null;
+
+  const selectedMemoryRefs = Array.isArray(row.memory_selected_refs)
+    ? row.memory_selected_refs
+    : [];
+  const parsedRefs = selectedMemoryRefs.map((rawRef) => {
+    const ref = asObject(rawRef);
+    return {
+      memoryId: String(ref.memoryId ?? ""),
+      revision: Number(ref.revision),
+      memoryHash: String(ref.memoryHash ?? ""),
+    };
+  });
+  const checked = validateMemoryExecutionBinding({
+    schemaVersion: "memory-execution-binding/v1",
+    executionContextHash: String(row.memory_execution_context_hash ?? ""),
+    memoryContextHash: String(row.memory_context_hash ?? ""),
+    memoryReadReceiptHash: String(row.memory_read_receipt_hash ?? ""),
+    runId: String(row.memory_run_id ?? ""),
+    assignmentId: String(row.memory_assignment_id ?? ""),
+    selectedMemoryIds: parsedRefs.map((ref) => ref.memoryId),
+    selectedMemoryRefs: parsedRefs,
+    bindingHash: String(row.memory_binding_hash),
+  });
+  if (!checked.ok) {
+    throw new DomainError(
+      "The database returned an invalid memory execution binding: " +
+        checked.failures.join(" "),
+    );
+  }
+  return checked.value;
+}
+
 function mapClaim(row: RuntimeRow): ExecutionClaim {
   return {
     attemptId: String(row.attempt_id),
@@ -205,6 +242,7 @@ function mapClaim(row: RuntimeRow): ExecutionClaim {
     executorContext: asObject(row.executor_context),
     leaseExpiresAt: String(row.lease_expires_at),
     attemptNumber: Number(row.attempt_number),
+    memoryBinding: mapMemoryBinding(row),
   };
 }
 
@@ -364,18 +402,49 @@ export async function claimExecutionStep(input: {
   capabilityKey: string;
   leaseToken: string;
   leaseSeconds?: number;
+  memoryBinding?: unknown;
 }): Promise<ExecutionClaim | null> {
   const leaseSeconds = input.leaseSeconds ?? 300;
   validateWorker(input.workerId, leaseSeconds);
   requireIdentifier(input.capabilityKey, "capabilityKey");
   const leaseTokenHash = requireLeaseToken(input.leaseToken);
+  let memoryBinding: MemoryExecutionBinding | null = null;
+  if (input.memoryBinding !== undefined) {
+    const checked = validateMemoryExecutionBinding(input.memoryBinding);
+    if (!checked.ok) {
+      throw new DomainError(
+        "Cannot claim an execution step with an invalid memory binding: " +
+          checked.failures.join(" "),
+      );
+    }
+    memoryBinding = checked.value;
+  }
+
   const db = runtimeDb();
-  const { data, error } = await db.rpc("claim_execution_step", {
-    p_worker_id: input.workerId,
-    p_capability_key: input.capabilityKey,
-    p_lease_token_hash: leaseTokenHash,
-    p_lease_seconds: leaseSeconds,
-  });
+  const functionName = memoryBinding
+    ? "claim_execution_step_with_memory"
+    : "claim_execution_step";
+  const args = memoryBinding
+    ? {
+        p_worker_id: input.workerId,
+        p_capability_key: input.capabilityKey,
+        p_lease_token_hash: leaseTokenHash,
+        p_memory_run_id: memoryBinding.runId,
+        p_memory_assignment_id: memoryBinding.assignmentId,
+        p_memory_execution_context_hash: memoryBinding.executionContextHash,
+        p_memory_context_hash: memoryBinding.memoryContextHash,
+        p_memory_read_receipt_hash: memoryBinding.memoryReadReceiptHash,
+        p_memory_binding_hash: memoryBinding.bindingHash,
+        p_memory_selected_refs: memoryBinding.selectedMemoryRefs,
+        p_lease_seconds: leaseSeconds,
+      }
+    : {
+        p_worker_id: input.workerId,
+        p_capability_key: input.capabilityKey,
+        p_lease_token_hash: leaseTokenHash,
+        p_lease_seconds: leaseSeconds,
+      };
+  const { data, error } = await db.rpc(functionName, args);
   if (error) throw new DomainError(error.message);
   const row = Array.isArray(data) ? data[0] : data;
   return row ? mapClaim(row as RuntimeRow) : null;

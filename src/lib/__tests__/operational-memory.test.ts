@@ -6,25 +6,32 @@ import {
   invalidateOperationalMemory,
   promoteOperationalMemory,
   recordMemoryConflict,
+  resolveMemoryConflict,
   validateOperationalMemory,
   type OperationalMemory,
+  type OperationalMemoryInput,
 } from "@/lib/operational-memory";
 
 const HASH = "c".repeat(64);
 
-function memory(overrides: Partial<Omit<OperationalMemory, "memoryHash">> = {}) {
+type MemoryOverrides = Partial<OperationalMemoryInput>;
+
+function memory(overrides: MemoryOverrides = {}) {
   return {
     schemaVersion: OPERATIONAL_MEMORY_SCHEMA_VERSION,
     memoryId: "memory-001",
     kind: "operational" as const,
     status: "candidate" as const,
     subjectKey: "crm.next-step.policy",
+    claim: "The CRM next step is required before a request can be delivered.",
     value: { nextStepRequired: true, source: "approved playbook" },
     scope: {
       organizationId: "org-001",
       scopeKind: "organization" as const,
       scopeKey: "org-001",
     },
+    sensitivity: "internal" as const,
+    retentionClass: "standard" as const,
     provenance: {
       sourceKind: "human_decision" as const,
       sourceArtifactRefs: [
@@ -43,14 +50,16 @@ function memory(overrides: Partial<Omit<OperationalMemory, "memoryHash">> = {}) 
     },
     reviewAfter: "2026-09-01T00:00:00Z",
     expiresAt: "2026-10-01T00:00:00Z",
+    expiredAt: null,
     invalidatedAt: null,
     invalidationReason: null,
     conflictSetId: null,
+    supersedesHash: null,
     ...overrides,
   };
 }
 
-function create(overrides: Partial<Omit<OperationalMemory, "memoryHash">> = {}): OperationalMemory {
+function create(overrides: MemoryOverrides = {}): OperationalMemory {
   const created = createOperationalMemory(memory(overrides));
   expect(created.ok).toBe(true);
   if (!created.ok) throw new Error(created.failures.join("; "));
@@ -61,21 +70,27 @@ describe("operational memory v1", () => {
   it("creates and hash-binds a candidate memory", () => {
     const created = create();
     expect(created.status).toBe("candidate");
+    expect(created.revision).toBe(1);
+    expect(created.supersedesHash).toBeNull();
     expect(created.memoryHash).toHaveLength(64);
     expect(validateOperationalMemory(created).ok).toBe(true);
   });
 
-  it("requires approval before promotion and preserves provenance", () => {
-    const promoted = promoteOperationalMemory(create(), "manager-001");
+  it("requires approval before promotion, preserves provenance, and appends lineage", () => {
+    const candidate = create();
+    const promoted = promoteOperationalMemory(candidate, "manager-001");
     expect(promoted.ok).toBe(true);
     if (promoted.ok) {
       expect(promoted.value.status).toBe("verified");
+      expect(promoted.value.revision).toBe(2);
+      expect(promoted.value.supersedesHash).toBe(candidate.memoryHash);
       expect(promoted.value.provenance.approverId).toBe("manager-001");
       expect(promoted.value.provenance.sourceKind).toBe("human_decision");
     }
 
+    expect(candidate.status).toBe("candidate");
     const unapproved = validateOperationalMemory({
-      ...create(),
+      ...candidate,
       status: "verified",
     });
     expect(unapproved.ok).toBe(false);
@@ -89,7 +104,8 @@ describe("operational memory v1", () => {
     expect(conflict.ok).toBe(true);
     if (conflict.ok) {
       expect(conflict.value.memories).toHaveLength(2);
-      expect(new Set(conflict.value.memories.map((item) => item.status))).toEqual(new Set(["conflicted"]));
+      expect(conflict.value.memories.every((item) => item.status === "conflicted")).toBe(true);
+      expect(conflict.value.memories.every((item) => item.revision === 2)).toBe(true);
       expect(new Set(conflict.value.memories.map((item) => item.conflictSetId))).toEqual(
         new Set([conflict.value.conflictSetId]),
       );
@@ -101,19 +117,99 @@ describe("operational memory v1", () => {
     }
   });
 
-  it("rejects cross-organization conflicts and tampered bodies", () => {
+  it("requires explicit conflict resolution and preserves the losing lineage", () => {
+    const conflict = recordMemoryConflict([
+      create({ memoryId: "memory-left", value: { nextStepRequired: true } }),
+      create({ memoryId: "memory-right", value: { nextStepRequired: false } }),
+    ]);
+    expect(conflict.ok).toBe(true);
+    if (!conflict.ok) return;
+
+    const resolved = resolveMemoryConflict(
+      conflict.value.memories,
+      "memory-left",
+      "manager-001",
+      "2026-09-02T00:00:00Z",
+      "Owner confirmed the approved playbook remains authoritative.",
+    );
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.value.winner.status).toBe("verified");
+      expect(resolved.value.winner.revision).toBe(3);
+      expect(resolved.value.winner.provenance.approverId).toBe("manager-001");
+      expect(resolved.value.winner.conflictSetId).toBeNull();
+      expect(resolved.value.invalidatedAlternatives).toHaveLength(1);
+      expect(resolved.value.invalidatedAlternatives[0].status).toBe("invalidated");
+      expect(resolved.value.invalidatedAlternatives[0].invalidationReason).toContain("memory-left");
+    }
+  });
+
+  it("rejects cross-organization, duplicate-id, and identical-value conflicts", () => {
     const left = create({ memoryId: "memory-left" });
     const right = create({
       memoryId: "memory-right",
       scope: { organizationId: "org-002", scopeKind: "organization", scopeKey: "org-002" },
     });
-    const conflict = recordMemoryConflict([left, right]);
-    expect(conflict.ok).toBe(false);
-    expect(conflict.ok ? [] : conflict.failures.join(" ")).toContain("exact scope");
+    const crossOrganization = recordMemoryConflict([left, right]);
+    expect(crossOrganization.ok).toBe(false);
+    expect(crossOrganization.ok ? [] : crossOrganization.failures.join(" ")).toContain("exact scope");
 
-    const tampered = validateOperationalMemory({ ...left, value: { nextStepRequired: false } });
-    expect(tampered.ok).toBe(false);
-    expect(tampered.ok ? [] : tampered.failures.join(" ")).toContain("memoryHash");
+    const duplicateId = recordMemoryConflict([left, left]);
+    expect(duplicateId.ok).toBe(false);
+    expect(duplicateId.ok ? [] : duplicateId.failures.join(" ")).toContain("repeat a memoryId");
+
+    const identicalValue = recordMemoryConflict([
+      left,
+      create({ memoryId: "memory-right", value: { nextStepRequired: true, source: "approved playbook" } }),
+    ]);
+    expect(identicalValue.ok).toBe(false);
+    expect(identicalValue.ok ? [] : identicalValue.failures.join(" ")).toContain("different values");
+  });
+
+  it("rejects mismatched scoped provenance and mixed conflict claims", () => {
+    const mismatched = createOperationalMemory({
+      ...memory({
+        scope: { organizationId: "org-001", scopeKind: "run", scopeKey: "run-001" },
+        retentionClass: "run",
+      }),
+      provenance: {
+        ...memory().provenance,
+        sourceKind: "executor_output",
+        sourceRunId: "run-002",
+      },
+    });
+    expect(mismatched.ok).toBe(false);
+    expect(mismatched.ok ? [] : mismatched.failures.join(" ")).toContain(
+      "sourceRunId must match",
+    );
+
+    const conflict = recordMemoryConflict([
+      create({ memoryId: "memory-left", value: { nextStepRequired: true } }),
+      create({ memoryId: "memory-right", value: { nextStepRequired: false } }),
+    ]);
+    expect(conflict.ok).toBe(true);
+    if (!conflict.ok) throw new Error(conflict.failures.join("; "));
+
+    const original = conflict.value.memories[1];
+    const { memoryHash: _memoryHash, ...body } = original;
+    const forged = createOperationalMemory({
+      ...body,
+      claim: "A different claim is being smuggled into the conflict set.",
+    });
+    expect(forged.ok).toBe(true);
+    if (!forged.ok) throw new Error(forged.failures.join("; "));
+
+    const resolved = resolveMemoryConflict(
+      [conflict.value.memories[0], forged.value],
+      "memory-left",
+      "manager-001",
+      "2026-09-02T00:00:00Z",
+      "Should not resolve mixed claims.",
+    );
+    expect(resolved.ok).toBe(false);
+    expect(resolved.ok ? [] : resolved.failures.join(" ")).toContain(
+      "same logical claim",
+    );
   });
 
   it("only expires after the declared deadline and supports explicit invalidation", () => {
@@ -123,7 +219,11 @@ describe("operational memory v1", () => {
 
     const expired = expireOperationalMemory(create(), "2026-10-01T00:00:00Z");
     expect(expired.ok).toBe(true);
-    if (expired.ok) expect(expired.value.status).toBe("expired");
+    if (expired.ok) {
+      expect(expired.value.status).toBe("expired");
+      expect(expired.value.expiredAt).toBe("2026-10-01T00:00:00Z");
+      expect(expired.value.revision).toBe(2);
+    }
 
     const invalidated = invalidateOperationalMemory(
       create(),
@@ -135,5 +235,42 @@ describe("operational memory v1", () => {
       expect(invalidated.value.status).toBe("invalidated");
       expect(invalidated.value.invalidationReason).toContain("superseded");
     }
+  });
+
+  it("rejects impossible retention, scope, and chronology combinations", () => {
+    const indefinite = createOperationalMemory(
+      memory({ retentionClass: "indefinite", expiresAt: "2026-10-01T00:00:00Z" }),
+    );
+    expect(indefinite.ok).toBe(false);
+    expect(indefinite.ok ? [] : indefinite.failures.join(" ")).toContain("indefinite");
+
+    const workingOrganization = createOperationalMemory(
+      memory({ kind: "working" }),
+    );
+    expect(workingOrganization.ok).toBe(false);
+    expect(workingOrganization.ok ? [] : workingOrganization.failures.join(" ")).toContain(
+      "working memory must be scoped",
+    );
+
+    const backwardsReview = createOperationalMemory(
+      memory({ reviewAfter: "2026-08-25T19:00:00Z" }),
+    );
+    expect(backwardsReview.ok).toBe(false);
+    expect(backwardsReview.ok ? [] : backwardsReview.failures.join(" ")).toContain(
+      "reviewAfter must not precede",
+    );
+  });
+
+  it("requires run provenance for executor output", () => {
+    const invalid = createOperationalMemory({
+      ...memory(),
+      provenance: {
+        ...memory().provenance,
+        sourceKind: "executor_output",
+        sourceRunId: null,
+      },
+    });
+    expect(invalid.ok).toBe(false);
+    expect(invalid.ok ? [] : invalid.failures.join(" ")).toContain("sourceRunId");
   });
 });
