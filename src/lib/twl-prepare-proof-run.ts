@@ -1,29 +1,47 @@
 import { AuthzError, DomainError, isOpsRole, type Actor } from "@/lib/domain";
-import {
-  addEvidenceArtifact,
-  getWorkstreamRunBundle,
-  type EvidenceArtifact,
-} from "@/lib/execution-primitives";
-import {
-  fetchPublicPullRequestMetadata,
-  parsePublicPullRequestTarget,
-  type GithubJsonFetcher,
-} from "@/lib/public-github-pr";
+import { getWorkstreamRunBundle, type EvidenceArtifact, type EvidenceKind } from "@/lib/execution-primitives";
+import { parsePublicPullRequestTarget } from "@/lib/public-github-pr";
 import { supabaseServer } from "@/lib/supabase/server";
 import {
-  TWL_PREPARE_PROOF_ASSIGNMENT_SCHEMA,
-  TWL_PREPARE_PROOF_PR_SCHEMA,
-  TWL_PREPARE_PROOF_SHADOW_KEY,
   TWL_PREPARE_PROOF_SPEC,
   evaluateTwlPrepareProofAccept,
   isTwlPrepareProofSpec,
-  sealTwlPrepareProofPayload,
+  parseTwlPrepareProofAssignment,
+  parseTwlPrepareProofPrEvidence,
   summarizeTwlPrepareProof,
-  type TwlPrepareProofAssignment,
 } from "@/lib/twl-prepare-proof";
 
 function canOperate(actor: Actor) {
   return isOpsRole(actor.role);
+}
+
+function mapEvidenceRow(row: Record<string, unknown>): EvidenceArtifact {
+  const payload = row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+    ? (row.payload as Record<string, unknown>)
+    : {};
+  return {
+    id: String(row.id),
+    organizationId: String(row.organization_id),
+    runId: String(row.run_id),
+    requestId: (row.request_id as string) ?? null,
+    kind: row.kind as EvidenceKind,
+    summary: String(row.summary ?? ""),
+    sourceUri: (row.source_uri as string) ?? null,
+    contentHash: (row.content_hash as string) ?? null,
+    payload,
+    observedAt: String(row.observed_at),
+    createdBy: (row.created_by as string) ?? null,
+    createdAt: String(row.created_at),
+  };
+}
+
+async function loadEvidenceById(artifactId: string) {
+  const db = await supabaseServer();
+  if (!db) throw new DomainError("Execution primitives require Supabase.");
+  const { data, error } = await db.from("evidence_artifacts").select("*").eq("id", artifactId).maybeSingle();
+  if (error) throw new DomainError(error.message);
+  if (!data) throw new DomainError("The reserved TWL evidence writer did not persist an artifact.");
+  return mapEvidenceRow(data as Record<string, unknown>);
 }
 
 async function patchExecutorSummary(
@@ -77,57 +95,44 @@ export async function assignTwlPrepareProofWorker(
     throw new DomainError("Start the run before assigning a worker. Evidence cannot be attached until then.");
   }
 
-  const workerKind = input.workerKind;
-  const workerKey =
-    workerKind === "shadow"
-      ? TWL_PREPARE_PROOF_SHADOW_KEY
-      : String(input.workerKey || "").trim();
-  const displayName =
-    workerKind === "shadow"
-      ? "SF-TWL prepare-only shadow"
-      : String(input.displayName || "").trim();
-  if (!workerKey || !displayName) {
-    throw new DomainError("A human operator assignment needs both an operator id and a display name.");
+  const workerKey = input.workerKind === "human_operator" ? String(input.workerKey || "").trim() : null;
+  if (input.workerKind === "human_operator" && !workerKey) {
+    throw new DomainError("A human operator assignment needs an operator id.");
   }
 
-  const payload = sealTwlPrepareProofPayload({
-    schemaVersion: TWL_PREPARE_PROOF_ASSIGNMENT_SCHEMA,
-    workerKind,
-    workerKey,
-    displayName,
-    mayOwnAccept: false as const,
-    actionClass: "prepare_only" as const,
-    assignedBy: actor.id,
-    assignedAt: new Date().toISOString(),
+  const db = await supabaseServer();
+  if (!db) throw new DomainError("Execution primitives require Supabase.");
+  const { data: artifactId, error } = await db.rpc("twl_prepare_proof_assign_worker", {
+    p_run_id: runId,
+    p_worker_kind: input.workerKind,
+    p_worker_key: workerKey,
   });
+  if (error) throw new DomainError(error.message);
+  if (!artifactId) throw new DomainError("The database assignment writer did not return an evidence artifact id.");
 
-  const evidence = await addEvidenceArtifact(actor, runId, {
-    kind: "observation",
-    summary:
-      workerKind === "shadow"
-        ? "Assigned the prepare-only shadow worker. It cannot Accept, merge, deploy, or write to GitHub."
-        : `Assigned human operator ${displayName}. This worker cannot Accept alone.`,
-    sourceUri: null,
-    payload,
-  });
+  const evidence = await loadEvidenceById(String(artifactId));
+  const parsed = parseTwlPrepareProofAssignment(evidence.payload);
+  if (!parsed.success) {
+    throw new DomainError("The database assignment writer returned evidence outside the frozen TWL assignment schema.");
+  }
+  const assignment = parsed.data;
 
   await patchExecutorSummary(actor, runId, bundle.run.organizationId, {
     assignedWorker: {
-      workerKind,
-      workerKey,
-      displayName,
+      workerKind: assignment.workerKind,
+      workerKey: assignment.workerKey,
+      displayName: assignment.displayName,
       mayOwnAccept: false,
     },
   });
 
-  return { evidence, assignment: payload as TwlPrepareProofAssignment };
+  return { evidence, assignment };
 }
 
 export async function attachTwlPrepareProofPrEvidence(
   actor: Actor,
   runId: string,
   targetInput: { owner?: string; repo?: string; pullNumber?: string | number } = {},
-  fetchJson?: GithubJsonFetcher,
 ) {
   if (!canOperate(actor)) throw new AuthzError("Only operations staff can attach public PR evidence.");
   const bundle = await getWorkstreamRunBundle(actor, runId);
@@ -142,33 +147,36 @@ export async function attachTwlPrepareProofPrEvidence(
   }
 
   const target = parsePublicPullRequestTarget(targetInput);
-  const metadata = await fetchPublicPullRequestMetadata(target, fetchJson);
-  const payload = sealTwlPrepareProofPayload({
-    schemaVersion: TWL_PREPARE_PROOF_PR_SCHEMA,
-    owner: metadata.owner,
-    repo: metadata.repo,
-    pullNumber: metadata.pullNumber,
-    htmlUrl: metadata.htmlUrl,
-    headSha: metadata.headSha,
-    baseSha: metadata.baseSha,
-    title: metadata.title,
-    state: metadata.state,
-    draft: metadata.draft,
-    upstreamMerged: metadata.upstreamMerged,
-    ciConclusion: metadata.ciConclusion,
-    mutatesRepository: false as const,
-    mergePerformed: false as const,
-    requestedMethod: "GET" as const,
-    fetchedAt: new Date().toISOString(),
-    source: "github-public-api" as const,
+  const db = await supabaseServer();
+  if (!db) throw new DomainError("Execution primitives require Supabase.");
+  const { data: artifactId, error } = await db.rpc("twl_prepare_proof_attach_public_pr", {
+    p_run_id: runId,
+    p_owner: target.owner,
+    p_repo: target.repo,
+    p_pull_number: target.pullNumber,
   });
+  if (error) throw new DomainError(error.message);
+  if (!artifactId) throw new DomainError("The database public-GitHub reader did not return an evidence artifact id.");
 
-  const evidence = await addEvidenceArtifact(actor, runId, {
-    kind: "source",
-    summary: `Read-only public PR ${metadata.owner}/${metadata.repo}#${metadata.pullNumber}. mutatesRepository=false; merge_performed=false.`,
-    sourceUri: metadata.htmlUrl,
-    payload,
-  });
+  const evidence = await loadEvidenceById(String(artifactId));
+  const parsed = parseTwlPrepareProofPrEvidence(evidence.payload);
+  if (!parsed.success) {
+    throw new DomainError("The database public-GitHub reader returned evidence outside the frozen TWL PR schema.");
+  }
+  const payload = parsed.data;
+  const metadata = {
+    owner: payload.owner,
+    repo: payload.repo,
+    pullNumber: payload.pullNumber,
+    htmlUrl: payload.htmlUrl,
+    headSha: payload.headSha,
+    baseSha: payload.baseSha,
+    title: payload.title,
+    state: payload.state,
+    draft: payload.draft,
+    upstreamMerged: payload.upstreamMerged,
+    ciConclusion: payload.ciConclusion,
+  };
 
   await patchExecutorSummary(actor, runId, bundle.run.organizationId, {
     publicPr: {
