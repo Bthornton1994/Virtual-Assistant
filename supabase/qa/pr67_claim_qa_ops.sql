@@ -37,7 +37,7 @@ begin
     from auth.users
    where id = v_uid;
 
-  if v_email is distinct from 'pr67-076ad943802b@delegation-test.cloud' then
+  if v_email is distinct from 'bthornton9415+pr67-076ad943802b@gmail.com' then
     raise exception 'This claim is restricted to the disposable PR67 QA identity';
   end if;
   if v_confirmed is null then
