@@ -1026,7 +1026,7 @@ begin
   if new.verification_status is distinct from 'passed' or not new.definition_of_done_met then
     return new;
   end if;
-  if not public.is_ops_manager() then
+  if coalesce(public.is_ops_manager(), false) is not true then
     raise exception 'Only an authenticated operations manager may pass a Software Factory run'
       using errcode = '23514';
   end if;
@@ -1103,9 +1103,10 @@ create trigger trg_software_factory_receipt_gate
   before insert on public.outcome_receipts
   for each row execute function public.enforce_software_factory_receipt();
 
-revoke all on function public.software_factory_append_event(uuid, uuid, text, text, text, text, text, jsonb) from public, anon;
-revoke all on function public.software_factory_sync_workstream(uuid, text) from public, anon;
-revoke all on function public.software_factory_write_evidence(public.software_factory_runs, text, text, text, jsonb) from public, anon;
+revoke all on function public.software_factory_append_event(uuid, uuid, text, text, text, text, text, jsonb) from public, anon, authenticated;
+revoke all on function public.software_factory_sync_workstream(uuid, text) from public, anon, authenticated;
+revoke all on function public.software_factory_write_evidence(public.software_factory_runs, text, text, text, jsonb) from public, anon, authenticated;
+revoke all on function public.software_factory_sha256(jsonb) from public, anon, authenticated;
 revoke all on function public.software_factory_bind_workstream_run(uuid, text, text, text, jsonb, jsonb) from public, anon;
 revoke all on function public.software_factory_transition(uuid, text, integer) from public, anon;
 revoke all on function public.software_factory_inspect_repository(uuid, text) from public, anon;

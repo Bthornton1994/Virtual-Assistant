@@ -85,7 +85,7 @@ Typed authoritative artifacts:
 - owner acceptance is written only by `software_factory_record_owner_decision` and must come from an organization owner or member
 - Accepted is written only when a passing Outcome Receipt survives `enforce_software_factory_receipt`
 
-Authenticated clients cannot insert or update `software_factory_runs` or `software_factory_approvals` directly. Generic evidence insert cannot impersonate the reserved packet or owner-decision schemas. The TWL reserved schemas stay reserved.
+Authenticated clients cannot insert or update `software_factory_runs` or `software_factory_approvals` directly. They also cannot execute the internal helpers `software_factory_write_evidence`, `software_factory_append_event`, or `software_factory_sync_workstream`. Generic evidence insert cannot impersonate the reserved packet or owner-decision schemas. The TWL reserved schemas stay reserved. The receipt trigger treats a non-staff `is_ops_manager()` result as closed, including SQL `NULL`.
 
 The SQL migrations are not applied to Production by this change. The QA fixture `supabase/qa/software_factory_loadout_sf_load_001.sql` creates a demonstration Delegation Spec marked `software-factory-run/v1`, a planned Workstream Run, and a Software Factory overlay at `intake`. It does not Accept the run and does not mutate Loadout.
 

@@ -42,6 +42,7 @@ describe("Software Factory control-plane hardening", () => {
     expect(migration).toContain("revoke insert, update on table public.software_factory_runs from authenticated");
     expect(migration).toContain("revoke insert, update on table public.software_factory_approvals from authenticated");
     expect(migration).toContain("Accepted is issued only by the Software Factory receipt writer");
+    expect(migration).toContain("coalesce(public.is_ops_manager(), false) is not true");
     expect(migration).toContain("Staff cannot record Software Factory owner acceptance");
     expect(migration).toContain("software_factory_allowed_transitions");
   });
@@ -57,6 +58,7 @@ describe("Software Factory control-plane hardening", () => {
   });
 
   it("keeps anonymous callers away from the reserved writer RPCs", () => {
+    expect(migration).toMatch(/revoke all on function public\.software_factory_write_evidence\([^)]+\) from public, anon, authenticated/);
     expect(migration).toMatch(/revoke all on function public\.software_factory_freeze_packet\([^)]+\) from public, anon/);
     expect(migration).toMatch(/revoke all on function public\.software_factory_record_owner_decision\([^)]+\) from public, anon/);
     expect(migration).toMatch(/grant execute on function public\.software_factory_freeze_packet\([^)]+\) to authenticated/);
