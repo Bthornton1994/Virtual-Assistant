@@ -16,7 +16,12 @@ import {
 } from "@/lib/execution-policy";
 import { checkEconomicEnvelope, validateEconomicEnvelope } from "@/lib/economic-envelope";
 import { supabaseServer } from "@/lib/supabase/server";
-import { evaluateTwlPrepareProofAccept, isTwlPrepareProofSpec } from "@/lib/twl-prepare-proof";
+import {
+  TWL_PREPARE_PROOF_ASSIGNMENT_SCHEMA,
+  TWL_PREPARE_PROOF_PR_SCHEMA,
+  evaluateTwlPrepareProofAccept,
+  isTwlPrepareProofSpec,
+} from "@/lib/twl-prepare-proof";
 
 export type DelegationSpecStatus = "draft" | "active" | "retired";
 export type EvidenceKind =
@@ -486,10 +491,6 @@ export async function transitionWorkstreamRun(
   assertOrgAccess(actor, run.organizationId);
   if (!canTransitionWorkstreamRun(run.status, to)) throw new DomainError(`Cannot move workstream run ${run.status} → ${to}`);
 
-  // A work-cell run reserves its single Gauntlet review slot for the deterministic
-  // verdict, and that verdict needs a completed validation artifact. Validation
-  // can only run while the run is 'running', so submitting a half-built work cell
-  // would strand it permanently. Mirrors the database trigger of the same name.
   const workCellRun =
     to === "awaiting_verification" || to === "verified"
       ? await runHasWorkCell(db, run.id)
@@ -617,6 +618,12 @@ export async function addEvidenceArtifact(
   if (run.status !== "running") throw new DomainError("Evidence can only be added while a run is in progress");
 
   const payload = input.payload ?? {};
+  if (
+    payload.schemaVersion === TWL_PREPARE_PROOF_ASSIGNMENT_SCHEMA ||
+    payload.schemaVersion === TWL_PREPARE_PROOF_PR_SCHEMA
+  ) {
+    throw new DomainError("Reserved TWL proof evidence must be created by its guarded assignment or public-GitHub writer");
+  }
   const contentHash = createHash("sha256")
     .update(JSON.stringify({ kind: input.kind, summary: input.summary.trim(), sourceUri: input.sourceUri ?? null, payload }))
     .digest("hex");
@@ -721,6 +728,7 @@ export async function verifyWorkstreamRun(
       spec,
       evidence: (evidenceRows ?? []).map((row) => mapEvidence(row as Record<string, unknown>)),
       actorRole: actor.role,
+      verifierId: actor.id,
       executorSummary: run.executorSummary,
     });
     if (!twlVerdict.canAccept) {
