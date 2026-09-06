@@ -72,8 +72,9 @@ test.describe("PR67 durable prepare-only public PR evidence", () => {
     await expect(page.getByText("running", { exact: true }).first()).toBeVisible({ timeout: 20_000 });
 
     await page.getByRole("button", { name: "Assign worker" }).click();
-    await expect(page.getByText("SF-TWL prepare-only shadow", { exact: true })).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText("no", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(/Assigned the prepare-only shadow worker/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Name:\s*SF-TWL prepare-only shadow/)).toBeVisible();
+    await expect(page.getByText(/May Accept:\s*no/)).toBeVisible();
 
     await page.locator('input[name="owner"]').fill("octocat");
     await page.locator('input[name="repo"]').fill("Hello-World");
