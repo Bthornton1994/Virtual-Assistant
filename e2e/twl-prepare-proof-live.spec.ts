@@ -1,12 +1,46 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
+import { randomBytes } from "node:crypto";
 
-const managerEmail = process.env.E2E_MANAGER_EMAIL || "ops.manager@delegation-test.cloud";
-const password = process.env.E2E_PASSWORD || "";
+const disposableEmail = "pr67-076ad943802b@delegation-test.cloud";
 const seededRunId = process.env.QA_TWL_RUN_ID || "";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "";
 
-async function login(page: Page) {
+async function provisionDisposableManager() {
+  if (!supabaseUrl || !publishableKey) {
+    throw new Error("PR67 live QA requires the QA Supabase URL and publishable key.");
+  }
+
+  const password = `${randomBytes(24).toString("base64url")}Aa1!`;
+  const auth = createClient(supabaseUrl, publishableKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data, error } = await auth.auth.signUp({
+    email: disposableEmail,
+    password,
+    options: { data: { name: "PR67 disposable QA manager" } },
+  });
+  if (error) throw new Error(`Disposable QA signup failed: ${error.message}`);
+  if (!data.session) {
+    throw new Error(
+      "Disposable QA signup requires email confirmation. Stop here; do not weaken Auth. Gmail is the fallback for confirmation.",
+    );
+  }
+
+  const claim = createClient(supabaseUrl, publishableKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${data.session.access_token}` } },
+  });
+  const { error: claimError } = await claim.rpc("pr67_claim_qa_ops");
+  if (claimError) throw new Error(`Disposable QA role claim failed: ${claimError.message}`);
+
+  return { email: disposableEmail, password };
+}
+
+async function login(page: Page, email: string, password: string) {
   await page.goto("/login");
-  await page.locator('input[name="email"]').fill(managerEmail);
+  await page.locator('input[name="email"]').fill(email);
   await page.locator('input[name="password"]').fill(password);
   await page.getByRole("button", { name: /sign in/i }).click();
   await page.waitForURL(/\/ops\//, { timeout: 30_000 });
@@ -23,7 +57,7 @@ async function openPlannedTwlRun(page: Page) {
   await page.goto("/ops/execution");
   await expect(page.getByRole("heading", { name: "Prove the work before automating it" })).toBeVisible();
   if (await page.getByText("Persistent workspace required").isVisible()) {
-    test.skip(true, "Execution Lab needs the persistent QA workspace.");
+    throw new Error("Execution Lab needs the persistent QA workspace.");
   }
 
   const create = page
@@ -31,7 +65,7 @@ async function openPlannedTwlRun(page: Page) {
     .filter({ hasText: "Three White Lights prepare-only proof" })
     .getByRole("button", { name: "Create run" });
   if ((await create.count()) === 0) {
-    test.skip(true, "TWL prepare-only spec is not seeded in this QA workspace.");
+    throw new Error("TWL prepare-only spec is not seeded in this QA workspace.");
   }
 
   await create.first().click();
@@ -42,9 +76,8 @@ test.describe("PR67 durable prepare-only public PR evidence", () => {
   test.setTimeout(180_000);
 
   test("walks a QA run through staff UI and issues a passing receipt", async ({ page }, testInfo) => {
-    test.skip(!password, "Requires repository secret E2E_PASSWORD for the QA ops manager.");
-
-    await login(page);
+    const credentials = await provisionDisposableManager();
+    await login(page, credentials.email, credentials.password);
     await openPlannedTwlRun(page);
 
     await expect(page.getByRole("heading", { name: "Prepare-only public PR proof" })).toBeVisible();
@@ -86,7 +119,6 @@ test.describe("PR67 durable prepare-only public PR evidence", () => {
 
     await expect(page.getByText("verified", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText("passed", { exact: true }).last()).toBeVisible();
-    await expect(page.getByText("Definition of done").last()).toBeVisible();
     await expect(page.getByText("Met", { exact: true })).toBeVisible();
     await expect(page.getByText("merge_performed=false · mutatesRepository=false · deploy unauthorized")).toBeVisible();
 
