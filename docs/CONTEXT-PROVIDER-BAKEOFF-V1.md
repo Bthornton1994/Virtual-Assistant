@@ -55,3 +55,7 @@ After identical unseen tasks run on Delegation Cloud and Loadout, choose one of:
 - reject.
 
 Do not deploy multiple context systems portfolio-wide before this evidence exists. The next implementation step is to add adapters behind this contract and run the same task set; this PR intentionally adds no provider integration, network calls, or production writes.
+
+## Optional native subset pilot
+
+See [Software Context Shunt v1](SOFTWARE-CONTEXT-SHUNT-V1.md) for an opt-in local literal-search/line-read helper and replayable byte benchmark. It emits exact, scoped, source-hashed excerpts and can project eligible search metadata into this contract. The capability remains proposed. The local smoke benchmark is not an unseen qualification bakeoff, a whole `ContextProvider` implementation, or evidence of measured model-token/weekly-quota savings. No provider selection, connector or automatic routing is enabled.

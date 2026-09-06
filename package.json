@@ -11,6 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "context:read": "node scripts/software-context-shunt.mjs",
+    "context:benchmark": "node scripts/benchmark-software-context-shunt.mjs",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
