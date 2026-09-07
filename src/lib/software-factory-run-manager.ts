@@ -209,6 +209,19 @@ export function isSoftwareFactoryTerminal(status: SoftwareFactoryLifecycleStatus
   return (SOFTWARE_FACTORY_TERMINAL_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * Staff overlay controls stay open while the workstream is running or awaiting
+ * verification. Verification syncs the workstream off `running`, and the owner
+ * queue still requires a later `awaiting_owner` factory transition.
+ */
+export function softwareFactoryStaffControlsOpen(input: {
+  workstreamStatus: WorkstreamRunStatus | string;
+  lifecycleStatus: SoftwareFactoryLifecycleStatus;
+}): boolean {
+  if (isSoftwareFactoryTerminal(input.lifecycleStatus)) return false;
+  return input.workstreamStatus === "running" || input.workstreamStatus === "awaiting_verification";
+}
+
 export function isSoftwareFactorySpec(spec: { requiredInputs: readonly string[] }) {
   return spec.requiredInputs.some((input) => input.toLowerCase() === SOFTWARE_FACTORY_RUN_INPUT);
 }

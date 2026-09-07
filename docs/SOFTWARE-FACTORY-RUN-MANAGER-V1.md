@@ -77,7 +77,7 @@ If authority is missing, the run creates an approval request and pauses. Even an
 
 Additive tables `software_factory_runs`, `software_factory_events`, and `software_factory_approvals` bind to existing `delegation_specs` and `workstream_runs`. Evidence remains in `evidence_artifacts`. Receipts remain in `outcome_receipts` when a persistent workspace applies the overlay.
 
-The in-memory store in `src/lib/software-factory-store.ts` remains the unit-test vertical slice. Persistent QA/staff operation uses reserved SECURITY DEFINER writers in `supabase/migrations/20260906210000_software_factory_control_plane_hardening.sql` and the staff surface on `/ops/execution`. The demo store does not simulate factory overlay rows: `/ops/execution` stays on the persistent-workspace notice, and `/app/approvals` returns an empty factory owner queue rather than opening Supabase.
+The in-memory store in `src/lib/software-factory-store.ts` remains the unit-test vertical slice. Persistent QA/staff operation uses reserved SECURITY DEFINER writers in `supabase/migrations/20260906210000_software_factory_control_plane_hardening.sql` and the staff surface on `/ops/execution`. Staff overlay controls stay available while the workstream is `running` or `awaiting_verification`, so verification can still move the factory run to `awaiting_owner` for the owner queue on `/app/approvals`. The demo store does not simulate factory overlay rows: `/ops/execution` stays on the persistent-workspace notice, and `/app/approvals` returns an empty factory owner queue rather than opening Supabase.
 
 Typed authoritative artifacts:
 

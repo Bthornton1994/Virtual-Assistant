@@ -24,6 +24,7 @@ import {
   isSoftwareFactorySpec,
   packetClaimsSelfAuthorization,
   softwareFactoryConnectorCatalog,
+  softwareFactoryStaffControlsOpen,
   validateSoftwareFactoryPacket,
 } from "@/lib/software-factory-run-manager";
 import {
@@ -606,6 +607,45 @@ describe("Loadout SF-LOAD-001 proof workflow", () => {
 });
 
 describe("Software Factory remaining control-plane gates", () => {
+  it("keeps staff overlay controls open after verification syncs the workstream", () => {
+    expect(
+      softwareFactoryStaffControlsOpen({
+        workstreamStatus: "awaiting_verification",
+        lifecycleStatus: "verification",
+      }),
+    ).toBe(true);
+    expect(
+      softwareFactoryStaffControlsOpen({
+        workstreamStatus: "awaiting_verification",
+        lifecycleStatus: "awaiting_owner",
+      }),
+    ).toBe(true);
+    expect(
+      softwareFactoryStaffControlsOpen({
+        workstreamStatus: "running",
+        lifecycleStatus: "in_progress",
+      }),
+    ).toBe(true);
+    expect(
+      softwareFactoryStaffControlsOpen({
+        workstreamStatus: "planned",
+        lifecycleStatus: "intake",
+      }),
+    ).toBe(false);
+    expect(
+      softwareFactoryStaffControlsOpen({
+        workstreamStatus: "awaiting_verification",
+        lifecycleStatus: "accepted",
+      }),
+    ).toBe(false);
+    expect(
+      softwareFactoryStaffControlsOpen({
+        workstreamStatus: "verified",
+        lifecycleStatus: "awaiting_owner",
+      }),
+    ).toBe(false);
+  });
+
   it("supports cancelled, rejected, and deferred terminal transitions", () => {
     const terminals = ["cancelled", "rejected", "deferred"] as const;
     for (const status of terminals) {

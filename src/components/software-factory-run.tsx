@@ -16,6 +16,7 @@ import {
   SOFTWARE_FACTORY_FORBIDDEN_ACTIONS,
   SOFTWARE_FACTORY_RUN_INPUT,
   SOFTWARE_FACTORY_TRANSITIONS,
+  softwareFactoryStaffControlsOpen,
 } from "@/lib/software-factory-run-manager";
 import type { WorkstreamRun } from "@/lib/execution-primitives";
 
@@ -34,7 +35,10 @@ export function SoftwareFactorySection({
   run: WorkstreamRun;
   overlay: SoftwareFactoryOverlay | null;
 }) {
-  const running = run.status === "running";
+  const running = softwareFactoryStaffControlsOpen({
+    workstreamStatus: run.status,
+    lifecycleStatus: overlay?.run.lifecycleStatus ?? "intake",
+  });
 
   return (
     <section className="space-y-4">
@@ -287,8 +291,8 @@ function SoftwareFactoryBoundSection({
       ) : (
         <Card className="p-5">
           <p className="text-sm text-muted">
-            Start the workstream run before recording inspection, packet, handoffs, or evidence. Submit it after the
-            factory run reaches awaiting owner.
+            Start the workstream run before recording inspection, packet, handoffs, or evidence. After verification,
+            keep using this overlay to move the factory run to awaiting owner, then submit the workstream.
           </p>
         </Card>
       )}
