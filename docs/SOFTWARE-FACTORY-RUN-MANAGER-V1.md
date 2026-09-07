@@ -89,6 +89,33 @@ Authenticated clients cannot insert or update `software_factory_runs` or `softwa
 
 The SQL migrations are not applied to Production by this change. The QA fixture `supabase/qa/software_factory_loadout_sf_load_001.sql` creates a demonstration Delegation Spec marked `software-factory-run/v1`, a planned Workstream Run, and a Software Factory overlay at `intake`. It does not Accept the run and does not mutate Loadout.
 
+## Packet hash and freeze-time STATUS
+
+Packet `STATUS` is a freeze-time snapshot of the overlay lifecycle at freeze. Later transitions do not rewrite the packet. `evaluateAcceptance` binds to `packetHash` of the frozen payload; it does not require `packet.STATUS` to equal the current lifecycle. Re-freeze only when payload fields change. A re-freeze must set `STATUS` to the current lifecycle. A mutated payload that keeps the old hash fails closed.
+
+Application `hashSoftwareFactoryPacket` canonicalizes object keys with case-insensitive `en` order so it matches Postgres `software_factory_sha256` (`twl_prepare_proof_canonical_json`, `ORDER BY key`). Catalog-evidence `sha256Hex` keeps UTF-16 ordinal key order and must not be used for factory packets. Do not change `twl_prepare_proof_sha256`; existing TWL and factory hashes stay valid.
+
+## Stale acceptance
+
+Problem class `stale` (default 72 hours since last evidence on a non-terminal run) is an unresolved acceptance failure. `evaluateAcceptance` and both Outcome Receipt issuers fail closed. The SQL `enforce_software_factory_receipt` trigger does not encode that clock; freshness is an application gate in this slice. No Production schema write.
+
+## Next work item: SF-VA-002 worker leases and heartbeats
+
+Not implemented in this slice. Execution-runtime leases on `execution_runtime_v1` / `execution_plan_steps` are a different plane; this overlay does not drive them.
+
+A separately scoped Software Factory change should specify:
+
+- allocation owner
+- executor identity
+- lease start and expiry
+- heartbeat / update timestamp
+- takeover rules
+- stale detection
+- owner-visible current-work state
+- concurrency and duplicate-worker tests
+
+SF-VA-002 must remain `prepare_only`, must not add automatic executor routing, and must not grant merge, deploy, or Production migration authority.
+
 ## Loadout proof
 
 Task `SF-LOAD-001` demonstrates the governed path against historical Loadout PR https://github.com/Bthornton1994/Loadout/pull/26. The PR is attached as evidence. This capability does not merge, reopen, or modify that PR.

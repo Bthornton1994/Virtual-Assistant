@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import { sha256HexSchema } from "@/lib/catalog-evidence-review";
@@ -576,8 +577,30 @@ export function validateSoftwareFactoryPacket(input: unknown): SoftwareFactoryRe
   return parseWith(softwareFactoryPacketSchema, input, "Packet ");
 }
 
+function softwareFactoryCanonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(softwareFactoryCanonicalize);
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, nested]) => nested !== undefined)
+      .sort(([left], [right]) => {
+        const byBase = left.localeCompare(right, "en", { sensitivity: "base" });
+        if (byBase !== 0) return byBase;
+        return left < right ? -1 : left > right ? 1 : 0;
+      });
+    const canonical: Record<string, unknown> = {};
+    for (const [key, nested] of entries) canonical[key] = softwareFactoryCanonicalize(nested);
+    return canonical;
+  }
+  return value;
+}
+
+/**
+ * SHA-256 of compact canonical JSON matching Postgres `software_factory_sha256`
+ * (`twl_prepare_proof_canonical_json` / `ORDER BY key`). Catalog-evidence
+ * `sha256Hex` sorts keys by UTF-16 ordinal and disagrees on mixed-case packets.
+ */
 export function hashSoftwareFactoryPacket(packet: SoftwareFactoryPacket): string {
-  return sha256Hex(packet);
+  return createHash("sha256").update(JSON.stringify(softwareFactoryCanonicalize(packet)), "utf8").digest("hex");
 }
 
 export function packetClaimsSelfAuthorization(packet: SoftwareFactoryPacket): boolean {
@@ -783,7 +806,14 @@ export function evaluateAcceptance(input: {
   const missing = missingRequiredEvidence(input.run.packet, input.evidence);
   if (missing.length) failures.push(`Required evidence is missing: ${missing.join(", ")}.`);
   const problems = detectSoftwareFactoryProblems(input);
-  const unresolved = problems.filter((problem) => problem.class === "blocked" || problem.class === "contradictory" || problem.class === "unverifiable" || problem.class === "incomplete");
+  const unresolved = problems.filter(
+    (problem) =>
+      problem.class === "blocked" ||
+      problem.class === "contradictory" ||
+      problem.class === "unverifiable" ||
+      problem.class === "incomplete" ||
+      problem.class === "stale",
+  );
   if (unresolved.length) {
     failures.push(unresolved.map((problem) => problem.summary).join(" "));
   }

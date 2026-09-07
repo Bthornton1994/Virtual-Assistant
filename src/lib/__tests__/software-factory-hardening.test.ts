@@ -47,6 +47,11 @@ describe("Software Factory control-plane hardening", () => {
     expect(migration).toContain("software_factory_allowed_transitions");
   });
 
+  it("fails acceptance closed on stale work and does not hash factory packets with catalog-evidence ordinal key sort", () => {
+    expect(contract).toMatch(/problem\.class === "stale"/);
+    expect(contract).not.toMatch(/export function hashSoftwareFactoryPacket[\s\S]{0,120}return sha256Hex\(packet\)/);
+  });
+
   it("binds persist callers to reserved RPCs instead of generic evidence insert", () => {
     expect(persist).toContain('rpc("software_factory_bind_workstream_run"');
     expect(persist).toContain('rpc("software_factory_freeze_packet"');

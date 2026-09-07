@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import { AuthzError, type Actor } from "@/lib/domain";
 import {
   SOFTWARE_FACTORY_EVIDENCE_KIND_TO_ARTIFACT_KIND,
@@ -896,5 +897,122 @@ describe("Software Factory reserved-writer accept gates", () => {
     ).toMatch(/provider success claim or agent report/);
 
     expect(hashSoftwareFactoryPacket(run.packet!)).toBe(run.packetHash);
+  });
+
+  it("fails closed when the run is stale at acceptance time", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    advanceToAwaitingOwner(store, opened.run.id);
+    const ownerDecision = recordSoftwareFactoryOwnerDecision(
+      store,
+      owner,
+      opened.run.id,
+      {
+        kind: "owner_acceptance",
+        status: "approved",
+        rationale: "Owner accepts the frozen packet.",
+        sourceRefs: ["governance:owner-acceptance"],
+      },
+      "evt-owner-stale-gate",
+      NOW,
+    );
+    expect(ownerDecision.ok).toBe(true);
+
+    const run = getSoftwareFactoryRun(store, manager, opened.run.id);
+    const evidence = store.evidenceByRun.get(opened.run.id) ?? [];
+    const approvals = [...store.approvals.values()].filter((row) => row.factoryRunId === opened.run.id);
+
+    expect(
+      evaluateAcceptance({
+        run,
+        evidence,
+        approvals,
+        now: NOW,
+        actorRole: "ops_manager",
+        verifierId: manager.id,
+      }).ok,
+    ).toBe(true);
+
+    const stale = evaluateAcceptance({
+      run,
+      evidence,
+      approvals,
+      now: LATER,
+      actorRole: "ops_manager",
+      verifierId: manager.id,
+    });
+    expect(stale.ok).toBe(false);
+    expect(stale.failures.join(" ")).toMatch(/stale/);
+
+    const receipt = issueSoftwareFactoryOutcomeReceipt(store, manager, opened.run.id, "evt-stale-receipt", LATER);
+    expect(receipt.ok).toBe(false);
+    expect(receipt.ok ? "" : receipt.failures.join(" ")).toMatch(/stale/);
+    expect(getSoftwareFactoryRun(store, manager, opened.run.id).lifecycleStatus).toBe("awaiting_owner");
+  });
+
+  it("binds packet hashes to Postgres software_factory_sha256 and rejects payload mutation without re-freeze", () => {
+    const qaPacket = {
+      RISK: "medium",
+      STATUS: "intake" as const,
+      TASK_ID: "SF-VA-UI-PROOF-01",
+      IN_SCOPE: ["Record the request as a Software Factory run.", "Attach hashed PR and verification evidence."],
+      OBJECTIVE: "Govern this software request without merging or deploying.",
+      BACKGROUND: "Owner acceptance must be recorded outside this packet.",
+      REPOSITORY: "Bthornton1994/Virtual-Assistant",
+      BASE_BRANCH: "main",
+      DEPENDENCIES: [],
+      OUT_OF_SCOPE: ["Merge, deploy, secret change, or live GitHub mutation."],
+      VERIFICATION: [
+        "Attach hashed PR, CI, and test evidence.",
+        "Owner acceptance must be recorded outside this packet.",
+      ],
+      HANDOFF_NOTES:
+        "PM and Developer coordination is human-mediated because no approved Grok Bot or Cursor connector exists.",
+      schemaVersion: SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION,
+      APPROVAL_REQUIRED: ["owner_acceptance"],
+      claimedApprovalIds: [],
+      ACCEPTANCE_CRITERIA: [
+        "Delegation Spec and Workstream Run exist.",
+        "Task packet is frozen and hashed.",
+        "Historical PR evidence is attached without mutation.",
+        "Merge remains unperformed by Delegation Cloud.",
+      ],
+    };
+    const parsed = validateSoftwareFactoryPacket(qaPacket);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.failures.join(" "));
+    const sqlHash = "be80fd9df728725718bca286104ded04f0761a6822e46106ef619c79816a8397";
+    expect(hashSoftwareFactoryPacket(parsed.value)).toBe(sqlHash);
+    expect(sha256Hex(parsed.value)).not.toBe(sqlHash);
+
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    advanceToAwaitingOwner(store, opened.run.id);
+    const run = getSoftwareFactoryRun(store, manager, opened.run.id);
+    const evidence = store.evidenceByRun.get(opened.run.id) ?? [];
+    const approvals = [...store.approvals.values()].filter((row) => row.factoryRunId === opened.run.id);
+
+    expect(run.packet?.STATUS).toBe("planned");
+    expect(run.lifecycleStatus).toBe("awaiting_owner");
+    expect(hashSoftwareFactoryPacket(run.packet!)).toBe(run.packetHash);
+    expect(
+      evaluateAcceptance({
+        run,
+        evidence,
+        approvals,
+        now: NOW,
+      }).failures.filter((failure) => /packet hash/.test(failure)),
+    ).toEqual([]);
+
+    const mutated = { ...run.packet!, OBJECTIVE: "Tampered objective after freeze." };
+    expect(hashSoftwareFactoryPacket(mutated)).not.toBe(run.packetHash);
+    expect(
+      evaluateAcceptance({
+        run: { ...run, packet: mutated },
+        evidence,
+        approvals,
+        now: NOW,
+      }).failures.join(" "),
+    ).toMatch(/packet hash/);
   });
 });
