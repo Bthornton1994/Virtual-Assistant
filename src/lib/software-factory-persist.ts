@@ -135,6 +135,7 @@ export async function getSoftwareFactoryOverlay(
   actor: Actor,
   workstreamRunId: string,
 ): Promise<SoftwareFactoryOverlay | null> {
+  if (actor.source === "demo") return null;
   const bundle = await getWorkstreamRunBundle(actor, workstreamRunId);
   if (!isSoftwareFactorySpec(bundle.spec)) return null;
   const client = await db();
@@ -188,8 +189,10 @@ export async function getSoftwareFactoryOverlay(
 }
 
 export async function listSoftwareFactoryOwnerQueue(actor: Actor) {
+  if (actor.source === "demo") return [];
   if (!isClientRole(actor.role) || !actor.organizationId) return [];
-  const client = await db();
+  const client = await supabaseServer();
+  if (!client) return [];
   const { data, error } = await client
     .from("software_factory_runs")
     .select("id, task_id, lifecycle_status, packet_hash, workstream_run_id, organization_id")
