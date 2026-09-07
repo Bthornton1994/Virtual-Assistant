@@ -13,6 +13,7 @@ export const CAPABILITY_KEYS = [
   "deterministic_catalog_validation",
   "public_web_retrieval",
   "software_repository_read",
+  "software_context_shunt",
   "software_change_prepare",
   "software_change_verify",
   "software_factory_run_management",
@@ -94,6 +95,20 @@ export const CAPABILITY_DEFINITIONS = [
     inputContractVersions: ["software-factory-intake/v1"],
     outputContractVersions: ["software-factory-inspection/v1"],
     verificationContract: { kind: "human_or_deterministic", implementation: "software-factory-run-manager/v1" },
+    status: "proposed",
+  },
+  {
+    key: "software_context_shunt",
+    displayName: "Software context shunt",
+    description: "Extract bounded, exact source excerpts from an approved frozen repository snapshot; no inference or authority over work outcomes.",
+    riskClass: "low",
+    inputContractVersions: ["software-context-request/v1", "software-context-scope/v1"],
+    outputContractVersions: ["software-context-receipt/v1"],
+    verificationContract: {
+      kind: "deterministic_and_independent_review",
+      implementation: "software-context-shunt/v1",
+      required: ["scope binding", "source hashes", "exact line ranges", "coverage disclosure", "measured response bytes"],
+    },
     status: "proposed",
   },
   {
