@@ -1,8 +1,10 @@
 import { decideApprovalAction } from "@/app/actions/requests";
+import { SoftwareFactoryOwnerCard } from "@/components/software-factory-run";
 import { ActionClassBadge, EmptyState, PageHeader, RiskBadge } from "@/components/product";
 import { Button, Input } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { APPROVAL_KIND_COPY } from "@/lib/domain";
+import { listSoftwareFactoryOwnerQueue } from "@/lib/software-factory-persist";
 import { getWorkspace } from "@/lib/workspace";
 
 export const metadata = { title: "Approvals" };
@@ -11,6 +13,7 @@ export default async function ApprovalsPage() {
   const actor = await requireClient();
   const store = getWorkspace(actor);
   const approvals = await store.listApprovals(actor);
+  const factoryQueue = await listSoftwareFactoryOwnerQueue(actor);
   const names = Object.fromEntries(
     await Promise.all(
       [...new Set(approvals.flatMap((a) => [a.requestedBy, a.decidedBy].filter(Boolean) as string[]))].map(async (id) => [
@@ -25,7 +28,20 @@ export default async function ApprovalsPage() {
         title="Approvals"
         description="Explicit approval objects. Sensitive execution never proceeds without a record here."
       />
-      {approvals.length === 0 ? (
+      {factoryQueue.length ? (
+        <div className="space-y-4">
+          {factoryQueue.map((item) => (
+            <SoftwareFactoryOwnerCard
+              key={item.factoryRunId}
+              factoryRunId={item.factoryRunId}
+              workstreamRunId={item.workstreamRunId}
+              taskId={item.taskId}
+              packetHash={item.packetHash}
+            />
+          ))}
+        </div>
+      ) : null}
+      {approvals.length === 0 && factoryQueue.length === 0 ? (
         <EmptyState
           title="Nothing needs your signature"
           body="Execution plans, external email, CRM changes, vendor communication, and sensitive actions pause here."

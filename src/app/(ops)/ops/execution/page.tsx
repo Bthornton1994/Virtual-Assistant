@@ -136,7 +136,7 @@ export default async function ExecutionLabPage() {
               />
             </Field>
             <Field label="Required inputs" hint="One system, record set, or source per line.">
-              <Textarea name="requiredInputs" placeholder={"HubSpot pipeline\nAccount owner rules"} />
+              <Textarea name="requiredInputs" placeholder={"software-factory-run/v1\nHubSpot pipeline"} />
             </Field>
             <Field label="Authority rules" hint="What Delegation Cloud may do inside this spec.">
               <Textarea name="authorityRules" placeholder={"Read CRM\nPrepare changes\nWrite non-destructive internal CRM fields"} />
