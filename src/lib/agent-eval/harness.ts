@@ -156,6 +156,7 @@ export function runAgentEval(options: RunAgentEvalOptions = {}): AgentEvalReport
     generatedAt: options.generatedAt ?? new Date().toISOString(),
     harness: {
       name: "agent-reliability-eval",
+      suite: "fixture",
       measures: [...MEASURES],
       doesNotMeasure: [...DOES_NOT_MEASURE],
     },

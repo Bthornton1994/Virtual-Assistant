@@ -124,7 +124,9 @@ export type AgentEvalReport = {
   policyVersion: typeof AGENT_EVAL_POLICY_VERSION;
   generatedAt: string;
   harness: {
-    name: "agent-reliability-eval";
+    name: "agent-reliability-eval" | "agent-reliability-eval-runtime";
+    /** Separates fixture-only grading from runtime-backed synthetic evaluation. */
+    suite: "fixture" | "runtime";
     measures: string[];
     doesNotMeasure: string[];
   };

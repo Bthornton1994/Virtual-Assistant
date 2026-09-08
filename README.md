@@ -75,7 +75,14 @@ npm run eval:agent
 npm run build
 ```
 
-Or `npm run verify` to run all five (includes the deterministic agent reliability gate).
+Or `npm run verify` to run lint, typecheck, tests, both agent eval suites, and build.
+
+Deterministic agent reliability gates:
+
+```bash
+npm run eval:agent           # fixture suite
+npm run eval:agent:runtime   # runtime-backed suite (depends on eval contracts)
+```
 
 ## Environment variables
 
