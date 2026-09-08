@@ -17,3 +17,9 @@ export {
 export { runGraders } from "./graders.ts";
 export { DEFAULT_AGENT_EVAL_CASES } from "./fixtures.ts";
 export { evaluateCase, runAgentEval, agentEvalExitCode, DEFAULT_EVALUATION_CLOCK } from "./harness.ts";
+export {
+  validateEvaluationClock,
+  requireEvaluationClock,
+  EvaluationClockError,
+  EVALUATION_CLOCK_ERROR_CODE,
+} from "./clock.ts";

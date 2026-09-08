@@ -1,7 +1,7 @@
 import { sha256Hex } from "../catalog-evidence-hash.ts";
 import { runGraders } from "./graders.ts";
 import { DEFAULT_AGENT_EVAL_CASES } from "./fixtures.ts";
-import { DEFAULT_EVALUATION_CLOCK } from "./clock.ts";
+import { DEFAULT_EVALUATION_CLOCK, requireEvaluationClock } from "./clock.ts";
 import {
   AGENT_EVAL_POLICY_VERSION,
   AGENT_EVAL_REPORT_SCHEMA_VERSION,
@@ -94,7 +94,7 @@ export function evaluateCase(
   caseDef: AgentEvalCase,
   options: EvaluateCaseOptions = {},
 ): AgentEvalCaseResult {
-  const evaluationClock = options.evaluationClock ?? DEFAULT_EVALUATION_CLOCK;
+  const { clock: evaluationClock } = requireEvaluationClock(options.evaluationClock);
   const graderResults = runGraders(caseDef, { evaluationClock });
   const failureReasons: string[] = [];
 
@@ -142,7 +142,7 @@ export type RunAgentEvalOptions = {
 
 export function runAgentEval(options: RunAgentEvalOptions = {}): AgentEvalReport {
   const cases = options.cases ?? DEFAULT_AGENT_EVAL_CASES;
-  const evaluationClock = options.evaluationClock ?? DEFAULT_EVALUATION_CLOCK;
+  const { clock: evaluationClock } = requireEvaluationClock(options.evaluationClock);
   const results = cases.map((caseDef) => evaluateCase(caseDef, { evaluationClock }));
   const failed = results.filter((result) => !result.pass);
   const securityCaseFailures = results.filter((result, index) => {

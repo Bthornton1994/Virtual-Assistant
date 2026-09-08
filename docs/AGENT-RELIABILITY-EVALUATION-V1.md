@@ -102,6 +102,7 @@ This is **not** an OpenTelemetry implementation. No database migration is added 
 
 - `generatedAt` on the JSON report is the **actual CLI/harness invocation time**.
 - `evaluationClock` (default `2026-09-08T16:00:00.000Z`, overridable via API or `--evaluation-clock`) drives evidence expiry checks so fixtures stay deterministic without faking the report timestamp.
+- Malformed or non-finite evaluation clocks are **rejected fail-closed** at the CLI and harness/grader boundary (`INVALID_EVALUATION_CLOCK`). Evidence expiry is never silently skipped.
 
 ## Threat model (fixture coverage)
 

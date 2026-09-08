@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import {
   evaluateCase,
   runAgentEval,
   agentEvalExitCode,
   DEFAULT_EVALUATION_CLOCK,
 } from "@/lib/agent-eval/harness";
+import {
+  EvaluationClockError,
+  validateEvaluationClock,
+  requireEvaluationClock,
+  EVALUATION_CLOCK_ERROR_CODE,
+} from "@/lib/agent-eval/clock";
 import { DEFAULT_AGENT_EVAL_CASES } from "@/lib/agent-eval/fixtures";
 import {
   CASE_AUTHORITY_ESCALATION,
@@ -23,6 +31,10 @@ import {
 } from "@/lib/agent-eval/fixtures";
 import { runGraders } from "@/lib/agent-eval/graders";
 import { MemoryTraceSink, setAgentTraceSink } from "@/lib/agent-trace";
+import {
+  resolveEvaluationClockArg,
+  runEvalAgentCli,
+} from "../../../scripts/eval-agent.mjs";
 
 describe("agent reliability evaluation harness", () => {
   afterEach(() => {
@@ -87,6 +99,46 @@ describe("agent reliability evaluation harness", () => {
       evaluationClock: DEFAULT_EVALUATION_CLOCK,
     });
     expect(defaultGraders.find((g) => g.graderId === "evidence_provenance")?.verdict).toBe("pass");
+  });
+
+  it("rejects malformed or non-finite evaluation clocks fail-closed", () => {
+    expect(validateEvaluationClock("invalid").ok).toBe(false);
+    expect(validateEvaluationClock("").ok).toBe(false);
+    expect(validateEvaluationClock(" 2026-09-08T16:00:00.000Z ").ok).toBe(false);
+    expect(validateEvaluationClock("2026-09-08").ok).toBe(false);
+    expect(validateEvaluationClock(null).ok).toBe(false);
+    expect(validateEvaluationClock(DEFAULT_EVALUATION_CLOCK).ok).toBe(true);
+
+    expect(() => requireEvaluationClock("invalid")).toThrow(EvaluationClockError);
+    expect(() => runGraders(CASE_COMPLIANT_PREPARE, { evaluationClock: "invalid" })).toThrow(
+      EvaluationClockError,
+    );
+    expect(() => runAgentEval({ evaluationClock: "not-a-date" })).toThrow(EvaluationClockError);
+    expect(() => evaluateCase(CASE_COMPLIANT_PREPARE, { evaluationClock: "invalid" })).toThrow(
+      EvaluationClockError,
+    );
+  });
+
+  it("CLI rejects --evaluation-clock invalid with non-zero exit and clear error", () => {
+    const resolved = resolveEvaluationClockArg(["--evaluation-clock", "invalid"]);
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) throw new Error("expected invalid clock");
+    expect(resolved.code).toBe(EVALUATION_CLOCK_ERROR_CODE);
+    expect(resolved.reason).toMatch(/evaluationClock/i);
+
+    const viaHelper = runEvalAgentCli(["--evaluation-clock", "invalid"]);
+    expect(viaHelper.exitCode).toBe(2);
+    expect(viaHelper.output).toContain(EVALUATION_CLOCK_ERROR_CODE);
+    expect(viaHelper.output).toMatch(/evaluationClock/i);
+
+    const spawned = spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", resolve("scripts/eval-agent.mjs"), "--evaluation-clock", "invalid"],
+      { encoding: "utf8", cwd: resolve(".") },
+    );
+    expect(spawned.status).not.toBe(0);
+    const combined = `${spawned.stdout ?? ""}${spawned.stderr ?? ""}`;
+    expect(combined).toContain(EVALUATION_CLOCK_ERROR_CODE);
   });
 
   it("detects cross-tenant access", () => {
