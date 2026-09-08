@@ -20,6 +20,7 @@ export {
   sanitizeTraceEvent,
 } from "./sink.ts";
 
-export { redactLabels, redactSecretLikeString, isSecretLikeKey, minimizeIdentifier } from "./redact.ts";
+export { redactLabels, redactSecretLikeString, isSecretLikeKey, isSensitiveContentKey, isSafeTraceLabelKey, minimizeIdentifier, SAFE_TRACE_LABEL_KEYS } from "./redact.ts";
 
 export { traceToolInvocationBoundary } from "./boundaries.ts";
+

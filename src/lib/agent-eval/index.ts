@@ -16,4 +16,4 @@ export {
 
 export { runGraders } from "./graders.ts";
 export { DEFAULT_AGENT_EVAL_CASES } from "./fixtures.ts";
-export { evaluateCase, runAgentEval, agentEvalExitCode } from "./harness.ts";
+export { evaluateCase, runAgentEval, agentEvalExitCode, DEFAULT_EVALUATION_CLOCK } from "./harness.ts";

@@ -4,28 +4,39 @@
  *
  * Usage: node --experimental-strip-types scripts/eval-agent.mjs
  *        node --experimental-strip-types scripts/eval-agent.mjs --json
+ *
+ * Report generatedAt is the actual invocation time.
+ * Evidence expiry uses DEFAULT_EVALUATION_CLOCK unless --evaluation-clock is set.
  */
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   agentEvalExitCode,
   runAgentEval,
+  DEFAULT_EVALUATION_CLOCK,
 } from "../src/lib/agent-eval/harness.ts";
 import { MemoryTraceSink, setAgentTraceSink } from "../src/lib/agent-trace/sink.ts";
 
-const args = new Set(process.argv.slice(2));
-const jsonOnly = args.has("--json");
+const args = process.argv.slice(2);
+const argSet = new Set(args);
+const jsonOnly = argSet.has("--json");
 const writePath = (() => {
-  const index = process.argv.indexOf("--out");
+  const index = args.indexOf("--out");
   if (index === -1) return null;
-  return process.argv[index + 1] ?? null;
+  return args[index + 1] ?? null;
+})();
+const evaluationClock = (() => {
+  const index = args.indexOf("--evaluation-clock");
+  if (index === -1) return DEFAULT_EVALUATION_CLOCK;
+  return args[index + 1] ?? DEFAULT_EVALUATION_CLOCK;
 })();
 
 const sink = new MemoryTraceSink();
 setAgentTraceSink(sink);
 
 const report = runAgentEval({
-  generatedAt: "2026-09-08T16:00:00.000Z",
+  evaluationClock,
+  // generatedAt defaults to actual invocation time inside runAgentEval.
 });
 
 const payload = JSON.stringify(report, null, 2);
@@ -39,6 +50,8 @@ if (jsonOnly) {
 } else {
   const lines = [
     `agent-reliability-eval ${report.policyVersion}`,
+    `generatedAt: ${report.generatedAt}`,
+    `evaluationClock: ${evaluationClock}`,
     `cases: ${report.summary.passed}/${report.summary.total} passed`,
     `security fixture failures: ${report.summary.securityCaseFailures}`,
     `measures: policy/authority/evidence/approval/lifecycle (not model quality)`,

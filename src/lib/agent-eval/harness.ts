@@ -1,6 +1,7 @@
 import { sha256Hex } from "../catalog-evidence-hash.ts";
 import { runGraders } from "./graders.ts";
 import { DEFAULT_AGENT_EVAL_CASES } from "./fixtures.ts";
+import { DEFAULT_EVALUATION_CLOCK } from "./clock.ts";
 import {
   AGENT_EVAL_POLICY_VERSION,
   AGENT_EVAL_REPORT_SCHEMA_VERSION,
@@ -50,8 +51,7 @@ function securityTags(caseDef: AgentEvalCase): boolean {
   return caseDef.tags.includes("adversarial") || caseDef.tags.includes("security");
 }
 
-function emitCaseTrace(caseDef: AgentEvalCase, pass: boolean): void {
-  const startedAt = "2026-09-08T16:00:00.000Z";
+function emitCaseTrace(caseDef: AgentEvalCase, pass: boolean, evaluationClock: string): void {
   const event: AgentTraceEvent = {
     schemaVersion: "agent-trace/v1",
     traceId: `trace-${caseDef.caseId}`,
@@ -65,8 +65,8 @@ function emitCaseTrace(caseDef: AgentEvalCase, pass: boolean): void {
     capability: "agent_reliability_eval",
     actionClass: caseDef.authority.actionClass,
     status: pass ? "ok" : "error",
-    startedAt,
-    endedAt: startedAt,
+    startedAt: evaluationClock,
+    endedAt: evaluationClock,
     durationMs: caseDef.timingMs ?? null,
     errorCode: pass ? null : "eval_case_failed",
     policyDecision: pass ? "allow_fixture" : "reject_fixture_regression",
@@ -86,8 +86,16 @@ function emitCaseTrace(caseDef: AgentEvalCase, pass: boolean): void {
   emitAgentTrace(event);
 }
 
-export function evaluateCase(caseDef: AgentEvalCase): AgentEvalCaseResult {
-  const graderResults = runGraders(caseDef);
+export type EvaluateCaseOptions = {
+  evaluationClock?: string;
+};
+
+export function evaluateCase(
+  caseDef: AgentEvalCase,
+  options: EvaluateCaseOptions = {},
+): AgentEvalCaseResult {
+  const evaluationClock = options.evaluationClock ?? DEFAULT_EVALUATION_CLOCK;
+  const graderResults = runGraders(caseDef, { evaluationClock });
   const failureReasons: string[] = [];
 
   for (const grader of graderResults) {
@@ -100,7 +108,7 @@ export function evaluateCase(caseDef: AgentEvalCase): AgentEvalCaseResult {
   }
 
   const pass = failureReasons.length === 0;
-  emitCaseTrace(caseDef, pass);
+  emitCaseTrace(caseDef, pass, evaluationClock);
 
   const unknownMetrics: string[] = [];
   if (caseDef.timingMs == null) unknownMetrics.push("timingMs");
@@ -120,13 +128,22 @@ export function evaluateCase(caseDef: AgentEvalCase): AgentEvalCaseResult {
 
 export type RunAgentEvalOptions = {
   cases?: readonly AgentEvalCase[];
-  /** Override generatedAt for deterministic tests. */
+  /**
+   * Report timestamp. Defaults to the actual invocation time.
+   * Tests may override only when asserting report shape — prefer leaving unset.
+   */
   generatedAt?: string;
+  /**
+   * Clock for evidence expiry and other deterministic fixture checks.
+   * Independent of generatedAt. Defaults to DEFAULT_EVALUATION_CLOCK.
+   */
+  evaluationClock?: string;
 };
 
 export function runAgentEval(options: RunAgentEvalOptions = {}): AgentEvalReport {
   const cases = options.cases ?? DEFAULT_AGENT_EVAL_CASES;
-  const results = cases.map((caseDef) => evaluateCase(caseDef));
+  const evaluationClock = options.evaluationClock ?? DEFAULT_EVALUATION_CLOCK;
+  const results = cases.map((caseDef) => evaluateCase(caseDef, { evaluationClock }));
   const failed = results.filter((result) => !result.pass);
   const securityCaseFailures = results.filter((result, index) => {
     const caseDef = cases[index];
@@ -161,3 +178,5 @@ export function agentEvalExitCode(report: AgentEvalReport): number {
   if (report.summary.securityCaseFailures > 0) return 1;
   return 0;
 }
+
+export { DEFAULT_EVALUATION_CLOCK };

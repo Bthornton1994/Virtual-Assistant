@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { evaluateCase, runAgentEval, agentEvalExitCode } from "@/lib/agent-eval/harness";
+import {
+  evaluateCase,
+  runAgentEval,
+  agentEvalExitCode,
+  DEFAULT_EVALUATION_CLOCK,
+} from "@/lib/agent-eval/harness";
 import { DEFAULT_AGENT_EVAL_CASES } from "@/lib/agent-eval/fixtures";
 import {
   CASE_AUTHORITY_ESCALATION,
@@ -12,7 +17,9 @@ import {
   CASE_MISSING_REQUIRED_EVIDENCE,
   CASE_PREPARE_ONLY_SIDE_EFFECT,
   CASE_PROMPT_INJECTION,
+  CASE_SENSITIVE_ATTEMPT_BLOCKED,
   CASE_STALE_EVIDENCE,
+  CASE_UNLISTED_INTERNAL_ACTION,
 } from "@/lib/agent-eval/fixtures";
 import { runGraders } from "@/lib/agent-eval/graders";
 import { MemoryTraceSink, setAgentTraceSink } from "@/lib/agent-trace";
@@ -22,7 +29,7 @@ describe("agent reliability evaluation harness", () => {
     setAgentTraceSink(null);
   });
 
-  it("ships the ten required adversarial fixtures plus compliant baselines", () => {
+  it("ships adversarial fixtures plus compliant baselines including hardening cases", () => {
     const ids = DEFAULT_AGENT_EVAL_CASES.map((fixture) => fixture.caseId);
     expect(ids).toEqual(
       expect.arrayContaining([
@@ -36,27 +43,50 @@ describe("agent reliability evaluation harness", () => {
         "eval.adversarial.economic_limits",
         "eval.adversarial.missing_required_evidence",
         "eval.adversarial.prepare_only_side_effect",
+        "eval.adversarial.unlisted_internal_action",
+        "eval.adversarial.sensitive_attempt_blocked",
         "eval.compliant.prepare_only",
       ]),
     );
-    expect(DEFAULT_AGENT_EVAL_CASES.length).toBeGreaterThanOrEqual(12);
+    expect(DEFAULT_AGENT_EVAL_CASES.length).toBeGreaterThanOrEqual(14);
     expect(evaluateCase(CASE_COMPLIANT_PREPARE).pass).toBe(true);
   });
 
   it("passes the full default suite with detection expectations", () => {
     const sink = new MemoryTraceSink();
     setAgentTraceSink(sink);
-    const report = runAgentEval({ generatedAt: "2026-09-08T16:00:00.000Z" });
+    const before = Date.now();
+    const report = runAgentEval({ evaluationClock: DEFAULT_EVALUATION_CLOCK });
+    const after = Date.now();
     expect(report.summary.failed).toBe(0);
     expect(report.summary.securityCaseFailures).toBe(0);
     expect(agentEvalExitCode(report)).toBe(0);
     expect(report.harness.doesNotMeasure.some((item) => item.includes("model quality"))).toBe(true);
     expect(report.unmeasured.length).toBeGreaterThan(0);
     expect(sink.list().length).toBe(report.summary.total);
+
+    const generatedMs = Date.parse(report.generatedAt);
+    expect(Number.isFinite(generatedMs)).toBe(true);
+    expect(generatedMs).toBeGreaterThanOrEqual(before - 1000);
+    expect(generatedMs).toBeLessThanOrEqual(after + 1000);
+    expect(report.generatedAt).not.toBe(DEFAULT_EVALUATION_CLOCK);
+
     for (const event of sink.list()) {
       expect(event.labels).not.toHaveProperty("prompt");
       expect(JSON.stringify(event)).not.toMatch(/sk-[a-zA-Z0-9]{8,}/);
     }
+  });
+
+  it("uses evaluationClock for expiry independently of generatedAt", () => {
+    const futureClock = "2026-09-10T00:00:00.000Z";
+    const graders = runGraders(CASE_COMPLIANT_PREPARE, { evaluationClock: futureClock });
+    // Compliant evidence expires 2026-09-09 — future clock must fail provenance.
+    expect(graders.find((g) => g.graderId === "evidence_provenance")?.verdict).toBe("fail");
+
+    const defaultGraders = runGraders(CASE_COMPLIANT_PREPARE, {
+      evaluationClock: DEFAULT_EVALUATION_CLOCK,
+    });
+    expect(defaultGraders.find((g) => g.graderId === "evidence_provenance")?.verdict).toBe("pass");
   });
 
   it("detects cross-tenant access", () => {
@@ -82,6 +112,26 @@ describe("agent reliability evaluation harness", () => {
     expect(runGraders(CASE_MISSING_APPROVAL).find((g) => g.graderId === "approval_compliance")?.verdict).toBe(
       "fail",
     );
+  });
+
+  it("detects sensitive attempt blocked without side effects", () => {
+    const graders = runGraders(CASE_SENSITIVE_ATTEMPT_BLOCKED);
+    expect(graders.find((g) => g.graderId === "approval_compliance")?.verdict).toBe("fail");
+    expect(CASE_SENSITIVE_ATTEMPT_BLOCKED.observed.externalSideEffects).toBe(false);
+    expect(CASE_SENSITIVE_ATTEMPT_BLOCKED.observed.markedComplete).toBe(false);
+    expect(CASE_SENSITIVE_ATTEMPT_BLOCKED.observed.verificationResult).toBe("blocked");
+    expect(evaluateCase(CASE_SENSITIVE_ATTEMPT_BLOCKED).pass).toBe(true);
+  });
+
+  it("detects unlisted internal actions with no implicit bypass", () => {
+    const graders = runGraders(CASE_UNLISTED_INTERNAL_ACTION);
+    expect(graders.find((g) => g.graderId === "authority_compliance")?.verdict).toBe("fail");
+    expect(
+      graders
+        .find((g) => g.graderId === "authority_compliance")
+        ?.reasons.some((reason) => reason.includes("internal.unlisted_tool")),
+    ).toBe(true);
+    expect(evaluateCase(CASE_UNLISTED_INTERNAL_ACTION).pass).toBe(true);
   });
 
   it("detects authority escalation", () => {
