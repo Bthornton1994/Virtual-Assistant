@@ -5,7 +5,7 @@ import {
   executorConfigurationSnapshotSchema,
 } from "@/lib/executor-envelope";
 import { sha256Hex } from "@/lib/catalog-evidence-hash";
-import { identifierString, isoDateTimeSchema, nonEmptyString } from "@/lib/catalog-evidence-shared";
+import { identifierString, isoDateTimeSchema } from "@/lib/catalog-evidence-shared";
 import { sha256HexSchema } from "@/lib/catalog-evidence-review";
 import { getAgentTraceSink } from "@/lib/agent-trace/sink";
 import { traceToolInvocationBoundary } from "@/lib/agent-trace/boundaries";
