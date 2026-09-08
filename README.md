@@ -51,6 +51,11 @@ cp .env.example .env.local   # optional; the demo store works without it
 npm run dev
 ```
 
+Cloud Agents provision automatically via `.cursor/environment.json`, which runs
+`.cursor/install.sh` (ensures Git >= 2.45 for the software-context adapter, then
+`npm ci`) and starts `npm run dev`. The install script is idempotent, so it is
+safe to run by hand if you ever need to re-provision.
+
 Open [http://localhost:3000](http://localhost:3000).
 
 Demo password for every seeded account: `demo`
