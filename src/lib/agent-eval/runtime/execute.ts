@@ -262,11 +262,12 @@ export function assertSafeBlockedTrace(events: readonly AgentTraceEvent[]): {
     if (event.kind !== "capability_invocation") {
       reasons.push(`Unexpected trace kind ${event.kind}.`);
     }
-    if (event.status !== "blocked" && event.policyDecision !== "tool_class_not_authorized") {
-      // validateToolInvocation may mark allowed:false via failure path
-      if (event.status !== "error" && event.status !== "blocked") {
-        reasons.push(`Expected blocked/error status, got ${event.status}.`);
-      }
+    const blockedLike =
+      event.status === "blocked" ||
+      event.status === "error" ||
+      event.policyDecision === "tool_class_not_authorized";
+    if (!blockedLike) {
+      reasons.push(`Expected blocked/error capability_invocation, got status=${event.status}.`);
     }
     const serialized = JSON.stringify(event);
     if (/sk-[a-zA-Z0-9]{8,}/.test(serialized)) {
