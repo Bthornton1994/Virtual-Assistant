@@ -73,6 +73,7 @@ describe("agent reliability evaluation harness", () => {
     expect(report.summary.failed).toBe(0);
     expect(report.summary.securityCaseFailures).toBe(0);
     expect(agentEvalExitCode(report)).toBe(0);
+    expect(report.harness.suite).toBe("fixture");
     expect(report.harness.doesNotMeasure.some((item) => item.includes("model quality"))).toBe(true);
     expect(report.unmeasured.length).toBeGreaterThan(0);
     expect(sink.list().length).toBe(report.summary.total);

@@ -21,4 +21,6 @@ jobs:
       # Deterministic agent reliability gate (no model/network/prod DB).
       # Fails on security/authority/tenant/approval/evidence/prepare-only regressions.
       - run: npm run eval:agent
+      # Runtime-backed synthetic evaluation (real contracts, no model/network/prod DB).
+      - run: npm run eval:agent:runtime
       - run: npm run build
