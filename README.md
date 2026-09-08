@@ -71,10 +71,11 @@ Northline Advisory is a **seeded demonstration organization**, not a public case
 npm run lint
 npm run typecheck
 npm test
+npm run eval:agent
 npm run build
 ```
 
-Or `npm run verify` to run all four.
+Or `npm run verify` to run all five (includes the deterministic agent reliability gate).
 
 ## Environment variables
 
