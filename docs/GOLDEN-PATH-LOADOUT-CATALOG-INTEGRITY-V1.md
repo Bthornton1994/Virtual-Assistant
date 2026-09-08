@@ -50,8 +50,8 @@ The Golden Path evaluates an attempt against existing contracts. It does not sto
 
 | Concern | Existing source of truth |
 | --- | --- |
-| Authority ceiling | Delegation Spec (`prepare_only`) |
-| Attempt identity | `workstream_runs` |
+| Attempt identity | `workstream_runs` (`loadout-internal-qa` / Catalog Integrity) |
+| Authority ceiling | Delegation Spec (`prepare_only`, `definition_of_done`, activated/frozen) |
 | Staffing | Step 3D work cell (`docs/STEP-3D-WORK-CELL.md`) |
 | Prepare executor | `hermes-loadout-researcher-v1` (agent, shadow) |
 | Review executor | `grok-loadout-reviewer-v1` (agent, shadow) |
@@ -95,6 +95,18 @@ Implemented in `src/lib/__tests__/golden-path-catalog-integrity.test.ts` against
 7. A self-issued Outcome Receipt is rejected.
 8. Missing independent review fails the work-cell gate, and a passing receipt claim cannot override that rejection.
 9. Default autonomy policy holds; this path cannot request promotion.
+10. An outcome cannot start without named organization, workstream, objective, and acceptance criteria.
+11. Frozen Delegation Spec mutation is rejected; a new Spec version is required.
+12. Forged evidence (hash mismatch) is rejected.
+13. Stale sources not accessed during the run fail closed.
+14. Duplicate claim IDs fail the existing packet validator.
+15. Expired leases and wrong workers fail `checkExecutionLease`.
+16. Missing evaluation clocks fail closed.
+17. Cross-tenant evidence references are rejected.
+18. A rejected attempt cannot be repaired in place; retry requires a new Workstream Run.
+19. Unsafe secret labels and markdown-labeled URLs are redacted/rejected.
+20. A passing receipt requires independent verification and operations-manager approval.
+21. Customer-visible `verified` status cannot be emitted without a valid Outcome Receipt.
 
 ## Non-goals
 

@@ -8,7 +8,10 @@ import {
   product,
   review,
   RUN_ID,
+  RULEBOOK_URL,
   ZERO_AUTHORITY,
+  rulebookSource,
+  manufacturerSource,
 } from "@/lib/__tests__/catalog-evidence-fixtures";
 import {
   createExecutionContext,
@@ -35,6 +38,8 @@ import {
   GOLDEN_PATH_KEY,
   GOLDEN_PATH_LEASE_AUTHORITY,
   GOLDEN_PATH_MODE,
+  GOLDEN_PATH_ORGANIZATION_SLUG,
+  GOLDEN_PATH_WORKSTREAM_NAME,
   GOLDEN_PATH_PREPARE_EXECUTOR_KEY,
   GOLDEN_PATH_RECEIPT_STORE,
   GOLDEN_PATH_REVIEW_EXECUTOR_KEY,
@@ -50,6 +55,17 @@ import {
   type GoldenPathPhaseAttempt,
 } from "@/lib/golden-path-catalog-integrity";
 
+const ORG_ID = "org-loadout-internal-qa";
+const WORKSTREAM_ID = "ws-catalog-integrity";
+const OBJECTIVE =
+  "Produce a complete, reproducible integrity assessment of material Loadout catalog claims and prepare evidence-backed corrections while preserving explicit unknown/demo status when evidence is absent.";
+const DEFINITION_OF_DONE = [
+  "Every current product is included in the report",
+  "No claim is treated as verified without a named source URL and observation date inside its freshness window",
+  "No catalog claim is changed, merged, published, or commercialized by this v1 workstream",
+];
+const APPROVAL_POINTS = ["Any change to published product claims", "Merge to main", "External communication or spending"];
+const VERIFICATION_RULES = ["Independent QA must inspect the machine-readable integrity report", "A passing run requires at least one evidence artifact"];
 const HASH = "a".repeat(64);
 const TOKEN = "b".repeat(64);
 const NOW = "2026-09-08T20:00:00.000Z";
@@ -305,17 +321,46 @@ function eligibleReview(evidencePacket = eligiblePacket()) {
   return review({ evidencePacketHash: hashCatalogEvidencePacket(evidencePacket) });
 }
 
+function passingReceipt(): GoldenPathAttempt["receipt"] {
+  return {
+    verificationStatus: "passed",
+    definitionOfDoneMet: true,
+    issuedByPhase: "human_verifier",
+    issuerRole: "ops_manager",
+    approved: true,
+    customerVisibleStatus: "verified",
+  };
+}
+
+function defaultSpec(): GoldenPathAttempt["spec"] {
+  return {
+    status: "active",
+    frozen: true,
+    organizationId: ORG_ID,
+    workstreamId: WORKSTREAM_ID,
+    objective: OBJECTIVE,
+    definitionOfDone: DEFINITION_OF_DONE,
+    presentedObjective: OBJECTIVE,
+    presentedDefinitionOfDone: DEFINITION_OF_DONE,
+    approvalPoints: APPROVAL_POINTS,
+    verificationRules: VERIFICATION_RULES,
+    dataPolicy: { retain_source_urls: true, no_cross_tenant_confidential_learning: true },
+  };
+}
+
 function eligibleAttempt(overrides: Partial<GoldenPathAttempt> = {}): GoldenPathAttempt {
   const {
     packet: packetOverride,
     review: reviewOverride,
     executionContext: contextOverride,
     toolInvocations: invocationOverride,
+    evidence: evidenceOverride,
     ...rest
   } = overrides;
   const evidencePacket = (packetOverride as ReturnType<typeof packet> | undefined) ?? eligiblePacket();
   const evidenceReview = reviewOverride === undefined ? eligibleReview(evidencePacket) : reviewOverride;
   const executionContext = (contextOverride as ExecutionContext | undefined) ?? context();
+  const packetHash = hashCatalogEvidencePacket(evidencePacket);
   return {
     schemaVersion: GOLDEN_PATH_SCHEMA_VERSION,
     goldenPathKey: GOLDEN_PATH_KEY,
@@ -324,16 +369,34 @@ function eligibleAttempt(overrides: Partial<GoldenPathAttempt> = {}): GoldenPath
     unauthorizedSurfaces: [],
     mergeAuthorityGranted: false,
     autonomyRequested: false,
+    intake: {
+      organizationId: ORG_ID,
+      organizationSlug: GOLDEN_PATH_ORGANIZATION_SLUG,
+      workstreamName: GOLDEN_PATH_WORKSTREAM_NAME,
+      objective: OBJECTIVE,
+      definitionOfDone: DEFINITION_OF_DONE,
+    },
+    spec: defaultSpec(),
+    run: {
+      id: RUN_ID,
+      organizationId: ORG_ID,
+      workstreamId: WORKSTREAM_ID,
+      status: "awaiting_verification",
+    },
+    evidence: evidenceOverride ?? {
+      organizationId: ORG_ID,
+      runId: RUN_ID,
+      packetContentHash: packetHash,
+      observedAt: CREATED_AT,
+    },
+    actor: { id: "user-ops-manager", role: "ops_manager", organizationId: ORG_ID },
+    priorAttempt: null,
     phases: [phaseAttempt("prepare"), phaseAttempt("review"), phaseAttempt("validate")],
     packet: evidencePacket,
     review: evidenceReview,
     executionContext,
     toolInvocations: invocationOverride ?? [invocation(executionContext)],
-    receipt: {
-      verificationStatus: "passed",
-      definitionOfDoneMet: true,
-      issuedByPhase: "human_verifier",
-    },
+    receipt: passingReceipt(),
     autonomyMetrics: holdingAutonomyMetrics(),
     ...rest,
   };
@@ -368,6 +431,8 @@ describe("Golden Path Loadout Catalog Integrity v1", () => {
     expect(reused.receiptStore).toBe("outcome_receipts");
     expect(reused.leaseAuthority).toBe("execution-runtime/v1");
     expect(reused.workCell).toBe("step-3d-work-cell");
+    expect(reused.organizationSlug).toBe("loadout-internal-qa");
+    expect(reused.workstreamName).toBe("Catalog Integrity");
     expect(reused.frozenExecutorKeys).toEqual(FROZEN_WORK_CELL_EXECUTOR_KEYS);
     expect(GOLDEN_PATH_DECISION_IDS).toEqual(["D-007", "D-009"]);
     expect(GOLDEN_PATH_RUN_STORE).toBe("workstream_runs");
@@ -584,7 +649,7 @@ describe("Golden Path Loadout Catalog Integrity v1", () => {
   });
 
   it("rejects a self-issued Outcome Receipt", () => {
-    expect(failuresOf(eligibleAttempt({ receipt: { verificationStatus: "passed", definitionOfDoneMet: true, issuedByPhase: "validate" } }))).toMatch(
+    expect(failuresOf(eligibleAttempt({ receipt: { ...passingReceipt(), issuedByPhase: "validate" } }))).toMatch(
       /Self-issued verification is forbidden/,
     );
   });
@@ -593,7 +658,7 @@ describe("Golden Path Loadout Catalog Integrity v1", () => {
     const evaluation = evaluateGoldenPathAttempt(
       eligibleAttempt({
         review: null,
-        receipt: { verificationStatus: "passed", definitionOfDoneMet: true, issuedByPhase: "human_verifier" },
+        receipt: { ...passingReceipt(), issuedByPhase: "human_verifier" },
       }),
     );
     expect(evaluation.eligible).toBe(false);
@@ -622,11 +687,238 @@ describe("Golden Path Loadout Catalog Integrity v1", () => {
       eligibleAttempt({
         packet: evidencePacket,
         review: rejectedReview,
-        receipt: { verificationStatus: "passed", definitionOfDoneMet: true, issuedByPhase: "human_verifier" },
+        receipt: { ...passingReceipt(), issuedByPhase: "human_verifier" },
       }),
     );
     expect(evaluation.eligible).toBe(false);
     expect(evaluation.workCellHardGatePass).toBe(false);
     expect(evaluation.failures.join(" ")).toMatch(/Rejection is authoritative/);
+  });
+
+  it("rejects missing acceptance criteria", () => {
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          intake: {
+            organizationId: ORG_ID,
+            organizationSlug: GOLDEN_PATH_ORGANIZATION_SLUG,
+            workstreamName: GOLDEN_PATH_WORKSTREAM_NAME,
+            objective: OBJECTIVE,
+            definitionOfDone: [],
+          },
+          spec: { ...defaultSpec(), definitionOfDone: [], presentedDefinitionOfDone: [] },
+        }),
+      ),
+    ).toMatch(/acceptance criteria/);
+  });
+
+  it("rejects a frozen-spec mutation attempt", () => {
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          spec: { ...defaultSpec(), presentedObjective: "Silently rewrite the frozen objective." },
+        }),
+      ),
+    ).toMatch(/Frozen Delegation Spec mutation is forbidden/);
+  });
+
+  it("rejects forged evidence whose stored hash does not match the packet", () => {
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          evidence: {
+            organizationId: ORG_ID,
+            runId: RUN_ID,
+            packetContentHash: "c".repeat(64),
+            observedAt: CREATED_AT,
+          },
+        }),
+      ),
+    ).toMatch(/Forged evidence is rejected/);
+  });
+
+  it("rejects stale evidence that was not accessed during the run", () => {
+    const stalePacket = packet({
+      products: [
+        product({
+          primarySources: [rulebookSource({ accessedDuringRun: false })],
+          federationEvidence: [
+            {
+              federation: "IPF",
+              status: "rule-compliant",
+              scope: "exact-configuration",
+              basis: "Assumed from a stale copy.",
+              sourceUrls: [RULEBOOK_URL],
+            },
+          ],
+        }),
+      ],
+    });
+    const text = failuresOf(
+      eligibleAttempt({
+        packet: stalePacket,
+        review: eligibleReview(stalePacket),
+        receipt: passingReceipt(),
+      }),
+    );
+    expect(text).toMatch(/Independent verification did not pass|not accessed during the run|Rejection is authoritative/);
+  });
+
+  it("rejects duplicate claims", () => {
+    const duplicate = packet({
+      products: [
+        product({
+          claimFindings: [
+            {
+              claimId: "ks-sbd-7mm:thickness",
+              field: "thickness",
+              catalogValue: "7mm",
+              finding: "supported",
+              evidenceSupportedValue: "7mm",
+              severity: "low",
+              sourceUrls: [MANUFACTURER_URL],
+            },
+            {
+              claimId: "ks-sbd-7mm:thickness",
+              field: "thickness",
+              catalogValue: "7mm",
+              finding: "supported",
+              evidenceSupportedValue: "7mm",
+              severity: "low",
+              sourceUrls: [MANUFACTURER_URL],
+            },
+          ],
+        }),
+      ],
+    });
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          packet: duplicate,
+          review: eligibleReview(duplicate),
+        }),
+      ),
+    ).toMatch(/Independent verification did not pass|claim IDs must be globally unique/);
+  });
+
+  it("fails closed on a missing evaluation clock", () => {
+    const missingEvidenceClock = failuresOf(
+      eligibleAttempt({
+        evidence: {
+          organizationId: ORG_ID,
+          runId: RUN_ID,
+          packetContentHash: hashCatalogEvidencePacket(eligiblePacket()),
+          observedAt: null,
+        },
+      }),
+    );
+    expect(missingEvidenceClock).toMatch(/evaluation clocks fail closed/);
+
+    const missingLeaseClock = failuresOf(
+      replacePhase(eligibleAttempt(), "prepare", (current) => ({
+        ...current,
+        now: "not-a-clock",
+      })),
+    );
+    expect(missingLeaseClock).toMatch(/evaluation clocks fail closed|lease is not live/);
+  });
+
+  it("rejects a cross-tenant evidence reference", () => {
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          evidence: {
+            organizationId: "org-other-tenant",
+            runId: RUN_ID,
+            packetContentHash: hashCatalogEvidencePacket(eligiblePacket()),
+            observedAt: CREATED_AT,
+          },
+        }),
+      ),
+    ).toMatch(/Cross-tenant evidence reference is rejected/);
+
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          actor: { id: "user-client", role: "client_member", organizationId: "org-other-tenant" },
+        }),
+      ),
+    ).toMatch(/Cross-tenant evidence reference is rejected/);
+  });
+
+  it("requires a new attempt after rejection and forbids in-place repair", () => {
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          priorAttempt: { runId: RUN_ID, status: "failed", repairedInPlace: true },
+        }),
+      ),
+    ).toMatch(/cannot be silently repaired in place/);
+
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          priorAttempt: { runId: RUN_ID, status: "failed", repairedInPlace: false },
+        }),
+      ),
+    ).toMatch(/Retry requires a new Workstream Run/);
+
+    const retry = evaluateGoldenPathAttempt(
+      eligibleAttempt({
+        priorAttempt: { runId: "run-3d-0000", status: "failed", repairedInPlace: false },
+      }),
+    );
+    expect(retry.failures).toEqual([]);
+    expect(retry.eligible).toBe(true);
+  });
+
+  it("redacts unsafe secret labels and markdown-labeled source URLs", () => {
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          spec: { ...defaultSpec(), dataPolicy: { retain_source_urls: true, apiKey: "must-not-be-here" } },
+        }),
+      ),
+    ).toMatch(/Unsafe secret labels must be redacted/);
+
+    const labeled = packet({
+      products: [
+        product({
+          primarySources: [manufacturerSource({ url: `[src](${MANUFACTURER_URL})` })],
+        }),
+      ],
+    });
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          packet: labeled,
+          review: eligibleReview(labeled),
+        }),
+      ),
+    ).toMatch(/Independent verification did not pass|Markdown-formatted link|malformed/);
+  });
+
+  it("rejects a passing receipt without required approval", () => {
+    expect(failuresOf(eligibleAttempt({ receipt: { ...passingReceipt(), approved: false } }))).toMatch(
+      /requires the existing approval gate/,
+    );
+    expect(failuresOf(eligibleAttempt({ receipt: { ...passingReceipt(), issuerRole: "client_member" } }))).toMatch(
+      /operations-manager approval/,
+    );
+  });
+
+  it("rejects customer-visible completion without a valid receipt", () => {
+    expect(
+      failuresOf(
+        eligibleAttempt({
+          receipt: {
+            ...passingReceipt(),
+            verificationStatus: "failed",
+            definitionOfDoneMet: false,
+            customerVisibleStatus: "verified",
+          },
+        }),
+      ),
+    ).toMatch(/customer-visible completion/);
   });
 });

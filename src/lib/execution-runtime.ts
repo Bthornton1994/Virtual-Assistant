@@ -197,6 +197,10 @@ function isBoundedPositiveInteger(value: unknown, maximum = Number.MAX_SAFE_INTE
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= maximum;
 }
 
+export function findSecretLikeKeys(value: unknown, path = "dataPolicy"): string[] {
+  return secretLikeKeys(value, path);
+}
+
 function secretLikeKeys(value: unknown, path = "dataPolicy", depth = 0): string[] {
   if (depth > 8 || value === null || typeof value !== "object") return [];
   if (Array.isArray(value)) return value.flatMap((item, index) => secretLikeKeys(item, `${path}[${index}]`, depth + 1));

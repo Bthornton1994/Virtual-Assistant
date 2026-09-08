@@ -1,5 +1,5 @@
 import { FROZEN_WORK_CELL_EXECUTOR_KEYS } from "@/lib/capability-registry";
-import { hashCatalogEvidencePacket } from "@/lib/catalog-evidence-hash";
+import { checkPayloadHash, hashCatalogEvidencePacket } from "@/lib/catalog-evidence-hash";
 import { CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION } from "@/lib/catalog-evidence-input";
 import {
   CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
@@ -12,7 +12,13 @@ import {
   validateCatalogEvidencePacket,
   validateCatalogEvidenceReview,
 } from "@/lib/catalog-evidence-validator";
-import type { ActionClass } from "@/lib/domain";
+import { canAccessOrganization, type ActionClass, type Actor, type Role } from "@/lib/domain";
+import {
+  canTransitionWorkstreamRun,
+  finalRunStatusForReceipt,
+  requiresEvidence,
+  type WorkstreamRunStatus,
+} from "@/lib/execution-policy";
 import {
   EXECUTION_CONTEXT_SCHEMA_VERSION,
   validateExecutionContext,
@@ -22,6 +28,7 @@ import {
 import {
   checkExecutionLease,
   EXECUTION_RUNTIME_SCHEMA_VERSION,
+  findSecretLikeKeys,
   type ExecutionLease,
 } from "@/lib/execution-runtime";
 import {
@@ -55,6 +62,9 @@ export const GOLDEN_PATH_WORK_CELL = "step-3d-work-cell" as const;
 export const GOLDEN_PATH_PREPARE_EXECUTOR_KEY = FROZEN_WORK_CELL_EXECUTOR_KEYS.prepare;
 export const GOLDEN_PATH_REVIEW_EXECUTOR_KEY = FROZEN_WORK_CELL_EXECUTOR_KEYS.review;
 export const GOLDEN_PATH_VALIDATE_EXECUTOR_KEY = FROZEN_WORK_CELL_EXECUTOR_KEYS.validate;
+export const GOLDEN_PATH_ORGANIZATION_SLUG = "loadout-internal-qa" as const;
+export const GOLDEN_PATH_WORKSTREAM_NAME = "Catalog Integrity" as const;
+export const GOLDEN_PATH_RECEIPT_ISSUER_ROLES = ["ops_manager", "platform_admin"] as const;
 
 export const GOLDEN_PATH_FORBIDDEN_ACTIONS = [
   "mutate_catalog",
@@ -132,6 +142,51 @@ export type GoldenPathReceiptClaim = {
   verificationStatus: "passed" | "failed";
   definitionOfDoneMet: boolean;
   issuedByPhase: GoldenPathPhase | "human_verifier";
+  issuerRole: Role;
+  approved: boolean;
+  customerVisibleStatus: WorkstreamRunStatus | "none";
+};
+
+export type GoldenPathIntake = {
+  organizationId: string;
+  organizationSlug: string;
+  workstreamName: string;
+  objective: string;
+  definitionOfDone: string[];
+};
+
+export type GoldenPathSpecBinding = {
+  status: "draft" | "active" | "retired";
+  frozen: boolean;
+  organizationId: string;
+  workstreamId: string;
+  objective: string;
+  definitionOfDone: string[];
+  presentedObjective: string;
+  presentedDefinitionOfDone: string[];
+  approvalPoints: string[];
+  verificationRules: string[];
+  dataPolicy: Record<string, unknown>;
+};
+
+export type GoldenPathRunBinding = {
+  id: string;
+  organizationId: string;
+  workstreamId: string;
+  status: WorkstreamRunStatus;
+};
+
+export type GoldenPathEvidenceBinding = {
+  organizationId: string;
+  runId: string;
+  packetContentHash: string;
+  observedAt: string | null;
+};
+
+export type GoldenPathPriorAttempt = {
+  runId: string;
+  status: WorkstreamRunStatus;
+  repairedInPlace: boolean;
 };
 
 export type GoldenPathAttempt = {
@@ -142,6 +197,12 @@ export type GoldenPathAttempt = {
   unauthorizedSurfaces: readonly string[];
   mergeAuthorityGranted: boolean;
   autonomyRequested: boolean;
+  intake: GoldenPathIntake;
+  spec: GoldenPathSpecBinding;
+  run: GoldenPathRunBinding;
+  evidence: GoldenPathEvidenceBinding;
+  actor: Pick<Actor, "id" | "role" | "organizationId">;
+  priorAttempt: GoldenPathPriorAttempt | null;
   phases: readonly GoldenPathPhaseAttempt[];
   packet: unknown;
   review: unknown;
@@ -197,6 +258,84 @@ function readCapabilityKey(envelope: unknown): string | null {
   if (!envelope || typeof envelope !== "object" || !("capabilityKey" in envelope)) return null;
   const key = (envelope as { capabilityKey: unknown }).capabilityKey;
   return typeof key === "string" ? key : null;
+}
+
+function isFiniteClock(value: string | null | undefined): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function asActor(view: Pick<Actor, "id" | "role" | "organizationId">): Actor {
+  return {
+    id: view.id,
+    email: "golden-path-verifier@delegation-test.cloud",
+    name: "Golden Path verifier",
+    role: view.role,
+    organizationId: view.organizationId,
+    operatorId: null,
+    source: "supabase",
+  };
+}
+
+function evaluateBindings(attempt: GoldenPathAttempt, failures: string[]) {
+  if (!attempt.intake.organizationId.trim()) fail(failures, "An outcome cannot start without a named organization.");
+  if (!attempt.intake.workstreamName.trim()) fail(failures, "An outcome cannot start without a named workstream.");
+  if (!attempt.intake.objective.trim()) fail(failures, "An outcome cannot start without an objective.");
+  if (!attempt.intake.definitionOfDone.length) {
+    fail(failures, "An outcome cannot start without acceptance criteria.");
+  }
+  if (attempt.intake.organizationSlug !== GOLDEN_PATH_ORGANIZATION_SLUG) {
+    fail(failures, "Golden Path organization must remain " + GOLDEN_PATH_ORGANIZATION_SLUG + ".");
+  }
+  if (attempt.intake.workstreamName !== GOLDEN_PATH_WORKSTREAM_NAME) {
+    fail(failures, "Golden Path workstream must remain " + GOLDEN_PATH_WORKSTREAM_NAME + ".");
+  }
+  if (!attempt.spec.frozen || attempt.spec.status !== "active") {
+    fail(failures, "The selected workstream must be frozen before execution.");
+  }
+  if (attempt.spec.presentedObjective !== attempt.spec.objective || JSON.stringify(attempt.spec.presentedDefinitionOfDone) !== JSON.stringify(attempt.spec.definitionOfDone)) {
+    fail(failures, "Frozen Delegation Spec mutation is forbidden. Create a new Spec version instead.");
+  }
+  if (attempt.intake.objective !== attempt.spec.objective) {
+    fail(failures, "Intake objective must match the frozen Delegation Spec.");
+  }
+  if (JSON.stringify(attempt.intake.definitionOfDone) !== JSON.stringify(attempt.spec.definitionOfDone)) {
+    fail(failures, "Intake acceptance criteria must match the frozen Delegation Spec.");
+  }
+  if (attempt.run.status === "planned") {
+    fail(failures, "The selected workstream must be frozen before execution.");
+  }
+  if (
+    attempt.spec.organizationId !== attempt.run.organizationId ||
+    attempt.spec.workstreamId !== attempt.run.workstreamId ||
+    attempt.intake.organizationId !== attempt.run.organizationId ||
+    attempt.evidence.organizationId !== attempt.run.organizationId
+  ) {
+    fail(failures, "Cross-tenant evidence reference is rejected.");
+  }
+  if (attempt.evidence.runId !== attempt.run.id) {
+    fail(failures, "Evidence must bind to the Workstream Run that produced it.");
+  }
+  if (!canAccessOrganization(asActor(attempt.actor), attempt.evidence.organizationId)) {
+    fail(failures, "Cross-tenant evidence reference is rejected.");
+  }
+  const secretPaths = findSecretLikeKeys(attempt.spec.dataPolicy);
+  if (secretPaths.length > 0) {
+    fail(failures, "Unsafe secret labels must be redacted from dataPolicy (" + secretPaths.join(", ") + ").");
+  }
+  if (!isFiniteClock(attempt.evidence.observedAt)) {
+    fail(failures, "Invalid or missing evaluation clocks fail closed.");
+  }
+  if (attempt.priorAttempt) {
+    if (attempt.priorAttempt.repairedInPlace) {
+      fail(failures, "A rejected attempt cannot be silently repaired in place. Start a new Workstream Run.");
+    }
+    if (attempt.priorAttempt.runId === attempt.run.id) {
+      fail(failures, "A rejected attempt remains recorded. Retry requires a new Workstream Run.");
+    }
+    if (canTransitionWorkstreamRun(attempt.priorAttempt.status, "running")) {
+      fail(failures, "A rejected attempt remains recorded. Retry requires a new Workstream Run.");
+    }
+  }
 }
 
 function evaluatePhase(
@@ -275,6 +414,9 @@ function evaluatePhase(
   }
 
   const leaseCheck = checkExecutionLease(phaseAttempt.lease, phaseAttempt.presentedLease, phaseAttempt.now);
+  if (!isFiniteClock(phaseAttempt.now)) {
+    fail(failures, phaseAttempt.phase + " invalid or missing evaluation clocks fail closed.");
+  }
   if (!leaseCheck.ok) {
     fail(failures, phaseAttempt.phase + " Execution Runtime lease is not live: " + leaseCheck.reason + ".");
   }
@@ -331,6 +473,7 @@ export function evaluateGoldenPathAttempt(attempt: GoldenPathAttempt): GoldenPat
   for (const surface of attempt.unauthorizedSurfaces) {
     fail(failures, "Unauthorized surface is present: " + surface + ".");
   }
+  evaluateBindings(attempt, failures);
 
   const seenPhases = new Set<GoldenPathPhase>();
   let runId: string | null = null;
@@ -368,12 +511,18 @@ export function evaluateGoldenPathAttempt(attempt: GoldenPathAttempt): GoldenPat
 
   const packetResult = validateCatalogEvidencePacket(attempt.packet);
   const parsedPacket = catalogEvidencePacketV1Schema.safeParse(attempt.packet);
+  if (parsedPacket.success) {
+    const forged = checkPayloadHash(parsedPacket.data, attempt.evidence.packetContentHash, "catalog-evidence-packet");
+    if (forged.tampered) {
+      fail(failures, "Forged evidence is rejected. " + forged.failure);
+    }
+  }
   const reviewResult = parsedPacket.success
     ? validateCatalogEvidenceReview(attempt.review, {
         expectedPacketHash: hashCatalogEvidencePacket(parsedPacket.data),
         claims: collectPacketClaims(parsedPacket.data),
         packetProductIds: parsedPacket.data.products.map((product) => product.productId),
-        expectedRunId: runId ?? parsedPacket.data.runId,
+        expectedRunId: runId ?? parsedPacket.data.runId ?? attempt.run.id,
         expectedReviewerKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.review,
       })
     : null;
@@ -416,6 +565,32 @@ export function evaluateGoldenPathAttempt(attempt: GoldenPathAttempt): GoldenPat
   }
   if (attempt.receipt.verificationStatus === "passed" && !gate.hardGatePass) {
     fail(failures, "A passing Outcome Receipt requires an independent work-cell hard gate.");
+  }
+  if (attempt.receipt.verificationStatus === "passed" && !attempt.receipt.approved) {
+    fail(failures, "A passing Outcome Receipt requires the existing approval gate.");
+  }
+  if (
+    attempt.receipt.verificationStatus === "passed" &&
+    !(GOLDEN_PATH_RECEIPT_ISSUER_ROLES as readonly string[]).includes(attempt.receipt.issuerRole)
+  ) {
+    fail(failures, "A passing Outcome Receipt requires an accountable operations-manager approval.");
+  }
+  if (attempt.receipt.verificationStatus === "passed" && requiresEvidence(attempt.spec.verificationRules) && !parsedPacket.success) {
+    fail(failures, "This Delegation Spec requires evidence before a run can pass verification.");
+  }
+  const receiptFinalStatus = finalRunStatusForReceipt(
+    attempt.receipt.verificationStatus,
+    attempt.receipt.definitionOfDoneMet,
+  );
+  if (attempt.receipt.customerVisibleStatus === "verified") {
+    if (
+      receiptFinalStatus !== "verified" ||
+      !gate.hardGatePass ||
+      !attempt.receipt.approved ||
+      attempt.receipt.issuedByPhase !== "human_verifier"
+    ) {
+      fail(failures, "No customer-visible completion may be emitted without a valid Outcome Receipt.");
+    }
   }
 
   if (attempt.autonomyMetrics) {
@@ -464,6 +639,8 @@ export function goldenPathReusedContracts() {
     workCell: GOLDEN_PATH_WORK_CELL,
     envelopes: EXECUTOR_ENVELOPE_SCHEMA_VERSION,
     executionContext: EXECUTION_CONTEXT_SCHEMA_VERSION,
+    organizationSlug: GOLDEN_PATH_ORGANIZATION_SLUG,
+    workstreamName: GOLDEN_PATH_WORKSTREAM_NAME,
     forbiddenActions: GOLDEN_PATH_FORBIDDEN_ACTIONS,
     unauthorizedSurfaces: GOLDEN_PATH_UNAUTHORIZED_SURFACES,
   } as const;
