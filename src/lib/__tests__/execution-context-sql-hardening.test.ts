@@ -51,7 +51,7 @@ describe("execution context SQL hardening v1", () => {
     expect(sql).toMatch(/SQL does NOT recompute canonicalJsonStringify \+ sha256/);
     expect(sql).toMatch(/SQL does not recompute the canonical hash/);
     expect(doc).toMatch(/does not recompute the canonical content hash in SQL/);
-    expect(doc).not.toMatch(/SQL independently recomputes/);
+    expect(doc).toMatch(/No claim that SQL independently recomputes/);
   });
 
   it("3. unsupported direct authenticated observation INSERT is fail-closed", () => {
@@ -242,7 +242,7 @@ describe("execution context SQL hardening v1", () => {
     expect(sql).toMatch(/cannot set p_allow_expired/);
     expect(sql).toMatch(/Do not document this as "No p_allow_expired"/);
     expect(qa).toMatch(/authenticated cannot set p_allow_expired/);
-    expect(doc).toMatch(/p_allow_expired is preserved/);
+    expect(doc).toMatch(/p_allow_expired` exists/);
     expect(doc).toMatch(/PR #78.s description said .*No `p_allow_expired`/);
   });
 });
