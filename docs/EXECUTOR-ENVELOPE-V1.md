@@ -41,4 +41,6 @@ No migration, database write, provider routing, or production deployment is incl
 
 ## Next boundary
 
-CS-3 can add a read-only adapter that translates existing `run_executor_assignments` rows into this envelope. That adapter should preserve the frozen executor keys and remain separate from any capability-based routing decision.
+`src/lib/assignment-to-envelope.ts` is the read-only translator from a frozen assignment snapshot into this envelope and an Execution Context. It preserves frozen executor and capability keys, maps the existing profile authority snapshot into `authoritySnapshot`, and binds identity with canonical SHA-256 assignment ids. It does not route, select a provider, write to a store, or replace the Delegation Spec as the authority ceiling.
+
+That translator remains separate from any capability-based routing decision. Adapter enforcement of Execution Context at fetch, lease completion, or evidence persistence is a later slice.
