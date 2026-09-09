@@ -914,7 +914,7 @@ describe("execution context enforcement v1 adversarial fail-closed gates", () =>
       prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
         fetchPage: async () => {
           fetchCalls += 1;
-          return { url: "https://example.invalid", status: 200, text: "injected fake must not be called" };
+          return { url: "https://www.sbdapparel.com/products/7mm-knee-sleeves", status: 200, text: "injected fake must not be called" };
         },
         now: NOW,
       }),
@@ -966,16 +966,10 @@ describe("execution context enforcement v1 adversarial fail-closed gates", () =>
     const prepared = persistGate();
     expect(assertWorkCellPhasePersistAllowed(prepared).contextHash).toBe(prepared.metadata.contextHash);
 
-    const reviewBinding = assignmentToEnvelope(
-      { ...assignmentInput(), phase: "review", capabilityKey: "independent_evidence_review" },
-      spec(),
-      inputRefs(),
-    );
-    if (!reviewBinding.ok) throw new Error(reviewBinding.failures.join(" "));
-    const reviewTrace = buildRequiredEmptyTrace("operator_submitted", reviewBinding.value);
+    const reviewTrace = buildRequiredEmptyTrace("operator_submitted", binding());
     const reviewIdentity = workCellPersistIdentity({
       organizationId: "org-loadout-internal-qa",
-      runId: reviewBinding.value.context.runId,
+      runId: binding().context.runId,
       phase: "review",
       executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.prepare,
       capabilityKey: "independent_evidence_review",
@@ -991,39 +985,12 @@ describe("execution context enforcement v1 adversarial fail-closed gates", () =>
         metadata: { ...reviewIdentity, ...observationPointersFor(reviewTrace) },
         observation: observationRow(reviewIdentity.runId, reviewIdentity.organizationId, reviewTrace),
       }).assignmentId,
-    ).toBe(reviewBinding.value.assignmentId);
+    ).toBe(binding().assignmentId);
 
-    const validateBinding = assignmentToEnvelope(
-      {
-        ...assignmentInput(),
-        phase: "validate",
-        capabilityKey: "deterministic_catalog_validation",
-        executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.validate,
-        executorKind: "deterministic",
-        provider: "delegation-cloud",
-        protocolVersion: "catalog-evidence-validator/v1",
-        modelId: null,
-        outputContract: { schemaVersion: "catalog-evidence-validation/v1", artifactKind: "test" },
-        evidenceRequirements: {
-          requiredArtifactSchemaVersions: ["catalog-evidence-validation/v1"],
-          requiredSourceProvenance: [],
-          independentReviewRequired: false,
-        },
-        profileAuthoritySnapshot: {
-          executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.validate,
-          executorKind: "deterministic",
-          authorityEnvelope: { actionClass: "prepare_only", mayOwnAuthoritativeState: false },
-          forbiddenActions: ["network access"],
-        },
-      },
-      spec({ allowedToolClasses: ["deterministic_validation"] }),
-      inputRefs(),
-    );
-    if (!validateBinding.ok) throw new Error(validateBinding.failures.join(" "));
-    const validateTrace = buildRequiredEmptyTrace("deterministic_validation_no_tools", validateBinding.value);
+    const validateTrace = buildRequiredEmptyTrace("deterministic_validation_no_tools", binding());
     const validateIdentity = workCellPersistIdentity({
       organizationId: "org-loadout-internal-qa",
-      runId: validateBinding.value.context.runId,
+      runId: binding().context.runId,
       phase: "validate",
       executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.validate,
       capabilityKey: "deterministic_catalog_validation",
@@ -1039,7 +1006,7 @@ describe("execution context enforcement v1 adversarial fail-closed gates", () =>
         metadata: { ...validateIdentity, ...observationPointersFor(validateTrace) },
         observation: observationRow(validateIdentity.runId, validateIdentity.organizationId, validateTrace),
       }).assignmentId,
-    ).toBe(validateBinding.value.assignmentId);
+    ).toBe(binding().assignmentId);
 
     const leased = leasedGate();
     expect(assertLeasedCompleteAllowed(leased).assignmentId).toBe(leased.expectedAssignmentId);

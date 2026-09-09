@@ -227,11 +227,10 @@ export async function persistObservationArtifact(
   };
 }
 
-const WORK_CELL_PHASES = ["prepare", "review", "validate"] as const;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const LEASE_SECRET_KEYS = ["workerId", "leaseToken", "leaseTokenHash", "tokenHash"] as const;
 
-export type WorkCellPhaseName = (typeof WORK_CELL_PHASES)[number];
+export type WorkCellPhaseName = "prepare" | "review" | "validate";
 
 export type BoundObservationRow = {
   organizationId: string;
@@ -406,15 +405,6 @@ export function requireCompleteMetadataHashes(
  * Lease expiry applies here, not to work-cell operator paste.
  */
 export function assertLeasedCompleteAllowed(input: LeasedCompleteGateInput): ObservationPointers {
-  if (input.attempt.status !== "running") {
-    throw new DomainError("Execution attempt is not running; cancelled, expired, or taken-over attempts cannot complete.");
-  }
-  if (
-    input.attempt.stepLeaseWorkerId != null &&
-    input.attempt.stepLeaseWorkerId !== input.caller.workerId
-  ) {
-    throw new DomainError("Execution attempt is not running; cancelled, expired, or taken-over attempts cannot complete.");
-  }
   if (!input.attempt.contextHash || !SHA256_HEX.test(input.attempt.contextHash)) {
     throw new DomainError("Execution attempt is missing a stored context hash.");
   }
@@ -446,6 +436,15 @@ export function assertLeasedCompleteAllowed(input: LeasedCompleteGateInput): Obs
   );
   if (!leaseCheck.ok) {
     throw new DomainError("Execution lease check failed: " + leaseCheck.reason);
+  }
+  if (input.attempt.status !== "running") {
+    throw new DomainError("Execution attempt is not running; cancelled, expired, or taken-over attempts cannot complete.");
+  }
+  if (
+    input.attempt.stepLeaseWorkerId != null &&
+    input.attempt.stepLeaseWorkerId !== input.caller.workerId
+  ) {
+    throw new DomainError("Execution attempt is not running; cancelled, expired, or taken-over attempts cannot complete.");
   }
 
   const pointers = requireCompleteMetadataHashes(input.caller.metadata, {
