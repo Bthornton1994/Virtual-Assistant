@@ -240,18 +240,21 @@ describe("execution context enforcement v1", () => {
     expect(trace).not.toHaveProperty("leaseTokenHash");
   });
 
-  it("10-17. native public_read authorize/fetch cycles record distinct outcomes without network", async () => {
+  it("10. native authorizeToolClass is preflight only and is not a persisted trace row", () => {
     const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
-    const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
-    let fetchCalls = 0;
-    const fetchPage: PageFetcher = async (url) => {
-      fetchCalls += 1;
-      if (url.includes("fail")) return { error: "upstream 503" };
-      return { url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" };
-    };
+    const allowed = authorizeToolClass(authorized.context, "public_read");
+    expect(allowed.ok).toBe(true);
+    if (allowed.ok) {
+      expect(allowed.value).not.toHaveProperty("invokedAt");
+      expect(allowed.value).not.toHaveProperty("completedAt");
+      expect(allowed.value).not.toHaveProperty("invocationId");
+      expect(allowed.value).not.toHaveProperty("status");
+    }
+  });
 
-    const preflight = authorizeToolClass(unauthorized.context, "public_read");
-    expect(preflight.ok).toBe(false);
+  it("11. native unauthorized public_read does not call fetchPage", async () => {
+    const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
+    expect(authorizeToolClass(unauthorized.context, "public_read").ok).toBe(false);
     const blocked = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
       fetchPage: async () => {
         throw new Error("fetchPage must not run after a blocked preflight");
@@ -259,35 +262,83 @@ describe("execution context enforcement v1", () => {
       now: NOW,
     });
     expect(blocked.trace.outcomes.map((outcome) => outcome.result)).toEqual(["blocked_preflight"]);
+  });
+
+  it("12. native blocked_preflight records a blocked invocation with tool_class_not_authorized", async () => {
+    const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
+    const blocked = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+      fetchPage: async () => {
+        throw new Error("fetchPage must not run after a blocked preflight");
+      },
+      now: NOW,
+    });
     expect(blocked.trace.invocations[0]?.status).toBe("blocked");
     expect(blocked.trace.invocations[0]?.failureCode).toBe("tool_class_not_authorized");
-    expect(fetchCalls).toBe(0);
+    expect(blocked.trace.outcomes[0]?.result).toBe("blocked_preflight");
+  });
 
+  it("13. native authorized public_read calls the injected fetchPage once", async () => {
+    const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
+    let fetchCalls = 0;
     const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), authorized, {
-      fetchPage,
+      fetchPage: async (url) => {
+        fetchCalls += 1;
+        return { url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" };
+      },
       now: NOW,
     });
     expect(fetchCalls).toBe(1);
+    expect(fetched.trace.dcExecutedTools).toBe(true);
+    expect(fetched.trace.externalAgentToolUse).toBe("not_applicable");
+  });
+
+  it("14. native fetched success records an allowed invocation without a failureCode", async () => {
+    const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
+    const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), authorized, {
+      fetchPage: async (url) => ({ url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" }),
+      now: NOW,
+    });
     expect(fetched.trace.outcomes[0]?.result).toBe("fetched");
     expect(fetched.trace.invocations[0]?.status).toBe("allowed");
     expect(fetched.trace.invocations[0]?.failureCode).toBeNull();
-    expect(fetched.trace.dcExecutedTools).toBe(true);
-    expect(fetched.trace.externalAgentToolUse).toBe("not_applicable");
-    expect(validateToolInvocationTrace(fetched.trace.invocations, authorized.context).ok).toBe(true);
+  });
 
+  it("15. native fetch_failed is an allowed invocation, not a blocked authorization", async () => {
+    const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
     const failingManifest = nativeManifest();
     failingManifest.inputRecords[0] = {
       productId: "ks-sbd-7mm",
       record: { name: "SBD 7mm Knee Sleeves", manufacturerUrl: "https://www.sbdapparel.com/fail" },
     };
     const failed = await prepareAuthorizedPublicWebEvidencePacket(failingManifest, authorized, {
-      fetchPage,
+      fetchPage: async () => ({ error: "upstream 503" }),
       now: NOW,
     });
     expect(failed.trace.outcomes[0]?.result).toBe("fetch_failed");
     expect(failed.trace.invocations[0]?.status).toBe("allowed");
     expect(failed.trace.invocations[0]?.failureCode).toBeNull();
     expect(failed.packet.schemaVersion).toBe(CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION);
+  });
+
+  it("16. native completed traces are validated after fetch, not used as preflight", async () => {
+    const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
+    const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), authorized, {
+      fetchPage: async (url) => ({ url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" }),
+      now: NOW,
+    });
+    expect(validateToolInvocationTrace(fetched.trace.invocations, authorized.context).ok).toBe(true);
+    expect(authorizeToolClass(authorized.context, "public_read").ok).toBe(true);
+  });
+
+  it("17. native tests use injected fakes only and never open a network fetch", async () => {
+    const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
+    const source = readFileSync(resolve(process.cwd(), "src/lib/__tests__/execution-context-enforcement.test.ts"), "utf8");
+    expect(source).not.toMatch(/https?:\/\/(?!www\.sbdapparel\.com)/);
+    const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), authorized, {
+      fetchPage: async (url) => ({ url, status: 200, text: "injected fixture" }),
+      now: NOW,
+    });
+    expect(fetched.trace.invocations).toHaveLength(1);
   });
 
   it("18. leased claim SQL requires and writes context_hash and envelopeHash", () => {
