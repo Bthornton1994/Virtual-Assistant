@@ -3,11 +3,14 @@ import { AuthzError, DomainError, assertOrgAccess, type ActionClass, type Actor 
 import type { AssignmentToEnvelopeAssignment } from "@/lib/assignment-to-envelope";
 import {
   assertObservationBound,
+  assertWorkCellPhasePersistAllowed,
   buildRequiredEmptyTrace,
+  loadObservationTrace,
   mergeObservationPointers,
   persistObservationArtifact,
   snapshotDelegationSpec,
   translateWorkCellAssignment,
+  workCellPersistIdentity,
   type ExecutionBinding,
 } from "@/lib/execution-context-enforcement";
 import type { ExecutorEnvelopeV1 } from "@/lib/executor-envelope";
@@ -365,7 +368,53 @@ async function persistPhaseArtifact(
   },
 ): Promise<{ artifactId: string; assignmentId: string }> {
   assertProfileFitsPhase(profile, input.phase);
-  await assertObservationBound(db, run, input.assignmentMetadata ?? {});
+  const capabilityKey =
+    input.phase === "validate" ? "deterministic_supplier_sourcing_validation" : "supplier_sourcing";
+  const identity = workCellPersistIdentity({
+    organizationId: run.organization_id,
+    runId: run.id,
+    phase: input.phase,
+    executorKey: profile.key,
+    capabilityKey,
+  });
+  const assignmentMetadata = {
+    ...(input.assignmentMetadata ?? {}),
+    ...identity,
+  };
+  await assertObservationBound(db, run, assignmentMetadata);
+  const observation = await loadObservationTrace(db, run.id, String(assignmentMetadata.assignmentId ?? ""));
+  const snapshotActionClass = profile.authorityEnvelope.actionClass;
+  let specActionClass: ActionClass = "prepare_only";
+  if (run.delegation_spec_id) {
+    const { data: specRow, error: specError } = await db
+      .from("delegation_specs")
+      .select("action_class")
+      .eq("id", run.delegation_spec_id)
+      .maybeSingle();
+    if (specError) throw new DomainError(specError.message);
+    if (specRow && typeof specRow.action_class === "string") {
+      specActionClass = specRow.action_class as ActionClass;
+    }
+  }
+  assertWorkCellPhasePersistAllowed({
+    organizationId: run.organization_id,
+    runId: run.id,
+    phase: input.phase,
+    executorKey: profile.key,
+    capabilityKey,
+    specActionClass,
+    assignmentActionClass: typeof snapshotActionClass === "string" ? (snapshotActionClass as ActionClass) : null,
+    metadata: assignmentMetadata,
+    observation: observation
+      ? {
+          organizationId: run.organization_id,
+          runId: run.id,
+          kind: "observation",
+          contentHash: observation.contentHash,
+          payload: observation.payload,
+        }
+      : null,
+  });
   if (await getPhaseAssignment(db, run.id, input.phase)) {
     throw new DomainError(
       "The " +
@@ -389,7 +438,7 @@ async function persistPhaseArtifact(
     p_human_minutes: input.humanMinutes ?? 0,
     p_ai_cost_micros: Math.round(input.aiCostMicros ?? 0),
     p_tool_cost_micros: Math.round(input.toolCostMicros ?? 0),
-    p_assignment_metadata: input.assignmentMetadata ?? {},
+    p_assignment_metadata: assignmentMetadata,
   });
   if (error) throw new DomainError(error.message);
   const rows = (Array.isArray(data) ? data : data ? [data] : []) as Array<{

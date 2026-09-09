@@ -174,6 +174,12 @@ export function validateToolInvocationTraceArtifact(
     }
   }
 
+  if (trace.productionClass === "leased_executor_execution" && trace.invocations.length === 0) {
+    failures.push(
+      "Leased completion refuses an empty observation trace unless production class is explicitly no-tools.",
+    );
+  }
+
   if (trace.productionClass === "operator_submitted" && trace.externalAgentToolUse !== "unknown") {
     failures.push("operator_submitted traces must record externalAgentToolUse as unknown.");
   }

@@ -13,8 +13,12 @@ import {
 } from "@/lib/execution-context";
 import { checkExecutionLease } from "@/lib/execution-runtime";
 import {
+  assertLeasedCompleteAllowed,
+  assertWorkCellPhasePersistAllowed,
   buildRequiredEmptyTrace,
+  requireCompleteMetadataHashes,
   snapshotDelegationSpec,
+  workCellPersistIdentity,
 } from "@/lib/execution-context-enforcement";
 import {
   CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION,
@@ -27,12 +31,14 @@ import { CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION } from "@/lib/catalog-evidence-r
 import {
   PUBLIC_WEB_RESEARCHER_KEY,
   prepareAuthorizedPublicWebEvidencePacket,
-  type PageFetcher,
 } from "@/lib/public-web-researcher";
 import {
   emptyObservationTrace,
+  hashToolInvocationTrace,
+  observationPointersFor,
   requireObservationPointers,
   validateToolInvocationTraceArtifact,
+  type ToolInvocationTrace,
 } from "@/lib/tool-invocation-trace";
 
 const HASH = "a".repeat(64);
@@ -255,26 +261,26 @@ describe("execution context enforcement v1", () => {
   it("11. native unauthorized public_read does not call fetchPage", async () => {
     const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
     expect(authorizeToolClass(unauthorized.context, "public_read").ok).toBe(false);
-    const blocked = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
-      fetchPage: async () => {
-        throw new Error("fetchPage must not run after a blocked preflight");
-      },
-      now: NOW,
-    });
-    expect(blocked.trace.outcomes.map((outcome) => outcome.result)).toEqual(["blocked_preflight"]);
+    await expect(
+      prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+        fetchPage: async () => {
+          throw new Error("fetchPage must not run after a blocked preflight");
+        },
+        now: NOW,
+      }),
+    ).rejects.toThrow(/blocked_preflight|Fetch was not started/);
   });
 
-  it("12. native blocked_preflight records a blocked invocation with tool_class_not_authorized", async () => {
+  it("12. native blocked_preflight rejects before returning a persistable packet", async () => {
     const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
-    const blocked = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
-      fetchPage: async () => {
-        throw new Error("fetchPage must not run after a blocked preflight");
-      },
-      now: NOW,
-    });
-    expect(blocked.trace.invocations[0]?.status).toBe("blocked");
-    expect(blocked.trace.invocations[0]?.failureCode).toBe("tool_class_not_authorized");
-    expect(blocked.trace.outcomes[0]?.result).toBe("blocked_preflight");
+    await expect(
+      prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+        fetchPage: async () => {
+          throw new Error("fetchPage must not run after a blocked preflight");
+        },
+        now: NOW,
+      }),
+    ).rejects.toThrow(/blocked_preflight|Fetch was not started/);
   });
 
   it("13. native authorized public_read calls the injected fetchPage once", async () => {
@@ -372,6 +378,8 @@ describe("execution context enforcement v1", () => {
     expect(complete).toMatch(/tool-invocation-trace\/v1/);
     expect(complete).toMatch(/leased_executor_execution/);
     expect(complete).toMatch(/p_output_artifact_ids/);
+    expect(complete).toMatch(/not \(v_metadata \? 'contextHash'\)/);
+    expect(complete).toMatch(/jsonb_array_length\(e.payload->'invocations'\) > 0/);
   });
 
   it("20. leased complete and fail reject metadata that mismatches stored hashes", () => {
@@ -578,7 +586,7 @@ describe("execution context enforcement v1", () => {
     expect(proof).toMatch(/execution_context_enforcement_v1_not_applied_to_supabase/);
     const persistence = readFileSync(resolve(process.cwd(), "src/lib/execution-runtime-persistence.ts"), "utf8");
     expect(persistence).toMatch(/p_context_hash: binding.contextHash/);
-    expect(persistence).toMatch(/checkExecutionLease\(/);
+    expect(persistence).toMatch(/assertLeasedCompleteAllowed\(/);
     const native = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
     const nativeFn = native.slice(
       native.indexOf("export async function runNativePublicWebPrepare"),
@@ -587,6 +595,9 @@ describe("execution context enforcement v1", () => {
     expect(nativeFn.indexOf("persistObservationArtifact")).toBeLessThan(nativeFn.indexOf("persistPhaseArtifact"));
     expect(nativeFn).toMatch(/prepareAuthorizedPublicWebEvidencePacket/);
     expect(nativeFn).not.toMatch(/preparePublicWebEvidencePacket\(/);
+    expect(nativeFn).toMatch(/blocked_preflight/);
+    expect(migration).toMatch(/create or replace function public\.record_work_cell_phase_artifact/);
+    expect(migration).toMatch(/Work-cell persistence requires a same-organization, same-run observation trace/);
   });
 });
 
@@ -598,5 +609,456 @@ describe("execution-step leased identity", () => {
       inputRefs(),
     );
     expect(result.ok).toBe(true);
+  });
+});
+
+function observationRow(runId: string, organizationId: string, trace: ToolInvocationTrace) {
+  return {
+    organizationId,
+    runId,
+    kind: "observation",
+    contentHash: hashToolInvocationTrace(trace),
+    payload: trace,
+  };
+}
+
+function persistGate(overrides: Partial<Parameters<typeof assertWorkCellPhasePersistAllowed>[0]> = {}) {
+  const current = binding();
+  const trace = buildRequiredEmptyTrace("operator_submitted", current);
+  const identity = workCellPersistIdentity({
+    organizationId: "org-loadout-internal-qa",
+    runId: current.context.runId,
+    phase: "prepare",
+    executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.prepare,
+    capabilityKey: "evidence_research",
+  });
+  const pointers = observationPointersFor(trace);
+  return {
+    organizationId: identity.organizationId,
+    runId: identity.runId,
+    phase: "prepare" as const,
+    executorKey: identity.executorKey,
+    capabilityKey: identity.capabilityKey,
+    specActionClass: "prepare_only" as const,
+    assignmentActionClass: "prepare_only" as const,
+    metadata: { ...identity, ...pointers },
+    observation: observationRow(identity.runId, identity.organizationId, trace),
+    ...overrides,
+  };
+}
+
+function leasedBinding() {
+  const result = executionStepAssignmentToEnvelope(
+    { ...assignmentInput(), planHash: HASH, stepKey: "research" },
+    spec(),
+    inputRefs(),
+  );
+  if (!result.ok) throw new Error(result.failures.join(" "));
+  return result.value;
+}
+
+function leasedTrace(current: ReturnType<typeof leasedBinding>, invocations = true): ToolInvocationTrace {
+  if (!invocations) {
+    return {
+      schemaVersion: "tool-invocation-trace/v1",
+      productionClass: "leased_executor_execution",
+      assignmentId: current.assignmentId,
+      envelopeHash: current.envelopeHash,
+      contextHash: current.contextHash,
+      dcExecutedTools: false,
+      externalAgentToolUse: "not_applicable",
+      invocations: [],
+      outcomes: [],
+    };
+  }
+  return {
+    schemaVersion: "tool-invocation-trace/v1",
+    productionClass: "leased_executor_execution",
+    assignmentId: current.assignmentId,
+    envelopeHash: current.envelopeHash,
+    contextHash: current.contextHash,
+    dcExecutedTools: true,
+    externalAgentToolUse: "not_applicable",
+    invocations: [
+      {
+        schemaVersion: current.context.schemaVersion,
+        invocationId: "invocation-001",
+        contextHash: current.contextHash,
+        toolClass: "public_read",
+        toolKey: "public-https-fetch",
+        status: "allowed",
+        invokedAt: NOW,
+        completedAt: NOW,
+        failureCode: null,
+      },
+    ],
+    outcomes: [{ invocationId: "invocation-001", result: "fetched" }],
+  };
+}
+
+function leasedGate(overrides: {
+  attempt?: Partial<Parameters<typeof assertLeasedCompleteAllowed>[0]["attempt"]>;
+  caller?: Partial<Parameters<typeof assertLeasedCompleteAllowed>[0]["caller"]>;
+  observation?: Parameters<typeof assertLeasedCompleteAllowed>[0]["observation"];
+  omitObservation?: boolean;
+} = {}) {
+  const current = leasedBinding();
+  const trace = leasedTrace(current);
+  const pointers = observationPointersFor(trace);
+  return {
+    attempt: {
+      status: "running",
+      organizationId: "org-loadout-internal-qa",
+      runId: current.context.runId,
+      workerId: "worker-001",
+      leaseTokenHash: HASH,
+      leaseExpiresAt: "2026-09-09T17:00:00Z",
+      contextHash: current.contextHash,
+      envelopeHash: current.envelopeHash,
+      stepLeaseWorkerId: "worker-001",
+      ...overrides.attempt,
+    },
+    caller: {
+      attemptId: "attempt-001",
+      stepKey: "research",
+      workerId: "worker-001",
+      leaseTokenHash: HASH,
+      now: NOW,
+      metadata: { ...pointers },
+      outputArtifactIds: ["11111111-1111-4111-8111-111111111111"],
+      ...overrides.caller,
+    },
+    observation: overrides.omitObservation
+      ? null
+      : (overrides.observation ?? observationRow(current.context.runId, "org-loadout-internal-qa", trace)),
+    context: current.context,
+    expectedAssignmentId: current.assignmentId,
+    expectedEnvelopeHash: current.envelopeHash,
+    expectedContextHash: current.contextHash,
+  };
+}
+
+describe("execution context enforcement v1 adversarial fail-closed gates", () => {
+  it("1. work-cell persistence without context is rejected", () => {
+    const current = persistGate();
+    expect(() =>
+      assertWorkCellPhasePersistAllowed({
+        ...current,
+        metadata: workCellPersistIdentity({
+          organizationId: current.organizationId,
+          runId: current.runId,
+          phase: current.phase,
+          executorKey: current.executorKey,
+          capabilityKey: current.capabilityKey,
+        }),
+        observation: null,
+      }),
+    ).toThrow(/Missing observation trace is not an empty trace/);
+  });
+
+  it("2. work-cell persistence with a mismatched context hash is rejected", () => {
+    const current = persistGate();
+    expect(() =>
+      assertWorkCellPhasePersistAllowed({
+        ...current,
+        metadata: { ...current.metadata, contextHash: "b".repeat(64) },
+      }),
+    ).toThrow(/do not match the frozen envelope and context|Observation hashes/);
+  });
+
+  it("3. work-cell persistence with mismatched tenant, run, executor, capability, or work-cell is rejected", () => {
+    const current = persistGate();
+    expect(() =>
+      assertWorkCellPhasePersistAllowed({
+        ...current,
+        metadata: { ...current.metadata, organizationId: "org-other" },
+      }),
+    ).toThrow(/organizationId does not match/);
+    expect(() =>
+      assertWorkCellPhasePersistAllowed({
+        ...current,
+        metadata: { ...current.metadata, runId: "run-other" },
+      }),
+    ).toThrow(/runId does not match/);
+    expect(() =>
+      assertWorkCellPhasePersistAllowed({
+        ...current,
+        metadata: { ...current.metadata, executorKey: "other-executor" },
+      }),
+    ).toThrow(/executorKey does not match/);
+    expect(() =>
+      assertWorkCellPhasePersistAllowed({
+        ...current,
+        metadata: { ...current.metadata, capabilityKey: "other-capability" },
+      }),
+    ).toThrow(/capabilityKey does not match/);
+    expect(() =>
+      assertWorkCellPhasePersistAllowed({
+        ...current,
+        metadata: { ...current.metadata, phase: "review" },
+      }),
+    ).toThrow(/phase does not match/);
+  });
+
+  it("4. work-cell paste has no lease; lease expiry is leased-complete (tests 8 and 23), not operator paste", () => {
+    const current = persistGate();
+    expect(current.metadata).not.toHaveProperty("workerId");
+    expect(current.metadata).not.toHaveProperty("leaseToken");
+    expect(current.metadata).not.toHaveProperty("leaseTokenHash");
+    expect(current.observation?.payload).not.toHaveProperty("leaseExpiresAt");
+    expect(() =>
+      assertWorkCellPhasePersistAllowed({
+        ...current,
+        metadata: { ...current.metadata, leaseTokenHash: HASH },
+      }),
+    ).toThrow(/must not invent worker, lease, or token fields/);
+    const sql = readFileSync(
+      resolve(process.cwd(), "supabase/migrations/20260909180000_execution_context_enforcement_v1.sql"),
+      "utf8",
+    );
+    const persist = sql.slice(sql.lastIndexOf("create or replace function public.record_work_cell_phase_artifact"));
+    expect(persist).not.toMatch(/lease_expires_at/);
+    expect(persist).toMatch(/must not invent worker, lease, or token fields/);
+    const complete = sql.slice(
+      sql.indexOf("create or replace function public.complete_execution_attempt"),
+      sql.indexOf("create or replace function public.fail_execution_attempt"),
+    );
+    expect(complete).toMatch(/Execution lease expired/);
+  });
+
+  it("5. leased completion without context is rejected", () => {
+    expect(() =>
+      assertLeasedCompleteAllowed(
+        leasedGate({
+          caller: { metadata: {} },
+          omitObservation: true,
+        }),
+      ),
+    ).toThrow(/Omitted hashes are not skipped|requires contextHash/);
+  });
+
+  it("6. leased completion with a mismatched context hash is rejected", () => {
+    const current = leasedGate();
+    expect(() =>
+      assertLeasedCompleteAllowed({
+        ...current,
+        caller: {
+          ...current.caller,
+          metadata: { ...current.caller.metadata, contextHash: "b".repeat(64) },
+        },
+      }),
+    ).toThrow(/does not match the stored context hash/);
+  });
+
+  it("7. leased completion with a stale token or wrong worker is rejected", () => {
+    expect(() =>
+      assertLeasedCompleteAllowed(
+        leasedGate({
+          caller: { workerId: "worker-002" },
+        }),
+      ),
+    ).toThrow(/lease_credential_mismatch/);
+    expect(() =>
+      assertLeasedCompleteAllowed(
+        leasedGate({
+          caller: { leaseTokenHash: "b".repeat(64) },
+        }),
+      ),
+    ).toThrow(/lease_credential_mismatch/);
+  });
+
+  it("8. leased completion after cancellation or takeover is rejected", () => {
+    expect(() =>
+      assertLeasedCompleteAllowed(
+        leasedGate({
+          attempt: { status: "cancelled" },
+        }),
+      ),
+    ).toThrow(/cancelled, expired, or taken-over/);
+    expect(() =>
+      assertLeasedCompleteAllowed(
+        leasedGate({
+          attempt: { status: "expired" },
+        }),
+      ),
+    ).toThrow(/cancelled, expired, or taken-over/);
+    expect(() =>
+      assertLeasedCompleteAllowed(
+        leasedGate({
+          attempt: { stepLeaseWorkerId: "worker-002" },
+        }),
+      ),
+    ).toThrow(/cancelled, expired, or taken-over/);
+  });
+
+  it("9. leased completion without a valid observation is rejected", () => {
+    expect(() => assertLeasedCompleteAllowed(leasedGate({ omitObservation: true }))).toThrow(
+      /bound observation trace artifact for leased execution/,
+    );
+    const current = leasedBinding();
+    const empty = leasedTrace(current, false);
+    expect(() =>
+      assertLeasedCompleteAllowed(
+        leasedGate({
+          observation: observationRow(current.context.runId, "org-loadout-internal-qa", empty),
+          caller: { metadata: observationPointersFor(empty) },
+        }),
+      ),
+    ).toThrow(/empty observation trace unless production class is explicitly no-tools/);
+  });
+
+  it("10. blocked native prepare is rejected before fetch", async () => {
+    const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
+    let fetchCalls = 0;
+    await expect(
+      prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+        fetchPage: async () => {
+          fetchCalls += 1;
+          return { url: "https://example.invalid", status: 200, text: "injected fake must not be called" };
+        },
+        now: NOW,
+      }),
+    ).rejects.toThrow(/blocked_preflight|Fetch was not started/);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("11. blocked native prepare cannot persist success or complete an assignment", async () => {
+    const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
+    await expect(
+      prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+        fetchPage: async () => {
+          throw new Error("injected fake must not be called");
+        },
+        now: NOW,
+      }),
+    ).rejects.toThrow(/blocked_preflight|Fetch was not started/);
+    const native = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
+    const nativeFn = native.slice(
+      native.indexOf("export async function runNativePublicWebPrepare"),
+      native.indexOf("export async function ingestCatalogEvidencePacket"),
+    );
+    expect(nativeFn).toMatch(/blocked_preflight and cannot persist a completed assignment/);
+    expect(nativeFn.indexOf("prepareAuthorizedPublicWebEvidencePacket")).toBeLessThan(
+      nativeFn.indexOf("persistPhaseArtifact"),
+    );
+  });
+
+  it("12. prepare-only cannot gain authority by omitting context", async () => {
+    const { preparePublicWebEvidencePacket } = await import("@/lib/public-web-researcher");
+    await expect(preparePublicWebEvidencePacket(nativeManifest())).rejects.toThrow(
+      /validated Execution Context binding/,
+    );
+    await expect(
+      prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), {
+        ...nativeBinding(["public_read"]),
+        context: {
+          ...nativeBinding(["public_read"]).context,
+          contextHash: "b".repeat(64),
+        },
+      }),
+    ).rejects.toThrow(/validated Execution Context|Fetch was not started/);
+    expect(() => requireCompleteMetadataHashes({}, { contextHash: HASH, envelopeHash: HASH })).toThrow(
+      /Omitted hashes are not skipped/,
+    );
+  });
+
+  it("13. valid prepare, review, and deterministic validate still pass", () => {
+    const prepared = persistGate();
+    expect(assertWorkCellPhasePersistAllowed(prepared).contextHash).toBe(prepared.metadata.contextHash);
+
+    const reviewBinding = assignmentToEnvelope(
+      { ...assignmentInput(), phase: "review", capabilityKey: "independent_evidence_review" },
+      spec(),
+      inputRefs(),
+    );
+    if (!reviewBinding.ok) throw new Error(reviewBinding.failures.join(" "));
+    const reviewTrace = buildRequiredEmptyTrace("operator_submitted", reviewBinding.value);
+    const reviewIdentity = workCellPersistIdentity({
+      organizationId: "org-loadout-internal-qa",
+      runId: reviewBinding.value.context.runId,
+      phase: "review",
+      executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.prepare,
+      capabilityKey: "independent_evidence_review",
+    });
+    expect(
+      assertWorkCellPhasePersistAllowed({
+        organizationId: reviewIdentity.organizationId,
+        runId: reviewIdentity.runId,
+        phase: "review",
+        executorKey: reviewIdentity.executorKey,
+        capabilityKey: reviewIdentity.capabilityKey,
+        specActionClass: "prepare_only",
+        metadata: { ...reviewIdentity, ...observationPointersFor(reviewTrace) },
+        observation: observationRow(reviewIdentity.runId, reviewIdentity.organizationId, reviewTrace),
+      }).assignmentId,
+    ).toBe(reviewBinding.value.assignmentId);
+
+    const validateBinding = assignmentToEnvelope(
+      {
+        ...assignmentInput(),
+        phase: "validate",
+        capabilityKey: "deterministic_catalog_validation",
+        executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.validate,
+        executorKind: "deterministic",
+        provider: "delegation-cloud",
+        protocolVersion: "catalog-evidence-validator/v1",
+        modelId: null,
+        outputContract: { schemaVersion: "catalog-evidence-validation/v1", artifactKind: "test" },
+        evidenceRequirements: {
+          requiredArtifactSchemaVersions: ["catalog-evidence-validation/v1"],
+          requiredSourceProvenance: [],
+          independentReviewRequired: false,
+        },
+        profileAuthoritySnapshot: {
+          executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.validate,
+          executorKind: "deterministic",
+          authorityEnvelope: { actionClass: "prepare_only", mayOwnAuthoritativeState: false },
+          forbiddenActions: ["network access"],
+        },
+      },
+      spec({ allowedToolClasses: ["deterministic_validation"] }),
+      inputRefs(),
+    );
+    if (!validateBinding.ok) throw new Error(validateBinding.failures.join(" "));
+    const validateTrace = buildRequiredEmptyTrace("deterministic_validation_no_tools", validateBinding.value);
+    const validateIdentity = workCellPersistIdentity({
+      organizationId: "org-loadout-internal-qa",
+      runId: validateBinding.value.context.runId,
+      phase: "validate",
+      executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.validate,
+      capabilityKey: "deterministic_catalog_validation",
+    });
+    expect(
+      assertWorkCellPhasePersistAllowed({
+        organizationId: validateIdentity.organizationId,
+        runId: validateIdentity.runId,
+        phase: "validate",
+        executorKey: validateIdentity.executorKey,
+        capabilityKey: validateIdentity.capabilityKey,
+        specActionClass: "prepare_only",
+        metadata: { ...validateIdentity, ...observationPointersFor(validateTrace) },
+        observation: observationRow(validateIdentity.runId, validateIdentity.organizationId, validateTrace),
+      }).assignmentId,
+    ).toBe(validateBinding.value.assignmentId);
+
+    const leased = leasedGate();
+    expect(assertLeasedCompleteAllowed(leased).assignmentId).toBe(leased.expectedAssignmentId);
+  });
+
+  it("14. existing authority, approval, tenant, lease, redaction, and trace tests still pass", () => {
+    expect(authorizeToolClass(binding().context, "credential_use").ok).toBe(false);
+    expect(checkExecutionLease).toBeTypeOf("function");
+    expect(validateToolInvocationTrace).toBeTypeOf("function");
+    const lease = {
+      attemptId: "attempt-001",
+      stepKey: "research",
+      workerId: "worker-001",
+      leaseTokenHash: HASH,
+      leaseExpiresAt: "2026-09-09T17:00:00Z",
+    };
+    expect(checkExecutionLease(lease, lease, NOW).ok).toBe(true);
+    const persistence = readFileSync(resolve(process.cwd(), "src/lib/execution-runtime-persistence.ts"), "utf8");
+    expect(persistence).toMatch(/SECRET_METADATA_KEY_PATTERN/);
+    expect(persistence).toMatch(/assertOrgAccess/);
   });
 });

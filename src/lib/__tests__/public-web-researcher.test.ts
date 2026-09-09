@@ -74,6 +74,7 @@ describe("prepare-only public-web researcher", () => {
     const packet = await preparePublicWebEvidencePacket(manifest(), {
       fetchPage,
       now: "2026-08-25T12:01:00Z",
+      allowUngatedPacketBuild: true,
     });
     expect(packet.executorKey).toBe(PUBLIC_WEB_RESEARCHER_KEY);
     expect(packet.authorityReport).toEqual({
@@ -115,7 +116,11 @@ describe("prepare-only public-web researcher", () => {
       status: 200,
       text: readablePageText(html),
     });
-    const packet = await preparePublicWebEvidencePacket(manifest(), { fetchPage, now: "2026-08-25T12:01:00Z" });
+    const packet = await preparePublicWebEvidencePacket(manifest(), {
+      fetchPage,
+      now: "2026-08-25T12:01:00Z",
+      allowUngatedPacketBuild: true,
+    });
     expect(packet.products[0]?.identity.status).toBe("exact");
   });
 
@@ -125,7 +130,11 @@ describe("prepare-only public-web researcher", () => {
       status: 200,
       text: "Unrelated sporting goods homepage with no model names.",
     });
-    const packet = await preparePublicWebEvidencePacket(manifest(), { fetchPage, now: "2026-08-25T12:01:00Z" });
+    const packet = await preparePublicWebEvidencePacket(manifest(), {
+      fetchPage,
+      now: "2026-08-25T12:01:00Z",
+      allowUngatedPacketBuild: true,
+    });
     const product = packet.products[0];
     expect(product?.identity.status).toBe("uncertain");
     expect(product?.escalation.required).toBe(true);
@@ -149,7 +158,11 @@ describe("prepare-only public-web researcher", () => {
         other: "https://www.sbdapparel.com/products/7mm-knee-sleeves",
       },
     };
-    const packet = await preparePublicWebEvidencePacket(poisoned, { fetchPage, now: "2026-08-25T12:01:00Z" });
+    const packet = await preparePublicWebEvidencePacket(poisoned, {
+      fetchPage,
+      now: "2026-08-25T12:01:00Z",
+      allowUngatedPacketBuild: true,
+    });
     expect(called).toEqual(["https://www.sbdapparel.com/products/7mm-knee-sleeves"]);
     expect(packet.authorityReport.otherExternalActions).toBe(0);
   });

@@ -11,14 +11,18 @@ import {
 } from "@/lib/domain";
 import { sha256Text } from "@/lib/catalog-evidence-hash";
 import {
-  checkExecutionLease,
   validateExecutionPlan,
   type ExecutionFailureClass,
   type ExecutionPlanInput,
 } from "@/lib/execution-runtime";
 import { executionStepAssignmentToEnvelope } from "@/lib/assignment-to-envelope";
-import { snapshotDelegationSpec } from "@/lib/execution-context-enforcement";
+import {
+  assertLeasedCompleteAllowed,
+  loadObservationTrace,
+  snapshotDelegationSpec,
+} from "@/lib/execution-context-enforcement";
 import type { ActionClass } from "@/lib/domain";
+import type { ExecutionContext } from "@/lib/execution-context";
 import { getCapabilityDefinition } from "@/lib/capability-registry";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -382,7 +386,14 @@ async function bindClaimedStep(
   db: SupabaseClient,
   step: RuntimeRow,
   workerId: string,
-): Promise<{ contextHash: string; envelopeHash: string; assignmentId: string; stepKey: string; planId: string }> {
+): Promise<{
+  contextHash: string;
+  envelopeHash: string;
+  assignmentId: string;
+  stepKey: string;
+  planId: string;
+  context: ExecutionContext;
+}> {
   const plan = await loadPlan(db, String(step.plan_id));
   const { data: spec, error: specError } = await db
     .from("delegation_specs")
@@ -471,6 +482,7 @@ async function bindClaimedStep(
     assignmentId: translated.value.assignmentId,
     stepKey: String(step.step_key),
     planId: String(step.plan_id),
+    context: translated.value.context,
   };
 }
 
@@ -562,37 +574,66 @@ export async function completeExecutionAttempt(input: {
   const db = runtimeDb();
   const { data: attempt, error: attemptError } = await db
     .from("execution_attempts")
-    .select("id, step_id, worker_id, lease_token_hash, lease_expires_at")
+    .select(
+      "id, organization_id, run_id, plan_id, step_id, status, worker_id, lease_token_hash, lease_expires_at, context_hash, authority_snapshot",
+    )
     .eq("id", input.attemptId)
     .maybeSingle();
   if (attemptError) throw new DomainError(attemptError.message);
   if (!attempt) throw new DomainError("Execution attempt not found.");
   const { data: step, error: stepError } = await db
     .from("execution_plan_steps")
-    .select("step_key")
+    .select(
+      "id, organization_id, plan_id, run_id, step_key, capability_key, action_class, deadline_at, input_artifact_ids, output_contract_version, lease_worker_id",
+    )
     .eq("id", String(attempt.step_id))
     .maybeSingle();
   if (stepError) throw new DomainError(stepError.message);
   if (!step) throw new DomainError("Execution step not found.");
-  const leaseCheck = checkExecutionLease(
-    {
-      attemptId: String(attempt.id),
-      stepKey: String(step.step_key),
+
+  const storedEnvelopeHash = String(asObject(attempt.authority_snapshot).envelopeHash ?? "");
+  const storedContextHash = typeof attempt.context_hash === "string" ? attempt.context_hash : "";
+  const binding = await bindClaimedStep(db, step as RuntimeRow, String(attempt.worker_id));
+  const loaded =
+    typeof metadata.assignmentId === "string"
+      ? await loadObservationTrace(db, String(attempt.run_id), metadata.assignmentId)
+      : null;
+
+  assertLeasedCompleteAllowed({
+    attempt: {
+      status: String(attempt.status),
+      organizationId: String(attempt.organization_id),
+      runId: String(attempt.run_id),
       workerId: String(attempt.worker_id),
       leaseTokenHash: String(attempt.lease_token_hash),
       leaseExpiresAt: String(attempt.lease_expires_at),
+      contextHash: storedContextHash || null,
+      envelopeHash: storedEnvelopeHash || null,
+      stepLeaseWorkerId: step.lease_worker_id == null ? null : String(step.lease_worker_id),
     },
-    {
+    caller: {
       attemptId: input.attemptId,
       stepKey: String(step.step_key),
       workerId: input.workerId,
       leaseTokenHash,
+      now: new Date().toISOString(),
+      metadata,
+      outputArtifactIds,
     },
-    new Date().toISOString(),
-  );
-  if (!leaseCheck.ok) {
-    throw new DomainError("Execution lease check failed: " + leaseCheck.reason);
-  }
+    observation: loaded
+      ? {
+          organizationId: String(attempt.organization_id),
+          runId: String(attempt.run_id),
+          kind: "observation",
+          contentHash: loaded.contentHash,
+          payload: loaded.payload,
+        }
+      : null,
+    context: binding.context,
+    expectedAssignmentId: binding.assignmentId,
+    expectedEnvelopeHash: binding.envelopeHash,
+    expectedContextHash: binding.contextHash,
+  });
 
   return attemptRpc("complete_execution_attempt", {
     p_attempt_id: input.attemptId,
