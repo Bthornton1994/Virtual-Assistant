@@ -8,14 +8,12 @@ import {
 } from "@/lib/assignment-to-envelope";
 import {
   authorizeToolClass,
-  createExecutionContext,
   validateToolInvocationTrace,
   type DelegationSpecSnapshot,
 } from "@/lib/execution-context";
 import { checkExecutionLease } from "@/lib/execution-runtime";
 import {
   buildRequiredEmptyTrace,
-  requireObservationPointers,
   snapshotDelegationSpec,
 } from "@/lib/execution-context-enforcement";
 import {
@@ -33,7 +31,7 @@ import {
 } from "@/lib/public-web-researcher";
 import {
   emptyObservationTrace,
-  TOOL_INVOCATION_TRACE_SCHEMA_VERSION,
+  requireObservationPointers,
   validateToolInvocationTraceArtifact,
 } from "@/lib/tool-invocation-trace";
 
@@ -175,10 +173,11 @@ describe("execution context enforcement v1", () => {
   });
 
   it("5. operator_submitted treats a missing trace as missing, not empty", () => {
-    expect(requireObservationPointers({}).ok).toBe(false);
-    expect(requireObservationPointers({}).ok ? "" : requireObservationPointers({}).failures.join(" ")).toMatch(
-      /Missing observation trace is not an empty trace/,
-    );
+    const missing = requireObservationPointers({});
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.failures.join(" ")).toMatch(/Missing observation trace is not an empty trace/);
+    }
   });
 
   it("6. operator_submitted rejects non-empty DC invocations", () => {
