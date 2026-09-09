@@ -54,9 +54,11 @@ Acceptance requires all of:
 - required evidence attached and hashed
 - no unresolved operational blockers
 - authority checks passed (`prepare_only`, merge not performed)
-- explicit owner acceptance recorded outside the task packet
+- explicit owner acceptance recorded outside the task packet, and the **latest** `owner_acceptance` decision for the current packet hash must be `approved`
 
 Never Accepted merely because an agent claims success.
+
+A later owner rejection of the same packet hash invalidates a prior approval. Re-approval records a new decision; acceptance binds to that latest row.
 
 ## Authority
 
@@ -91,13 +93,26 @@ The SQL migrations are not applied to Production by this change. The QA fixture 
 
 ## Packet hash and freeze-time STATUS
 
-Packet `STATUS` is a freeze-time snapshot of the overlay lifecycle at freeze. Later transitions do not rewrite the packet. `evaluateAcceptance` binds to `packetHash` of the frozen payload; it does not require `packet.STATUS` to equal the current lifecycle. Re-freeze only when payload fields change. A re-freeze must set `STATUS` to the current lifecycle. A mutated payload that keeps the old hash fails closed.
+Packet `STATUS` is a freeze-time snapshot of the overlay lifecycle at freeze. Later transitions do not rewrite the packet. `evaluateAcceptance` binds to `packetHash` of the frozen payload; it does not require `packet.STATUS` to equal the current lifecycle. Re-freeze when payload fields change: the writer increments `packet_freeze_version`, inserts a new immutable packet artifact, and binds later acceptance to the overlay's latest hash. Identical payload hashes are idempotent and do not overwrite historical evidence. A mutated payload that keeps the old hash fails closed.
 
 Application `hashSoftwareFactoryPacket` canonicalizes object keys with case-insensitive `en` order so it matches Postgres `software_factory_sha256` (`twl_prepare_proof_canonical_json`, `ORDER BY key`). Catalog-evidence `sha256Hex` keeps UTF-16 ordinal key order and must not be used for factory packets. Do not change `twl_prepare_proof_sha256`; existing TWL and factory hashes stay valid.
 
 ## Stale acceptance
 
-Problem class `stale` (default 72 hours since last evidence on a non-terminal run) is an unresolved acceptance failure. `evaluateAcceptance` and both Outcome Receipt issuers fail closed. The SQL `enforce_software_factory_receipt` trigger does not encode that clock; freshness is an application gate in this slice. No Production schema write.
+Problem class `stale` (default 72 hours since last evidence on a non-terminal run) is an unresolved acceptance failure. `evaluateAcceptance`, both Outcome Receipt issuers, and the SQL `enforce_software_factory_receipt` trigger fail closed when the newest `evidence_artifacts.created_at` for the workstream is older than 72 hours. No Production schema write.
+
+## Database boundary (SF-VA-003)
+
+`supabase/migrations/20260907040000_software_factory_database_boundary_hardening.sql` is replay-safe and QA-only. It encodes:
+
+1. Every frozen `ACCEPTANCE_CRITERIA` item must appear in some evidence `payload.satisfiedCriteria` before a passing receipt.
+2. Overlay `rejected` projects the workstream to `failed`; `deferred`/`cancelled` project to `cancelled`, walking a valid chain. `awaiting_verification → cancelled` and failed-without-receipt are factory-overlay exceptions only.
+3. Freeze RPCs reject secret-like keys and values; the application freeze path uses `validateSoftwareFactoryPacket` (including `rejectSecrets`).
+4. Passing receipts require the latest decided `owner_acceptance` for the current packet hash to be `approved`.
+5. Packet freezes are versioned; reserved packet artifacts are unique on `(run_id, freezeVersion)`, not one-per-run.
+6. `software_factory_reject_forbidden_action` inserts a tenant-scoped `forbidden_action_blocked` event and returns `{ ok: false, blocked: true, mergePerformed: false }` without raising after the insert, so the audit row survives. It never updates overlay lifecycle or `merge_performed`.
+
+Staff overlay controls stay available while the workstream is `running` or `awaiting_verification` **and** the factory overlay is not terminal. Continue/verify cards on `/ops/execution/runs/[id]` also hide when the overlay is terminal.
 
 ## Next work item: SF-VA-002 worker leases and heartbeats
 
