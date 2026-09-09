@@ -174,6 +174,11 @@ export async function loadObservationTrace(
   };
 }
 
+/**
+ * Approved observation write path. TypeScript computes the canonical hash.
+ * SQL persist_tool_invocation_observation structurally validates and inserts;
+ * it does not recompute that hash.
+ */
 export async function persistObservationArtifact(
   db: SupabaseClient,
   actor: Actor,
@@ -200,29 +205,27 @@ export async function persistObservationArtifact(
     };
   }
 
-  const { data, error } = await db
-    .from("evidence_artifacts")
-    .insert({
-      organization_id: run.organization_id,
-      run_id: run.id,
-      kind: "observation",
-      summary: "Tool invocation observation trace v1.",
-      source_uri: null,
-      content_hash: contentHash,
-      payload: trace,
-      created_by: actor.id,
-    })
-    .select("id, content_hash")
-    .single();
+  const { data, error } = await db.rpc("persist_tool_invocation_observation", {
+    p_organization_id: run.organization_id,
+    p_run_id: run.id,
+    p_summary: "Tool invocation observation trace v1.",
+    p_content_hash: contentHash,
+    p_payload: trace,
+    p_created_by: actor.id,
+  });
   if (error) throw new DomainError(error.message);
+  const row = (Array.isArray(data) ? data[0] : data) as { artifact_id?: string; content_hash?: string } | null;
+  if (!row?.artifact_id || !row.content_hash) {
+    throw new DomainError("Observation persist did not return the stored artifact.");
+  }
   return {
-    artifactId: String(data.id),
-    contentHash: String(data.content_hash),
+    artifactId: String(row.artifact_id),
+    contentHash: String(row.content_hash),
     pointers: {
       assignmentId: trace.assignmentId,
       envelopeHash: trace.envelopeHash,
       contextHash: trace.contextHash,
-      traceContentHash: String(data.content_hash),
+      traceContentHash: String(row.content_hash),
     },
   };
 }
