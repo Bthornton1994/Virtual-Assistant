@@ -249,6 +249,10 @@ describe("execution runtime v1", () => {
       ok: false,
       reason: "lease_credential_mismatch",
     });
+    expect(checkExecutionLease(lease, { ...lease, leaseTokenHash: "b".repeat(64) }, CREATED_AT)).toEqual({
+      ok: false,
+      reason: "lease_credential_mismatch",
+    });
     expect(checkExecutionLease(lease, lease, "2026-09-03T10:05:00.000Z")).toEqual({
       ok: false,
       reason: "lease_expired",

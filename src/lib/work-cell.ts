@@ -33,9 +33,22 @@ import {
 } from "@/lib/work-cell-policy";
 import {
   PUBLIC_WEB_RESEARCHER_KEY,
-  preparePublicWebEvidencePacket,
+  prepareAuthorizedPublicWebEvidencePacket,
 } from "@/lib/public-web-researcher";
 import { parseExtractedJson } from "@/lib/work-cell-json";
+import type { AssignmentToEnvelopeAssignment } from "@/lib/assignment-to-envelope";
+import type { ActionClass } from "@/lib/domain";
+import {
+  assertObservationBound,
+  buildRequiredEmptyTrace,
+  mergeObservationPointers,
+  persistObservationArtifact,
+  snapshotDelegationSpec,
+  translateWorkCellAssignment,
+  type ExecutionBinding,
+} from "@/lib/execution-context-enforcement";
+import { validateToolInvocationTraceArtifact } from "@/lib/tool-invocation-trace";
+import type { ExecutorEnvelopeV1 } from "@/lib/executor-envelope";
 
 export const WORK_CELL_VALIDATION_SCHEMA_VERSION = "catalog-evidence-validation/v1" as const;
 export const WORK_CELL_REJECTION_SCHEMA_VERSION = "catalog-evidence-rejection/v1" as const;
@@ -181,13 +194,19 @@ export function parseRawExecutorJson(raw: string): { ok: true; value: unknown } 
 async function loadRun(db: SupabaseClient, actor: Actor, runId: string) {
   const { data, error } = await db
     .from("workstream_runs")
-    .select("id, organization_id, status, gauntlet_cycle_id")
+    .select("id, organization_id, status, gauntlet_cycle_id, delegation_spec_id")
     .eq("id", runId)
     .maybeSingle();
   if (error) throw new DomainError(error.message);
   if (!data) throw new DomainError("Workstream run not found.");
   assertOrgAccess(actor, String(data.organization_id));
-  return data as { id: string; organization_id: string; status: string; gauntlet_cycle_id: string | null };
+  return data as {
+    id: string;
+    organization_id: string;
+    status: string;
+    gauntlet_cycle_id: string | null;
+    delegation_spec_id: string;
+  };
 }
 
 async function loadTypedArtifact(db: SupabaseClient, runId: string, schemaVersion: string) {
@@ -292,6 +311,130 @@ function buildAuthoritySnapshot(profile: ExecutorProfile): Record<string, unknow
   };
 }
 
+function phaseCapability(phase: ExecutorPhase, executorKey: string): {
+  capabilityKey: string;
+  outputContract: ExecutorEnvelopeV1["outputContract"];
+  evidenceRequirements: ExecutorEnvelopeV1["evidenceRequirements"];
+  objective: string;
+} {
+  if (phase === "prepare") {
+    return {
+      capabilityKey: executorKey === PUBLIC_WEB_RESEARCHER_KEY ? "public_web_retrieval" : "evidence_research",
+      outputContract: { schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION, artifactKind: "candidate_evidence" },
+      evidenceRequirements: {
+        requiredArtifactSchemaVersions: [CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION],
+        requiredSourceProvenance: ["sourceUrl"],
+        independentReviewRequired: true,
+      },
+      objective: "Prepare source-backed candidate evidence.",
+    };
+  }
+  if (phase === "review") {
+    return {
+      capabilityKey: "independent_evidence_review",
+      outputContract: { schemaVersion: CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION, artifactKind: "independent_review" },
+      evidenceRequirements: {
+        requiredArtifactSchemaVersions: [CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION],
+        requiredSourceProvenance: ["sourceUrl"],
+        independentReviewRequired: false,
+      },
+      objective: "Independently review frozen candidate evidence.",
+    };
+  }
+  return {
+    capabilityKey: "deterministic_catalog_validation",
+    outputContract: { schemaVersion: WORK_CELL_VALIDATION_SCHEMA_VERSION, artifactKind: "test" },
+    evidenceRequirements: {
+      requiredArtifactSchemaVersions: [WORK_CELL_VALIDATION_SCHEMA_VERSION],
+      requiredSourceProvenance: [],
+      independentReviewRequired: false,
+    },
+    objective: "Deterministically validate the work cell.",
+  };
+}
+
+async function loadSpecSnapshot(db: SupabaseClient, specId: string, allowedToolClasses?: Parameters<typeof snapshotDelegationSpec>[0]["allowedToolClasses"]) {
+  const { data, error } = await db
+    .from("delegation_specs")
+    .select("id, version, action_class, objective")
+    .eq("id", specId)
+    .maybeSingle();
+  if (error) throw new DomainError(error.message);
+  if (!data) throw new DomainError("Delegation Spec not found for this Workstream Run.");
+  return snapshotDelegationSpec({
+    specKey: "workstream-delegation-spec",
+    specVersion: "delegation-spec/v" + String(data.version),
+    actionClass: data.action_class as ActionClass,
+    allowedToolClasses,
+  });
+}
+
+async function bindWorkCellPhase(
+  db: SupabaseClient,
+  run: { id: string; organization_id: string; delegation_spec_id: string },
+  profile: ExecutorProfile,
+  phase: ExecutorPhase,
+  inputManifestContentHash: string,
+  inputArtifactRefs: ExecutorEnvelopeV1["inputArtifactRefs"],
+  createdAt: string,
+  allowedToolClasses?: Parameters<typeof snapshotDelegationSpec>[0]["allowedToolClasses"],
+): Promise<ExecutionBinding> {
+  const spec = await loadSpecSnapshot(db, run.delegation_spec_id, allowedToolClasses);
+  const contracts = phaseCapability(phase, profile.key);
+  const assignment: AssignmentToEnvelopeAssignment = {
+    organizationId: run.organization_id,
+    runId: run.id,
+    phase,
+    capabilityKey: contracts.capabilityKey,
+    executorKey: profile.key,
+    executorKind: profile.executorKind,
+    provider: profile.provider || "delegation-cloud",
+    protocolVersion: String(profile.configurationMetadata.protocolVersion || profile.provider || "work-cell/v1"),
+    modelId: typeof profile.configurationMetadata.modelId === "string" ? profile.configurationMetadata.modelId : null,
+    configHash: null,
+    objective: contracts.objective,
+    createdAt,
+    deadline: createdAt,
+    outputContract: contracts.outputContract,
+    evidenceRequirements: contracts.evidenceRequirements,
+    economicLimit: { currency: "USD", maxHumanMinutes: 0, maxAiCostMicros: 0, maxToolCostMicros: 0 },
+    inputManifestContentHash,
+    profileAuthoritySnapshot: buildAuthoritySnapshot(profile),
+  };
+  return translateWorkCellAssignment(assignment, spec, inputArtifactRefs);
+}
+
+async function persistWorkCellObservation(
+  db: SupabaseClient,
+  actor: Actor,
+  run: { id: string; organization_id: string; delegation_spec_id: string },
+  profile: ExecutorProfile,
+  phase: ExecutorPhase,
+  manifest: { id: string; contentHash: string; createdAt: string },
+  inputArtifactRefs: ExecutorEnvelopeV1["inputArtifactRefs"],
+  productionClass: "operator_submitted" | "deterministic_validation_no_tools" = phase === "validate"
+    ? "deterministic_validation_no_tools"
+    : "operator_submitted",
+  allowedToolClasses?: Parameters<typeof snapshotDelegationSpec>[0]["allowedToolClasses"],
+) {
+  if (phase === "validate" && profile.executorKind !== "deterministic") {
+    throw new DomainError("The validate phase requires a deterministic executor; an AI worker cannot own a verification gate.");
+  }
+  const binding = await bindWorkCellPhase(
+    db,
+    run,
+    profile,
+    phase,
+    manifest.contentHash,
+    inputArtifactRefs,
+    manifest.createdAt,
+    allowedToolClasses,
+  );
+  const trace = buildRequiredEmptyTrace(productionClass, binding);
+  const persisted = await persistObservationArtifact(db, actor, run, trace);
+  return { binding, pointers: persisted.pointers };
+}
+
 /**
  * Persists one phase's evidence artifact and its executor assignment together,
  * atomically, via the record_work_cell_phase_artifact RPC.
@@ -324,6 +467,7 @@ async function persistPhaseArtifact(
   },
 ): Promise<{ artifactId: string; assignmentId: string }> {
   assertProfileFitsPhase(profile, input.phase);
+  await assertObservationBound(db, run, input.assignmentMetadata ?? {});
 
   const existing = await getAssignment(db, run.id, input.phase);
   if (existing) {
@@ -401,6 +545,7 @@ async function recordRejectedExecutorOutput(
     humanMinutes?: number;
     aiCostMicros?: number;
     toolCostMicros?: number;
+    assignmentMetadata?: Record<string, unknown>;
   },
 ) {
   const rawHash = sha256Text(input.raw);
@@ -428,7 +573,11 @@ async function recordRejectedExecutorOutput(
     humanMinutes: input.humanMinutes,
     aiCostMicros: input.aiCostMicros,
     toolCostMicros: input.toolCostMicros,
-    assignmentMetadata: { rawOutputHash: rawHash, hardFailureCount: input.hardFailures.length },
+    assignmentMetadata: {
+      rawOutputHash: rawHash,
+      hardFailureCount: input.hardFailures.length,
+      ...(input.assignmentMetadata ?? {}),
+    },
   });
   await audit(db, actor, run.organization_id, "execution.evidence_added", "evidence_artifact", artifactId, {
     runId: run.id,
@@ -584,19 +733,84 @@ export async function runNativePublicWebPrepare(
 ): Promise<PacketIngestResult> {
   managerOnly(actor);
   const db = await persistentDb(actor);
-  const { manifest } = await requireInputManifest(db, runId);
-  if (manifest.prepareExecutorKey !== PUBLIC_WEB_RESEARCHER_KEY) {
+  const run = await loadRun(db, actor, runId);
+  if (run.status !== "running") {
+    throw new DomainError("Work-cell evidence can only be ingested while the run is in progress.");
+  }
+  const frozen = await requireInputManifest(db, runId);
+  if (frozen.manifest.prepareExecutorKey !== PUBLIC_WEB_RESEARCHER_KEY) {
     throw new DomainError(
       `Native public-web prepare is only valid when the frozen prepare executor is ${PUBLIC_WEB_RESEARCHER_KEY}.`,
     );
   }
-  const packet = await preparePublicWebEvidencePacket(manifest);
-  return ingestCatalogEvidencePacket(actor, runId, {
-    raw: JSON.stringify(packet),
-    humanMinutes: 0,
-    aiCostMicros: 0,
-    toolCostMicros: 0,
+  if (await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION)) {
+    throw new DomainError("This run already has a frozen catalog evidence packet. Ingesting another belongs to a new attempt.");
+  }
+  const profile = await getProfileByKey(db, frozen.manifest.prepareExecutorKey);
+  assertProfileFitsPhase(profile, "prepare");
+
+  const binding = await bindWorkCellPhase(
+    db,
+    run,
+    profile,
+    "prepare",
+    frozen.contentHash,
+    [
+      {
+        artifactId: frozen.id,
+        schemaVersion: CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION,
+        contentHash: frozen.contentHash,
+      },
+    ],
+    frozen.manifest.createdAt,
+    ["public_read", "artifact_read", "artifact_write"],
+  );
+  const prepared = await prepareAuthorizedPublicWebEvidencePacket(frozen.manifest, binding);
+  const checked = validateToolInvocationTraceArtifact(prepared.trace, binding.context, {
+    productionClass: "native_tool_execution",
+    assignmentId: binding.assignmentId,
+    envelopeHash: binding.envelopeHash,
+    contextHash: binding.contextHash,
   });
+  if (!checked.ok) {
+    throw new DomainError("Native observation trace is invalid: " + checked.failures.join(" "));
+  }
+  const observation = await persistObservationArtifact(db, actor, run, checked.value);
+  const pointers = observation.pointers;
+
+  const validation = validateCatalogEvidencePacket(prepared.packet, {
+    expectedProductIds: frozen.manifest.expectedProductIds,
+    expectedRunId: runId,
+    expectedExecutorKey: profile.key,
+    expectedMarket: frozen.manifest.market,
+  });
+  if (!validation.hardGatePass) {
+    await recordRejectedExecutorOutput(db, actor, run, {
+      phase: "prepare",
+      profile,
+      raw: JSON.stringify(prepared.packet),
+      hardFailures: validation.hardFailures,
+      metrics: validation.metrics as unknown as Record<string, number>,
+      assignmentMetadata: pointers,
+    });
+    return { persisted: false, contentHash: null, artifactId: null, validation };
+  }
+
+  const contentHash = hashCatalogEvidencePacket(prepared.packet);
+  const { artifactId } = await persistPhaseArtifact(db, actor, run, profile, {
+    kind: "source",
+    summary: `Catalog evidence packet v1 from ${profile.key} covering ${prepared.packet.products.length} product(s).`,
+    payload: prepared.packet as unknown as Record<string, unknown>,
+    contentHash,
+    phase: "prepare",
+    assignmentStatus: "completed",
+    inputArtifactId: null,
+    assignmentMetadata: mergeObservationPointers(
+      { packetHash: contentHash, productCount: validation.metrics.productCount, inputHash: frozen.manifest.inputHash },
+      pointers,
+    ),
+  });
+  return { persisted: true, validation, contentHash, artifactId };
 }
 
 /** Validates a pasted research packet BEFORE persistence. Rejected output is untrusted audit, never evidence. */
@@ -611,7 +825,8 @@ export async function ingestCatalogEvidencePacket(
   if (run.status !== "running") {
     throw new DomainError("Work-cell evidence can only be ingested while the run is in progress.");
   }
-  const { manifest } = await requireInputManifest(db, runId);
+  const frozen = await requireInputManifest(db, runId);
+  const manifest = frozen.manifest;
   if (await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION)) {
     throw new DomainError("This run already has a frozen catalog evidence packet. Ingesting another belongs to a new attempt.");
   }
@@ -622,6 +837,22 @@ export async function ingestCatalogEvidencePacket(
   const profile = await getProfileByKey(db, manifest.prepareExecutorKey);
   // Checked before any write, so an unfit profile never reaches the persistence RPC.
   assertProfileFitsPhase(profile, "prepare");
+  const observation = await persistWorkCellObservation(
+    db,
+    actor,
+    run,
+    profile,
+    "prepare",
+    { id: frozen.id, contentHash: frozen.contentHash, createdAt: manifest.createdAt },
+    [
+      {
+        artifactId: frozen.id,
+        schemaVersion: CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION,
+        contentHash: frozen.contentHash,
+      },
+    ],
+  );
+  const pointers = observation.pointers;
 
   const parsed = parseRawExecutorJson(input.raw);
   if (!parsed.ok) {
@@ -640,6 +871,7 @@ export async function ingestCatalogEvidencePacket(
       humanMinutes: input.humanMinutes,
       aiCostMicros: input.aiCostMicros,
       toolCostMicros: input.toolCostMicros,
+      assignmentMetadata: pointers,
     });
     return { persisted: false, contentHash: null, artifactId: null, validation };
   }
@@ -660,6 +892,7 @@ export async function ingestCatalogEvidencePacket(
       humanMinutes: input.humanMinutes,
       aiCostMicros: input.aiCostMicros,
       toolCostMicros: input.toolCostMicros,
+      assignmentMetadata: pointers,
     });
     return { persisted: false, contentHash: null, artifactId: null, validation };
   }
@@ -678,7 +911,10 @@ export async function ingestCatalogEvidencePacket(
     humanMinutes: input.humanMinutes,
     aiCostMicros: input.aiCostMicros,
     toolCostMicros: input.toolCostMicros,
-    assignmentMetadata: { packetHash: contentHash, productCount: validation.metrics.productCount, inputHash: manifest.inputHash },
+    assignmentMetadata: mergeObservationPointers(
+      { packetHash: contentHash, productCount: validation.metrics.productCount, inputHash: manifest.inputHash },
+      pointers,
+    ),
   });
 
   return { persisted: true, validation, contentHash, artifactId };
@@ -708,7 +944,8 @@ export async function ingestCatalogEvidenceReview(
   if (run.status !== "running") {
     throw new DomainError("Work-cell evidence can only be ingested while the run is in progress.");
   }
-  const { manifest } = await requireInputManifest(db, runId);
+  const frozen = await requireInputManifest(db, runId);
+  const manifest = frozen.manifest;
 
   const packetRow = await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION);
   if (!packetRow) throw new DomainError("Freeze a catalog evidence packet before ingesting an independent review.");
@@ -720,6 +957,27 @@ export async function ingestCatalogEvidenceReview(
   const expectedPacketHash = String(packetRow.content_hash ?? "");
   const profile = await getProfileByKey(db, manifest.reviewExecutorKey);
   assertProfileFitsPhase(profile, "review");
+  const observation = await persistWorkCellObservation(
+    db,
+    actor,
+    run,
+    profile,
+    "review",
+    { id: frozen.id, contentHash: frozen.contentHash, createdAt: manifest.createdAt },
+    [
+      {
+        artifactId: frozen.id,
+        schemaVersion: CATALOG_EVIDENCE_INPUT_SCHEMA_VERSION,
+        contentHash: frozen.contentHash,
+      },
+      {
+        artifactId: String(packetRow.id),
+        schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
+        contentHash: expectedPacketHash,
+      },
+    ],
+  );
+  const pointers = observation.pointers;
   const context = {
     expectedPacketHash,
     claims: collectPacketClaims(packet),
@@ -746,6 +1004,7 @@ export async function ingestCatalogEvidenceReview(
       humanMinutes: input.humanMinutes,
       aiCostMicros: input.aiCostMicros,
       toolCostMicros: input.toolCostMicros,
+      assignmentMetadata: pointers,
     });
     return { persisted: false, contentHash: null, artifactId: null, expectedPacketHash, validation };
   }
@@ -762,6 +1021,7 @@ export async function ingestCatalogEvidenceReview(
       humanMinutes: input.humanMinutes,
       aiCostMicros: input.aiCostMicros,
       toolCostMicros: input.toolCostMicros,
+      assignmentMetadata: pointers,
     });
     return { persisted: false, contentHash: null, artifactId: null, expectedPacketHash, validation };
   }
@@ -780,7 +1040,10 @@ export async function ingestCatalogEvidenceReview(
     humanMinutes: input.humanMinutes,
     aiCostMicros: input.aiCostMicros,
     toolCostMicros: input.toolCostMicros,
-    assignmentMetadata: { reviewHash: contentHash, reviewedPacketHash: expectedPacketHash },
+    assignmentMetadata: mergeObservationPointers(
+      { reviewHash: contentHash, reviewedPacketHash: expectedPacketHash },
+      pointers,
+    ),
   });
 
   return { persisted: true, validation, contentHash, artifactId, expectedPacketHash };
@@ -948,8 +1211,36 @@ export async function runWorkCellValidation(actor: Actor, runId: string) {
     throw new DomainError("Ingest the independent review before running deterministic work-cell validation.");
   }
 
+  const frozen = await requireInputManifest(db, runId);
   const { report, packetArtifactId } = await computeValidationReport(db, runId);
   const profile = await getProfileByKey(db, VALIDATOR_EXECUTOR_KEY);
+  const reviewRow = await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION);
+  const observation = await persistWorkCellObservation(
+    db,
+    actor,
+    run,
+    profile,
+    "validate",
+    { id: frozen.id, contentHash: frozen.contentHash, createdAt: frozen.manifest.createdAt },
+    [
+      {
+        artifactId: packetArtifactId,
+        schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
+        contentHash: report.packetHash,
+      },
+      ...(reviewRow && report.reviewHash
+        ? [
+            {
+              artifactId: String(reviewRow.id),
+              schemaVersion: CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION,
+              contentHash: report.reviewHash,
+            },
+          ]
+        : []),
+    ],
+    "deterministic_validation_no_tools",
+    ["deterministic_validation"],
+  );
   const payload = report as unknown as Record<string, unknown>;
   const contentHash = sha256Hex(payload);
 
@@ -961,7 +1252,10 @@ export async function runWorkCellValidation(actor: Actor, runId: string) {
     phase: "validate",
     assignmentStatus: "completed",
     inputArtifactId: packetArtifactId,
-    assignmentMetadata: { hardGatePass: report.gate.hardGatePass, packetHash: report.packetHash, reviewHash: report.reviewHash },
+    assignmentMetadata: mergeObservationPointers(
+      { hardGatePass: report.gate.hardGatePass, packetHash: report.packetHash, reviewHash: report.reviewHash },
+      observation.pointers,
+    ),
   });
 
   return report;

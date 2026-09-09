@@ -1,0 +1,23 @@
+-- Execution Context enforcement proof fixture.
+--
+-- NEVER apply this file to a real Supabase project (local, QA, or Production).
+-- It is a source-checked companion to
+-- supabase/migrations/20260909180000_execution_context_enforcement_v1.sql.
+-- Automated tests read that migration; this file records the fail-closed
+-- contract so a reviewer can re-run the same assertions without writing
+-- Production data.
+--
+-- Required contract:
+-- 1. claim_execution_step requires p_context_hash and p_envelope_hash matching ^[0-9a-f]{64}$
+-- 2. claim writes execution_attempts.context_hash and authority_snapshot.envelopeHash
+-- 3. complete requires those stored hashes and a same-org/run observation artifact
+--    (kind=observation, schemaVersion=tool-invocation-trace/v1) in p_output_artifact_ids
+-- 4. complete/fail reject caller metadata that mismatches stored hashes
+-- 5. complete/fail never overwrite stored context_hash or authority_snapshot
+-- 6. no new tables or columns
+-- 7. no p_allow_expired change on the complete path
+--
+-- Usage (disposable local Postgres only, never Supabase):
+--   # Do not run against a live project. Prefer src/lib/__tests__/execution-context-enforcement.test.ts.
+
+select 'execution_context_enforcement_v1_not_applied_to_supabase' as proof_marker;

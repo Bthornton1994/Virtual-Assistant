@@ -1,5 +1,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { AuthzError, DomainError, assertOrgAccess, type Actor } from "@/lib/domain";
+import { AuthzError, DomainError, assertOrgAccess, type ActionClass, type Actor } from "@/lib/domain";
+import type { AssignmentToEnvelopeAssignment } from "@/lib/assignment-to-envelope";
+import {
+  assertObservationBound,
+  buildRequiredEmptyTrace,
+  mergeObservationPointers,
+  persistObservationArtifact,
+  snapshotDelegationSpec,
+  translateWorkCellAssignment,
+  type ExecutionBinding,
+} from "@/lib/execution-context-enforcement";
+import type { ExecutorEnvelopeV1 } from "@/lib/executor-envelope";
 import { addGauntletReview } from "@/lib/gauntlet";
 import { transitionWorkstreamRun } from "@/lib/execution-primitives";
 import { supabaseServer } from "@/lib/supabase/server";
@@ -49,6 +60,7 @@ type SupplierRun = {
   status: string;
   gauntletCycleId: string | null;
   gauntlet_cycle_id: string | null;
+  delegation_spec_id: string;
 };
 
 export type SupplierProfile = {
@@ -86,6 +98,7 @@ function mapRun(row: Record<string, unknown>): SupplierRun {
     status: String(row.status),
     gauntletCycleId: (row.gauntlet_cycle_id as string | null) ?? null,
     gauntlet_cycle_id: (row.gauntlet_cycle_id as string | null) ?? null,
+    delegation_spec_id: String(row.delegation_spec_id ?? ""),
   };
 }
 
@@ -122,7 +135,7 @@ function managerOnly(actor: Actor) {
 async function loadRun(db: SupabaseClient, actor: Actor, runId: string): Promise<SupplierRun> {
   const { data, error } = await db
     .from("workstream_runs")
-    .select("id, organization_id, status, gauntlet_cycle_id")
+    .select("id, organization_id, status, gauntlet_cycle_id, delegation_spec_id")
     .eq("id", runId)
     .maybeSingle();
   if (error) throw new DomainError(error.message);
@@ -198,6 +211,80 @@ function authoritySnapshot(profile: SupplierProfile): Record<string, unknown> {
     forbiddenActions: profile.forbiddenActions,
     configurationMetadata: profile.configurationMetadata,
   };
+}
+
+async function persistSupplierObservation(
+  db: SupabaseClient,
+  actor: Actor,
+  run: SupplierRun,
+  profile: SupplierProfile,
+  phase: Phase,
+  manifest: { id: string; contentHash: string; createdAt: string },
+  inputArtifactRefs: ExecutorEnvelopeV1["inputArtifactRefs"],
+): Promise<ExecutionBinding & { pointers: import("@/lib/tool-invocation-trace").ObservationPointers }> {
+  if (!run.delegation_spec_id) {
+    throw new DomainError("Supplier sourcing requires the run's Delegation Spec to bind an execution context.");
+  }
+  const { data: specRow, error } = await db
+    .from("delegation_specs")
+    .select("version, action_class")
+    .eq("id", run.delegation_spec_id)
+    .maybeSingle();
+  if (error) throw new DomainError(error.message);
+  if (!specRow) throw new DomainError("Delegation Spec not found for this supplier-sourcing run.");
+
+  const productionClass = phase === "validate" ? "deterministic_validation_no_tools" : "operator_submitted";
+  const spec = snapshotDelegationSpec({
+    specKey: "supplier-sourcing-delegation-spec",
+    specVersion: "delegation-spec/v" + String(specRow.version),
+    actionClass: specRow.action_class as ActionClass,
+    allowedToolClasses:
+      phase === "validate"
+        ? ["deterministic_validation"]
+        : ["artifact_read", "artifact_write", "public_read", "external_message_draft"],
+  });
+  const assignment: AssignmentToEnvelopeAssignment = {
+    organizationId: run.organization_id,
+    runId: run.id,
+    phase,
+    capabilityKey:
+      phase === "validate" ? "deterministic_supplier_sourcing_validation" : "supplier_sourcing",
+    executorKey: profile.key,
+    executorKind: profile.executorKind as AssignmentToEnvelopeAssignment["executorKind"],
+    provider: profile.provider || "delegation-cloud",
+    protocolVersion: String(profile.configurationMetadata.protocolVersion || "supplier-sourcing/v1"),
+    modelId: null,
+    configHash: null,
+    objective:
+      phase === "prepare"
+        ? "Prepare supplier-sourcing candidate evidence."
+        : phase === "review"
+          ? "Independently review supplier-sourcing evidence."
+          : "Deterministically validate supplier-sourcing evidence.",
+    createdAt: manifest.createdAt,
+    deadline: manifest.createdAt,
+    outputContract: {
+      schemaVersion:
+        phase === "validate"
+          ? SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION
+          : SUPPLIER_SOURCING_PACKET_SCHEMA_VERSION,
+      artifactKind: phase === "validate" ? "test" : "candidate_evidence",
+    },
+    evidenceRequirements: {
+      requiredArtifactSchemaVersions: [
+        phase === "validate" ? SUPPLIER_SOURCING_VALIDATION_SCHEMA_VERSION : SUPPLIER_SOURCING_PACKET_SCHEMA_VERSION,
+      ],
+      requiredSourceProvenance: [],
+      independentReviewRequired: phase === "prepare",
+    },
+    economicLimit: { currency: "USD", maxHumanMinutes: 0, maxAiCostMicros: 0, maxToolCostMicros: 0 },
+    inputManifestContentHash: manifest.contentHash,
+    profileAuthoritySnapshot: authoritySnapshot(profile),
+  };
+  const binding = translateWorkCellAssignment(assignment, spec, inputArtifactRefs);
+  const trace = buildRequiredEmptyTrace(productionClass, binding);
+  const persisted = await persistObservationArtifact(db, actor, run, trace);
+  return { ...binding, pointers: persisted.pointers };
 }
 
 async function insertManifestArtifact(
@@ -278,6 +365,7 @@ async function persistPhaseArtifact(
   },
 ): Promise<{ artifactId: string; assignmentId: string }> {
   assertProfileFitsPhase(profile, input.phase);
+  await assertObservationBound(db, run, input.assignmentMetadata ?? {});
   if (await getPhaseAssignment(db, run.id, input.phase)) {
     throw new DomainError(
       "The " +
@@ -325,6 +413,7 @@ async function recordRejectedOutput(
   failures: string[],
   inputArtifactId: string | null,
   metrics?: SupplierSourcingValidationMetrics,
+  assignmentMetadata?: Record<string, unknown>,
 ) {
   const payload = {
     ...serializeSupplierSourcingRejection(
@@ -347,6 +436,7 @@ async function recordRejectedOutput(
       rejected: true,
       rawOutputHash: sha256Text(raw),
       failureCount: failures.length,
+      ...(assignmentMetadata ?? {}),
     },
   });
 }
@@ -432,6 +522,25 @@ export async function ingestSupplierSourcingPacket(
 
   const profile = await loadProfile(db, inputArtifact.manifest.prepareExecutorKey);
   assertProfileFitsPhase(profile, "prepare");
+  const observation = await persistSupplierObservation(
+    db,
+    actor,
+    run,
+    profile,
+    "prepare",
+    {
+      id: inputArtifact.id,
+      contentHash: inputArtifact.contentHash,
+      createdAt: inputArtifact.manifest.createdAt,
+    },
+    [
+      {
+        artifactId: inputArtifact.id,
+        schemaVersion: SUPPLIER_SOURCING_INPUT_SCHEMA_VERSION,
+        contentHash: inputArtifact.contentHash,
+      },
+    ],
+  );
   const parsed = parseExtractedJson(input.raw);
   let validation = parsed.ok
     ? validateSupplierSourcingPacket(parsed.value, {
@@ -460,6 +569,7 @@ export async function ingestSupplierSourcingPacket(
       validation.hardFailures,
       inputArtifact.id,
       validation.metrics,
+      observation.pointers,
     );
     return { persisted: false, validation, contentHash: null, artifactId: null };
   }
@@ -480,11 +590,14 @@ export async function ingestSupplierSourcingPacket(
     humanMinutes: input.humanMinutes,
     aiCostMicros: input.aiCostMicros,
     toolCostMicros: input.toolCostMicros,
-    assignmentMetadata: {
-      inputHash: inputArtifact.manifest.inputHash,
-      packetHash: contentHash,
-      candidateCount: validation.metrics.candidateCount,
-    },
+    assignmentMetadata: mergeObservationPointers(
+      {
+        inputHash: inputArtifact.manifest.inputHash,
+        packetHash: contentHash,
+        candidateCount: validation.metrics.candidateCount,
+      },
+      observation.pointers,
+    ),
   });
   return { persisted: true, validation, contentHash, artifactId: persisted.artifactId };
 }
@@ -526,6 +639,25 @@ export async function ingestSupplierSourcingReview(
 
   const profile = await loadProfile(db, inputArtifact.manifest.reviewExecutorKey);
   assertProfileFitsPhase(profile, "review");
+  const observation = await persistSupplierObservation(
+    db,
+    actor,
+    run,
+    profile,
+    "review",
+    {
+      id: inputArtifact.id,
+      contentHash: inputArtifact.contentHash,
+      createdAt: inputArtifact.manifest.createdAt,
+    },
+    [
+      {
+        artifactId: inputArtifact.id,
+        schemaVersion: SUPPLIER_SOURCING_INPUT_SCHEMA_VERSION,
+        contentHash: inputArtifact.contentHash,
+      },
+    ],
+  );
   const parsed = parseExtractedJson(input.raw);
   const validation = parsed.ok
     ? validateSupplierSourcingReview(parsed.value, {
@@ -548,6 +680,8 @@ export async function ingestSupplierSourcingReview(
       input.raw,
       validation.hardFailures,
       packetArtifact.id,
+      undefined,
+      observation.pointers,
     );
     return {
       persisted: false,
@@ -574,10 +708,13 @@ export async function ingestSupplierSourcingReview(
     humanMinutes: input.humanMinutes,
     aiCostMicros: input.aiCostMicros,
     toolCostMicros: input.toolCostMicros,
-    assignmentMetadata: {
-      packetHash: packetArtifact.contentHash,
-      reviewHash: contentHash,
-    },
+    assignmentMetadata: mergeObservationPointers(
+      {
+        packetHash: packetArtifact.contentHash,
+        reviewHash: contentHash,
+      },
+      observation.pointers,
+    ),
   });
   return {
     persisted: true,
@@ -699,6 +836,30 @@ export async function runSupplierSourcingValidation(
 
   const profile = await loadProfile(db, SUPPLIER_SOURCING_EXECUTOR_KEYS.validate);
   assertProfileFitsPhase(profile, "validate");
+  const observation = await persistSupplierObservation(
+    db,
+    actor,
+    run,
+    profile,
+    "validate",
+    {
+      id: inputArtifact.id,
+      contentHash: inputArtifact.contentHash,
+      createdAt: inputArtifact.manifest.createdAt,
+    },
+    [
+      {
+        artifactId: packetArtifact.id,
+        schemaVersion: SUPPLIER_SOURCING_PACKET_SCHEMA_VERSION,
+        contentHash: packetArtifact.contentHash,
+      },
+      {
+        artifactId: reviewArtifact.id,
+        schemaVersion: SUPPLIER_SOURCING_REVIEW_SCHEMA_VERSION,
+        contentHash: reviewArtifact.contentHash,
+      },
+    ],
+  );
   const packetResult = supplierSourcingPacketV1Schema.safeParse(packetArtifact.payload);
   const reviewResult = supplierSourcingReviewV1Schema.safeParse(reviewArtifact.payload);
   if (!packetResult.success || !reviewResult.success) {
@@ -741,11 +902,14 @@ export async function runSupplierSourcingValidation(
     summary: "Deterministic supplier-sourcing validation: " + (checked.data.hardGatePass ? "passed." : "failed."),
     inputArtifactId: packetArtifact.id,
     assignmentStatus: "completed",
-    assignmentMetadata: {
-      hardGatePass: checked.data.hardGatePass,
-      packetHash: checked.data.packetHash,
-      reviewHash: checked.data.reviewHash,
-    },
+    assignmentMetadata: mergeObservationPointers(
+      {
+        hardGatePass: checked.data.hardGatePass,
+        packetHash: checked.data.packetHash,
+        reviewHash: checked.data.reviewHash,
+      },
+      observation.pointers,
+    ),
   });
   if (!persisted.artifactId) throw new DomainError("Supplier validation artifact was not persisted.");
   return checked.data;

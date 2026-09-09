@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EXECUTION_CONTEXT_SCHEMA_VERSION,
+  authorizeToolClass,
   createExecutionContext,
   validateExecutionContext,
   validateToolInvocation,
@@ -131,6 +132,27 @@ describe("execution context v1", () => {
     );
     expect(mislabeled.ok).toBe(false);
     expect(mislabeled.ok ? [] : mislabeled.failures.join(" ")).toContain("tool_class_not_authorized");
+
+    const blocked = validateToolInvocation(
+      invocation({
+        toolClass: "external_message_send",
+        status: "blocked",
+        failureCode: "tool_class_not_authorized",
+      }),
+      context(),
+    );
+    expect(blocked.ok).toBe(true);
+  });
+
+  it("authorizes a planned tool class without requiring an observed result", () => {
+    const allowed = authorizeToolClass(context(), "public_read");
+    expect(allowed.ok).toBe(true);
+    if (allowed.ok) {
+      expect(allowed.value.toolClass).toBe("public_read");
+      expect("invokedAt" in allowed.value).toBe(false);
+    }
+    const denied = authorizeToolClass(context(), "external_message_send");
+    expect(denied.ok).toBe(false);
   });
 
   it("does not allow secrets to be declared as embedded prompt material", () => {

@@ -11,10 +11,15 @@ import {
 } from "@/lib/domain";
 import { sha256Text } from "@/lib/catalog-evidence-hash";
 import {
+  checkExecutionLease,
   validateExecutionPlan,
   type ExecutionFailureClass,
   type ExecutionPlanInput,
 } from "@/lib/execution-runtime";
+import { executionStepAssignmentToEnvelope } from "@/lib/assignment-to-envelope";
+import { snapshotDelegationSpec } from "@/lib/execution-context-enforcement";
+import type { ActionClass } from "@/lib/domain";
+import { getCapabilityDefinition } from "@/lib/capability-registry";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 /**
@@ -359,6 +364,116 @@ function validateWorker(workerId: string, leaseSeconds: number) {
   }
 }
 
+async function previewReadyStep(db: SupabaseClient, capabilityKey: string) {
+  const { data, error } = await db
+    .from("execution_plan_steps")
+    .select("id, organization_id, plan_id, run_id, step_key, capability_key, action_class, deadline_at, input_artifact_ids, output_contract_version")
+    .eq("capability_key", capabilityKey)
+    .eq("status", "ready")
+    .order("available_at", { ascending: true })
+    .order("sequence", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new DomainError(error.message);
+  return data as RuntimeRow | null;
+}
+
+async function bindClaimedStep(
+  db: SupabaseClient,
+  step: RuntimeRow,
+  workerId: string,
+): Promise<{ contextHash: string; envelopeHash: string; assignmentId: string; stepKey: string; planId: string }> {
+  const plan = await loadPlan(db, String(step.plan_id));
+  const { data: spec, error: specError } = await db
+    .from("delegation_specs")
+    .select("id, version, action_class, objective")
+    .eq("id", String(plan.delegation_spec_id))
+    .maybeSingle();
+  if (specError) throw new DomainError(specError.message);
+  if (!spec) throw new DomainError("Delegation Spec not found for the frozen execution plan.");
+
+  const { data: profile, error: profileError } = await db
+    .from("executor_profiles")
+    .select("key, executor_kind, provider, authority_envelope, forbidden_actions, configuration_metadata")
+    .eq("key", workerId)
+    .maybeSingle();
+  if (profileError) throw new DomainError(profileError.message);
+  if (!profile) throw new DomainError("Executor profile not found for the claiming worker.");
+
+  const capability = getCapabilityDefinition(String(step.capability_key));
+  const outputSchema =
+    (typeof step.output_contract_version === "string" && step.output_contract_version) ||
+    capability?.outputContractVersions[0] ||
+    "artifact/v1";
+  const specSnapshot = snapshotDelegationSpec({
+    specKey: "execution-runtime-delegation-spec",
+    specVersion: "delegation-spec/v" + String(spec.version),
+    actionClass: String(spec.action_class) as ActionClass,
+  });
+  const inputIds = Array.isArray(step.input_artifact_ids) ? step.input_artifact_ids : [];
+  const refs: Array<{ artifactId: string; schemaVersion: string; contentHash: string }> = [];
+  if (inputIds.length > 0) {
+    const { data: artifacts, error: artifactError } = await db
+      .from("evidence_artifacts")
+      .select("id, content_hash, payload")
+      .in("id", inputIds.map(String));
+    if (artifactError) throw new DomainError(artifactError.message);
+    for (const artifact of artifacts ?? []) {
+      const payload = asObject(artifact.payload);
+      refs.push({
+        artifactId: String(artifact.id),
+        schemaVersion: String(payload.schemaVersion ?? "artifact/v1"),
+        contentHash: String(artifact.content_hash ?? ""),
+      });
+    }
+  }
+
+  const translated = executionStepAssignmentToEnvelope(
+    {
+      organizationId: String(step.organization_id),
+      runId: String(step.run_id),
+      phase: String(profile.executor_kind) === "deterministic" ? "validate" : "prepare",
+      planHash: String(plan.plan_hash),
+      stepKey: String(step.step_key),
+      capabilityKey: String(step.capability_key),
+      executorKey: workerId,
+      executorKind: String(profile.executor_kind),
+      provider: String(profile.provider ?? "delegation-cloud"),
+      protocolVersion: String(asObject(profile.configuration_metadata).protocolVersion ?? "execution-runtime/v1"),
+      modelId: null,
+      configHash: null,
+      objective: String(plan.objective_snapshot ?? spec.objective ?? "Execute the frozen plan step."),
+      createdAt: String(plan.created_at),
+      deadline: String(step.deadline_at),
+      outputContract: { schemaVersion: outputSchema, artifactKind: "candidate_evidence" },
+      evidenceRequirements: {
+        requiredArtifactSchemaVersions: capability?.outputContractVersions ? [...capability.outputContractVersions] : [],
+        requiredSourceProvenance: [],
+        independentReviewRequired: false,
+      },
+      economicLimit: { currency: "USD", maxHumanMinutes: 0, maxAiCostMicros: 0, maxToolCostMicros: 0 },
+      profileAuthoritySnapshot: {
+        executorKey: workerId,
+        executorKind: String(profile.executor_kind),
+        authorityEnvelope: asObject(profile.authority_envelope),
+        forbiddenActions: Array.isArray(profile.forbidden_actions) ? profile.forbidden_actions : [],
+      },
+    },
+    specSnapshot,
+    refs,
+  );
+  if (!translated.ok) {
+    throw new DomainError("Cannot claim an execution step without a valid execution context: " + translated.failures.join(" "));
+  }
+  return {
+    contextHash: translated.value.contextHash,
+    envelopeHash: translated.value.envelopeHash,
+    assignmentId: translated.value.assignmentId,
+    stepKey: String(step.step_key),
+    planId: String(step.plan_id),
+  };
+}
+
 export async function claimExecutionStep(input: {
   workerId: string;
   capabilityKey: string;
@@ -370,15 +485,25 @@ export async function claimExecutionStep(input: {
   requireIdentifier(input.capabilityKey, "capabilityKey");
   const leaseTokenHash = requireLeaseToken(input.leaseToken);
   const db = runtimeDb();
+  const preview = await previewReadyStep(db, input.capabilityKey);
+  if (!preview) return null;
+  const binding = await bindClaimedStep(db, preview, input.workerId);
   const { data, error } = await db.rpc("claim_execution_step", {
     p_worker_id: input.workerId,
     p_capability_key: input.capabilityKey,
     p_lease_token_hash: leaseTokenHash,
+    p_context_hash: binding.contextHash,
+    p_envelope_hash: binding.envelopeHash,
     p_lease_seconds: leaseSeconds,
   });
   if (error) throw new DomainError(error.message);
   const row = Array.isArray(data) ? data[0] : data;
-  return row ? mapClaim(row as RuntimeRow) : null;
+  if (!row) return null;
+  const claimed = mapClaim(row as RuntimeRow);
+  if (claimed.stepKey !== binding.stepKey || claimed.planId !== binding.planId) {
+    throw new DomainError("Claimed execution step does not match the frozen assignment used to hash the execution context.");
+  }
+  return claimed;
 }
 
 async function attemptRpc(
@@ -433,6 +558,42 @@ export async function completeExecutionAttempt(input: {
   requireCost(input.humanMinutes ?? 0, "humanMinutes");
   requireCost(input.aiCostMicros ?? 0, "aiCostMicros");
   requireCost(input.toolCostMicros ?? 0, "toolCostMicros");
+
+  const db = runtimeDb();
+  const { data: attempt, error: attemptError } = await db
+    .from("execution_attempts")
+    .select("id, step_id, worker_id, lease_token_hash, lease_expires_at")
+    .eq("id", input.attemptId)
+    .maybeSingle();
+  if (attemptError) throw new DomainError(attemptError.message);
+  if (!attempt) throw new DomainError("Execution attempt not found.");
+  const { data: step, error: stepError } = await db
+    .from("execution_plan_steps")
+    .select("step_key")
+    .eq("id", String(attempt.step_id))
+    .maybeSingle();
+  if (stepError) throw new DomainError(stepError.message);
+  if (!step) throw new DomainError("Execution step not found.");
+  const leaseCheck = checkExecutionLease(
+    {
+      attemptId: String(attempt.id),
+      stepKey: String(step.step_key),
+      workerId: String(attempt.worker_id),
+      leaseTokenHash: String(attempt.lease_token_hash),
+      leaseExpiresAt: String(attempt.lease_expires_at),
+    },
+    {
+      attemptId: input.attemptId,
+      stepKey: String(step.step_key),
+      workerId: input.workerId,
+      leaseTokenHash,
+    },
+    new Date().toISOString(),
+  );
+  if (!leaseCheck.ok) {
+    throw new DomainError("Execution lease check failed: " + leaseCheck.reason);
+  }
+
   return attemptRpc("complete_execution_attempt", {
     p_attempt_id: input.attemptId,
     p_worker_id: input.workerId,

@@ -7,6 +7,7 @@ import {
   EXECUTION_STEP_ASSIGNMENT_IDENTITY_SCHEMA_VERSION,
   WORK_CELL_ASSIGNMENT_IDENTITY_SCHEMA_VERSION,
   assignmentToEnvelope,
+  executionStepAssignmentToEnvelope,
   stableExecutionStepAssignmentId,
   stableWorkCellAssignmentId,
   type AssignmentToEnvelopeAssignment,
@@ -415,6 +416,35 @@ describe("assignmentToEnvelope", () => {
     expect(second.value.contextHash).toBe(first.value.contextHash);
     expect(second.value.envelope).toEqual(first.value.envelope);
     expect(second.value.context).toEqual(first.value.context);
+  });
+
+  it("uses stableExecutionStepAssignmentId for leased execution-step envelopes", () => {
+    const stepAssignment = {
+      ...prepareAssignment(),
+      planHash: HASH,
+      stepKey: "research",
+    };
+    const result = executionStepAssignmentToEnvelope(stepAssignment, spec(), inputRefs());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.assignmentId).toBe(
+      stableExecutionStepAssignmentId({
+        organizationId: stepAssignment.organizationId,
+        runId: stepAssignment.runId,
+        planHash: HASH,
+        stepKey: "research",
+        capabilityKey: stepAssignment.capabilityKey,
+      }),
+    );
+    expect(result.value.assignmentId).not.toBe(
+      stableWorkCellAssignmentId({
+        organizationId: stepAssignment.organizationId,
+        runId: stepAssignment.runId,
+        phase: "prepare",
+        executorKey: stepAssignment.executorKey,
+        inputManifestContentHash: HASH,
+      }),
+    );
   });
 
   it("does not import persistence, the capability router, Supabase, or fetch", () => {

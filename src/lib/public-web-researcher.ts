@@ -7,6 +7,19 @@ import type {
 } from "@/lib/catalog-evidence-packet";
 import type { AuthorityReport, ClaimValue } from "@/lib/catalog-evidence-shared";
 import { validateEvidenceUrl } from "@/lib/catalog-evidence-validator";
+import {
+  authorizeToolClass,
+  validateToolInvocationTrace,
+  type ExecutionContext,
+  type ToolInvocation,
+} from "@/lib/execution-context";
+import {
+  buildNativeToolTrace,
+  recordNativePublicReadCycle,
+  validateToolInvocationTraceArtifact,
+  type ToolInvocationTrace,
+  type TraceOutcome,
+} from "@/lib/tool-invocation-trace";
 
 export const PUBLIC_WEB_RESEARCHER_KEY = "delegation-cloud-public-web-researcher-v1" as const;
 export const PUBLIC_WEB_RESEARCHER_PROTOCOL = "delegation-cloud-public-web-prepare/v1" as const;
@@ -315,4 +328,100 @@ export async function preparePublicWebEvidencePacket(
     products,
     authorityReport: { ...ZERO_AUTHORITY },
   };
+}
+
+export type AuthorizedPublicWebPrepareResult = {
+  packet: CatalogEvidencePacketV1;
+  trace: ToolInvocationTrace;
+};
+
+/**
+ * Native public-web prepare. Authorizes public_read before each fetch.
+ * Preflight authorization is not a persisted row. A completed observation
+ * is returned only after the authorize/fetch cycles and postflight
+ * validateToolInvocationTrace.
+ */
+export async function prepareAuthorizedPublicWebEvidencePacket(
+  manifest: CatalogEvidenceInputManifestV1,
+  binding: { assignmentId: string; envelopeHash: string; contextHash: string; context: ExecutionContext },
+  options?: { fetchPage?: PageFetcher; now?: string },
+): Promise<AuthorizedPublicWebPrepareResult> {
+  const fetchPage = options?.fetchPage ?? fetchPublicHttpsPage;
+  const now = options?.now ?? new Date().toISOString();
+  const products: CatalogEvidenceProduct[] = [];
+  const invocations: ToolInvocation[] = [];
+  const outcomes: TraceOutcome[] = [];
+  let sequence = 0;
+
+  for (const item of manifest.inputRecords) {
+    const urls = extractHttpsUrls(item.record);
+    const pages: FetchedPage[] = [];
+    for (const url of urls) {
+      sequence += 1;
+      const invocationId = "public-read-" + String(sequence);
+      const preflight = authorizeToolClass(binding.context, "public_read");
+      if (!preflight.ok) {
+        const recorded = recordNativePublicReadCycle({
+          context: binding.context,
+          invocationId,
+          toolKey: "public-https-fetch",
+          invokedAt: now,
+          completedAt: now,
+          fetchResult: "blocked_preflight",
+        });
+        if (!recorded.ok) throw new Error(recorded.failures.join(" "));
+        invocations.push(recorded.value.invocation);
+        outcomes.push(recorded.value.outcome);
+        continue;
+      }
+
+      const result = await fetchPage(url);
+      const fetchResult = "error" in result ? "fetch_failed" : "fetched";
+      const recorded = recordNativePublicReadCycle({
+        context: binding.context,
+        invocationId,
+        toolKey: "public-https-fetch",
+        invokedAt: now,
+        completedAt: now,
+        fetchResult,
+      });
+      if (!recorded.ok) throw new Error(recorded.failures.join(" "));
+      invocations.push(recorded.value.invocation);
+      outcomes.push(recorded.value.outcome);
+      if (!("error" in result)) pages.push(result);
+    }
+    products.push(buildProduct(item.productId, item.record, pages, manifest.market));
+  }
+
+  const postflight = validateToolInvocationTrace(invocations, binding.context);
+  if (!postflight.ok) {
+    throw new Error("Completed native tool trace is invalid: " + postflight.failures.join(" "));
+  }
+
+  const packet: CatalogEvidencePacketV1 = {
+    schemaVersion: "catalog-evidence-packet/v1",
+    runId: manifest.runId,
+    executorKey: PUBLIC_WEB_RESEARCHER_KEY,
+    generatedAt: now,
+    market: manifest.market,
+    products,
+    authorityReport: { ...ZERO_AUTHORITY },
+  };
+  const trace = buildNativeToolTrace({
+    assignmentId: binding.assignmentId,
+    envelopeHash: binding.envelopeHash,
+    contextHash: binding.contextHash,
+    invocations: postflight.value,
+    outcomes,
+  });
+  const checked = validateToolInvocationTraceArtifact(trace, binding.context, {
+    productionClass: "native_tool_execution",
+    assignmentId: binding.assignmentId,
+    envelopeHash: binding.envelopeHash,
+    contextHash: binding.contextHash,
+  });
+  if (!checked.ok) {
+    throw new Error("Native observation trace is invalid: " + checked.failures.join(" "));
+  }
+  return { packet, trace: checked.value };
 }
