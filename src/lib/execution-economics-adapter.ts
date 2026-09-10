@@ -4,6 +4,7 @@ import {
 } from "@/lib/assignment-to-envelope";
 import { canonicalJsonStringify, sha256Hex } from "@/lib/catalog-evidence-hash";
 import { DomainError, type ActionClass } from "@/lib/domain";
+import { CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION } from "@/lib/catalog-evidence-packet";
 import {
   hashExecutorEnvelope,
   validateExecutorEnvelope,
@@ -178,6 +179,10 @@ export type WorkCellPhaseClaimInput = {
   now: string;
 };
 
+export type EconomicsCommitProof = "complete" | "failed" | "unknown";
+
+export type WorkCellOwnerActionKind = "blocked_owner_action";
+
 export type WorkCellPhaseClaimRecord = WorkCellPhaseClaimInput & {
   status: "planned" | "running" | "completed" | "failed";
   claimedAt: string;
@@ -185,7 +190,31 @@ export type WorkCellPhaseClaimRecord = WorkCellPhaseClaimInput & {
   failReason?: string;
   outputArtifactId?: string | null;
   acceptedCatalogPacketExists?: boolean;
+  /** TypeScript-only. Never a durable database status. */
+  ownerAction?: WorkCellOwnerActionKind;
+  /** TypeScript-only. Process-local proof; never inferred from packet presence. */
+  economicsCommit?: EconomicsCommitProof;
 };
+
+export type WorkCellPhaseClaimIdentity = {
+  runId: string;
+  phase: string;
+  assignmentId: string;
+  outputArtifactId: string | null;
+  inputManifestContentHash: string;
+  envelopeHash: string;
+  contextHash: string;
+  executorKey: string;
+  capabilityKey: string;
+};
+
+/**
+ * Isolate death after a process-local commit cannot be proven. Automatic
+ * reclaim completion is forbidden until a durable accounting seam exists on
+ * existing `execution_attempts` and `evidence_artifacts`.
+ */
+export const WORK_CELL_ECONOMICS_OWNER_BLOCKED =
+  "OWNER_BLOCKED: process-local economics cannot safely finalize a durable accepted packet across isolate death. A durable accounting seam is required before automatic reclaim completion." as const;
 
 export type WorkCellPhaseClaimFailInput = WorkCellPhaseClaimInput & {
   reason: string;
@@ -199,9 +228,22 @@ export type WorkCellPhaseClaimFailFn = (
   input: WorkCellPhaseClaimFailInput,
 ) => Promise<GovernorResult<WorkCellPhaseClaimRecord>>;
 
+export type WorkCellPhaseClaimBoundPacket = {
+  artifactId: string;
+  runId: string;
+  executorKey: string;
+  schemaVersion: string;
+};
+
 export type WorkCellPhaseClaimCompleteInput = WorkCellPhaseClaimInput & {
   outputArtifactId?: string | null;
   acceptedCatalogPacketExists?: boolean;
+  /**
+   * Same-process confirmation that commitDeferredGovernedReservations succeeded.
+   * Packet persistence is not this flag. Isolate restart cannot set this true.
+   */
+  economicsCommitConfirmed?: boolean;
+  boundPacket?: WorkCellPhaseClaimBoundPacket | null;
 };
 
 export type WorkCellPhaseClaimCompleteFn = (
@@ -211,13 +253,45 @@ export type WorkCellPhaseClaimCompleteFn = (
 export const FAIL_WORK_CELL_PHASE_CLAIM_RPC = "fail_work_cell_phase_claim" as const;
 export const COMPLETE_WORK_CELL_PHASE_CLAIM_RPC = "complete_work_cell_phase_claim" as const;
 
-export type WorkCellPhaseClaimReclaimAction = "noop" | "complete" | "fail";
+export type WorkCellPhaseClaimReclaimAction = "noop" | "blocked" | "fail";
+
+/**
+ * Packet persisted, economics commit succeeded, assignment completion succeeded,
+ * and economics-unknown after isolate death are distinct. Packet presence is
+ * never economics proof. This is not a new assignment status.
+ */
+export const WORK_CELL_ECONOMICS_COMMIT_UNKNOWN_OWNER_ACTION =
+  `OWNER_ACTION_REQUIRED: An accepted catalog evidence packet is persisted, but process-local economics commitment is unknown. Packet presence is not economics proof. The assignment remains running. Stale reclaim will not complete or fail this claim. Fetch was not started. ${WORK_CELL_ECONOMICS_OWNER_BLOCKED}`;
+
+export function economicsCommitUnknownOwnerActionFailure(
+  reservationIds: readonly string[] = [],
+): string {
+  const ids =
+    reservationIds.length > 0 ? ` Reservation IDs: ${reservationIds.join(", ")}.` : "";
+  return `${WORK_CELL_ECONOMICS_COMMIT_UNKNOWN_OWNER_ACTION}${ids}`;
+}
+
+export function deferredCommitFailedAfterAcceptedPacketReason(failures: readonly string[]): string {
+  return `Deferred economics commit failed after the accepted catalog packet was persisted. Economics are not committed. ${failures.join(" ")} ${WORK_CELL_ECONOMICS_OWNER_BLOCKED}`;
+}
+
+export function economicsReservationIdsFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+): string[] {
+  const ids = metadata?.[ECONOMICS_RESERVATION_IDS_METADATA_KEY];
+  if (!Array.isArray(ids)) return [];
+  return ids.filter((id): id is string => typeof id === "string" && id.length > 0);
+}
 
 export function acceptedCatalogPacketPresent(input: {
   acceptedCatalogPacketExists?: boolean;
   outputArtifactId?: string | null;
 }): boolean {
   return Boolean(input.acceptedCatalogPacketExists) || Boolean(input.outputArtifactId);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled work-cell reclaim action: ${String(value)}`);
 }
 
 /**
@@ -246,9 +320,106 @@ export function failWorkCellPhaseClaimBlockedReason(input: {
   return null;
 }
 
+export function workCellPhaseClaimBoundIdentityFailure(input: {
+  existing: {
+    runId: string;
+    phase: string;
+    assignmentId: string;
+    executorKey: string;
+    capabilityKey: string;
+    inputManifestContentHash: string;
+    envelopeHash: string;
+    contextHash: string;
+    outputArtifactId?: string | null;
+  };
+  presented: {
+    runId: string;
+    phase: string;
+    assignmentId: string;
+    outputArtifactId?: string | null;
+    inputManifestContentHash: string;
+    envelopeHash: string;
+    contextHash: string;
+    executorKey: string;
+    capabilityKey: string;
+  };
+  boundPacket?: WorkCellPhaseClaimBoundPacket | null;
+}): string | null {
+  if (input.presented.runId !== input.existing.runId) {
+    return "Work-cell phase claim run identity does not match the completion request.";
+  }
+  if (input.presented.phase !== input.existing.phase) {
+    return "Work-cell phase claim phase does not match the completion request.";
+  }
+  if (input.presented.assignmentId !== input.existing.assignmentId) {
+    return "Work-cell phase claim identity does not match the completion request.";
+  }
+  if (input.presented.executorKey !== input.existing.executorKey) {
+    return "Work-cell phase claim executor identity does not match the completion request.";
+  }
+  if (input.presented.capabilityKey !== input.existing.capabilityKey) {
+    return "Work-cell phase claim capability identity does not match the completion request.";
+  }
+  if (input.presented.inputManifestContentHash !== input.existing.inputManifestContentHash) {
+    return "Work-cell phase claim input-manifest content hash does not match the completion request.";
+  }
+  if (input.presented.envelopeHash !== input.existing.envelopeHash) {
+    return "Work-cell phase claim envelope hash does not match the completion request.";
+  }
+  if (input.presented.contextHash !== input.existing.contextHash) {
+    return "Work-cell phase claim execution context hash does not match the completion request.";
+  }
+  if (!input.existing.outputArtifactId) {
+    return "Cannot complete a work-cell phase claim that is not running with output evidence.";
+  }
+  if (!input.presented.outputArtifactId || input.presented.outputArtifactId !== input.existing.outputArtifactId) {
+    return "Work-cell phase claim output artifact does not match the completion request.";
+  }
+  if (input.boundPacket) {
+    if (input.boundPacket.artifactId !== input.existing.outputArtifactId) {
+      return "An unrelated catalog evidence packet cannot complete this work-cell phase claim.";
+    }
+    if (input.boundPacket.runId !== input.existing.runId) {
+      return "Work-cell phase claim run identity does not match the completion request.";
+    }
+    if (input.boundPacket.executorKey !== input.existing.executorKey) {
+      return "Work-cell phase claim executor identity does not match the completion request.";
+    }
+    if (input.boundPacket.schemaVersion !== CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION) {
+      return "An unrelated catalog evidence packet cannot complete this work-cell phase claim.";
+    }
+  }
+  return null;
+}
+
+export function workCellPhaseClaimCompletionBlockedReason(input: {
+  status: string;
+  existing: Parameters<typeof workCellPhaseClaimBoundIdentityFailure>[0]["existing"];
+  presented: WorkCellPhaseClaimCompleteInput;
+}): string | null {
+  if (input.status === "failed") {
+    return "A failed work-cell phase assignment cannot be completed.";
+  }
+  const mismatch = workCellPhaseClaimBoundIdentityFailure({
+    existing: input.existing,
+    presented: input.presented,
+    boundPacket: input.presented.boundPacket,
+  });
+  if (mismatch) return mismatch;
+  if (input.status === "completed") return null;
+  if (input.status !== "running") {
+    return "Cannot complete a work-cell phase claim that is not running with output evidence.";
+  }
+  if (input.presented.economicsCommitConfirmed !== true) {
+    return "Successful completion requires a confirmed process-local economics commit. An accepted catalog evidence packet is not economics proof.";
+  }
+  return null;
+}
+
 /**
- * Stale reclaim never fetches. A persisted accepted packet must complete (or
- * stay running for the operator), not fail. No packet: running -> failed after TTL.
+ * Stale reclaim never fetches. Packet presence is not economics proof and must
+ * not complete the assignment. Bound accepted packet: leave running and block
+ * for owner action. No bound packet: running -> failed after TTL.
  */
 export function decideStaleWorkCellPhaseClaimReclaim(input: {
   status: string;
@@ -264,7 +435,7 @@ export function decideStaleWorkCellPhaseClaimReclaim(input: {
   if (!Number.isFinite(createdMs) || !Number.isFinite(nowMs) || nowMs - createdMs < input.ttlMs) {
     return "noop";
   }
-  if (acceptedCatalogPacketPresent(input)) return "complete";
+  if (acceptedCatalogPacketPresent(input)) return "blocked";
   return "fail";
 }
 
@@ -1157,11 +1328,13 @@ export function createMemoryWorkCellPhaseClaim(options?: {
     if (!existing) {
       return { ok: false, failures: ["No work-cell phase claim exists to complete."] };
     }
-    if (existing.status === "failed") {
-      return {
-        ok: false,
-        failures: ["A failed work-cell phase assignment cannot be completed."],
-      };
+    const blocked = workCellPhaseClaimCompletionBlockedReason({
+      status: existing.status,
+      existing,
+      presented: input,
+    });
+    if (blocked) {
+      return { ok: false, failures: [blocked] };
     }
     if (existing.status === "completed") {
       return { ok: true, value: existing };
@@ -1222,14 +1395,20 @@ export function createMemoryWorkCellPhaseClaim(options?: {
         outputArtifactId: existing.outputArtifactId,
       });
       if (action === "noop") return { ok: true, value: null };
-      if (action === "complete") {
-        return complete(existing);
+      if (action === "blocked") {
+        return {
+          ok: false,
+          failures: [economicsCommitUnknownOwnerActionFailure()],
+        };
       }
-      return fail({
-        ...existing,
-        now: input.now,
-        reason: input.reason ?? "Stale running work-cell phase claim reclaimed to failed without fetching.",
-      });
+      if (action === "fail") {
+        return fail({
+          ...existing,
+          now: input.now,
+          reason: input.reason ?? "Stale running work-cell phase claim reclaimed to failed without fetching.",
+        });
+      }
+      return assertNever(action);
     },
   };
 }
