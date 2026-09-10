@@ -10,7 +10,13 @@ import {
   type Actor,
 } from "@/lib/domain";
 import { sha256Text } from "@/lib/catalog-evidence-hash";
-import { assertRedactedEconomicsTelemetry } from "@/lib/outcome-economics-governor";
+import {
+  assertRedactedEconomicsTelemetry,
+  readRuntimeEconomicsReservationId,
+  releaseReservation,
+  type EconomicsSession,
+} from "@/lib/outcome-economics-governor";
+import { assertSuccessfulCompletionMayProceed } from "@/lib/execution-economics-adapter";
 import {
   validateExecutionPlan,
   type ExecutionFailureClass,
@@ -560,6 +566,7 @@ export async function completeExecutionAttempt(input: {
   humanMinutes?: number;
   aiCostMicros?: number;
   toolCostMicros?: number;
+  economicsSession?: EconomicsSession;
 }) {
   requireUuid(input.attemptId, "attemptId");
   requireIdentifier(input.workerId, "workerId");
@@ -640,6 +647,22 @@ export async function completeExecutionAttempt(input: {
     expectedContextHash: binding.contextHash,
   });
 
+  if (input.economicsSession) {
+    if (input.economicsSession.organizationId !== String(attempt.organization_id)) {
+      throw new DomainError("Same-process economics session organization does not match the execution attempt.");
+    }
+    const completion = assertSuccessfulCompletionMayProceed({
+      session: input.economicsSession,
+      organizationId: input.economicsSession.organizationId,
+      tenantId: input.economicsSession.tenantId,
+      executionAttemptId: input.attemptId,
+      reservationId: readRuntimeEconomicsReservationId(metadata),
+    });
+    if (!completion.ok) {
+      throw new DomainError(completion.failures.join(" "));
+    }
+  }
+
   return attemptRpc("complete_execution_attempt", {
     p_attempt_id: input.attemptId,
     p_worker_id: input.workerId,
@@ -656,6 +679,7 @@ export async function failExecutionAttempt(input: ExecutionFailureInput & {
   attemptId: string;
   workerId: string;
   leaseToken: string;
+  economicsSession?: EconomicsSession;
 }) {
   requireUuid(input.attemptId, "attemptId");
   requireIdentifier(input.workerId, "workerId");
@@ -669,6 +693,22 @@ export async function failExecutionAttempt(input: ExecutionFailureInput & {
   requireCost(input.humanMinutes ?? 0, "humanMinutes");
   requireCost(input.aiCostMicros ?? 0, "aiCostMicros");
   requireCost(input.toolCostMicros ?? 0, "toolCostMicros");
+  if (input.economicsSession) {
+    const reservationId = readRuntimeEconomicsReservationId(metadata);
+    if (reservationId) {
+      const released = releaseReservation({
+        session: input.economicsSession,
+        organizationId: input.economicsSession.organizationId,
+        tenantId: input.economicsSession.tenantId,
+        reservationId,
+        idempotencyKey: reservationId,
+        now: new Date().toISOString(),
+      });
+      if (!released.ok && !released.failures.some((failure) => /not be released|not found|Committed/.test(failure))) {
+        throw new DomainError(released.failures.join(" "));
+      }
+    }
+  }
   return attemptRpc("fail_execution_attempt", {
     p_attempt_id: input.attemptId,
     p_worker_id: input.workerId,
