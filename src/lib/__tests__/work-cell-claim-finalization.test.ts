@@ -16,6 +16,7 @@ import {
   workCellPhaseClaimBoundIdentityFailure,
   WORK_CELL_ECONOMICS_COMMIT_UNKNOWN_OWNER_ACTION,
   WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
+  type WorkCellPhaseClaimCompleteFn,
 } from "@/lib/execution-economics-adapter";
 import { PUBLIC_WEB_RESEARCHER_KEY } from "@/lib/public-web-researcher";
 
@@ -208,7 +209,7 @@ describe("work-cell claim finalization — crash and reclaim windows", () => {
     expect((await store.claim(claimInput)).ok).toBe(true);
     store.recordAcceptedPacket(claimInput.runId, "prepare", ARTIFACT);
     let attempts = 0;
-    const flakyComplete = async (input: typeof boundCompleteInput) => {
+    const flakyComplete: WorkCellPhaseClaimCompleteFn = async (input) => {
       attempts += 1;
       if (attempts === 1) {
         return { ok: false as const, failures: ["complete RPC failed after economics commit"] };
