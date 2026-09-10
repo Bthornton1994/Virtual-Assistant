@@ -522,7 +522,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     });
   }
 
-  async function rejectWithLedger(message: string, release: boolean): Promise<never> {
+  async function rejectWithLedger(message: string, release: boolean): Promise<GovernedNativePrepareError> {
     if (release && economics) {
       releaseReservedGovernedExecutions({
         session: economics.session,
@@ -552,7 +552,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
           };
         })
       : [];
-    throw new GovernedNativePrepareError(message, economicReservationIds, ledger);
+    return new GovernedNativePrepareError(message, economicReservationIds, ledger);
   }
 
   for (const entry of planned) {
@@ -583,7 +583,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     });
     if (!governed.ok) {
       if (governed.reservation) economicReservationIds.push(governed.reservation.reservationId);
-      await rejectWithLedger(
+      throw await rejectWithLedger(
         "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
           governed.failures.join(" "),
         true,
@@ -593,7 +593,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     try {
       await persistDurableReserve(governed.reservation);
     } catch (error) {
-      await rejectWithLedger(
+      throw await rejectWithLedger(
         error instanceof Error
           ? error.message
           : "Durable economics reservation failed. Fetch was not started.",
@@ -622,7 +622,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     try {
       await persistDurableInvocationStarted(pending.reservation);
     } catch (error) {
-      await rejectWithLedger(
+      throw await rejectWithLedger(
         error instanceof Error
           ? error.message
           : "Durable invocation_started could not be persisted. Fetch was not started.",
@@ -659,7 +659,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         fetchResult: "fetch_failed",
       });
       if (!recordedFailed.ok) {
-        await rejectWithLedger(recordedFailed.failures.join(" "), true);
+        throw await rejectWithLedger(recordedFailed.failures.join(" "), true);
       }
       invocations.push(recordedFailed.value.invocation);
       outcomes.push(recordedFailed.value.outcome);
@@ -689,7 +689,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "usage observation failed";
-      await rejectWithLedger(`Provider usage could not be observed: ${reason}`, true);
+      throw await rejectWithLedger(`Provider usage could not be observed: ${reason}`, true);
     }
     pending.page = fetched;
     const recorded = recordNativePublicReadCycle({
@@ -701,7 +701,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
       fetchResult: "fetched",
     });
     if (!recorded.ok) {
-      await rejectWithLedger(recorded.failures.join(" "), true);
+      throw await rejectWithLedger(recorded.failures.join(" "), true);
     }
     invocations.push(recorded.value.invocation);
     outcomes.push(recorded.value.outcome);
@@ -711,7 +711,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
   }
 
   if (outcomes.some((outcome) => outcome.result === "blocked_preflight")) {
-    await rejectWithLedger(
+    throw await rejectWithLedger(
       "Native public-web prepare is blocked_preflight: public_read is not authorized. Fetch was not started.",
       true,
     );
@@ -720,7 +720,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
   options?.beforePostflight?.();
   const postflight = validateToolInvocationTrace(invocations, contextCheck.value);
   if (!postflight.ok) {
-    await rejectWithLedger("Completed native tool trace is invalid: " + postflight.failures.join(" "), true);
+    throw await rejectWithLedger("Completed native tool trace is invalid: " + postflight.failures.join(" "), true);
   }
 
   const products: CatalogEvidenceProduct[] = manifest.inputRecords.map((item, itemIndex) =>
@@ -750,7 +750,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     contextHash: binding.contextHash,
   });
   if (!checked.ok) {
-    await rejectWithLedger("Native observation trace is invalid: " + checked.failures.join(" "), true);
+    throw await rejectWithLedger("Native observation trace is invalid: " + checked.failures.join(" "), true);
   }
 
   const pendingCommits: NativePendingCommit[] = [];

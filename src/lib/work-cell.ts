@@ -419,16 +419,7 @@ async function rpcFinalizeWorkCellPhaseEconomics(
   metadataPatch: Record<string, unknown>,
   identity: WorkCellPhaseClaimCompleteInput & { packetContentHash: string; reservationIds: readonly string[] },
 ): Promise<RunExecutorAssignment> {
-  const writer = createSupabaseDurableEconomicsWriter(db, {
-    runId: run.id,
-    phase,
-    assignmentId: identity.assignmentId,
-    executorKey: identity.executorKey,
-    capabilityKey: identity.capabilityKey,
-    inputManifestContentHash: identity.inputManifestContentHash,
-    envelopeHash: identity.envelopeHash,
-    contextHash: identity.contextHash,
-  });
+  const writer = createSupabaseDurableEconomicsWriter(db);
   const finalized = await writer.finalize({
     runId: run.id,
     phase,
@@ -1187,7 +1178,7 @@ export async function runNativePublicWebPrepare(
       envelopeHash: binding.envelopeHash,
       contextHash: binding.contextHash,
     };
-    const durableEconomics = createSupabaseDurableEconomicsWriter(db, durableIdentity);
+    const durableEconomics = createSupabaseDurableEconomicsWriter(db);
 
     const releaseEconomics = (reservationIds: readonly string[]) =>
       releaseReservedGovernedExecutions({

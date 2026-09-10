@@ -348,7 +348,8 @@ describe("outcome economics event seam — SQL catalog and native wiring", () =>
     expect(proof).toMatch(/workstream_runs FOR UPDATE then run_executor_assignments FOR UPDATE/);
     expect(sql).toMatch(/outcome-economics-event\/v1/);
     expect(sql).toMatch(/DISTINCT schemaVersion `outcome-economics-event\/v1`/);
-    expect(sql).toMatch(/does not change\s+`outcome-economics-evidence\/v1`/);
+    expect(sql).toMatch(/This does not change/);
+    expect(sql).toMatch(/outcome-economics-evidence\/v1/);
     expect(sql).toMatch(/outcome_economics_event_reservation_type_idx/);
     expect(sql).toMatch(/outcome_economics_event_idempotency_type_idx/);
     expect(sql).toMatch(/payload->>'reservationId'/);

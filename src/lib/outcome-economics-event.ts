@@ -635,10 +635,7 @@ export function createMemoryDurableEconomicsStore(input: {
   return writer;
 }
 
-export function createSupabaseDurableEconomicsWriter(
-  db: SupabaseClient,
-  identity: DurableNativeEconomicsIdentity,
-): DurableEconomicsWriter {
+export function createSupabaseDurableEconomicsWriter(db: SupabaseClient): DurableEconomicsWriter {
   return {
     async reserve(input) {
       const { data, error } = await db.rpc(RESERVE_OUTCOME_ECONOMICS_EVENT_RPC, {
