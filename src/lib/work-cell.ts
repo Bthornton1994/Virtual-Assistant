@@ -45,12 +45,17 @@ import {
   COMPLETE_WORK_CELL_PHASE_CLAIM_RPC,
   commitDeferredGovernedReservations,
   decideStaleWorkCellPhaseClaimReclaim,
+  deferredCommitFailedAfterAcceptedPacketReason,
+  economicsCommitUnknownOwnerActionFailure,
+  economicsReservationIdsFromMetadata,
   FAIL_WORK_CELL_PHASE_CLAIM_RPC,
   releaseReservedGovernedExecutions,
   requireEconomicsEnvelope,
   workCellPhaseAlreadyRecordedFromAssignment,
+  workCellPhaseClaimBoundIdentityFailure,
   WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
   WORK_CELL_PHASE_CLAIM_SCHEMA_VERSION,
+  type WorkCellPhaseClaimCompleteInput,
   type WorkCellPhaseClaimInput,
 } from "@/lib/execution-economics-adapter";
 import { sealPersistedWorkCellProjectionFromWorkCellLoader } from "@/lib/execution-economics-binding-internal";
@@ -351,18 +356,78 @@ async function failWorkCellPhaseClaim(
   return existing;
 }
 
+function claimIdentityFromAssignment(existing: RunExecutorAssignment): {
+  runId: string;
+  phase: ExecutorPhase;
+  assignmentId: string;
+  executorKey: string;
+  capabilityKey: string;
+  inputManifestContentHash: string;
+  envelopeHash: string;
+  contextHash: string;
+  outputArtifactId: string | null;
+} {
+  return {
+    runId: existing.runId,
+    phase: existing.phase,
+    assignmentId: assignmentIdFromMetadata(existing.metadata) ?? "",
+    executorKey: typeof existing.metadata.executorKey === "string" ? existing.metadata.executorKey : "",
+    capabilityKey: typeof existing.metadata.capabilityKey === "string" ? existing.metadata.capabilityKey : "",
+    inputManifestContentHash:
+      typeof existing.metadata.inputManifestContentHash === "string"
+        ? existing.metadata.inputManifestContentHash
+        : "",
+    envelopeHash: typeof existing.metadata.envelopeHash === "string" ? existing.metadata.envelopeHash : "",
+    contextHash: typeof existing.metadata.contextHash === "string" ? existing.metadata.contextHash : "",
+    outputArtifactId: existing.outputArtifactId,
+  };
+}
+
+async function loadBoundAcceptedCatalogPacketForClaim(
+  db: SupabaseClient,
+  existing: RunExecutorAssignment,
+): Promise<{ artifactId: string; runId: string; executorKey: string; schemaVersion: string } | null> {
+  if (!existing.outputArtifactId) return null;
+  const { data, error } = await db
+    .from("evidence_artifacts")
+    .select("id, run_id, payload")
+    .eq("id", existing.outputArtifactId)
+    .maybeSingle();
+  if (error) throw new DomainError(error.message);
+  if (!data) return null;
+  const payload = asObject(data.payload);
+  if (String(data.id) !== existing.outputArtifactId) return null;
+  if (String(data.run_id ?? "") !== existing.runId) return null;
+  if (payload.schemaVersion !== CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION) return null;
+  if (String(payload.runId ?? "") !== existing.runId) return null;
+  const executorKey = claimIdentityFromAssignment(existing).executorKey;
+  if (executorKey && String(payload.executorKey ?? "") !== executorKey) return null;
+  return {
+    artifactId: String(data.id),
+    runId: String(payload.runId ?? existing.runId),
+    executorKey: String(payload.executorKey ?? ""),
+    schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
+  };
+}
+
 async function rpcCompleteWorkCellPhaseClaim(
   db: SupabaseClient,
   run: { id: string },
   phase: ExecutorPhase,
   metadataPatch: Record<string, unknown>,
-  assignmentId: string | null,
+  identity: WorkCellPhaseClaimCompleteInput,
 ): Promise<RunExecutorAssignment> {
   const { data, error } = await db.rpc(COMPLETE_WORK_CELL_PHASE_CLAIM_RPC, {
     p_run_id: run.id,
     p_phase: phase,
     p_metadata_patch: metadataPatch,
-    p_assignment_id: assignmentId,
+    p_assignment_id: identity.assignmentId,
+    p_output_artifact_id: identity.outputArtifactId,
+    p_input_manifest_content_hash: identity.inputManifestContentHash,
+    p_envelope_hash: identity.envelopeHash,
+    p_context_hash: identity.contextHash,
+    p_executor_key: identity.executorKey,
+    p_capability_key: identity.capabilityKey,
   });
   if (error) throw new DomainError(error.message || "Could not complete the work-cell phase claim.");
   const existing = await getAssignment(db, run.id, phase);
@@ -382,18 +447,43 @@ async function completeWorkCellPhaseClaim(
   run: { id: string },
   phase: ExecutorPhase,
   _now: string,
-  metadataPatch: Record<string, unknown> = {},
+  metadataPatch: Record<string, unknown>,
+  identity: WorkCellPhaseClaimCompleteInput,
 ): Promise<RunExecutorAssignment> {
   const existing = await getAssignment(db, run.id, phase);
-  if (existing?.status === "completed") return existing;
-  const assignmentId = existing ? assignmentIdFromMetadata(existing.metadata) : null;
+  if (!existing) {
+    throw new DomainError("Cannot complete a work-cell phase claim that is not running with output evidence.");
+  }
+  if (existing.status === "failed") {
+    throw new DomainError("A failed work-cell phase assignment cannot be completed.");
+  }
+  const mismatch = workCellPhaseClaimBoundIdentityFailure({
+    existing: claimIdentityFromAssignment(existing),
+    presented: identity,
+    boundPacket: identity.boundPacket,
+  });
+  if (mismatch) throw new DomainError(mismatch);
+  if (existing.status === "completed") return existing;
+  if (identity.economicsCommitConfirmed !== true) {
+    throw new DomainError(
+      "Successful completion requires a confirmed process-local economics commit. An accepted catalog evidence packet is not economics proof.",
+    );
+  }
   try {
-    return await rpcCompleteWorkCellPhaseClaim(db, run, phase, metadataPatch, assignmentId);
+    return await rpcCompleteWorkCellPhaseClaim(db, run, phase, metadataPatch, identity);
   } catch (error) {
     const raced = await getAssignment(db, run.id, phase);
-    if (raced?.status === "completed") return raced;
-    if (raced?.status === "running" && raced.outputArtifactId) {
-      return rpcCompleteWorkCellPhaseClaim(db, run, phase, metadataPatch, assignmentId);
+    if (raced?.status === "completed") {
+      const racedMismatch = workCellPhaseClaimBoundIdentityFailure({
+        existing: claimIdentityFromAssignment(raced),
+        presented: identity,
+        boundPacket: identity.boundPacket,
+      });
+      if (racedMismatch) throw new DomainError(racedMismatch);
+      return raced;
+    }
+    if (raced?.status === "running" && raced.outputArtifactId === identity.outputArtifactId) {
+      return rpcCompleteWorkCellPhaseClaim(db, run, phase, metadataPatch, identity);
     }
     throw error;
   }
@@ -404,23 +494,22 @@ async function expireStaleRunningWorkCellPhaseClaim(
   existing: RunExecutorAssignment,
   now: string,
 ): Promise<RunExecutorAssignment | null> {
-  const packet = await loadTypedArtifact(db, existing.runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION);
+  const boundPacket = await loadBoundAcceptedCatalogPacketForClaim(db, existing);
   const action = decideStaleWorkCellPhaseClaimReclaim({
     status: existing.status,
     createdAt: existing.createdAt,
     now,
     ttlMs: WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
-    acceptedCatalogPacketExists: packet != null,
+    acceptedCatalogPacketExists: boundPacket != null,
     outputArtifactId: existing.outputArtifactId,
   });
   if (action === "noop") return null;
-  if (action === "complete") {
-    try {
-      return await completeWorkCellPhaseClaim(db, { id: existing.runId }, existing.phase, now);
-    } catch {
-      // Leave running for the operator. Never fail an accepted packet.
-      return existing;
-    }
+  if (action === "blocked") {
+    // Leave running. Packet presence is not economics proof after isolate death
+    // or a failed process-local commit. Never complete. Never fail an accepted packet.
+    throw new DomainError(
+      economicsCommitUnknownOwnerActionFailure(economicsReservationIdsFromMetadata(existing.metadata)),
+    );
   }
   try {
     const failed = await failWorkCellPhaseClaim(
@@ -436,11 +525,9 @@ async function expireStaleRunningWorkCellPhaseClaim(
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (/accepted catalog evidence packet|cannot be overwritten by a claim failure/i.test(message)) {
-      try {
-        return await completeWorkCellPhaseClaim(db, { id: existing.runId }, existing.phase, now);
-      } catch {
-        return existing;
-      }
+      throw new DomainError(
+        economicsCommitUnknownOwnerActionFailure(economicsReservationIdsFromMetadata(existing.metadata)),
+      );
     }
     throw error;
   }
@@ -1209,11 +1296,35 @@ export async function runNativePublicWebPrepare(
     });
     if (!committed.ok) {
       releaseEconomics(prepared.economicReservationIds);
-      // Packet is durable. Leave the assignment running; reclaim may complete it.
+      // Packet is durable. Leave the assignment running. Do not complete.
       // Do not fail a successful packet because process-local commit rolled back.
-      throw new DomainError(committed.failures.join(" "));
+      // Packet presence is not economics proof; stale reclaim will not complete.
+      throw new DomainError(
+        `${deferredCommitFailedAfterAcceptedPacketReason(committed.failures)} ${economicsCommitUnknownOwnerActionFailure(prepared.economicReservationIds)}`,
+      );
     }
-    await completeWorkCellPhaseClaim(db, run, "prepare", now, reservationMetadata);
+    await completeWorkCellPhaseClaim(db, run, "prepare", now, reservationMetadata, {
+      organizationId: run.organization_id,
+      tenantId: run.organization_id,
+      runId: run.id,
+      phase: "prepare",
+      assignmentId: binding.assignmentId,
+      executorKey: profile.key,
+      capabilityKey: phaseCapability("prepare", profile.key).capabilityKey,
+      inputManifestContentHash: frozen.contentHash,
+      envelopeHash: binding.envelopeHash,
+      contextHash: binding.contextHash,
+      now,
+      outputArtifactId: artifactId,
+      acceptedCatalogPacketExists: true,
+      economicsCommitConfirmed: true,
+      boundPacket: {
+        artifactId,
+        runId: run.id,
+        executorKey: profile.key,
+        schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
+      },
+    });
     assignmentIsTerminal = true;
     return { persisted: true, validation, contentHash, artifactId };
   } finally {
