@@ -261,7 +261,7 @@ export type WorkCellPhaseClaimReclaimAction = "noop" | "blocked" | "fail";
  * never economics proof. This is not a new assignment status.
  */
 export const WORK_CELL_ECONOMICS_COMMIT_UNKNOWN_OWNER_ACTION =
-  "OWNER_ACTION_REQUIRED: An accepted catalog evidence packet is persisted, but process-local economics commitment is unknown. Packet presence is not economics proof. The assignment remains running. Stale reclaim will not complete or fail this claim. Fetch was not started. OWNER_BLOCKED: process-local economics cannot safely finalize a durable accepted packet across isolate death. A durable accounting seam is required before automatic reclaim completion.";
+  `OWNER_ACTION_REQUIRED: An accepted catalog evidence packet is persisted, but process-local economics commitment is unknown. Packet presence is not economics proof. The assignment remains running. Stale reclaim will not complete or fail this claim. Fetch was not started. ${WORK_CELL_ECONOMICS_OWNER_BLOCKED}`;
 
 export function economicsCommitUnknownOwnerActionFailure(
   reservationIds: readonly string[] = [],
@@ -272,7 +272,7 @@ export function economicsCommitUnknownOwnerActionFailure(
 }
 
 export function deferredCommitFailedAfterAcceptedPacketReason(failures: readonly string[]): string {
-  return `Deferred economics commit failed after the accepted catalog packet was persisted. Economics are not committed. ${failures.join(" ")}`;
+  return `Deferred economics commit failed after the accepted catalog packet was persisted. Economics are not committed. ${failures.join(" ")} ${WORK_CELL_ECONOMICS_OWNER_BLOCKED}`;
 }
 
 export function economicsReservationIdsFromMetadata(
