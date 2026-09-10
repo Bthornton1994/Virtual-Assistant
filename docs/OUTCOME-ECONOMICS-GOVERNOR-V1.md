@@ -50,6 +50,7 @@ Cursor, Grok, Claude, Codex, Hermes, humans, and future runtimes remain replacea
 6. `releaseReservation` returns unused reserved micros. Commit and release are idempotent on the caller idempotency key.
 7. When `now` is at or after `expiresAt`, reserved micros return and commits fail closed.
 8. Malformed or non-finite usage (NaN, Infinity, negatives, fractions, unsafe integers, numeric strings, booleans) fail closed. Optional usage fields may be null; a present value must be a finite non-negative safe integer. Invalid usage does not commit, refund, or alter remaining budget.
+9. Deferred multi-reservation finalization in the adapter snapshots in-process Maps and rolls back the batch if any commit fails. That is not a SQL transaction. Mixed committed/reserved leftovers from a partial batch are not left behind.
 
 Pricing is supplied by the caller as micros per token and per tool call, with an optional quote timestamp. Stale or future-dated quotes are treated as unknown pricing. Token-derived cost and billed micros must agree; disagreement is untrusted and cannot commit. This slice contains no provider SDK and no hardcoded vendor rate card.
 
@@ -111,7 +112,7 @@ No new database table is added. Reservations bind to `executionAttemptId`, `assi
 | Telemetry key and bypass/injection checks | **Enforcing** in the governor and on execution-attempt complete/fail metadata. |
 | Attempt, deadline, and work-cell limits | **Enforcing** when `executionLimits` is supplied; the adapter always supplies them from trusted runtime/context. |
 | Authority freeze on cheaper routes | **Enforcing** when frozen and proposed snapshots are supplied; the adapter always supplies them. |
-| Native public-web `fetchPage` via `runGovernedExecution` | **Enforcing** in-process. Factory-minted binding, re-derived frozen authority, explicit `public_read` authorization, durable `(run_id, phase)` pre-fetch claim, reserve-all before fetch, fetch-error release without commit, and deferred commit until packet/rejection persist. Missing economics fail closed. Native catalog path binds an input-manifest content hash, not a plan hash. See `docs/EXECUTION-ECONOMICS-ADAPTER-V1.md`. |
+| Native public-web `fetchPage` via `runGovernedExecution` | **Enforcing** in-process. Persistence-backed sealed projection, factory-minted binding, re-derived frozen authority, explicit `public_read` authorization, durable `(run_id, phase)` pre-fetch claim with handled-failure `failed` and bounded running→failed reclaim, reserve-all before fetch, fetch-error release without commit, and all-or-none deferred commit until packet/rejection persist. Missing economics fail closed. Native catalog path binds an input-manifest content hash, not a plan hash. See `docs/EXECUTION-ECONOMICS-ADAPTER-V1.md`. |
 | Same-process `completeExecutionAttempt` with `economicsSession` | **Enforcing**: success cannot complete while a reservation remains `reserved`. |
 | Same-process `failExecutionAttempt` with `economicsSession` | **Enforcing** attempt-bound release: another attempt's reservation is not released. |
 | Existing `claimExecutionAttempt` / complete / fail without a session | **Advisory**. Serverless requests do not share this in-memory session. |

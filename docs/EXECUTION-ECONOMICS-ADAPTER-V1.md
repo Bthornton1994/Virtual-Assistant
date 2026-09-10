@@ -8,9 +8,43 @@ Vision alignment: **Aligns with constraints** — `VISION.md` sections *Capabili
 
 PR #80 added the Outcome Economics Governor. This adapter puts that governor around real in-process calls. Native public-web `fetchPage` cannot run unless `evaluateAndReserve` allows it. It reuses Execution Context, Executor Envelope hashing, `authorizeToolClass`, `checkExecutionLease`, work-cell `getAssignment`, the existing `run_executor_assignments` unique `(run_id, phase)` slot as a pre-fetch claim, and complete/fail metadata keys `economicReservationId` / `economicReservationIds`. It does not create a second budget, lease, planner, queue, evidence, receipt, or memory store. It does not add a provider SDK.
 
+## Implementation decision record (binding provenance, claim lifecycle, deferred commit)
+
+This stacked slice closes three remaining in-process holes against **existing** contracts. It does not add a second assignment table, a second lease table, a Skill registry, a global economics ledger, or a new authority class.
+
+### Finding 1 — close self-certified binding provenance
+
+A module `WeakSet` of factory-created objects proved only that `runGovernedExecution` received an object the factory minted. It did **not** prove that factory *inputs* came from persisted Delegation Cloud state. A caller could construct assignment + Delegation Spec snapshot + Execution Context + envelope, hash them, call the exported factory, and execute.
+
+This slice:
+
+- Moves `mintTrustedGovernedBinding` to `src/lib/execution-economics-binding-internal.ts` and does **not** re-export it from `execution-economics-adapter.ts`.
+- Seals native projections with a **module-private `Symbol`** (not `Symbol.for`) plus a WeakSet. `bindNativePublicWebEconomics` accepts only a `PersistedWorkCellProjection` sealed after work-cell persistence reads (`loadRun` / `getProfile` / `requireInputManifest` / `bindWorkCellPhase`) via `sealPersistedWorkCellProjectionFromWorkCellLoader`.
+- Tests that need a native projection use the explicitly named `createPersistedWorkCellProjectionForTests` test double. That double is not a production route API.
+- A structurally valid homemade binding or lookalike projection cannot reach `execute()` through the exported generic adapter path.
+
+The internal-caller boundary is process-local “minted after loader.” It is **not** cryptographic authenticity, not a SQL proof, and not a global Map. HTTP routes must not import the internal module.
+
+### Finding 2 — close stranded running claims
+
+The pre-fetch claim INSERTs `running` before economics and fetch. A handled failure after that INSERT must not leave an unexplained `running` row. This slice uses the **existing** `run_executor_assignments` row:
+
+- Handled post-claim failures `UPDATE` `running` → `failed` with claim-failure metadata. Completed rows are not overwritten.
+- A failed request does not fetch again on the same `(run_id, phase)`. Unique `(run_id, phase)` still blocks a second INSERT. Retry belongs to a new Gauntlet attempt (typically a new `run_id`).
+- Crash-before-any-handler still leaves `running`. A second authenticated prepare may **reclaim** that row to `failed` when `created_at` is older than the existing native prepare window (`NATIVE_PUBLIC_WEB_RESERVATION_TTL_MS`). Reclaim does not INSERT and does not fetch. Same-run retry stays fail-closed.
+- Draft SQL `fail_work_cell_phase_claim` / `complete_work_cell_phase_claim` documents the same transitions. **SQL_VERIFICATION_NOT_AVAILABLE**.
+
+Crash reclaim is bounded, authenticated (manager-only native prepare), and cannot allow two active fetches. It does not invent a second lease table.
+
+### Finding 3 — deferred reservation finalization is all-or-none
+
+Sequential `commitReservation` could commit URL 1 then fail URL 2, leaving mixed committed/reserved process-local state. `commitDeferredGovernedReservations` now snapshots in-process Maps (`remaining*`, `released*`, reservation states, commit maps) and restores every mutation in the batch if any commit fails. Assignment completion happens only after a successful all-or-none commit; commit failure cannot leave a successful assignment with an incomplete commit set. Rejection-path commit failure rolls back to reserved and then releases reserved IDs; it does not release already-committed spend as if it were still reserved.
+
+Snapshot/rollback is **not** a SQL transaction. Process-local Maps remain process-local.
+
 ## Implementation decision record (pre-fetch claim, batch accounting, trusted binding)
 
-This slice closes three in-process holes against **existing** contracts. It does not add a second assignment table, a second lease table, a Skill registry, or a global economics ledger.
+This prior slice closed three in-process holes against **existing** contracts. It does not add a second assignment table, a second lease table, a Skill registry, or a global economics ledger.
 
 ### Which existing durable contract closes the pre-fetch race
 
@@ -38,15 +72,17 @@ Process-local `EconomicsSession` Maps cannot two-phase-commit with SQL. This sli
 
 Assignment metadata stores **all** reservation IDs under `economicReservationIds`, and keeps `economicReservationId` as the last id for existing single-id readers. That is representation, not a second ledger.
 
-If persist fails after fetch, spend is **not** committed. The durable `running` claim (when the DB path ran) still blocks another fetch. A later owner decision may add reclaim/timeout; this slice fail-closes.
+If persist fails after fetch, spend is **not** committed. Handled failures mark the claim `failed`. A crash-left `running` row still blocks another fetch; a later authenticated prepare may reclaim that row to `failed` after the existing native TTL without fetching. Same-run retry stays fail-closed.
+
+Deferred commits are all-or-none in this process: a later commit failure rolls back earlier in-batch mutations so mixed committed/reserved state is not left behind. That rollback is not a SQL transaction.
 
 ### How generic callers obtain trusted binding provenance
 
-`runGovernedExecution` no longer accepts an independently supplied `expectedEnvelopeHash`, freeze snapshot, and runtime tuple. Callers must pass a **factory-minted** `TrustedGovernedBinding`. Minting is process-local: a module `WeakSet` records objects created only by `mintTrustedGovernedBinding` / `bindNativePublicWebEconomics`. A lookalike object with matching 64-hex hashes is rejected. Hash equality is **not** cryptographic authenticity. A TypeScript cast is **not** authenticity.
+`runGovernedExecution` no longer accepts an independently supplied `expectedEnvelopeHash`, freeze snapshot, and runtime tuple. Callers must pass a **factory-minted** `TrustedGovernedBinding`. Minting is process-local and lives on the internal module: a module-private Symbol plus WeakSet records objects created only by `mintTrustedGovernedBinding` (internal) / `bindNativePublicWebEconomics` after a sealed work-cell projection. A lookalike object with matching 64-hex hashes is rejected. Hash equality is **not** cryptographic authenticity. A TypeScript cast is **not** authenticity. A WeakSet or matching 64-hex is **not** authenticity of persisted DC state; the seal only means “this object was minted by the loader (or the named test double) in this process.”
 
-The factory derives envelope, context, hashes, and frozen authority from assignment + Delegation Spec snapshot + input artifact refs (or from `bindWorkCellPhase`, which loads those from persistence). Native prepare mints only after loading the Workstream Run, frozen input manifest, executor profile, and Delegation Spec.
+The factory derives envelope, context, hashes, and frozen authority from a persistence-backed work-cell projection (validated Workstream Run, active Delegation Spec, frozen input manifest, registered executor profile, validated capability/authority, existing Execution Context and Envelope rules). Native prepare seals that projection only after those reads.
 
-**Internal trust precondition:** there is no HTTP route that accepts raw hashes/snapshots and calls `runGovernedExecution`. The only production caller is native public-web prepare via `runNativePublicWebPrepare` → `prepareAuthorizedPublicWebEvidencePacket`. Generic in-process tests must mint. Off-box workers remain advisory.
+**Internal trust precondition:** there is no HTTP route that accepts raw hashes/snapshots and calls `runGovernedExecution`. The only production native caller is `runNativePublicWebPrepare` → sealed projection → `bindNativePublicWebEconomics` → `prepareAuthorizedPublicWebEvidencePacket`. Generic in-process tests import the internal mint explicitly. Off-box workers remain advisory.
 
 This slice does **not** implement PR #83 Skill fields, nullable Skill columns, or a verification-command registry. Freeze-time Skill binding can later attach to the same minted binding without a second registry.
 
@@ -54,8 +90,9 @@ This slice does **not** implement PR #83 Skill fields, nullable Skill columns, o
 
 - Reservation Maps are still process-local. Cross-request economics remain advisory except for the durable **assignment claim** that blocks a second native fetch.
 - The claim INSERT/UPDATE SQL is not runtime-verified against PostgreSQL in this change.
-- RLS, concurrent two-session unique-violation behavior, and crash-restart reclaim are unverified.
-- Committed process-local spend after a **successful** persist is represented on the assignment metadata in this process; a different isolate cannot see the Maps.
+- RLS, concurrent two-session unique-violation behavior, and crash-restart reclaim against PostgreSQL are unverified.
+- In-process snapshot/rollback of deferred commits is not a SQL transaction.
+- Committed process-local spend after a **successful** persist and all-or-none commit is represented on the assignment metadata in this process; a different isolate cannot see the Maps.
 
 ## Actual call boundary wired
 
@@ -78,7 +115,7 @@ Before `fetchPage` on the native path:
 1. Validate Execution Context from persisted spec/profile/manifest (`bindWorkCellPhase`).
 2. Fail closed if a prepare assignment already exists (`getAssignment`).
 3. **Claim** unique `(run_id, phase)` before reservation and fetch.
-4. Mint `TrustedGovernedBinding` from that validated projection. Do not accept a caller-supplied envelope hash as trust.
+4. Seal a persistence-backed work-cell projection, then mint `TrustedGovernedBinding` from that projection. Do not accept a caller-supplied envelope hash or a caller-built binding object as trust.
 5. Re-derive frozen authority from the minted contracts. Weak frozen + weak proposed cannot pass the cheaper-route check.
 6. For `callKind === "tool"`, require an explicit `ToolClass` and call `authorizeToolClass` inside `runGovernedExecution` before reservation. `toolKeys` are not tool classes. `credential_use` is rejected when it is outside the envelope.
 7. For `callKind === "executor_process"`, require an explicit authorized tool class or reject. Do not invent a new authority class.
@@ -90,7 +127,7 @@ Native catalog path: `inputManifestContentHash` is the frozen input-manifest con
 
 ## After the call
 
-- Native multi-URL: valid usage **commits only after** observation/packet or rejection persistence.
+- Native multi-URL: valid usage **commits only after** observation/packet or rejection persistence, and only as an all-or-none in-process batch. Assignment `completed` is written only after that commit succeeds.
 - Failure, cancellation, timeout, abort, and native `{error}` fetch results release **that** URL. They do not commit as successful usage.
 - If `usageOnSuccess` throws **before** commit, remaining reserved IDs are released.
 - Malformed, incomplete, stale, non-finite, contradictory, or over-reported usage that reaches `commitReservation` cannot commit (PR #80 fail-closed: NaN/Infinity stay reserved, no refund). Omitted token fields remain null; explicit `0` remains `0`. Cheap + null tokens consume the reserved amount rather than refunding.
@@ -99,7 +136,7 @@ Native catalog path: `inputManifestContentHash` is the frozen input-manifest con
 
 ## Native phase-recorded gate
 
-`runNativePublicWebPrepare` calls `getAssignment(db, run.id, "prepare")` and `workCellPhaseAlreadyRecordedFromAssignment` **before** bind, claim, economics, and fetch. A prior failed, blocked, completed, planned, or running prepare assignment blocks another fetch. After a successful claim INSERT, this request proceeds with `workCellPhaseAlreadyRecorded: false` because **this** claim owns the slot. Packet uniqueness remains and is not sufficient alone.
+`runNativePublicWebPrepare` calls `getAssignment(db, run.id, "prepare")` and `workCellPhaseAlreadyRecordedFromAssignment` **before** bind, claim, economics, and fetch. A prior failed, blocked, completed, planned, or running prepare assignment blocks another fetch. A stale `running` claim may be reclaimed to `failed` without fetching; the failed row still blocks retry on this run. After a successful claim INSERT, this request proceeds with `workCellPhaseAlreadyRecorded: false` because **this** claim owns the slot. Packet uniqueness remains and is not sufficient alone. Handled post-claim failures mark `failed`.
 
 ## Remaining limitations (not global serverless enforcement)
 

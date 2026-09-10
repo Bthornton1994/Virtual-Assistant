@@ -40,14 +40,17 @@ import {
   alreadyClaimedPhaseFailure,
   attachEconomicsReservationIds,
   bindNativePublicWebEconomics,
+  claimFailureMetadata,
   claimMetadataFromInput,
   commitDeferredGovernedReservations,
   releaseReservedGovernedExecutions,
   requireEconomicsEnvelope,
   workCellPhaseAlreadyRecordedFromAssignment,
+  WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
   WORK_CELL_PHASE_CLAIM_SCHEMA_VERSION,
   type WorkCellPhaseClaimInput,
 } from "@/lib/execution-economics-adapter";
+import { sealPersistedWorkCellProjectionFromWorkCellLoader } from "@/lib/execution-economics-binding-internal";
 import {
   createEconomicsSession,
 } from "@/lib/outcome-economics-governor";
@@ -119,6 +122,7 @@ export type RunExecutorAssignment = {
   aiCostMicros: number;
   toolCostMicros: number;
   metadata: Record<string, unknown>;
+  createdAt: string;
 };
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -162,6 +166,7 @@ function mapAssignment(row: Record<string, unknown>): RunExecutorAssignment {
     aiCostMicros: Number(row.ai_cost_micros ?? 0),
     toolCostMicros: Number(row.tool_cost_micros ?? 0),
     metadata: asObject(row.metadata),
+    createdAt: String(row.created_at ?? ""),
   };
 }
 
@@ -303,6 +308,102 @@ async function claimWorkCellPhase(
     throw new DomainError(error.message || "Could not claim the work-cell phase.");
   }
   return mapAssignment(data as Record<string, unknown>);
+}
+
+async function failWorkCellPhaseClaim(
+  db: SupabaseClient,
+  run: { id: string },
+  phase: ExecutorPhase,
+  now: string,
+  reason: string,
+  reservationIds: readonly string[] = [],
+): Promise<RunExecutorAssignment | null> {
+  const existing = await getAssignment(db, run.id, phase);
+  if (!existing) return null;
+  if (existing.status === "completed") {
+    throw new DomainError("A completed work-cell phase assignment cannot be overwritten by a claim failure.");
+  }
+  if (existing.status === "failed") return existing;
+  if (existing.status !== "running") {
+    throw new DomainError(alreadyClaimedPhaseFailure(phase, existing.status));
+  }
+  const metadata = {
+    ...existing.metadata,
+    ...claimFailureMetadata(reason, now, reservationIds),
+  };
+  const { data, error } = await db
+    .from("run_executor_assignments")
+    .update({
+      status: "failed",
+      completed_at: now,
+      metadata,
+    })
+    .eq("id", existing.id)
+    .eq("status", "running")
+    .select("*")
+    .maybeSingle();
+  if (error) throw new DomainError(error.message || "Could not fail the work-cell phase claim.");
+  if (!data) {
+    const raced = await getAssignment(db, run.id, phase);
+    if (raced?.status === "failed") return raced;
+    if (raced?.status === "completed") {
+      throw new DomainError("A completed work-cell phase assignment cannot be overwritten by a claim failure.");
+    }
+    return raced;
+  }
+  return mapAssignment(data as Record<string, unknown>);
+}
+
+async function completeWorkCellPhaseClaim(
+  db: SupabaseClient,
+  run: { id: string },
+  phase: ExecutorPhase,
+  now: string,
+  metadataPatch: Record<string, unknown> = {},
+): Promise<RunExecutorAssignment> {
+  const existing = await getAssignment(db, run.id, phase);
+  if (!existing || existing.status !== "running" || !existing.outputArtifactId) {
+    throw new DomainError(
+      "Cannot complete a work-cell phase claim that is not running with output evidence. Assignment cannot be successful with an incomplete economics commit set.",
+    );
+  }
+  const { data, error } = await db
+    .from("run_executor_assignments")
+    .update({
+      status: "completed",
+      completed_at: now,
+      metadata: { ...existing.metadata, ...metadataPatch, economicsCommit: "complete" },
+    })
+    .eq("id", existing.id)
+    .eq("status", "running")
+    .select("*")
+    .maybeSingle();
+  if (error) throw new DomainError(error.message || "Could not complete the work-cell phase claim.");
+  if (!data) {
+    throw new DomainError(
+      "Cannot complete a work-cell phase claim that is not running with output evidence. Assignment cannot be successful with an incomplete economics commit set.",
+    );
+  }
+  return mapAssignment(data as Record<string, unknown>);
+}
+
+async function expireStaleRunningWorkCellPhaseClaim(
+  db: SupabaseClient,
+  existing: RunExecutorAssignment,
+  now: string,
+): Promise<RunExecutorAssignment | null> {
+  if (existing.status !== "running") return null;
+  const createdMs = Date.parse(existing.createdAt);
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(createdMs) || !Number.isFinite(nowMs)) return null;
+  if (nowMs - createdMs < WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS) return null;
+  return failWorkCellPhaseClaim(
+    db,
+    { id: existing.runId },
+    existing.phase,
+    now,
+    "Stale running work-cell phase claim reclaimed to failed without fetching.",
+  );
 }
 
 async function insertEvidenceArtifact(
@@ -865,7 +966,12 @@ export async function runNativePublicWebPrepare(
   if (await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION)) {
     throw new DomainError("This run already has a frozen catalog evidence packet. Ingesting another belongs to a new attempt.");
   }
+  const now = new Date().toISOString();
   const existingPrepare = await getAssignment(db, run.id, "prepare");
+  if (existingPrepare?.status === "running") {
+    const reclaimed = await expireStaleRunningWorkCellPhaseClaim(db, existingPrepare, now);
+    throw new DomainError(alreadyClaimedPhaseFailure("prepare", reclaimed?.status ?? existingPrepare.status));
+  }
   const workCellPhaseAlreadyRecorded = workCellPhaseAlreadyRecordedFromAssignment(existingPrepare);
   if (workCellPhaseAlreadyRecorded) {
     throw new DomainError(
@@ -891,7 +997,6 @@ export async function runNativePublicWebPrepare(
     frozen.manifest.createdAt,
     ["public_read", "artifact_read", "artifact_write"],
   );
-  const now = new Date().toISOString();
   const claimInput: WorkCellPhaseClaimInput = {
     organizationId: run.organization_id,
     tenantId: run.organization_id,
@@ -906,100 +1011,148 @@ export async function runNativePublicWebPrepare(
     now,
   };
   await claimWorkCellPhase(db, actor, run, profile, "prepare", claimInput, frozen.id);
-  const session = createEconomicsSession({
-    organizationId: run.organization_id,
-    tenantId: run.organization_id,
-    economicEnvelope: await loadSpecEconomicEnvelope(db, run.delegation_spec_id),
-  });
-  if (!session.ok) {
-    throw new DomainError(
-      "Native public-web prepare cannot start without a trusted economic envelope. Fetch was not started. " +
-        session.failures.join(" "),
-    );
-  }
-  const economics = bindNativePublicWebEconomics({
-    session: session.value,
-    binding,
-    organizationId: run.organization_id,
-    tenantId: run.organization_id,
-    now,
-    inputManifestContentHash: frozen.contentHash,
-    deadlineAt: new Date(Date.parse(now) + 120_000).toISOString(),
-    workCellPhaseAlreadyRecorded: false,
-    cancelled: run.status !== "running",
-  });
-  if (!economics.ok) {
-    throw new DomainError(
-      "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
-        economics.failures.join(" "),
-    );
-  }
 
-  const releaseEconomics = (reservationIds: readonly string[]) =>
-    releaseReservedGovernedExecutions({
-      session: session.value,
+  let assignmentIsTerminal = false;
+  let trackedReservationIds: string[] = [];
+  try {
+    const session = createEconomicsSession({
       organizationId: run.organization_id,
       tenantId: run.organization_id,
-      reservationIds,
-      now,
+      economicEnvelope: await loadSpecEconomicEnvelope(db, run.delegation_spec_id),
     });
-
-  let prepared: Awaited<ReturnType<typeof prepareAuthorizedPublicWebEvidencePacket>>;
-  try {
-    prepared = await prepareAuthorizedPublicWebEvidencePacket(frozen.manifest, binding, {
-      economics: economics.value,
+    if (!session.ok) {
+      throw new DomainError(
+        "Native public-web prepare cannot start without a trusted economic envelope. Fetch was not started. " +
+          session.failures.join(" "),
+      );
+    }
+    const projection = sealPersistedWorkCellProjectionFromWorkCellLoader(binding, frozen.contentHash);
+    const economics = bindNativePublicWebEconomics({
+      session: session.value,
+      projection,
+      organizationId: run.organization_id,
+      tenantId: run.organization_id,
       now,
+      deadlineAt: new Date(Date.parse(now) + 120_000).toISOString(),
+      workCellPhaseAlreadyRecorded: false,
+      cancelled: run.status !== "running",
     });
-  } catch (error) {
-    const reservationIds =
-      error instanceof GovernedNativePrepareError ? error.economicReservationIds : [];
-    releaseEconomics(reservationIds);
-    throw error;
-  }
-  if (prepared.trace.outcomes.some((outcome) => outcome.result === "blocked_preflight")) {
-    releaseEconomics(prepared.economicReservationIds);
-    throw new DomainError(
-      "Native public-web prepare is blocked_preflight and cannot persist a completed assignment. Fetch was not started.",
-    );
-  }
-  const checked = validateToolInvocationTraceArtifact(prepared.trace, binding.context, {
-    productionClass: "native_tool_execution",
-    assignmentId: binding.assignmentId,
-    envelopeHash: binding.envelopeHash,
-    contextHash: binding.contextHash,
-  });
-  if (!checked.ok) {
-    releaseEconomics(prepared.economicReservationIds);
-    throw new DomainError("Native observation trace is invalid: " + checked.failures.join(" "));
-  }
+    if (!economics.ok) {
+      throw new DomainError(
+        "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
+          economics.failures.join(" "),
+      );
+    }
 
-  const reservationMetadata = attachEconomicsReservationIds({}, prepared.economicReservationIds);
-
-  let observation;
-  try {
-    observation = await persistObservationArtifact(db, actor, run, checked.value);
-  } catch (error) {
-    releaseEconomics(prepared.economicReservationIds);
-    throw error;
-  }
-  const pointers = observation.pointers;
-
-  const validation = validateCatalogEvidencePacket(prepared.packet, {
-    expectedProductIds: frozen.manifest.expectedProductIds,
-    expectedRunId: runId,
-    expectedExecutorKey: profile.key,
-    expectedMarket: frozen.manifest.market,
-  });
-  if (!validation.hardGatePass) {
-    try {
-      await recordRejectedExecutorOutput(db, actor, run, {
-        phase: "prepare",
-        profile,
-        raw: JSON.stringify(prepared.packet),
-        hardFailures: validation.hardFailures,
-        metrics: validation.metrics as unknown as Record<string, number>,
-        assignmentMetadata: { ...reservationMetadata, ...pointers },
+    const releaseEconomics = (reservationIds: readonly string[]) =>
+      releaseReservedGovernedExecutions({
+        session: session.value,
+        organizationId: run.organization_id,
+        tenantId: run.organization_id,
+        reservationIds,
+        now,
       });
+
+    let prepared: Awaited<ReturnType<typeof prepareAuthorizedPublicWebEvidencePacket>>;
+    try {
+      prepared = await prepareAuthorizedPublicWebEvidencePacket(frozen.manifest, binding, {
+        economics: economics.value,
+        now,
+      });
+    } catch (error) {
+      const reservationIds =
+        error instanceof GovernedNativePrepareError ? error.economicReservationIds : [];
+      trackedReservationIds = reservationIds;
+      releaseEconomics(reservationIds);
+      throw error;
+    }
+    trackedReservationIds = prepared.economicReservationIds;
+    if (prepared.trace.outcomes.some((outcome) => outcome.result === "blocked_preflight")) {
+      releaseEconomics(prepared.economicReservationIds);
+      throw new DomainError(
+        "Native public-web prepare is blocked_preflight and cannot persist a completed assignment. Fetch was not started.",
+      );
+    }
+    const checked = validateToolInvocationTraceArtifact(prepared.trace, binding.context, {
+      productionClass: "native_tool_execution",
+      assignmentId: binding.assignmentId,
+      envelopeHash: binding.envelopeHash,
+      contextHash: binding.contextHash,
+    });
+    if (!checked.ok) {
+      releaseEconomics(prepared.economicReservationIds);
+      throw new DomainError("Native observation trace is invalid: " + checked.failures.join(" "));
+    }
+
+    const reservationMetadata = attachEconomicsReservationIds({}, prepared.economicReservationIds);
+
+    let observation;
+    try {
+      observation = await persistObservationArtifact(db, actor, run, checked.value);
+    } catch (error) {
+      releaseEconomics(prepared.economicReservationIds);
+      throw error;
+    }
+    const pointers = observation.pointers;
+
+    const validation = validateCatalogEvidencePacket(prepared.packet, {
+      expectedProductIds: frozen.manifest.expectedProductIds,
+      expectedRunId: runId,
+      expectedExecutorKey: profile.key,
+      expectedMarket: frozen.manifest.market,
+    });
+    if (!validation.hardGatePass) {
+      try {
+        await recordRejectedExecutorOutput(db, actor, run, {
+          phase: "prepare",
+          profile,
+          raw: JSON.stringify(prepared.packet),
+          hardFailures: validation.hardFailures,
+          metrics: validation.metrics as unknown as Record<string, number>,
+          assignmentMetadata: { ...reservationMetadata, ...pointers },
+        });
+      } catch (error) {
+        releaseEconomics(prepared.economicReservationIds);
+        throw error;
+      }
+      assignmentIsTerminal = true;
+      const committed = commitDeferredGovernedReservations({
+        session: session.value,
+        organizationId: run.organization_id,
+        tenantId: run.organization_id,
+        now,
+        pricing: economics.value.pricing,
+        items: prepared.pendingCommits,
+      });
+      if (!committed.ok) {
+        releaseEconomics(prepared.economicReservationIds);
+        throw new DomainError(committed.failures.join(" "));
+      }
+      return { persisted: false, contentHash: null, artifactId: null, validation };
+    }
+
+    const contentHash = hashCatalogEvidencePacket(prepared.packet);
+    let artifactId: string;
+    try {
+      const persisted = await persistPhaseArtifact(db, actor, run, profile, {
+        kind: "source",
+        summary: `Catalog evidence packet v1 from ${profile.key} covering ${prepared.packet.products.length} product(s).`,
+        payload: prepared.packet as unknown as Record<string, unknown>,
+        contentHash,
+        phase: "prepare",
+        assignmentStatus: "running",
+        inputArtifactId: frozen.id,
+        assignmentMetadata: mergeObservationPointers(
+          {
+            packetHash: contentHash,
+            productCount: validation.metrics.productCount,
+            inputHash: frozen.manifest.inputHash,
+            ...reservationMetadata,
+          },
+          pointers,
+        ),
+      });
+      artifactId = persisted.artifactId;
     } catch (error) {
       releaseEconomics(prepared.economicReservationIds);
       throw error;
@@ -1016,47 +1169,25 @@ export async function runNativePublicWebPrepare(
       releaseEconomics(prepared.economicReservationIds);
       throw new DomainError(committed.failures.join(" "));
     }
-    return { persisted: false, contentHash: null, artifactId: null, validation };
+    await completeWorkCellPhaseClaim(db, run, "prepare", now, reservationMetadata);
+    assignmentIsTerminal = true;
+    return { persisted: true, validation, contentHash, artifactId };
+  } finally {
+    if (!assignmentIsTerminal) {
+      try {
+        await failWorkCellPhaseClaim(
+          db,
+          run,
+          "prepare",
+          now,
+          "Native public-web prepare failed after claiming the (run_id, phase) slot. Fetch will not retry on this run.",
+          trackedReservationIds,
+        );
+      } catch {
+        // Keep the original prepare failure; claim fail is best-effort representation.
+      }
+    }
   }
-
-  const contentHash = hashCatalogEvidencePacket(prepared.packet);
-  let artifactId: string;
-  try {
-    const persisted = await persistPhaseArtifact(db, actor, run, profile, {
-      kind: "source",
-      summary: `Catalog evidence packet v1 from ${profile.key} covering ${prepared.packet.products.length} product(s).`,
-      payload: prepared.packet as unknown as Record<string, unknown>,
-      contentHash,
-      phase: "prepare",
-      assignmentStatus: "completed",
-      inputArtifactId: frozen.id,
-      assignmentMetadata: mergeObservationPointers(
-        {
-          packetHash: contentHash,
-          productCount: validation.metrics.productCount,
-          inputHash: frozen.manifest.inputHash,
-          ...reservationMetadata,
-        },
-        pointers,
-      ),
-    });
-    artifactId = persisted.artifactId;
-  } catch (error) {
-    releaseEconomics(prepared.economicReservationIds);
-    throw error;
-  }
-  const committed = commitDeferredGovernedReservations({
-    session: session.value,
-    organizationId: run.organization_id,
-    tenantId: run.organization_id,
-    now,
-    pricing: economics.value.pricing,
-    items: prepared.pendingCommits,
-  });
-  if (!committed.ok) {
-    throw new DomainError(committed.failures.join(" "));
-  }
-  return { persisted: true, validation, contentHash, artifactId };
 }
 
 /** Validates a pasted research packet BEFORE persistence. Rejected output is untrusted audit, never evidence. */
