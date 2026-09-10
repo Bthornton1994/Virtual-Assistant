@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ECONOMICS_RESERVATION_METADATA_KEY,
+  INVALID_SESSION_BUDGET_FAILURE,
+  INVALID_USAGE_FAILURE,
   OUTCOME_ECONOMICS_EVIDENCE_SCHEMA_VERSION,
   assertRedactedEconomicsTelemetry,
+  assertSafeNonNegativeInteger,
+  assertUsageObservationNumerics,
   buildEconomicEvidence,
   commitReservation,
   createEconomicsSession,
@@ -13,6 +17,7 @@ import {
   estimateCostMicros,
   governModelUsage,
   isForbiddenEconomicsTelemetryKey,
+  isSafeNonNegativeInteger,
   loopFingerprint,
   readRuntimeEconomicsReservationId,
   reconcileUntrustedUsage,
@@ -1071,5 +1076,348 @@ describe("outcome economics governor v1", () => {
     expect(released.ok).toBe(true);
     expect(economics.releasedAiCostMicros).toBe(100);
     expect(economics.remainingAiCostMicros).toBe(1_000);
+  });
+});
+
+describe("outcome economics governor v1 numeric fail-closed", () => {
+  const UNSAFE_INTEGER = Number.MAX_SAFE_INTEGER + 1;
+  const USAGE_NUMERIC_FIELDS = [
+    "inputTokens",
+    "outputTokens",
+    "totalTokens",
+    "reasoningTokens",
+    "cacheTokens",
+    "toolCallCount",
+    "retryCount",
+    "latencyMs",
+  ] as const;
+
+  function snapshot(economics: EconomicsSession) {
+    return {
+      remainingAi: economics.remainingAiCostMicros,
+      remainingTool: economics.remainingToolCostMicros,
+      releasedAi: economics.releasedAiCostMicros,
+      releasedTool: economics.releasedToolCostMicros,
+      states: [...economics.reservations.values()].map((row) => row.state),
+      commits: economics.commitsByIdempotency.size,
+    };
+  }
+
+  function reservedSession() {
+    const economics = session();
+    const reserved = evaluateAndReserve(reserveInput(economics));
+    if (!reserved.ok || !reserved.value.reservation) {
+      throw new Error("expected reservation");
+    }
+    return { economics, reserved: reserved.value.reservation };
+  }
+
+  function commitWith(
+    economics: EconomicsSession,
+    reservationId: string,
+    observationOverrides: Partial<UsageObservation> | Record<string, unknown> = {},
+    billedCostMicros?: number | null,
+  ) {
+    return commitReservation({
+      session: economics,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId,
+      idempotencyKey: "reserve-1",
+      observation: observation(observationOverrides as Partial<UsageObservation>),
+      pricing: PRICING,
+      billedCostMicros,
+      now: LATER,
+    });
+  }
+
+  it("rejects NaN in every numeric usage field without mutating remaining budget", () => {
+    for (const field of USAGE_NUMERIC_FIELDS) {
+      const { economics, reserved } = reservedSession();
+      const before = snapshot(economics);
+      const result = commitWith(economics, reserved.reservationId, { [field]: Number.NaN });
+      expect(result.ok).toBe(false);
+      expect(failuresOf(result)).toContain(INVALID_USAGE_FAILURE);
+      expect(snapshot(economics)).toEqual(before);
+      expect([...economics.reservations.values()][0]?.state).toBe("reserved");
+    }
+  });
+
+  it("rejects NaN billedCostMicros without committing", () => {
+    const { economics, reserved } = reservedSession();
+    const before = snapshot(economics);
+    const result = commitWith(economics, reserved.reservationId, {}, Number.NaN);
+    expect(result.ok).toBe(false);
+    expect(failuresOf(result)).toContain(INVALID_USAGE_FAILURE);
+    expect(snapshot(economics)).toEqual(before);
+    expect([...economics.reservations.values()][0]?.state).toBe("reserved");
+  });
+
+  it("rejects positive and negative Infinity on usage fields and billedCostMicros", () => {
+    const { economics, reserved } = reservedSession();
+    const before = snapshot(economics);
+    for (const value of [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const inputTokens = commitWith(economics, reserved.reservationId, { inputTokens: value });
+      const billed = commitWith(economics, reserved.reservationId, {}, value);
+      expect(inputTokens.ok).toBe(false);
+      expect(billed.ok).toBe(false);
+      expect(failuresOf(inputTokens)).toContain(INVALID_USAGE_FAILURE);
+      expect(failuresOf(billed)).toContain(INVALID_USAGE_FAILURE);
+    }
+    expect(snapshot(economics)).toEqual(before);
+  });
+
+  it("rejects negative inputTokens, outputTokens, toolCallCount, and billedCostMicros", () => {
+    const { economics, reserved } = reservedSession();
+    const before = snapshot(economics);
+    expect(commitWith(economics, reserved.reservationId, { inputTokens: -1 }).ok).toBe(false);
+    expect(commitWith(economics, reserved.reservationId, { outputTokens: -1 }).ok).toBe(false);
+    expect(commitWith(economics, reserved.reservationId, { toolCallCount: -1 }).ok).toBe(false);
+    expect(commitWith(economics, reserved.reservationId, {}, -1).ok).toBe(false);
+    expect(snapshot(economics)).toEqual(before);
+    expect([...economics.reservations.values()][0]?.state).toBe("reserved");
+  });
+
+  it("rejects fractional values, unsafe integers, numeric strings, booleans, and other malformed values", () => {
+    const malformed = [1.5, UNSAFE_INTEGER, "1", true, false, {}, [], "0"];
+    for (const value of malformed) {
+      const usage = assertUsageObservationNumerics(
+        observation({ inputTokens: value as unknown as number }),
+      );
+      expect(usage.ok).toBe(false);
+      expect(failuresOf(usage)).toContain(INVALID_USAGE_FAILURE);
+      expect(isSafeNonNegativeInteger(value)).toBe(false);
+    }
+    expect(assertSafeNonNegativeInteger(true, "billedCostMicros").ok).toBe(false);
+    expect(assertSafeNonNegativeInteger("8", "billedCostMicros").ok).toBe(false);
+    const { economics, reserved } = reservedSession();
+    const before = snapshot(economics);
+    expect(commitWith(economics, reserved.reservationId, { inputTokens: 1.5 }).ok).toBe(false);
+    expect(commitWith(economics, reserved.reservationId, { outputTokens: UNSAFE_INTEGER }).ok).toBe(false);
+    expect(
+      commitWith(economics, reserved.reservationId, { toolCallCount: "1" as unknown as number }).ok,
+    ).toBe(false);
+    expect(commitWith(economics, reserved.reservationId, {}, 1.25).ok).toBe(false);
+    expect(snapshot(economics)).toEqual(before);
+  });
+
+  it("does not increase remaining budget or treat invalid usage as successful consumption", () => {
+    const { economics, reserved } = reservedSession();
+    expect(economics.remainingAiCostMicros).toBe(900);
+    const result = commitWith(economics, reserved.reservationId, { inputTokens: -20, outputTokens: 0, totalTokens: -20 });
+    expect(result.ok).toBe(false);
+    expect(economics.remainingAiCostMicros).toBe(900);
+    expect(economics.commitsByIdempotency.size).toBe(0);
+    const evidence = buildEconomicEvidence({
+      reservation: reserved,
+      decision: "allow",
+      routing: cheapRouting(),
+      loopSignal: "none",
+      retryReworkCostMicros: 0,
+    });
+    expect(evidence.actualObservedCostMicros).toBeNull();
+    expect(evidence.consumedAiCostMicros).toBe(0);
+  });
+
+  it("fails closed on a subsequent reservation when session remaining budget is non-finite", () => {
+    const economics = session();
+    economics.remainingAiCostMicros = Number.NaN;
+    const result = evaluateAndReserve(reserveInput(economics, { idempotencyKey: "after-poison" }));
+    expect(result.ok).toBe(false);
+    expect(failuresOf(result)).toContain(INVALID_SESSION_BUDGET_FAILURE);
+    expect(economics.reservations.size).toBe(0);
+  });
+
+  it("allows a reservation equal to remaining budget and rejects the next reservation after exact exhaustion", () => {
+    const economics = session();
+    const exact = evaluateAndReserve(
+      reserveInput(economics, {
+        estimatedAiCostMicros: 1_000,
+        estimatedToolCostMicros: 500,
+        estimatedCostMicros: 1_500,
+      }),
+    );
+    expect(exact.ok).toBe(true);
+    if (!exact.ok || !exact.value.reservation) return;
+    expect(economics.remainingAiCostMicros).toBe(0);
+    expect(economics.remainingToolCostMicros).toBe(0);
+    const overflow = evaluateAndReserve(
+      reserveInput(economics, {
+        idempotencyKey: "after-exhaust",
+        executionAttemptId: "attempt-002",
+        estimatedAiCostMicros: 1,
+        estimatedToolCostMicros: 0,
+        estimatedCostMicros: 1,
+        stepKey: "follow-up",
+      }),
+    );
+    expect(overflow.ok).toBe(false);
+    expect(failuresOf(overflow)).toMatch(/Budget exceeded/);
+  });
+
+  it("accepts valid zero usage values", () => {
+    const { economics, reserved } = reservedSession();
+    const committed = commitWith(economics, reserved.reservationId, {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      reasoningTokens: 0,
+      cacheTokens: 0,
+      toolCallCount: 0,
+      retryCount: 0,
+      latencyMs: 0,
+    });
+    expect(committed.ok).toBe(true);
+    if (!committed.ok) return;
+    expect(committed.value.consumedAiCostMicros).toBe(0);
+    expect(committed.value.consumedToolCostMicros).toBe(0);
+    expect(economics.remainingAiCostMicros).toBe(1_000);
+  });
+
+  it("preserves missing-usage, hold, over-report, under-report, downgrade, and reconciliation behavior", () => {
+    expect(governModelUsage(null, "cheap").ok).toBe(true);
+    const economics = session();
+    const missingReserved = evaluateAndReserve(reserveInput(economics, { idempotencyKey: "missing" }));
+    expect(missingReserved.ok).toBe(true);
+    if (!missingReserved.ok || !missingReserved.value.reservation) return;
+    const missing = commitReservation({
+      session: economics,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId: missingReserved.value.reservation.reservationId,
+      idempotencyKey: "missing",
+      observation: observation({
+        idempotencyKey: "missing",
+        inputTokens: null,
+        outputTokens: null,
+        totalTokens: null,
+        usageStatus: "unavailable",
+      }),
+      pricing: PRICING,
+      now: LATER,
+    });
+    expect(missing.ok).toBe(true);
+    if (!missing.ok) return;
+    expect(missing.value.unusedAiCostMicros).toBe(0);
+    expect(missing.value.observedCostMicros).toBeNull();
+
+    const holdSession = session();
+    const held = evaluateAndReserve(
+      reserveInput(holdSession, {
+        executorTier: "expensive",
+        routing: expensiveRouting(),
+        streamTerminatedBeforeUsage: true,
+        idempotencyKey: "hold-zero",
+      }),
+    );
+    expect(held.ok).toBe(true);
+    if (!held.ok) return;
+    expect(held.value.decision).toBe("hold");
+    expect(held.value.reservation).toBeNull();
+
+    const overSession = session();
+    const overReserved = evaluateAndReserve(reserveInput(overSession, { idempotencyKey: "over" }));
+    if (!overReserved.ok || !overReserved.value.reservation) return;
+    const over = commitReservation({
+      session: overSession,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId: overReserved.value.reservation.reservationId,
+      idempotencyKey: "over",
+      observation: observation({
+        idempotencyKey: "over",
+        inputTokens: 400,
+        outputTokens: 80,
+        totalTokens: 480,
+      }),
+      pricing: PRICING,
+      now: LATER,
+    });
+    expect(over.ok).toBe(false);
+    expect([...overSession.reservations.values()][0]?.state).toBe("reserved");
+
+    const underSession = session();
+    const underReserved = evaluateAndReserve(
+      reserveInput(underSession, {
+        executorTier: "expensive",
+        routing: expensiveRouting(),
+        estimatedAiCostMicros: 200,
+        estimatedToolCostMicros: 40,
+        estimatedCostMicros: 240,
+        idempotencyKey: "under",
+      }),
+    );
+    if (!underReserved.ok || !underReserved.value.reservation) return;
+    const remainingAfterReserve = underSession.remainingAiCostMicros;
+    const under = commitReservation({
+      session: underSession,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId: underReserved.value.reservation.reservationId,
+      idempotencyKey: "under",
+      observation: observation({
+        executorTier: "expensive",
+        idempotencyKey: "under",
+        inputTokens: 20,
+        outputTokens: 10,
+        totalTokens: 30,
+        reasoningTokens: 1,
+        cacheTokens: 0,
+        toolCallCount: 1,
+      }),
+      pricing: PRICING,
+      now: LATER,
+    });
+    expect(under.ok).toBe(true);
+    if (!under.ok) return;
+    expect(under.value.underReported).toBe(true);
+    expect(underSession.remainingAiCostMicros).toBe(remainingAfterReserve);
+
+    const downgrade = evaluateAndReserve(
+      reserveInput(session(), {
+        executorTier: "expensive",
+        usageUnavailable: true,
+        routing: expensiveRouting(),
+        idempotencyKey: "down",
+      }),
+    );
+    expect(downgrade.ok).toBe(true);
+    if (!downgrade.ok) return;
+    expect(downgrade.value.decision).toBe("downgrade");
+    expect(
+      reconcileUntrustedUsage({ tokenDerivedMicros: 90, billedCostMicros: 91, usageStatus: "reported" }).ok,
+    ).toBe(false);
+    expect(
+      reconcileUntrustedUsage({ tokenDerivedMicros: 90, billedCostMicros: 90, usageStatus: "reported" }).ok,
+    ).toBe(true);
+  });
+
+  it("does not copy estimated cost into actual observed cost", () => {
+    const economics = session();
+    const reserved = evaluateAndReserve(reserveInput(economics));
+    if (!reserved.ok || !reserved.value.reservation) return;
+    const evidence = buildEconomicEvidence({
+      reservation: reserved.value.reservation,
+      decision: "allow",
+      routing: reserved.value.routing,
+      loopSignal: reserved.value.loopSignal,
+      retryReworkCostMicros: 0,
+    });
+    expect(evidence.estimatedCostMicros).toBe(120);
+    expect(evidence.actualObservedCostMicros).toBeNull();
+    const verified = deriveVerifiedOutcomeEconomics({
+      evidence: [evidence],
+      receipt: { verificationStatus: "passed", definitionOfDoneMet: true },
+      outcomeSource: "deterministic_validator",
+      firstPassVerified: true,
+      expensiveEscalations: 0,
+      expensiveEscalationsAccepted: 0,
+    });
+    expect(verified.ok).toBe(true);
+    if (!verified.ok) return;
+    expect(verified.value.estimatedCostMicros).toBe(120);
+    expect(verified.value.actualObservedCostMicros).toBeNull();
+    expect(verified.value.costPerAcceptedOutcomeReceiptMicros).toBeNull();
+    expect(verified.value.costPerAcceptedOutcomeReceiptMicros).not.toBe(verified.value.estimatedCostMicros);
   });
 });

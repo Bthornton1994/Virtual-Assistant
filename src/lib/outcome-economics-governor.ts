@@ -311,12 +311,166 @@ function requireClock(value: unknown, label: string, failures: string[]): number
   return ms;
 }
 
+export const INVALID_USAGE_FAILURE = "Malformed or non-finite usage cannot be committed.";
+export const INVALID_SESSION_BUDGET_FAILURE = "Economics session monetary state is invalid.";
+
+export function isSafeNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+export function assertSafeNonNegativeInteger(
+  value: unknown,
+  label: string,
+  code: string = INVALID_USAGE_FAILURE,
+): GovernorResult<number> {
+  if (!isSafeNonNegativeInteger(value)) {
+    return { ok: false, failures: [`${label} must be a non-negative safe integer.`, code] };
+  }
+  return { ok: true, value };
+}
+
+export function assertOptionalSafeNonNegativeInteger(
+  value: unknown,
+  label: string,
+  code: string = INVALID_USAGE_FAILURE,
+): GovernorResult<number | null> {
+  if (value === null || value === undefined) return { ok: true, value: null };
+  return assertSafeNonNegativeInteger(value, label, code);
+}
+
 function requireNonNegativeInteger(value: unknown, label: string, failures: string[]): number | null {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || !Number.isFinite(value)) {
-    failures.push(`${label} must be a non-negative integer.`);
+  const checked = assertSafeNonNegativeInteger(value, label, INVALID_USAGE_FAILURE);
+  if (!checked.ok) {
+    failures.push(...checked.failures);
     return null;
   }
-  return value;
+  return checked.value;
+}
+
+function collectSafeIntegerFailure(
+  value: unknown,
+  label: string,
+  failures: string[],
+  optional: boolean,
+): void {
+  if (optional && (value === null || value === undefined)) return;
+  if (!isSafeNonNegativeInteger(value)) {
+    failures.push(`${label} must be a non-negative safe integer.`);
+  }
+}
+
+export function assertUsageObservationNumerics(observation: UsageObservation): GovernorResult<true> {
+  const failures: string[] = [];
+  collectSafeIntegerFailure(observation.inputTokens, "observation.inputTokens", failures, true);
+  collectSafeIntegerFailure(observation.outputTokens, "observation.outputTokens", failures, true);
+  collectSafeIntegerFailure(observation.totalTokens, "observation.totalTokens", failures, true);
+  collectSafeIntegerFailure(observation.reasoningTokens, "observation.reasoningTokens", failures, true);
+  collectSafeIntegerFailure(observation.cacheTokens, "observation.cacheTokens", failures, true);
+  collectSafeIntegerFailure(observation.toolCallCount, "observation.toolCallCount", failures, false);
+  collectSafeIntegerFailure(observation.retryCount, "observation.retryCount", failures, false);
+  collectSafeIntegerFailure(observation.latencyMs, "observation.latencyMs", failures, false);
+  if (failures.length) {
+    return { ok: false, failures: [...failures, INVALID_USAGE_FAILURE] };
+  }
+  return { ok: true, value: true };
+}
+
+export function assertCallerPricingNumerics(pricing: CallerPricing): GovernorResult<true> {
+  const failures: string[] = [];
+  collectSafeIntegerFailure(pricing.inputMicrosPerToken, "pricing.inputMicrosPerToken", failures, true);
+  collectSafeIntegerFailure(pricing.outputMicrosPerToken, "pricing.outputMicrosPerToken", failures, true);
+  collectSafeIntegerFailure(pricing.toolCallMicros, "pricing.toolCallMicros", failures, true);
+  if (failures.length) {
+    return { ok: false, failures: [...failures, INVALID_USAGE_FAILURE] };
+  }
+  return { ok: true, value: true };
+}
+
+function sessionReservedAndConsumed(session: EconomicsSession): {
+  reservedAiCostMicros: number;
+  reservedToolCostMicros: number;
+  consumedAiCostMicros: number;
+  consumedToolCostMicros: number;
+  failures: string[];
+} {
+  const failures: string[] = [];
+  let reservedAiCostMicros = 0;
+  let reservedToolCostMicros = 0;
+  let consumedAiCostMicros = 0;
+  let consumedToolCostMicros = 0;
+  for (const reservation of session.reservations.values()) {
+    collectSafeIntegerFailure(reservation.reservedAiCostMicros, "reservation.reservedAiCostMicros", failures, false);
+    collectSafeIntegerFailure(reservation.reservedToolCostMicros, "reservation.reservedToolCostMicros", failures, false);
+    collectSafeIntegerFailure(reservation.estimatedCostMicros, "reservation.estimatedCostMicros", failures, true);
+    if (reservation.state === "reserved") {
+      reservedAiCostMicros += reservation.reservedAiCostMicros;
+      reservedToolCostMicros += reservation.reservedToolCostMicros;
+    }
+    if (reservation.committed) {
+      collectSafeIntegerFailure(
+        reservation.committed.consumedAiCostMicros,
+        "reservation.consumedAiCostMicros",
+        failures,
+        false,
+      );
+      collectSafeIntegerFailure(
+        reservation.committed.consumedToolCostMicros,
+        "reservation.consumedToolCostMicros",
+        failures,
+        false,
+      );
+      collectSafeIntegerFailure(
+        reservation.committed.observedCostMicros,
+        "reservation.observedCostMicros",
+        failures,
+        true,
+      );
+      collectSafeIntegerFailure(
+        reservation.committed.unusedAiCostMicros,
+        "reservation.unusedAiCostMicros",
+        failures,
+        false,
+      );
+      collectSafeIntegerFailure(
+        reservation.committed.unusedToolCostMicros,
+        "reservation.unusedToolCostMicros",
+        failures,
+        false,
+      );
+      consumedAiCostMicros += reservation.committed.consumedAiCostMicros;
+      consumedToolCostMicros += reservation.committed.consumedToolCostMicros;
+    }
+  }
+  for (const event of session.fingerprints) {
+    collectSafeIntegerFailure(event.estimatedCostMicros, "fingerprint.estimatedCostMicros", failures, false);
+  }
+  collectSafeIntegerFailure(reservedAiCostMicros, "reservedAiCostMicros", failures, false);
+  collectSafeIntegerFailure(reservedToolCostMicros, "reservedToolCostMicros", failures, false);
+  collectSafeIntegerFailure(consumedAiCostMicros, "consumedAiCostMicros", failures, false);
+  collectSafeIntegerFailure(consumedToolCostMicros, "consumedToolCostMicros", failures, false);
+  return {
+    reservedAiCostMicros,
+    reservedToolCostMicros,
+    consumedAiCostMicros,
+    consumedToolCostMicros,
+    failures,
+  };
+}
+
+export function assertEconomicsSessionMonetaryState(session: EconomicsSession): GovernorResult<true> {
+  const failures: string[] = [];
+  collectSafeIntegerFailure(session.maxAiCostMicros, "maxAiCostMicros", failures, false);
+  collectSafeIntegerFailure(session.maxToolCostMicros, "maxToolCostMicros", failures, false);
+  collectSafeIntegerFailure(session.remainingAiCostMicros, "remainingAiCostMicros", failures, false);
+  collectSafeIntegerFailure(session.remainingToolCostMicros, "remainingToolCostMicros", failures, false);
+  collectSafeIntegerFailure(session.releasedAiCostMicros, "releasedAiCostMicros", failures, false);
+  collectSafeIntegerFailure(session.releasedToolCostMicros, "releasedToolCostMicros", failures, false);
+  const derived = sessionReservedAndConsumed(session);
+  failures.push(...derived.failures);
+  if (failures.length) {
+    return { ok: false, failures: [...failures, INVALID_SESSION_BUDGET_FAILURE] };
+  }
+  return { ok: true, value: true };
 }
 
 function requireIsolation(
@@ -665,15 +819,36 @@ export type ReserveResult = {
   routing: RoutingDecision;
 };
 
-function expireReservations(session: EconomicsSession, nowMs: number): void {
+function expireReservations(session: EconomicsSession, nowMs: number): GovernorResult<true> {
+  const toExpire: ReservationRecord[] = [];
+  let nextRemainingAi = session.remainingAiCostMicros;
+  let nextRemainingTool = session.remainingToolCostMicros;
   for (const reservation of session.reservations.values()) {
     if (reservation.state !== "reserved") continue;
     if (Date.parse(reservation.expiresAt) <= nowMs) {
-      reservation.state = "expired";
-      session.remainingAiCostMicros += reservation.reservedAiCostMicros;
-      session.remainingToolCostMicros += reservation.reservedToolCostMicros;
+      toExpire.push(reservation);
+      nextRemainingAi += reservation.reservedAiCostMicros;
+      nextRemainingTool += reservation.reservedToolCostMicros;
     }
   }
+  const nextAi = assertSafeNonNegativeInteger(
+    nextRemainingAi,
+    "remainingAiCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  const nextTool = assertSafeNonNegativeInteger(
+    nextRemainingTool,
+    "remainingToolCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  if (!nextAi.ok) return nextAi;
+  if (!nextTool.ok) return nextTool;
+  for (const reservation of toExpire) {
+    reservation.state = "expired";
+  }
+  session.remainingAiCostMicros = nextAi.value;
+  session.remainingToolCostMicros = nextTool.value;
+  return { ok: true, value: true };
 }
 
 function expensiveGate(input: ReserveInput): GovernorResult<BudgetDecision> {
@@ -715,6 +890,9 @@ export function evaluatePreExecutionBudget(input: ReserveInput): GovernorResult<
   requireIdentifier(input.stepKey, "stepKey", failures);
   const reservedAi = requireNonNegativeInteger(input.estimatedAiCostMicros, "estimatedAiCostMicros", failures);
   const reservedTool = requireNonNegativeInteger(input.estimatedToolCostMicros, "estimatedToolCostMicros", failures);
+  if (input.estimatedCostMicros !== null && input.estimatedCostMicros !== undefined) {
+    requireNonNegativeInteger(input.estimatedCostMicros, "estimatedCostMicros", failures);
+  }
   if (nowMs !== null && expiresMs !== null && expiresMs <= nowMs) {
     failures.push("Reservation expiresAt must be after the evaluation clock.");
   }
@@ -728,6 +906,9 @@ export function evaluatePreExecutionBudget(input: ReserveInput): GovernorResult<
   if (failures.length || reservedAi === null || reservedTool === null || nowMs === null) {
     return { ok: false, failures };
   }
+
+  const sessionState = assertEconomicsSessionMonetaryState(input.session);
+  if (!sessionState.ok) return sessionState;
 
   if (input.executionLimits) {
     const limits = assertExecutionLimits(input.executionLimits, nowMs);
@@ -743,7 +924,10 @@ export function evaluatePreExecutionBudget(input: ReserveInput): GovernorResult<
   const pricingUnknown =
     input.unknownPricing || (input.pricing ? pricingIsStale(input.pricing, nowMs) : false);
 
-  expireReservations(input.session, nowMs);
+  const expired = expireReservations(input.session, nowMs);
+  if (!expired.ok) return expired;
+  const afterExpire = assertEconomicsSessionMonetaryState(input.session);
+  if (!afterExpire.ok) return afterExpire;
 
   const existingId = input.session.reservationsByIdempotency.get(input.idempotencyKey);
   if (existingId) {
@@ -793,7 +977,19 @@ export function evaluatePreExecutionBudget(input: ReserveInput): GovernorResult<
     return { ok: false, failures: [`Repeated execution is fail-closed (${loopSignal}).`] };
   }
 
-  if (reservedAi > input.session.remainingAiCostMicros || reservedTool > input.session.remainingToolCostMicros) {
+  const remainingAi = assertSafeNonNegativeInteger(
+    input.session.remainingAiCostMicros,
+    "remainingAiCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  const remainingTool = assertSafeNonNegativeInteger(
+    input.session.remainingToolCostMicros,
+    "remainingToolCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  if (!remainingAi.ok) return remainingAi;
+  if (!remainingTool.ok) return remainingTool;
+  if (reservedAi > remainingAi.value || reservedTool > remainingTool.value) {
     return { ok: false, failures: ["Budget exceeded: reservation is larger than remaining envelope."] };
   }
 
@@ -847,8 +1043,26 @@ export function evaluateAndReserve(input: ReserveInput): GovernorResult<ReserveR
     expiresAt: input.expiresAt,
     loopFingerprint: fingerprint,
   };
-  input.session.remainingAiCostMicros -= input.estimatedAiCostMicros;
-  input.session.remainingToolCostMicros -= input.estimatedToolCostMicros;
+  const nextRemainingAi = assertSafeNonNegativeInteger(
+    input.session.remainingAiCostMicros - input.estimatedAiCostMicros,
+    "remainingAiCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  const nextRemainingTool = assertSafeNonNegativeInteger(
+    input.session.remainingToolCostMicros - input.estimatedToolCostMicros,
+    "remainingToolCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  const fingerprintEstimate = assertSafeNonNegativeInteger(
+    input.estimatedAiCostMicros + input.estimatedToolCostMicros,
+    "fingerprint.estimatedCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  if (!nextRemainingAi.ok) return nextRemainingAi;
+  if (!nextRemainingTool.ok) return nextRemainingTool;
+  if (!fingerprintEstimate.ok) return fingerprintEstimate;
+  input.session.remainingAiCostMicros = nextRemainingAi.value;
+  input.session.remainingToolCostMicros = nextRemainingTool.value;
   input.session.reservations.set(reservationId, reservation);
   input.session.reservationsByIdempotency.set(input.idempotencyKey, reservationId);
   input.session.fingerprints.push({
@@ -858,9 +1072,18 @@ export function evaluateAndReserve(input: ReserveInput): GovernorResult<ReserveR
     fingerprint,
     recordedAtMs: nowMs,
     progressed: false,
-    estimatedCostMicros: input.estimatedAiCostMicros + input.estimatedToolCostMicros,
+    estimatedCostMicros: fingerprintEstimate.value,
     executorTier: input.executorTier,
   });
+  const afterReserve = assertEconomicsSessionMonetaryState(input.session);
+  if (!afterReserve.ok) {
+    input.session.remainingAiCostMicros += input.estimatedAiCostMicros;
+    input.session.remainingToolCostMicros += input.estimatedToolCostMicros;
+    input.session.reservations.delete(reservationId);
+    input.session.reservationsByIdempotency.delete(input.idempotencyKey);
+    input.session.fingerprints.pop();
+    return afterReserve;
+  }
   return {
     ok: true,
     value: {
@@ -899,7 +1122,23 @@ export function commitReservation(input: {
   }
   if (failures.length || nowMs === null) return { ok: false, failures };
 
-  expireReservations(input.session, nowMs);
+  const usageNumerics = assertUsageObservationNumerics(input.observation);
+  if (!usageNumerics.ok) return usageNumerics;
+  const billedNumerics = assertOptionalSafeNonNegativeInteger(
+    input.billedCostMicros,
+    "billedCostMicros",
+    INVALID_USAGE_FAILURE,
+  );
+  if (!billedNumerics.ok) return billedNumerics;
+  const pricingNumerics = assertCallerPricingNumerics(input.pricing);
+  if (!pricingNumerics.ok) return pricingNumerics;
+  const sessionState = assertEconomicsSessionMonetaryState(input.session);
+  if (!sessionState.ok) return sessionState;
+
+  const expired = expireReservations(input.session, nowMs);
+  if (!expired.ok) return expired;
+  const afterExpire = assertEconomicsSessionMonetaryState(input.session);
+  if (!afterExpire.ok) return afterExpire;
 
   const existingCommit = input.session.commitsByIdempotency.get(input.idempotencyKey);
   if (existingCommit) return { ok: true, value: existingCommit };
@@ -925,18 +1164,29 @@ export function commitReservation(input: {
   const observedAi = observedAiCostMicros(input.observation, input.pricing);
   const observedTool = observedToolCostMicros(input.observation, input.pricing);
   const observedTotal = observedCostMicros(input.observation, input.pricing);
+  const observedAiSafe = assertOptionalSafeNonNegativeInteger(observedAi, "observedAiCostMicros");
+  const observedToolSafe = assertOptionalSafeNonNegativeInteger(observedTool, "observedToolCostMicros");
+  const observedTotalSafe = assertOptionalSafeNonNegativeInteger(observedTotal, "observedCostMicros");
+  if (!observedAiSafe.ok) return observedAiSafe;
+  if (!observedToolSafe.ok) return observedToolSafe;
+  if (!observedTotalSafe.ok) return observedTotalSafe;
   if (pricingIsStale(input.pricing, nowMs)) {
     return { ok: false, failures: ["Stale or future-dated pricing cannot reconcile usage."] };
   }
   const billed = reconcileUntrustedUsage({
-    tokenDerivedMicros: observedTotal,
-    billedCostMicros: input.billedCostMicros ?? null,
+    tokenDerivedMicros: observedTotalSafe.value,
+    billedCostMicros: billedNumerics.value,
     usageStatus: input.observation.usageStatus,
   });
   if (!billed.ok) return billed;
+  const billedObserved = assertOptionalSafeNonNegativeInteger(
+    billed.value.observedCostMicros,
+    "reconciledObservedCostMicros",
+  );
+  if (!billedObserved.ok) return billedObserved;
   if (
     reservation.executorTier === "expensive" &&
-    (input.observation.usageStatus !== "reported" || observedTotal === null)
+    (input.observation.usageStatus !== "reported" || observedTotalSafe.value === null)
   ) {
     return {
       ok: false,
@@ -944,24 +1194,26 @@ export function commitReservation(input: {
     };
   }
   if (
-    observedAi !== null &&
-    observedTool !== null &&
-    (observedAi > reservation.reservedAiCostMicros || observedTool > reservation.reservedToolCostMicros)
+    observedAiSafe.value !== null &&
+    observedToolSafe.value !== null &&
+    (observedAiSafe.value > reservation.reservedAiCostMicros ||
+      observedToolSafe.value > reservation.reservedToolCostMicros)
   ) {
     return { ok: false, failures: ["Provider-reported usage exceeds the reserved budget."] };
   }
 
   const underReported =
     reservation.executorTier === "expensive" &&
-    observedAi !== null &&
-    observedTool !== null &&
-    (observedAi < reservation.reservedAiCostMicros || observedTool < reservation.reservedToolCostMicros);
+    observedAiSafe.value !== null &&
+    observedToolSafe.value !== null &&
+    (observedAiSafe.value < reservation.reservedAiCostMicros ||
+      observedToolSafe.value < reservation.reservedToolCostMicros);
 
   let consumedAi: number;
   let consumedTool: number;
   let unusedAi: number;
   let unusedTool: number;
-  if (observedAi === null || observedTool === null) {
+  if (observedAiSafe.value === null || observedToolSafe.value === null) {
     consumedAi = reservation.reservedAiCostMicros;
     consumedTool = reservation.reservedToolCostMicros;
     unusedAi = 0;
@@ -972,28 +1224,59 @@ export function commitReservation(input: {
     unusedAi = 0;
     unusedTool = 0;
   } else {
-    consumedAi = observedAi;
-    consumedTool = observedTool;
+    consumedAi = observedAiSafe.value;
+    consumedTool = observedToolSafe.value;
     unusedAi = reservation.reservedAiCostMicros - consumedAi;
     unusedTool = reservation.reservedToolCostMicros - consumedTool;
   }
 
-  input.session.remainingAiCostMicros += unusedAi;
-  input.session.remainingToolCostMicros += unusedTool;
+  const consumedAiSafe = assertSafeNonNegativeInteger(consumedAi, "consumedAiCostMicros", INVALID_USAGE_FAILURE);
+  const consumedToolSafe = assertSafeNonNegativeInteger(consumedTool, "consumedToolCostMicros", INVALID_USAGE_FAILURE);
+  const unusedAiSafe = assertSafeNonNegativeInteger(unusedAi, "unusedAiCostMicros", INVALID_USAGE_FAILURE);
+  const unusedToolSafe = assertSafeNonNegativeInteger(unusedTool, "unusedToolCostMicros", INVALID_USAGE_FAILURE);
+  if (!consumedAiSafe.ok) return consumedAiSafe;
+  if (!consumedToolSafe.ok) return consumedToolSafe;
+  if (!unusedAiSafe.ok) return unusedAiSafe;
+  if (!unusedToolSafe.ok) return unusedToolSafe;
+
+  const nextRemainingAi = assertSafeNonNegativeInteger(
+    input.session.remainingAiCostMicros + unusedAiSafe.value,
+    "remainingAiCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  const nextRemainingTool = assertSafeNonNegativeInteger(
+    input.session.remainingToolCostMicros + unusedToolSafe.value,
+    "remainingToolCostMicros",
+    INVALID_SESSION_BUDGET_FAILURE,
+  );
+  if (!nextRemainingAi.ok) return nextRemainingAi;
+  if (!nextRemainingTool.ok) return nextRemainingTool;
+
   const commit: ReservationCommit = {
     reservationId: reservation.reservationId,
     idempotencyKey: input.idempotencyKey,
-    consumedAiCostMicros: consumedAi,
-    consumedToolCostMicros: consumedTool,
-    observedCostMicros: observedTotal,
-    unusedAiCostMicros: unusedAi,
-    unusedToolCostMicros: unusedTool,
+    consumedAiCostMicros: consumedAiSafe.value,
+    consumedToolCostMicros: consumedToolSafe.value,
+    observedCostMicros: observedTotalSafe.value,
+    unusedAiCostMicros: unusedAiSafe.value,
+    unusedToolCostMicros: unusedToolSafe.value,
     committedAt: input.now,
     underReported,
   };
+  input.session.remainingAiCostMicros = nextRemainingAi.value;
+  input.session.remainingToolCostMicros = nextRemainingTool.value;
   reservation.state = "committed";
   reservation.committed = commit;
   input.session.commitsByIdempotency.set(input.idempotencyKey, commit);
+  const afterCommit = assertEconomicsSessionMonetaryState(input.session);
+  if (!afterCommit.ok) {
+    input.session.remainingAiCostMicros -= unusedAiSafe.value;
+    input.session.remainingToolCostMicros -= unusedToolSafe.value;
+    reservation.state = "reserved";
+    delete reservation.committed;
+    input.session.commitsByIdempotency.delete(input.idempotencyKey);
+    return afterCommit;
+  }
   if (input.progressed) {
     for (const event of input.session.fingerprints) {
       if (event.fingerprint === reservation.loopFingerprint) event.progressed = true;
@@ -1015,10 +1298,16 @@ export function releaseReservation(input: {
   const nowMs = requireClock(input.now, "now", failures);
   if (failures.length || nowMs === null) return { ok: false, failures };
 
+  const sessionState = assertEconomicsSessionMonetaryState(input.session);
+  if (!sessionState.ok) return sessionState;
+
   const existing = input.session.releasesByIdempotency.get(input.idempotencyKey);
   if (existing) return { ok: true, value: existing };
 
-  expireReservations(input.session, nowMs);
+  const expired = expireReservations(input.session, nowMs);
+  if (!expired.ok) return expired;
+  const afterExpire = assertEconomicsSessionMonetaryState(input.session);
+  if (!afterExpire.ok) return afterExpire;
   const reservation = input.session.reservations.get(input.reservationId);
   if (!reservation) return { ok: false, failures: ["Reservation was not found."] };
   if (reservation.organizationId !== input.organizationId || reservation.tenantId !== input.tenantId) {
@@ -1032,15 +1321,54 @@ export function releaseReservation(input: {
     input.session.releasesByIdempotency.set(input.idempotencyKey, released);
     return { ok: true, value: released };
   }
-  if (reservation.state === "reserved") {
-    input.session.remainingAiCostMicros += reservation.reservedAiCostMicros;
-    input.session.remainingToolCostMicros += reservation.reservedToolCostMicros;
-    input.session.releasedAiCostMicros += reservation.reservedAiCostMicros;
-    input.session.releasedToolCostMicros += reservation.reservedToolCostMicros;
+  const previousState = reservation.state;
+  let restoredReserved = false;
+  if (previousState === "reserved") {
+    const nextRemainingAi = assertSafeNonNegativeInteger(
+      input.session.remainingAiCostMicros + reservation.reservedAiCostMicros,
+      "remainingAiCostMicros",
+      INVALID_SESSION_BUDGET_FAILURE,
+    );
+    const nextRemainingTool = assertSafeNonNegativeInteger(
+      input.session.remainingToolCostMicros + reservation.reservedToolCostMicros,
+      "remainingToolCostMicros",
+      INVALID_SESSION_BUDGET_FAILURE,
+    );
+    const nextReleasedAi = assertSafeNonNegativeInteger(
+      input.session.releasedAiCostMicros + reservation.reservedAiCostMicros,
+      "releasedAiCostMicros",
+      INVALID_SESSION_BUDGET_FAILURE,
+    );
+    const nextReleasedTool = assertSafeNonNegativeInteger(
+      input.session.releasedToolCostMicros + reservation.reservedToolCostMicros,
+      "releasedToolCostMicros",
+      INVALID_SESSION_BUDGET_FAILURE,
+    );
+    if (!nextRemainingAi.ok) return nextRemainingAi;
+    if (!nextRemainingTool.ok) return nextRemainingTool;
+    if (!nextReleasedAi.ok) return nextReleasedAi;
+    if (!nextReleasedTool.ok) return nextReleasedTool;
+    input.session.remainingAiCostMicros = nextRemainingAi.value;
+    input.session.remainingToolCostMicros = nextRemainingTool.value;
+    input.session.releasedAiCostMicros = nextReleasedAi.value;
+    input.session.releasedToolCostMicros = nextReleasedTool.value;
+    restoredReserved = true;
   }
   reservation.state = "released";
   const released = { reservationId: reservation.reservationId, releasedAt: input.now };
   input.session.releasesByIdempotency.set(input.idempotencyKey, released);
+  const afterRelease = assertEconomicsSessionMonetaryState(input.session);
+  if (!afterRelease.ok) {
+    reservation.state = previousState;
+    input.session.releasesByIdempotency.delete(input.idempotencyKey);
+    if (restoredReserved) {
+      input.session.remainingAiCostMicros -= reservation.reservedAiCostMicros;
+      input.session.remainingToolCostMicros -= reservation.reservedToolCostMicros;
+      input.session.releasedAiCostMicros -= reservation.reservedAiCostMicros;
+      input.session.releasedToolCostMicros -= reservation.reservedToolCostMicros;
+    }
+    return afterRelease;
+  }
   return { ok: true, value: released };
 }
 
@@ -1098,6 +1426,18 @@ export function deriveVerifiedOutcomeEconomics(input: {
   if (input.evidence.length === 0) {
     return { ok: false, failures: ["Verified outcome economics require attached economic evidence."] };
   }
+  for (const item of input.evidence) {
+    const estimatedField = assertOptionalSafeNonNegativeInteger(
+      item.estimatedCostMicros,
+      "evidence.estimatedCostMicros",
+    );
+    const actualField = assertOptionalSafeNonNegativeInteger(
+      item.actualObservedCostMicros,
+      "evidence.actualObservedCostMicros",
+    );
+    if (!estimatedField.ok) return estimatedField;
+    if (!actualField.ok) return actualField;
+  }
   const actuals = input.evidence.map((item) => item.actualObservedCostMicros);
   const actualObservedCostMicros = actuals.every((value) => value !== null)
     ? actuals.reduce((sum, value) => sum + (value ?? 0), 0)
@@ -1105,6 +1445,10 @@ export function deriveVerifiedOutcomeEconomics(input: {
   const estimated = input.evidence.every((item) => item.estimatedCostMicros !== null)
     ? input.evidence.reduce((sum, item) => sum + (item.estimatedCostMicros ?? 0), 0)
     : null;
+  const actualSafe = assertOptionalSafeNonNegativeInteger(actualObservedCostMicros, "actualObservedCostMicros");
+  const estimatedSafe = assertOptionalSafeNonNegativeInteger(estimated, "estimatedCostMicros");
+  if (!actualSafe.ok) return actualSafe;
+  if (!estimatedSafe.ok) return estimatedSafe;
   const reservedVersusConsumedAiMicros = input.evidence.reduce(
     (sum, item) => sum + item.reservedVersusConsumedAiMicros,
     0,
@@ -1121,8 +1465,8 @@ export function deriveVerifiedOutcomeEconomics(input: {
   return {
     ok: true,
     value: {
-      estimatedCostMicros: estimated,
-      actualObservedCostMicros,
+      estimatedCostMicros: estimatedSafe.value,
+      actualObservedCostMicros: actualSafe.value,
       reservedVersusConsumedAiMicros,
       retryReworkCostMicros,
       failedAttemptCostMicros: retryReworkCostMicros,
@@ -1132,14 +1476,14 @@ export function deriveVerifiedOutcomeEconomics(input: {
       retryCount: input.retryCount ?? input.evidence.length,
       estimatedUsageTokens: input.estimatedUsageTokens ?? null,
       actualUsageTokens: input.actualUsageTokens ?? null,
-      costPerAcceptedOutcomeReceiptMicros: actualObservedCostMicros,
+      costPerAcceptedOutcomeReceiptMicros: actualSafe.value,
       firstPassVerificationRate: input.firstPassVerified ? 1 : 0,
       expensiveEscalationYield:
         input.expensiveEscalations === 0 ? null : input.expensiveEscalationsAccepted / input.expensiveEscalations,
       wastedExecutionPercentage:
-        actualObservedCostMicros === null || actualObservedCostMicros === 0
+        actualSafe.value === null || actualSafe.value === 0
           ? null
-          : retryReworkCostMicros / actualObservedCostMicros,
+          : retryReworkCostMicros / actualSafe.value,
       acceptedReceiptCount: 1,
       attemptCount: input.evidence.length,
     },

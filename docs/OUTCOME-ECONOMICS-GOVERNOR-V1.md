@@ -49,6 +49,7 @@ Cursor, Grok, Claude, Codex, Hermes, humans, and future runtimes remain replacea
 5. Over-reporting above the reservation is rejected; the reservation stays held until expiry or release.
 6. `releaseReservation` returns unused reserved micros. Commit and release are idempotent on the caller idempotency key.
 7. When `now` is at or after `expiresAt`, reserved micros return and commits fail closed.
+8. Malformed or non-finite usage (NaN, Infinity, negatives, fractions, unsafe integers, numeric strings, booleans) fail closed. Optional usage fields may be null; a present value must be a finite non-negative safe integer. Invalid usage does not commit, refund, or alter remaining budget.
 
 Pricing is supplied by the caller as micros per token and per tool call, with an optional quote timestamp. Stale or future-dated quotes are treated as unknown pricing. Token-derived cost and billed micros must agree; disagreement is untrusted and cannot commit. This slice contains no provider SDK and no hardcoded vendor rate card.
 
@@ -68,6 +69,7 @@ The governor also consumes existing execution-runtime ceilings when the caller s
 | Progressed retry or different tool keys | Not a no-progress fail-close. |
 | Cheap fail then expensive with budget left | Escalation allowed with an explicit reason. |
 | Stale or manipulated pricing quote | Unknown pricing / cannot commit. |
+| Malformed or non-finite usage | Fail closed; reservation stays reserved; remaining budget is unchanged. |
 | Forged economic evidence | Content-hash mismatch rejected. |
 | Prompt injection / bypass keys | Reject. |
 | Governor as an LLM | The module is pure TypeScript policy with no provider client. |
