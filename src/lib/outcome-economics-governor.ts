@@ -933,7 +933,6 @@ export function deriveVerifiedOutcomeEconomics(input: {
     0,
   );
   const retryReworkCostMicros = input.evidence.reduce((sum, item) => sum + item.retryReworkCostMicros, 0);
-  const wasted = actualObservedCostMicros === null ? null : retryReworkCostMicros;
   return {
     ok: true,
     value: {
@@ -946,7 +945,9 @@ export function deriveVerifiedOutcomeEconomics(input: {
       expensiveEscalationYield:
         input.expensiveEscalations === 0 ? null : input.expensiveEscalationsAccepted / input.expensiveEscalations,
       wastedExecutionPercentage:
-        wasted === null || actualObservedCostMicros === 0 ? null : wasted / actualObservedCostMicros,
+        actualObservedCostMicros === null || actualObservedCostMicros === 0
+          ? null
+          : retryReworkCostMicros / actualObservedCostMicros,
       acceptedReceiptCount: 1,
       attemptCount: input.evidence.length,
     },
