@@ -183,6 +183,8 @@ export type WorkCellPhaseClaimRecord = WorkCellPhaseClaimInput & {
   claimedAt: string;
   failedAt?: string;
   failReason?: string;
+  outputArtifactId?: string | null;
+  acceptedCatalogPacketExists?: boolean;
 };
 
 export type WorkCellPhaseClaimFailInput = WorkCellPhaseClaimInput & {
@@ -196,6 +198,75 @@ export type WorkCellPhaseClaimFn = (
 export type WorkCellPhaseClaimFailFn = (
   input: WorkCellPhaseClaimFailInput,
 ) => Promise<GovernorResult<WorkCellPhaseClaimRecord>>;
+
+export type WorkCellPhaseClaimCompleteInput = WorkCellPhaseClaimInput & {
+  outputArtifactId?: string | null;
+  acceptedCatalogPacketExists?: boolean;
+};
+
+export type WorkCellPhaseClaimCompleteFn = (
+  input: WorkCellPhaseClaimCompleteInput,
+) => Promise<GovernorResult<WorkCellPhaseClaimRecord>>;
+
+export const FAIL_WORK_CELL_PHASE_CLAIM_RPC = "fail_work_cell_phase_claim" as const;
+export const COMPLETE_WORK_CELL_PHASE_CLAIM_RPC = "complete_work_cell_phase_claim" as const;
+
+export type WorkCellPhaseClaimReclaimAction = "noop" | "complete" | "fail";
+
+export function acceptedCatalogPacketPresent(input: {
+  acceptedCatalogPacketExists?: boolean;
+  outputArtifactId?: string | null;
+}): boolean {
+  return Boolean(input.acceptedCatalogPacketExists) || Boolean(input.outputArtifactId);
+}
+
+/**
+ * Fail is forbidden after an accepted catalog packet is durable, even when
+ * assignment completion has not yet succeeded. Completing that packet into an
+ * ordinary failed claim would hide successful evidence behind a blocked retry.
+ */
+export function claimFailureAllowedAfterPrepareOutcome(input: {
+  assignmentAlreadyTerminal: boolean;
+  acceptedCatalogPacketPersisted: boolean;
+}): boolean {
+  return !input.assignmentAlreadyTerminal && !input.acceptedCatalogPacketPersisted;
+}
+
+export function failWorkCellPhaseClaimBlockedReason(input: {
+  status: string;
+  acceptedCatalogPacketExists?: boolean;
+  outputArtifactId?: string | null;
+}): string | null {
+  if (input.status === "completed") {
+    return "A completed work-cell phase assignment cannot be overwritten by a claim failure.";
+  }
+  if (input.status === "running" && acceptedCatalogPacketPresent(input)) {
+    return "An accepted catalog evidence packet exists; refusing to fail the work-cell phase claim.";
+  }
+  return null;
+}
+
+/**
+ * Stale reclaim never fetches. A persisted accepted packet must complete (or
+ * stay running for the operator), not fail. No packet: running -> failed after TTL.
+ */
+export function decideStaleWorkCellPhaseClaimReclaim(input: {
+  status: string;
+  createdAt: string;
+  now: string;
+  ttlMs: number;
+  acceptedCatalogPacketExists?: boolean;
+  outputArtifactId?: string | null;
+}): WorkCellPhaseClaimReclaimAction {
+  if (input.status !== "running") return "noop";
+  const createdMs = Date.parse(input.createdAt);
+  const nowMs = Date.parse(input.now);
+  if (!Number.isFinite(createdMs) || !Number.isFinite(nowMs) || nowMs - createdMs < input.ttlMs) {
+    return "noop";
+  }
+  if (acceptedCatalogPacketPresent(input)) return "complete";
+  return "fail";
+}
 
 export type WorkCellPhaseClaimExpireInput = {
   runId: string;
@@ -1049,7 +1120,8 @@ export function createMemoryWorkCellPhaseClaim(options?: {
   claim: WorkCellPhaseClaimFn;
   fail: WorkCellPhaseClaimFailFn;
   expireStale: WorkCellPhaseClaimExpireFn;
-  complete: WorkCellPhaseClaimFailFn;
+  complete: WorkCellPhaseClaimCompleteFn;
+  recordAcceptedPacket: (runId: string, phase: string, artifactId: string) => void;
   records: Map<string, WorkCellPhaseClaimRecord>;
 } {
   const records = new Map<string, WorkCellPhaseClaimRecord>();
@@ -1059,11 +1131,13 @@ export function createMemoryWorkCellPhaseClaim(options?: {
     if (!existing) {
       return { ok: false, failures: ["No work-cell phase claim exists to fail."] };
     }
-    if (existing.status === "completed") {
-      return {
-        ok: false,
-        failures: ["A completed work-cell phase assignment cannot be overwritten by a claim failure."],
-      };
+    const blocked = failWorkCellPhaseClaimBlockedReason({
+      status: existing.status,
+      acceptedCatalogPacketExists: existing.acceptedCatalogPacketExists,
+      outputArtifactId: existing.outputArtifactId,
+    });
+    if (blocked) {
+      return { ok: false, failures: [blocked] };
     }
     if (existing.status === "failed") {
       return { ok: true, value: existing };
@@ -1077,8 +1151,43 @@ export function createMemoryWorkCellPhaseClaim(options?: {
     records.set(key, record);
     return { ok: true, value: record };
   };
+  const complete: WorkCellPhaseClaimCompleteFn = async (input) => {
+    const key = workCellPhaseClaimKey(input.runId, input.phase);
+    const existing = records.get(key);
+    if (!existing) {
+      return { ok: false, failures: ["No work-cell phase claim exists to complete."] };
+    }
+    if (existing.status === "failed") {
+      return {
+        ok: false,
+        failures: ["A failed work-cell phase assignment cannot be completed."],
+      };
+    }
+    if (existing.status === "completed") {
+      return { ok: true, value: existing };
+    }
+    const record: WorkCellPhaseClaimRecord = {
+      ...existing,
+      status: "completed",
+      outputArtifactId: input.outputArtifactId ?? existing.outputArtifactId,
+      acceptedCatalogPacketExists:
+        input.acceptedCatalogPacketExists ?? existing.acceptedCatalogPacketExists,
+    };
+    records.set(key, record);
+    return { ok: true, value: record };
+  };
   return {
     records,
+    recordAcceptedPacket: (runId, phase, artifactId) => {
+      const key = workCellPhaseClaimKey(runId, phase);
+      const existing = records.get(key);
+      if (!existing) return;
+      records.set(key, {
+        ...existing,
+        outputArtifactId: artifactId,
+        acceptedCatalogPacketExists: true,
+      });
+    },
     claim: async (input) => {
       if (options?.beforeInsert) await options.beforeInsert();
       const key = workCellPhaseClaimKey(input.runId, input.phase);
@@ -1090,40 +1199,31 @@ export function createMemoryWorkCellPhaseClaim(options?: {
         ...input,
         status: "running",
         claimedAt: input.now,
+        outputArtifactId: null,
+        acceptedCatalogPacketExists: false,
       };
       records.set(key, record);
       return { ok: true, value: record };
     },
     fail,
-    complete: async (input) => {
-      const key = workCellPhaseClaimKey(input.runId, input.phase);
-      const existing = records.get(key);
-      if (!existing) {
-        return { ok: false, failures: ["No work-cell phase claim exists to complete."] };
-      }
-      if (existing.status === "failed") {
-        return {
-          ok: false,
-          failures: ["A failed work-cell phase assignment cannot be completed."],
-        };
-      }
-      if (existing.status === "completed") {
-        return { ok: true, value: existing };
-      }
-      const record: WorkCellPhaseClaimRecord = { ...existing, status: "completed" };
-      records.set(key, record);
-      return { ok: true, value: record };
-    },
+    complete,
     expireStale: async (input) => {
       const key = workCellPhaseClaimKey(input.runId, input.phase);
       const existing = records.get(key);
-      if (!existing || existing.status !== "running") {
+      if (!existing) {
         return { ok: true, value: null };
       }
-      const claimedMs = Date.parse(existing.claimedAt);
-      const nowMs = Date.parse(input.now);
-      if (!Number.isFinite(claimedMs) || !Number.isFinite(nowMs) || nowMs - claimedMs < input.ttlMs) {
-        return { ok: true, value: null };
+      const action = decideStaleWorkCellPhaseClaimReclaim({
+        status: existing.status,
+        createdAt: existing.claimedAt,
+        now: input.now,
+        ttlMs: input.ttlMs,
+        acceptedCatalogPacketExists: existing.acceptedCatalogPacketExists,
+        outputArtifactId: existing.outputArtifactId,
+      });
+      if (action === "noop") return { ok: true, value: null };
+      if (action === "complete") {
+        return complete(existing);
       }
       return fail({
         ...existing,
@@ -1146,6 +1246,13 @@ export async function failWorkCellPhaseClaim(
   input: WorkCellPhaseClaimFailInput,
 ): Promise<GovernorResult<WorkCellPhaseClaimRecord>> {
   return fail(input);
+}
+
+export async function completeWorkCellPhaseClaim(
+  complete: WorkCellPhaseClaimCompleteFn,
+  input: WorkCellPhaseClaimCompleteInput,
+): Promise<GovernorResult<WorkCellPhaseClaimRecord>> {
+  return complete(input);
 }
 
 export async function expireStaleRunningWorkCellPhaseClaim(

@@ -805,6 +805,8 @@ describe("execution economics adapter v1", () => {
     expect(nativeFn).toMatch(/claimWorkCellPhase/);
     expect(nativeFn).toMatch(/failWorkCellPhaseClaim/);
     expect(nativeFn).toMatch(/completeWorkCellPhaseClaim/);
+    expect(nativeFn).toMatch(/claimFailureAllowedAfterPrepareOutcome/);
+    expect(nativeFn).toMatch(/acceptedCatalogPacketPersisted/);
     expect(nativeFn).toMatch(/workCellPhaseAlreadyRecordedFromAssignment/);
     expect(nativeFn).toMatch(/inputManifestContentHash: frozen.contentHash/);
     expect(nativeFn).not.toMatch(/canonicalPlanHash: frozen.contentHash/);
@@ -1502,6 +1504,16 @@ describe("execution economics adapter v1", () => {
     expect(failSql).toMatch(/complete_work_cell_phase_claim/);
     expect(failSql).toMatch(/running -> failed/);
     expect(failSql).not.toMatch(/create table/i);
+    const finalSql = readFileSync(
+      resolve(process.cwd(), "supabase/migrations/20260910220000_work_cell_phase_claim_finalization_v1.sql"),
+      "utf8",
+    );
+    expect(finalSql).toMatch(/SQL_VERIFICATION_NOT_AVAILABLE/);
+    expect(finalSql).toMatch(/fail_work_cell_phase_claim/);
+    expect(finalSql).toMatch(/complete_work_cell_phase_claim/);
+    expect(finalSql).toMatch(/is_ops_manager/);
+    expect(finalSql).toMatch(/catalog-evidence-packet\/v1/);
+    expect(finalSql).not.toMatch(/create table/i);
   });
 
   it("self-constructed structurally valid source cannot execute through the exported generic path", async () => {
@@ -1725,7 +1737,7 @@ describe("execution economics adapter v1", () => {
       now: NOW,
     };
     expect((await store.claim(claimInput)).ok).toBe(true);
-    expect((await store.complete({ ...claimInput, reason: "done" })).ok).toBe(true);
+    expect((await store.complete(claimInput)).ok).toBe(true);
     const failed = await failWorkCellPhaseClaim(store.fail, {
       ...claimInput,
       reason: "must not overwrite completed",

@@ -40,9 +40,12 @@ import {
   alreadyClaimedPhaseFailure,
   attachEconomicsReservationIds,
   bindNativePublicWebEconomics,
-  claimFailureMetadata,
+  claimFailureAllowedAfterPrepareOutcome,
   claimMetadataFromInput,
+  COMPLETE_WORK_CELL_PHASE_CLAIM_RPC,
   commitDeferredGovernedReservations,
+  decideStaleWorkCellPhaseClaimReclaim,
+  FAIL_WORK_CELL_PHASE_CLAIM_RPC,
   releaseReservedGovernedExecutions,
   requireEconomicsEnvelope,
   workCellPhaseAlreadyRecordedFromAssignment,
@@ -310,81 +313,90 @@ async function claimWorkCellPhase(
   return mapAssignment(data as Record<string, unknown>);
 }
 
+function assignmentIdFromMetadata(metadata: Record<string, unknown>): string | null {
+  const assignmentId = metadata.assignmentId;
+  return typeof assignmentId === "string" && assignmentId.length > 0 ? assignmentId : null;
+}
+
 async function failWorkCellPhaseClaim(
   db: SupabaseClient,
   run: { id: string },
   phase: ExecutorPhase,
-  now: string,
+  _now: string,
   reason: string,
   reservationIds: readonly string[] = [],
+  staleOnly = false,
 ): Promise<RunExecutorAssignment | null> {
+  const { data, error } = await db.rpc(FAIL_WORK_CELL_PHASE_CLAIM_RPC, {
+    p_run_id: run.id,
+    p_phase: phase,
+    p_reason: reason,
+    p_stale_only: staleOnly,
+    p_ttl_ms: WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
+    p_reservation_ids: [...reservationIds],
+  });
+  if (error) throw new DomainError(error.message || "Could not fail the work-cell phase claim.");
   const existing = await getAssignment(db, run.id, phase);
   if (!existing) return null;
   if (existing.status === "completed") {
     throw new DomainError("A completed work-cell phase assignment cannot be overwritten by a claim failure.");
   }
-  if (existing.status === "failed") return existing;
-  if (existing.status !== "running") {
-    throw new DomainError(alreadyClaimedPhaseFailure(phase, existing.status));
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as Array<{
+    assignment_id?: string;
+    assignment_status?: string;
+  }>;
+  if (rows[0]?.assignment_status === "completed") {
+    throw new DomainError("A completed work-cell phase assignment cannot be overwritten by a claim failure.");
   }
-  const metadata = {
-    ...existing.metadata,
-    ...claimFailureMetadata(reason, now, reservationIds),
-  };
-  const { data, error } = await db
-    .from("run_executor_assignments")
-    .update({
-      status: "failed",
-      completed_at: now,
-      metadata,
-    })
-    .eq("id", existing.id)
-    .eq("status", "running")
-    .select("*")
-    .maybeSingle();
-  if (error) throw new DomainError(error.message || "Could not fail the work-cell phase claim.");
-  if (!data) {
-    const raced = await getAssignment(db, run.id, phase);
-    if (raced?.status === "failed") return raced;
-    if (raced?.status === "completed") {
-      throw new DomainError("A completed work-cell phase assignment cannot be overwritten by a claim failure.");
-    }
-    return raced;
-  }
-  return mapAssignment(data as Record<string, unknown>);
+  return existing;
+}
+
+async function rpcCompleteWorkCellPhaseClaim(
+  db: SupabaseClient,
+  run: { id: string },
+  phase: ExecutorPhase,
+  metadataPatch: Record<string, unknown>,
+  assignmentId: string | null,
+): Promise<RunExecutorAssignment> {
+  const { data, error } = await db.rpc(COMPLETE_WORK_CELL_PHASE_CLAIM_RPC, {
+    p_run_id: run.id,
+    p_phase: phase,
+    p_metadata_patch: metadataPatch,
+    p_assignment_id: assignmentId,
+  });
+  if (error) throw new DomainError(error.message || "Could not complete the work-cell phase claim.");
+  const existing = await getAssignment(db, run.id, phase);
+  if (existing?.status === "completed") return existing;
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as Array<{
+    assignment_id?: string;
+    assignment_status?: string;
+  }>;
+  if (rows[0]?.assignment_status === "completed" && existing) return existing;
+  throw new DomainError(
+    "Cannot complete a work-cell phase claim that is not running with output evidence. Assignment cannot be successful with an incomplete economics commit set.",
+  );
 }
 
 async function completeWorkCellPhaseClaim(
   db: SupabaseClient,
   run: { id: string },
   phase: ExecutorPhase,
-  now: string,
+  _now: string,
   metadataPatch: Record<string, unknown> = {},
 ): Promise<RunExecutorAssignment> {
   const existing = await getAssignment(db, run.id, phase);
-  if (!existing || existing.status !== "running" || !existing.outputArtifactId) {
-    throw new DomainError(
-      "Cannot complete a work-cell phase claim that is not running with output evidence. Assignment cannot be successful with an incomplete economics commit set.",
-    );
+  if (existing?.status === "completed") return existing;
+  const assignmentId = existing ? assignmentIdFromMetadata(existing.metadata) : null;
+  try {
+    return await rpcCompleteWorkCellPhaseClaim(db, run, phase, metadataPatch, assignmentId);
+  } catch (error) {
+    const raced = await getAssignment(db, run.id, phase);
+    if (raced?.status === "completed") return raced;
+    if (raced?.status === "running" && raced.outputArtifactId) {
+      return rpcCompleteWorkCellPhaseClaim(db, run, phase, metadataPatch, assignmentId);
+    }
+    throw error;
   }
-  const { data, error } = await db
-    .from("run_executor_assignments")
-    .update({
-      status: "completed",
-      completed_at: now,
-      metadata: { ...existing.metadata, ...metadataPatch, economicsCommit: "complete" },
-    })
-    .eq("id", existing.id)
-    .eq("status", "running")
-    .select("*")
-    .maybeSingle();
-  if (error) throw new DomainError(error.message || "Could not complete the work-cell phase claim.");
-  if (!data) {
-    throw new DomainError(
-      "Cannot complete a work-cell phase claim that is not running with output evidence. Assignment cannot be successful with an incomplete economics commit set.",
-    );
-  }
-  return mapAssignment(data as Record<string, unknown>);
 }
 
 async function expireStaleRunningWorkCellPhaseClaim(
@@ -392,18 +404,46 @@ async function expireStaleRunningWorkCellPhaseClaim(
   existing: RunExecutorAssignment,
   now: string,
 ): Promise<RunExecutorAssignment | null> {
-  if (existing.status !== "running") return null;
-  const createdMs = Date.parse(existing.createdAt);
-  const nowMs = Date.parse(now);
-  if (!Number.isFinite(createdMs) || !Number.isFinite(nowMs)) return null;
-  if (nowMs - createdMs < WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS) return null;
-  return failWorkCellPhaseClaim(
-    db,
-    { id: existing.runId },
-    existing.phase,
+  const packet = await loadTypedArtifact(db, existing.runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION);
+  const action = decideStaleWorkCellPhaseClaimReclaim({
+    status: existing.status,
+    createdAt: existing.createdAt,
     now,
-    "Stale running work-cell phase claim reclaimed to failed without fetching.",
-  );
+    ttlMs: WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
+    acceptedCatalogPacketExists: packet != null,
+    outputArtifactId: existing.outputArtifactId,
+  });
+  if (action === "noop") return null;
+  if (action === "complete") {
+    try {
+      return await completeWorkCellPhaseClaim(db, { id: existing.runId }, existing.phase, now);
+    } catch {
+      // Leave running for the operator. Never fail an accepted packet.
+      return existing;
+    }
+  }
+  try {
+    const failed = await failWorkCellPhaseClaim(
+      db,
+      { id: existing.runId },
+      existing.phase,
+      now,
+      "Stale running work-cell phase claim reclaimed to failed without fetching.",
+      [],
+      true,
+    );
+    return failed?.status === "failed" ? failed : null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/accepted catalog evidence packet|cannot be overwritten by a claim failure/i.test(message)) {
+      try {
+        return await completeWorkCellPhaseClaim(db, { id: existing.runId }, existing.phase, now);
+      } catch {
+        return existing;
+      }
+    }
+    throw error;
+  }
 }
 
 async function insertEvidenceArtifact(
@@ -1013,6 +1053,7 @@ export async function runNativePublicWebPrepare(
   await claimWorkCellPhase(db, actor, run, profile, "prepare", claimInput, frozen.id);
 
   let assignmentIsTerminal = false;
+  let acceptedCatalogPacketPersisted = false;
   let trackedReservationIds: string[] = [];
   try {
     const session = createEconomicsSession({
@@ -1153,6 +1194,7 @@ export async function runNativePublicWebPrepare(
         ),
       });
       artifactId = persisted.artifactId;
+      acceptedCatalogPacketPersisted = true;
     } catch (error) {
       releaseEconomics(prepared.economicReservationIds);
       throw error;
@@ -1167,13 +1209,20 @@ export async function runNativePublicWebPrepare(
     });
     if (!committed.ok) {
       releaseEconomics(prepared.economicReservationIds);
+      // Packet is durable. Leave the assignment running; reclaim may complete it.
+      // Do not fail a successful packet because process-local commit rolled back.
       throw new DomainError(committed.failures.join(" "));
     }
     await completeWorkCellPhaseClaim(db, run, "prepare", now, reservationMetadata);
     assignmentIsTerminal = true;
     return { persisted: true, validation, contentHash, artifactId };
   } finally {
-    if (!assignmentIsTerminal) {
+    if (
+      claimFailureAllowedAfterPrepareOutcome({
+        assignmentAlreadyTerminal: assignmentIsTerminal,
+        acceptedCatalogPacketPersisted,
+      })
+    ) {
       try {
         await failWorkCellPhaseClaim(
           db,
