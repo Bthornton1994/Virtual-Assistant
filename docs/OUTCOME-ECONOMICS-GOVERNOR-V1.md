@@ -22,8 +22,9 @@ It does not wake itself, choose work, talk to a provider, write Workstream Run s
 | Decision | Meaning |
 | --- | --- |
 | Allow and reserve | Remaining envelope covers the estimate; loop/storm gates passed. |
-| Downgrade | Expensive work lacks usage or pricing, and a cheaper eligible tier exists. |
-| Reject | Budget exceeded, expensive usage unavailable with no cheaper tier, unknown expensive pricing with no cheaper tier, retry storm, no-progress loop, expired clock, tenant mismatch, or forbidden telemetry. |
+| Downgrade | Expensive work lacks usage or pricing, and a cheaper eligible tier exists. Authority, review, and evidence requirements cannot be weakened. |
+| Hold | Usage accounting is incomplete or a stream ended before usage returned. No reservation is taken; execution must not proceed. |
+| Reject | Budget exceeded, expensive usage unavailable with no cheaper tier, unknown expensive pricing with no cheaper tier, retry storm, no-progress loop, expired clock, tenant mismatch, exhausted attempts, missed deadline, already-recorded work-cell phase, or forbidden telemetry. |
 | Commit | Provider-reported usage is reconciled against the reservation. |
 | Release | Unused reservation returns to remaining budget. |
 | Escalate tier | Only with an allowlisted, explainable reason. It does not pick a vendor or model id. |
@@ -49,7 +50,27 @@ Cursor, Grok, Claude, Codex, Hermes, humans, and future runtimes remain replacea
 6. `releaseReservation` returns unused reserved micros. Commit and release are idempotent on the caller idempotency key.
 7. When `now` is at or after `expiresAt`, reserved micros return and commits fail closed.
 
-Pricing is supplied by the caller as micros per token and per tool call. This slice contains no provider SDK and no hardcoded vendor rate card.
+Pricing is supplied by the caller as micros per token and per tool call, with an optional quote timestamp. Stale or future-dated quotes are treated as unknown pricing. Token-derived cost and billed micros must agree; disagreement is untrusted and cannot commit. This slice contains no provider SDK and no hardcoded vendor rate card.
+
+The governor also consumes existing execution-runtime ceilings when the caller supplies them: `maxAttempts`, the evaluation clock versus `deadlineAt`, and a work-cell phase-already-recorded flag. A cheaper selected tier cannot drop frozen human approval, independent review, or required evidence schemas, and cannot raise the action class above the Delegation Spec.
+
+## Red-team notes
+
+| Attack | Governor response |
+| --- | --- |
+| Token counts disagree with billed micros | Fail closed; neither figure is trusted until they match. |
+| Hidden reasoning or cache tokens on expensive work | Cannot commit. |
+| Stream ends before usage | `hold`; no reservation. |
+| Duplicate commit / retry billed twice | Idempotent commit returns the first reconciliation. |
+| Parallel reservations in one process | Remaining envelope decreases before the second reserve. |
+| Provider/model switch to expensive around cheap routing | Reject. |
+| Changing prompts, same tools/step | Same loop fingerprint. |
+| Progressed retry or different tool keys | Not a no-progress fail-close. |
+| Cheap fail then expensive with budget left | Escalation allowed with an explicit reason. |
+| Stale or manipulated pricing quote | Unknown pricing / cannot commit. |
+| Forged economic evidence | Content-hash mismatch rejected. |
+| Prompt injection / bypass keys | Reject. |
+| Governor as an LLM | The module is pure TypeScript policy with no provider client. |
 
 ## Cost per verified outcome, not token minimization
 
@@ -86,7 +107,10 @@ No new database table is added. Reservations bind to `executionAttemptId`, `assi
 | --- | --- |
 | `evaluateAndReserve` / `commitReservation` / `releaseReservation` | **Enforcing** when a caller invokes them. |
 | Telemetry key and bypass/injection checks | **Enforcing** in the governor and on execution-attempt complete/fail metadata. |
+| Attempt, deadline, and work-cell limits | **Enforcing** when `executionLimits` is supplied; **advisory** if the adapter omits them. |
+| Authority freeze on cheaper routes | **Enforcing** when frozen and proposed snapshots are supplied; **advisory** if omitted. |
 | Existing `claimExecutionAttempt` / complete / fail without a reservation | **Advisory**. Serverless requests do not share this in-memory session. Completing an attempt does not require `economicReservationId`. |
+| Execution Context observation gates from PR #78 | **Not on this branch.** PR #78 is independently eligible and has not landed on `main`. This governor does not stack on or modify #78/#79. |
 | Capability router, work-cell fetch, Gauntlet, receipts | **Unchanged / advisory** relative to this governor. |
 | SQL remaining-budget locks | **Not present**. Concurrent safety is proved only inside one process. |
 

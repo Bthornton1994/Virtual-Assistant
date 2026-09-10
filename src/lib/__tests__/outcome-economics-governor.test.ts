@@ -15,9 +15,12 @@ import {
   isForbiddenEconomicsTelemetryKey,
   loopFingerprint,
   readRuntimeEconomicsReservationId,
+  reconcileUntrustedUsage,
   releaseReservation,
   routeExecutorTier,
   totalsAgainstEnvelope,
+  verifyEconomicEvidence,
+  type AuthorityFreeze,
   type CallerPricing,
   type EconomicsSession,
   type ReserveInput,
@@ -821,5 +824,252 @@ describe("outcome economics governor v1", () => {
     expect(persistence).toMatch(/completeExecutionAttempt/);
     expect(governor).not.toMatch(/from\("execution_/);
     expect(governor).not.toMatch(/create table/i);
+  });
+
+  it("holds expensive execution when a stream ends before usage is returned or usage is incomplete", () => {
+    const economics = session();
+    const streamed = evaluateAndReserve(
+      reserveInput(economics, {
+        executorTier: "expensive",
+        routing: expensiveRouting(),
+        streamTerminatedBeforeUsage: true,
+      }),
+    );
+    expect(streamed.ok).toBe(true);
+    if (!streamed.ok) return;
+    expect(streamed.value.decision).toBe("hold");
+    expect(streamed.value.reservation).toBeNull();
+    expect(economics.remainingAiCostMicros).toBe(1_000);
+  });
+
+  it("enforces hard attempt, work-cell, and deadline limits from the execution runtime", () => {
+    const economics = session();
+    const exhausted = evaluateAndReserve(
+      reserveInput(economics, {
+        executionLimits: {
+          attemptNumber: 3,
+          maxAttempts: 2,
+          deadlineAt: EXPIRES,
+          workCellPhaseAlreadyRecorded: false,
+        },
+      }),
+    );
+    const recorded = evaluateAndReserve(
+      reserveInput(economics, {
+        executionLimits: {
+          attemptNumber: 1,
+          maxAttempts: 2,
+          deadlineAt: EXPIRES,
+          workCellPhaseAlreadyRecorded: true,
+        },
+      }),
+    );
+    const late = evaluateAndReserve(
+      reserveInput(economics, {
+        executionLimits: {
+          attemptNumber: 1,
+          maxAttempts: 2,
+          deadlineAt: "2026-09-10T11:00:00.000Z",
+          workCellPhaseAlreadyRecorded: false,
+        },
+      }),
+    );
+    expect(exhausted.ok).toBe(false);
+    expect(recorded.ok).toBe(false);
+    expect(late.ok).toBe(false);
+    expect(failuresOf(exhausted)).toMatch(/Attempt budget is exhausted/);
+    expect(failuresOf(recorded)).toMatch(/Work-cell phase already has a recorded attempt/);
+    expect(failuresOf(late)).toMatch(/deadline/);
+  });
+
+  it("refuses a cheaper route that drops approval, review, or evidence requirements", () => {
+    const frozen: AuthorityFreeze = {
+      actionClass: "prepare_only",
+      requiresHumanApproval: true,
+      mayOwnAuthoritativeState: false,
+      independentReviewRequired: true,
+      requiredArtifactSchemaVersions: ["catalog-evidence-packet/v1"],
+    };
+    const economics = session();
+    const weakened = evaluateAndReserve(
+      reserveInput(economics, {
+        frozenAuthority: frozen,
+        proposedAuthority: {
+          ...frozen,
+          requiresHumanApproval: false,
+          independentReviewRequired: false,
+          requiredArtifactSchemaVersions: [],
+        },
+      }),
+    );
+    expect(weakened.ok).toBe(false);
+    expect(failuresOf(weakened)).toMatch(/human approval/);
+  });
+
+  it("rejects billed usage that disagrees with token-derived cost", () => {
+    const mismatch = reconcileUntrustedUsage({
+      tokenDerivedMicros: 90,
+      billedCostMicros: 40,
+      usageStatus: "reported",
+    });
+    expect(mismatch.ok).toBe(false);
+    expect(failuresOf(mismatch)).toMatch(/does not match token-derived cost/);
+  });
+
+  it("treats stale pricing as unknown and will not commit with it", () => {
+    const economics = session();
+    const stale = evaluateAndReserve(
+      reserveInput(economics, {
+        executorTier: "expensive",
+        routing: expensiveOnlyRouting(),
+        unknownPricing: false,
+        pricing: {
+          ...PRICING,
+          quotedAt: "2026-09-10T09:00:00.000Z",
+          maxAgeMs: 60_000,
+        },
+      }),
+    );
+    expect(stale.ok).toBe(false);
+    expect(failuresOf(stale)).toMatch(/Unknown pricing/);
+
+    const reserved = evaluateAndReserve(reserveInput(economics));
+    if (!reserved.ok || !reserved.value.reservation) return;
+    const committed = commitReservation({
+      session: economics,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId: reserved.value.reservation.reservationId,
+      idempotencyKey: "reserve-1",
+      observation: observation(),
+      pricing: { ...PRICING, quotedAt: "2026-09-10T09:00:00.000Z", maxAgeMs: 60_000 },
+      now: LATER,
+    });
+    expect(committed.ok).toBe(false);
+    expect(failuresOf(committed)).toMatch(/Stale or future-dated pricing/);
+  });
+
+  it("does not treat a progressed retry or a different tool set as a no-progress loop", () => {
+    const economics = session();
+    const first = evaluateAndReserve(reserveInput(economics, { idempotencyKey: "progress-1" }));
+    if (!first.ok || !first.value.reservation) return;
+    expect(
+      commitReservation({
+        session: economics,
+        organizationId: ORG,
+        tenantId: TENANT,
+        reservationId: first.value.reservation.reservationId,
+        idempotencyKey: "progress-1",
+        observation: observation({ idempotencyKey: "progress-1" }),
+        pricing: PRICING,
+        now: LATER,
+        progressed: true,
+      }).ok,
+    ).toBe(true);
+    const second = evaluateAndReserve(
+      reserveInput(economics, {
+        idempotencyKey: "progress-2",
+        executionAttemptId: "attempt-002",
+      }),
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.loopSignal).toBe("repeated_equivalent_attempt");
+
+    const other = session();
+    expect(evaluateAndReserve(reserveInput(other, { idempotencyKey: "tools-1", toolKeys: ["public_read"] })).ok).toBe(true);
+    expect(
+      evaluateAndReserve(
+        reserveInput(other, {
+          idempotencyKey: "tools-2",
+          executionAttemptId: "attempt-002",
+          toolKeys: ["artifact_read"],
+        }),
+      ).ok,
+    ).toBe(true);
+    const thirdDifferent = evaluateAndReserve(
+      reserveInput(other, {
+        idempotencyKey: "tools-3",
+        executionAttemptId: "attempt-003",
+        toolKeys: ["artifact_write"],
+      }),
+    );
+    expect(thirdDifferent.ok).toBe(true);
+    if (!thirdDifferent.ok) return;
+    expect(thirdDifferent.value.loopSignal).toBe("none");
+  });
+
+  it("still allows expensive escalation after cheap failure when budget remains", () => {
+    const economics = session();
+    expect(evaluateAndReserve(reserveInput(economics, { idempotencyKey: "cheap-first" })).ok).toBe(true);
+    const expensive = evaluateAndReserve(
+      reserveInput(economics, {
+        executorTier: "expensive",
+        routing: expensiveRouting(),
+        idempotencyKey: "expensive-after-cheap",
+        executionAttemptId: "attempt-002",
+        stepKey: "research-escalated",
+        estimatedAiCostMicros: 200,
+        estimatedCostMicros: 220,
+      }),
+    );
+    expect(expensive.ok).toBe(true);
+    if (!expensive.ok) return;
+    expect(expensive.value.decision).toBe("allow");
+    expect(expensive.value.routing.escalationReason).toBe("cheap_failed_with_progress");
+  });
+
+  it("rejects provider or model switching that jumps to an expensive tier around cheap routing", () => {
+    const economics = session();
+    const switched = evaluateAndReserve(
+      reserveInput(economics, {
+        executorTier: "expensive",
+        routing: cheapRouting(),
+      }),
+    );
+    expect(switched.ok).toBe(false);
+    expect(failuresOf(switched)).toMatch(/expensive tier around a cheaper routing decision/);
+  });
+
+  it("rejects forged economic evidence whose hash does not match the payload", () => {
+    const economics = session();
+    const reserved = evaluateAndReserve(reserveInput(economics));
+    if (!reserved.ok || !reserved.value.reservation) return;
+    const evidence = buildEconomicEvidence({
+      reservation: reserved.value.reservation,
+      decision: "allow",
+      routing: reserved.value.routing,
+      loopSignal: reserved.value.loopSignal,
+      retryReworkCostMicros: 0,
+    });
+    expect(verifyEconomicEvidence(evidence).ok).toBe(true);
+    const forged = { ...evidence, consumedAiCostMicros: 999_999 };
+    expect(verifyEconomicEvidence(forged).ok).toBe(false);
+    expect(failuresOf(verifyEconomicEvidence(forged))).toMatch(/content hash/);
+  });
+
+  it("is a deterministic policy module, not an LLM or provider client", () => {
+    const governor = readFileSync("src/lib/outcome-economics-governor.ts", "utf8");
+    expect(governor).not.toMatch(/fetch\(/);
+    expect(governor).not.toMatch(/openai|anthropic|@ai-sdk|tiktoken/i);
+    expect(governor).toMatch(/Control-plane budget reservation/);
+  });
+
+  it("tracks released budget separately from remaining envelope", () => {
+    const economics = session();
+    const reserved = evaluateAndReserve(reserveInput(economics, { idempotencyKey: "rel-budget" }));
+    if (!reserved.ok || !reserved.value.reservation) return;
+    expect(economics.releasedAiCostMicros).toBe(0);
+    const released = releaseReservation({
+      session: economics,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId: reserved.value.reservation.reservationId,
+      idempotencyKey: "rel-budget",
+      now: LATER,
+    });
+    expect(released.ok).toBe(true);
+    expect(economics.releasedAiCostMicros).toBe(100);
+    expect(economics.remainingAiCostMicros).toBe(1_000);
   });
 });

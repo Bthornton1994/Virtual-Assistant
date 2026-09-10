@@ -1,6 +1,7 @@
 import { checkEconomicEnvelope, type EconomicTotals } from "@/lib/economic-envelope";
 import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import { LEDGER_OUTCOME_SOURCES, type LedgerOutcomeSource } from "@/lib/capability-performance-ledger";
+import type { ActionClass } from "@/lib/domain";
 import type { ModelUsage } from "@/lib/model-provider";
 
 /**
@@ -20,7 +21,7 @@ export type ExecutorTier = (typeof EXECUTOR_TIERS)[number];
 export const USAGE_STATUSES = ["reported", "unavailable", "incomplete"] as const;
 export type UsageStatus = (typeof USAGE_STATUSES)[number];
 
-export const BUDGET_DECISIONS = ["allow", "downgrade", "reject"] as const;
+export const BUDGET_DECISIONS = ["allow", "downgrade", "hold", "reject"] as const;
 export type BudgetDecision = (typeof BUDGET_DECISIONS)[number];
 
 export const RESERVATION_STATES = ["reserved", "committed", "released", "expired"] as const;
@@ -77,7 +78,33 @@ export type CallerPricing = {
   inputMicrosPerToken: number | null;
   outputMicrosPerToken: number | null;
   toolCallMicros: number | null;
+  quotedAt?: string | null;
+  maxAgeMs?: number | null;
 };
+
+export type ExecutionLimitSnapshot = {
+  attemptNumber: number;
+  maxAttempts: number;
+  deadlineAt: string;
+  workCellPhaseAlreadyRecorded: boolean;
+};
+
+export type AuthorityFreeze = {
+  actionClass: ActionClass;
+  requiresHumanApproval: boolean;
+  mayOwnAuthoritativeState: boolean;
+  independentReviewRequired: boolean;
+  requiredArtifactSchemaVersions: readonly string[];
+};
+
+const ACTION_CLASS_RANK: Record<ActionClass, number> = {
+  prepare_only: 0,
+  low_risk_execution: 1,
+  external_execution: 2,
+  sensitive_execution: 3,
+};
+
+export const PRICING_DEFAULT_MAX_AGE_MS = 60 * 60 * 1000;
 
 export type UsageObservation = {
   schemaVersion: typeof OUTCOME_ECONOMICS_GOVERNOR_SCHEMA_VERSION;
@@ -169,6 +196,13 @@ export type VerifiedOutcomeEconomics = {
   actualObservedCostMicros: number | null;
   reservedVersusConsumedAiMicros: number;
   retryReworkCostMicros: number;
+  failedAttemptCostMicros: number;
+  reservedBudgetMicros: number;
+  consumedBudgetMicros: number;
+  releasedBudgetMicros: number;
+  retryCount: number;
+  estimatedUsageTokens: number | null;
+  actualUsageTokens: number | null;
   costPerAcceptedOutcomeReceiptMicros: number | null;
   firstPassVerificationRate: number | null;
   expensiveEscalationYield: number | null;
@@ -199,6 +233,8 @@ export type EconomicsSession = {
   maxToolCostMicros: number;
   remainingAiCostMicros: number;
   remainingToolCostMicros: number;
+  releasedAiCostMicros: number;
+  releasedToolCostMicros: number;
   reservations: Map<string, ReservationRecord>;
   reservationsByIdempotency: Map<string, string>;
   commitsByIdempotency: Map<string, ReservationCommit>;
@@ -300,6 +336,98 @@ function requireIsolation(
 
 function cheaperTierAvailable(routing: RoutingDecision): boolean {
   return routing.eligibleTiers.some((tier) => TIER_RANK[tier] < TIER_RANK.expensive);
+}
+
+export function assertCheaperRouteDoesNotWeakenAuthority(input: {
+  frozen: AuthorityFreeze;
+  proposed: AuthorityFreeze;
+}): GovernorResult<true> {
+  const failures: string[] = [];
+  if (input.proposed.mayOwnAuthoritativeState) {
+    failures.push("A cheaper route cannot grant authoritative state ownership.");
+  }
+  if (input.frozen.mayOwnAuthoritativeState) {
+    failures.push("Frozen authority cannot declare executor-owned authoritative state.");
+  }
+  if (ACTION_CLASS_RANK[input.proposed.actionClass] > ACTION_CLASS_RANK[input.frozen.actionClass]) {
+    failures.push("A cheaper route cannot raise the action class above the frozen Delegation Spec ceiling.");
+  }
+  if (input.frozen.requiresHumanApproval && !input.proposed.requiresHumanApproval) {
+    failures.push("A cheaper route cannot drop a required human approval.");
+  }
+  if (input.frozen.independentReviewRequired && !input.proposed.independentReviewRequired) {
+    failures.push("A cheaper route cannot drop independent review.");
+  }
+  const frozenSchemas = new Set(input.frozen.requiredArtifactSchemaVersions);
+  for (const schema of frozenSchemas) {
+    if (!input.proposed.requiredArtifactSchemaVersions.includes(schema)) {
+      failures.push("A cheaper route cannot drop required evidence artifact schemas.");
+      break;
+    }
+  }
+  return failures.length ? { ok: false, failures } : { ok: true, value: true };
+}
+
+export function assertExecutionLimits(
+  limits: ExecutionLimitSnapshot,
+  nowMs: number,
+): GovernorResult<true> {
+  const failures: string[] = [];
+  if (!Number.isInteger(limits.attemptNumber) || limits.attemptNumber < 1) {
+    failures.push("attemptNumber must be a positive integer.");
+  }
+  if (!Number.isInteger(limits.maxAttempts) || limits.maxAttempts < 1 || limits.maxAttempts > 10) {
+    failures.push("maxAttempts must be an integer from 1 through 10.");
+  }
+  if (limits.attemptNumber > limits.maxAttempts) {
+    failures.push("Attempt budget is exhausted.");
+  }
+  const deadlineMs = requireClock(limits.deadlineAt, "deadlineAt", failures);
+  if (deadlineMs !== null && deadlineMs <= nowMs) {
+    failures.push("Evaluation clock is at or after the execution deadline.");
+  }
+  if (limits.workCellPhaseAlreadyRecorded) {
+    failures.push("Work-cell phase already has a recorded attempt.");
+  }
+  return failures.length ? { ok: false, failures } : { ok: true, value: true };
+}
+
+export function pricingIsStale(pricing: CallerPricing, nowMs: number): boolean {
+  if (!pricing.quotedAt) return false;
+  const quotedMs = Date.parse(pricing.quotedAt);
+  if (!Number.isFinite(quotedMs)) return true;
+  const maxAge = pricing.maxAgeMs ?? PRICING_DEFAULT_MAX_AGE_MS;
+  return nowMs - quotedMs > maxAge || quotedMs > nowMs;
+}
+
+export function reconcileUntrustedUsage(input: {
+  tokenDerivedMicros: number | null;
+  billedCostMicros: number | null;
+  usageStatus: UsageStatus;
+}): GovernorResult<{ observedCostMicros: number | null }> {
+  if (input.usageStatus === "incomplete") {
+    return { ok: false, failures: ["Incomplete provider usage is untrusted and cannot commit."] };
+  }
+  if (input.billedCostMicros !== null && input.tokenDerivedMicros !== null && input.billedCostMicros !== input.tokenDerivedMicros) {
+    return {
+      ok: false,
+      failures: ["Provider billed usage does not match token-derived cost; both are untrusted until they agree."],
+    };
+  }
+  return {
+    ok: true,
+    value: { observedCostMicros: input.billedCostMicros ?? input.tokenDerivedMicros },
+  };
+}
+
+export function verifyEconomicEvidence(evidence: OutcomeEconomicsEvidence): GovernorResult<true> {
+  const redacted = assertRedactedEconomicsTelemetry(evidence, "economicEvidence");
+  if (!redacted.ok) return redacted;
+  const { contentHash, ...payload } = evidence;
+  if (sha256Hex(payload) !== contentHash) {
+    return { ok: false, failures: ["Economic evidence content hash does not match the frozen payload."] };
+  }
+  return { ok: true, value: true };
 }
 
 export function loopFingerprint(input: {
@@ -416,6 +544,8 @@ export function createEconomicsSession(input: {
       maxToolCostMicros,
       remainingAiCostMicros: maxAiCostMicros,
       remainingToolCostMicros: maxToolCostMicros,
+      releasedAiCostMicros: 0,
+      releasedToolCostMicros: 0,
       reservations: new Map(),
       reservationsByIdempotency: new Map(),
       commitsByIdempotency: new Map(),
@@ -514,6 +644,13 @@ export type ReserveInput = {
   estimatedCostMicros: number | null;
   unknownPricing: boolean;
   usageUnavailable: boolean;
+  usageIncomplete?: boolean;
+  streamTerminatedBeforeUsage?: boolean;
+  billedCostMicros?: number | null;
+  pricing?: CallerPricing | null;
+  executionLimits?: ExecutionLimitSnapshot | null;
+  frozenAuthority?: AuthorityFreeze | null;
+  proposedAuthority?: AuthorityFreeze | null;
   idempotencyKey: string;
   now: string;
   expiresAt: string;
@@ -541,6 +678,9 @@ function expireReservations(session: EconomicsSession, nowMs: number): void {
 
 function expensiveGate(input: ReserveInput): GovernorResult<BudgetDecision> {
   if (input.executorTier !== "expensive") return { ok: true, value: "allow" };
+  if (input.streamTerminatedBeforeUsage || input.usageIncomplete) {
+    return { ok: true, value: "hold" };
+  }
   const downgrade = cheaperTierAvailable(input.routing);
   if (input.unknownPricing) {
     if (downgrade) return { ok: true, value: "downgrade" };
@@ -578,9 +718,30 @@ export function evaluatePreExecutionBudget(input: ReserveInput): GovernorResult<
   if (nowMs !== null && expiresMs !== null && expiresMs <= nowMs) {
     failures.push("Reservation expiresAt must be after the evaluation clock.");
   }
+  if (
+    input.executorTier !== input.routing.selectedTier &&
+    input.routing.selectedTier !== "expensive" &&
+    input.executorTier === "expensive"
+  ) {
+    failures.push("Executor cannot switch to an expensive tier around a cheaper routing decision.");
+  }
   if (failures.length || reservedAi === null || reservedTool === null || nowMs === null) {
     return { ok: false, failures };
   }
+
+  if (input.executionLimits) {
+    const limits = assertExecutionLimits(input.executionLimits, nowMs);
+    if (!limits.ok) return limits;
+  }
+  if (input.frozenAuthority && input.proposedAuthority) {
+    const authority = assertCheaperRouteDoesNotWeakenAuthority({
+      frozen: input.frozenAuthority,
+      proposed: input.proposedAuthority,
+    });
+    if (!authority.ok) return authority;
+  }
+  const pricingUnknown =
+    input.unknownPricing || (input.pricing ? pricingIsStale(input.pricing, nowMs) : false);
 
   expireReservations(input.session, nowMs);
 
@@ -605,13 +766,13 @@ export function evaluatePreExecutionBudget(input: ReserveInput): GovernorResult<
     };
   }
 
-  const gate = expensiveGate(input);
+  const gate = expensiveGate({ ...input, unknownPricing: pricingUnknown });
   if (!gate.ok) return gate;
-  if (gate.value === "downgrade") {
+  if (gate.value === "downgrade" || gate.value === "hold") {
     return {
       ok: true,
       value: {
-        decision: "downgrade",
+        decision: gate.value,
         reservation: null,
         loopSignal: "none",
         routing: input.routing,
@@ -719,6 +880,7 @@ export function commitReservation(input: {
   idempotencyKey: string;
   observation: UsageObservation;
   pricing: CallerPricing;
+  billedCostMicros?: number | null;
   now: string;
   progressed?: boolean;
   telemetry?: unknown;
@@ -763,6 +925,15 @@ export function commitReservation(input: {
   const observedAi = observedAiCostMicros(input.observation, input.pricing);
   const observedTool = observedToolCostMicros(input.observation, input.pricing);
   const observedTotal = observedCostMicros(input.observation, input.pricing);
+  if (pricingIsStale(input.pricing, nowMs)) {
+    return { ok: false, failures: ["Stale or future-dated pricing cannot reconcile usage."] };
+  }
+  const billed = reconcileUntrustedUsage({
+    tokenDerivedMicros: observedTotal,
+    billedCostMicros: input.billedCostMicros ?? null,
+    usageStatus: input.observation.usageStatus,
+  });
+  if (!billed.ok) return billed;
   if (
     reservation.executorTier === "expensive" &&
     (input.observation.usageStatus !== "reported" || observedTotal === null)
@@ -864,6 +1035,8 @@ export function releaseReservation(input: {
   if (reservation.state === "reserved") {
     input.session.remainingAiCostMicros += reservation.reservedAiCostMicros;
     input.session.remainingToolCostMicros += reservation.reservedToolCostMicros;
+    input.session.releasedAiCostMicros += reservation.reservedAiCostMicros;
+    input.session.releasedToolCostMicros += reservation.reservedToolCostMicros;
   }
   reservation.state = "released";
   const released = { reservationId: reservation.reservationId, releasedAt: input.now };
@@ -911,6 +1084,10 @@ export function deriveVerifiedOutcomeEconomics(input: {
   firstPassVerified: boolean;
   expensiveEscalations: number;
   expensiveEscalationsAccepted: number;
+  releasedBudgetMicros?: number;
+  retryCount?: number;
+  estimatedUsageTokens?: number | null;
+  actualUsageTokens?: number | null;
 }): GovernorResult<VerifiedOutcomeEconomics> {
   if (!(LEDGER_OUTCOME_SOURCES as readonly string[]).includes(input.outcomeSource)) {
     return { ok: false, failures: ["Performance ledger may only learn from deterministic_validator or human_qa."] };
@@ -933,6 +1110,14 @@ export function deriveVerifiedOutcomeEconomics(input: {
     0,
   );
   const retryReworkCostMicros = input.evidence.reduce((sum, item) => sum + item.retryReworkCostMicros, 0);
+  const reservedBudgetMicros = input.evidence.reduce(
+    (sum, item) => sum + item.reservedAiCostMicros + item.reservedToolCostMicros,
+    0,
+  );
+  const consumedBudgetMicros = input.evidence.reduce(
+    (sum, item) => sum + item.consumedAiCostMicros + item.consumedToolCostMicros,
+    0,
+  );
   return {
     ok: true,
     value: {
@@ -940,6 +1125,13 @@ export function deriveVerifiedOutcomeEconomics(input: {
       actualObservedCostMicros,
       reservedVersusConsumedAiMicros,
       retryReworkCostMicros,
+      failedAttemptCostMicros: retryReworkCostMicros,
+      reservedBudgetMicros,
+      consumedBudgetMicros,
+      releasedBudgetMicros: input.releasedBudgetMicros ?? 0,
+      retryCount: input.retryCount ?? input.evidence.length,
+      estimatedUsageTokens: input.estimatedUsageTokens ?? null,
+      actualUsageTokens: input.actualUsageTokens ?? null,
       costPerAcceptedOutcomeReceiptMicros: actualObservedCostMicros,
       firstPassVerificationRate: input.firstPassVerified ? 1 : 0,
       expensiveEscalationYield:
