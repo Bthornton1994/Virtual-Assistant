@@ -19,12 +19,14 @@ import type { ExecutorEnvelopeV1 } from "@/lib/executor-envelope";
 import {
   claimWorkCellPhase,
   deriveGovernedIdempotencyKey,
+  failWorkCellPhaseClaim,
   reportedToolUsage,
   reservationExpiresAt,
   reservationLedgerFromSession,
   releaseReservedGovernedExecutions,
   runGovernedExecution,
   type NativePublicWebEconomicsBinding,
+  type WorkCellPhaseClaimFailFn,
   type WorkCellPhaseClaimFn,
   type WorkCellPhaseClaimInput,
 } from "@/lib/execution-economics-adapter";
@@ -723,20 +725,36 @@ export async function claimThenPrepareAuthorizedPublicWebEvidencePacket(
   },
   options: {
     claimPhase: WorkCellPhaseClaimFn;
+    failPhase: WorkCellPhaseClaimFailFn;
     claimInput: WorkCellPhaseClaimInput;
     mintEconomics: () => NativePublicWebEconomicsBinding;
     fetchPage?: PageFetcher;
     now?: string;
+    beforeUsageObservation?: (stepKey: string) => void;
+    beforePostflight?: () => void;
   },
 ): Promise<AuthorizedPublicWebPrepareResult> {
   const claimed = await claimWorkCellPhase(options.claimPhase, options.claimInput);
   if (!claimed.ok) {
     throw new DomainError(claimed.failures.join(" "));
   }
-  const economics = options.mintEconomics();
-  return prepareAuthorizedPublicWebEvidencePacket(manifest, binding, {
-    economics,
-    fetchPage: options.fetchPage,
-    now: options.now,
-  });
+  try {
+    const economics = options.mintEconomics();
+    return await prepareAuthorizedPublicWebEvidencePacket(manifest, binding, {
+      economics,
+      fetchPage: options.fetchPage,
+      now: options.now,
+      beforeUsageObservation: options.beforeUsageObservation,
+      beforePostflight: options.beforePostflight,
+    });
+  } catch (error) {
+    await failWorkCellPhaseClaim(options.failPhase, {
+      ...options.claimInput,
+      reason:
+        error instanceof Error
+          ? error.message
+          : "Native public-web prepare failed after claiming the (run_id, phase) slot.",
+    });
+    throw error;
+  }
 }

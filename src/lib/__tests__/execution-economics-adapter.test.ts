@@ -18,16 +18,22 @@ import {
   commitDeferredGovernedReservations,
   createMemoryWorkCellPhaseClaim,
   deriveGovernedIdempotencyKey,
+  expireStaleRunningWorkCellPhaseClaim,
+  failWorkCellPhaseClaim,
   findAttemptReservations,
-  mintTrustedGovernedBinding,
   releaseAttemptBoundReservation,
   reportedToolUsage,
   reservationExpiresAt,
   runGovernedExecution,
+  WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
   workCellPhaseAlreadyRecordedFromAssignment,
   type GovernedExecutionInput,
   type TrustedGovernedBinding,
 } from "@/lib/execution-economics-adapter";
+import {
+  createPersistedWorkCellProjectionForTests,
+  mintTrustedGovernedBinding,
+} from "@/lib/execution-economics-binding-internal";
 import { snapshotDelegationSpec } from "@/lib/execution-context-enforcement";
 import type { DelegationSpecSnapshot } from "@/lib/execution-context";
 import {
@@ -112,6 +118,37 @@ function nativeBinding() {
   ]);
   if (!translated.ok) throw new Error(translated.failures.join(" "));
   return translated.value;
+}
+
+function nativeProjection(binding = nativeBinding()) {
+  return createPersistedWorkCellProjectionForTests(binding, HASH);
+}
+
+function bindNativeEconomics(
+  binding = nativeBinding(),
+  overrides: {
+    session?: EconomicsSession;
+    now?: string;
+    deadlineAt?: string;
+    projection?: ReturnType<typeof nativeProjection>;
+    executionAttemptId?: string;
+    attemptNumber?: number;
+    maxAttempts?: number;
+    cancelled?: boolean;
+    workCellPhaseAlreadyRecorded?: boolean;
+    pricing?: CallerPricing;
+  } = {},
+) {
+  const { session: economicsSession, now, deadlineAt, projection, ...rest } = overrides;
+  return bindNativePublicWebEconomics({
+    session: economicsSession ?? session(),
+    projection: projection ?? nativeProjection(binding),
+    organizationId: ORG,
+    tenantId: TENANT,
+    now: now ?? NOW,
+    deadlineAt: deadlineAt ?? DEADLINE,
+    ...rest,
+  });
 }
 
 function session(): EconomicsSession {
@@ -696,17 +733,7 @@ describe("execution economics adapter v1", () => {
 
   it("native fetchPage is surrounded by the governor and commits valid tool usage", async () => {
     const binding = nativeBinding();
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
-      attemptNumber: 1,
-      maxAttempts: 3,
-    });
+    const economics = bindNativeEconomics(binding, { attemptNumber: 1, maxAttempts: 3 });
     if (!economics.ok) throw new Error(economics.failures.join(" "));
     let fetchCalls = 0;
     const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
@@ -739,16 +766,7 @@ describe("execution economics adapter v1", () => {
 
   it("native rejected economics never calls fetchPage", async () => {
     const binding = nativeBinding();
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
-      cancelled: true,
-    });
+    const economics = bindNativeEconomics(binding, { cancelled: true });
     if (!economics.ok) throw new Error(economics.failures.join(" "));
     let fetchCalls = 0;
     await expect(
@@ -782,8 +800,11 @@ describe("execution economics adapter v1", () => {
       workCell.indexOf("export async function ingestCatalogEvidencePacket"),
     );
     expect(nativeFn).toMatch(/bindNativePublicWebEconomics/);
+    expect(nativeFn).toMatch(/sealPersistedWorkCellProjectionFromWorkCellLoader/);
     expect(nativeFn).toMatch(/getAssignment/);
     expect(nativeFn).toMatch(/claimWorkCellPhase/);
+    expect(nativeFn).toMatch(/failWorkCellPhaseClaim/);
+    expect(nativeFn).toMatch(/completeWorkCellPhaseClaim/);
     expect(nativeFn).toMatch(/workCellPhaseAlreadyRecordedFromAssignment/);
     expect(nativeFn).toMatch(/inputManifestContentHash: frozen.contentHash/);
     expect(nativeFn).not.toMatch(/canonicalPlanHash: frozen.contentHash/);
@@ -798,8 +819,14 @@ describe("execution economics adapter v1", () => {
     expect(nativeFn.indexOf("bindNativePublicWebEconomics")).toBeLessThan(
       nativeFn.indexOf("prepareAuthorizedPublicWebEvidencePacket"),
     );
+    expect(nativeFn.indexOf("sealPersistedWorkCellProjectionFromWorkCellLoader")).toBeLessThan(
+      nativeFn.indexOf("bindNativePublicWebEconomics"),
+    );
     expect(nativeFn.lastIndexOf("persistPhaseArtifact")).toBeLessThan(
       nativeFn.lastIndexOf("commitDeferredGovernedReservations"),
+    );
+    expect(nativeFn.lastIndexOf("commitDeferredGovernedReservations")).toBeLessThan(
+      nativeFn.lastIndexOf("completeWorkCellPhaseClaim"),
     );
   });
 
@@ -854,14 +881,8 @@ describe("execution economics adapter v1", () => {
         economicLimit: { ...binding.envelope.economicLimit, maxToolCostMicros: 50_000 },
       },
     };
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding: mutated,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
+    const economics = bindNativeEconomics(binding, {
+      projection: createPersistedWorkCellProjectionForTests(mutated, HASH),
     });
     expect(economics.ok).toBe(false);
     if (!economics.ok) expect(economics.failures.join(" ")).toMatch(/trusted expected envelope hash/);
@@ -1088,16 +1109,7 @@ describe("execution economics adapter v1", () => {
 
   it("existing recorded prepare assignment blocks native fetch before economics execute", async () => {
     const binding = nativeBinding();
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
-      workCellPhaseAlreadyRecorded: true,
-    });
+    const economics = bindNativeEconomics(binding, { workCellPhaseAlreadyRecorded: true });
     if (!economics.ok) throw new Error(economics.failures.join(" "));
     let fetchCalls = 0;
     await expect(
@@ -1178,14 +1190,8 @@ describe("execution economics adapter v1", () => {
   it("releases on native HTTP and timeout fetch failures without committing", async () => {
     const binding = nativeBinding();
     const httpSession = session();
-    const httpEconomics = bindNativePublicWebEconomics({
+    const httpEconomics = bindNativeEconomics(binding, {
       session: httpSession,
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
       attemptNumber: 1,
       maxAttempts: 3,
     });
@@ -1207,14 +1213,8 @@ describe("execution economics adapter v1", () => {
     expect([...httpSession.reservations.values()].some((reservation) => reservation.state === "released")).toBe(true);
 
     const timeoutSession = session();
-    const timeoutEconomics = bindNativePublicWebEconomics({
+    const timeoutEconomics = bindNativeEconomics(binding, {
       session: timeoutSession,
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
       attemptNumber: 1,
       maxAttempts: 3,
     });
@@ -1290,19 +1290,10 @@ describe("execution economics adapter v1", () => {
     const runOne = () =>
       claimThenPrepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
         claimPhase: store.claim,
+        failPhase: store.fail,
         claimInput,
         mintEconomics: () => {
-          const economics = bindNativePublicWebEconomics({
-            session: session(),
-            binding,
-            organizationId: ORG,
-            tenantId: TENANT,
-            now: NOW,
-            inputManifestContentHash: HASH,
-            deadlineAt: DEADLINE,
-            attemptNumber: 1,
-            maxAttempts: 3,
-          });
+          const economics = bindNativeEconomics(binding, { attemptNumber: 1, maxAttempts: 3 });
           if (!economics.ok) throw new Error(economics.failures.join(" "));
           return economics.value;
         },
@@ -1326,17 +1317,7 @@ describe("execution economics adapter v1", () => {
 
   it("multi-URL: URL1 success and URL2 fetch error keeps URL1 reserved and represents both ids", async () => {
     const binding = nativeBinding();
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
-      attemptNumber: 1,
-      maxAttempts: 3,
-    });
+    const economics = bindNativeEconomics(binding, { attemptNumber: 1, maxAttempts: 3 });
     if (!economics.ok) throw new Error(economics.failures.join(" "));
     const fetched = await prepareAuthorizedPublicWebEvidencePacket(twoUrlManifest(), binding, {
       economics: economics.value,
@@ -1358,14 +1339,7 @@ describe("execution economics adapter v1", () => {
 
   it("multi-URL: URL2 reservation reject releases URL1 and never fetches", async () => {
     const binding = nativeBinding();
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
+    const economics = bindNativeEconomics(binding, {
       attemptNumber: 1,
       maxAttempts: 3,
       pricing: { ...PRICING, toolCallMicros: 300 },
@@ -1393,17 +1367,7 @@ describe("execution economics adapter v1", () => {
 
   it("multi-URL: URL2 usage throw releases reserved work and does not commit", async () => {
     const binding = nativeBinding();
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
-      attemptNumber: 1,
-      maxAttempts: 3,
-    });
+    const economics = bindNativeEconomics(binding, { attemptNumber: 1, maxAttempts: 3 });
     if (!economics.ok) throw new Error(economics.failures.join(" "));
     await expect(
       prepareAuthorizedPublicWebEvidencePacket(twoUrlManifest(), binding, {
@@ -1425,17 +1389,7 @@ describe("execution economics adapter v1", () => {
 
   it("multi-URL: postflight throw releases reserved URLs without committing", async () => {
     const binding = nativeBinding();
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
-      attemptNumber: 1,
-      maxAttempts: 3,
-    });
+    const economics = bindNativeEconomics(binding, { attemptNumber: 1, maxAttempts: 3 });
     if (!economics.ok) throw new Error(economics.failures.join(" "));
     await expect(
       prepareAuthorizedPublicWebEvidencePacket(twoUrlManifest(), binding, {
@@ -1454,17 +1408,7 @@ describe("execution economics adapter v1", () => {
 
   it("multi-URL: packet validation/persist failure paths keep all reservation ids and do not commit-and-lose", async () => {
     const binding = nativeBinding();
-    const economics = bindNativePublicWebEconomics({
-      session: session(),
-      binding,
-      organizationId: ORG,
-      tenantId: TENANT,
-      now: NOW,
-      inputManifestContentHash: HASH,
-      deadlineAt: DEADLINE,
-      attemptNumber: 1,
-      maxAttempts: 3,
-    });
+    const economics = bindNativeEconomics(binding, { attemptNumber: 1, maxAttempts: 3 });
     if (!economics.ok) throw new Error(economics.failures.join(" "));
     const fetched = await prepareAuthorizedPublicWebEvidencePacket(twoUrlManifest(), binding, {
       economics: economics.value,
@@ -1497,6 +1441,9 @@ describe("execution economics adapter v1", () => {
     );
     expect(nativeFn.lastIndexOf("persistPhaseArtifact")).toBeLessThan(
       nativeFn.lastIndexOf("commitDeferredGovernedReservations"),
+    );
+    expect(nativeFn.lastIndexOf("commitDeferredGovernedReservations")).toBeLessThan(
+      nativeFn.lastIndexOf("completeWorkCellPhaseClaim"),
     );
     expect(nativeFn).toMatch(/releaseEconomics\(prepared\.economicReservationIds\)/);
   });
@@ -1546,5 +1493,299 @@ describe("execution economics adapter v1", () => {
     expect(sql).toMatch(/for update/);
     expect(sql).not.toMatch(/create table/i);
     expect(sql).toMatch(/No new tables or columns/);
+    const failSql = readFileSync(
+      resolve(process.cwd(), "supabase/migrations/20260910204500_work_cell_phase_claim_fail_reclaim_v1.sql"),
+      "utf8",
+    );
+    expect(failSql).toMatch(/SQL_VERIFICATION_NOT_AVAILABLE/);
+    expect(failSql).toMatch(/fail_work_cell_phase_claim/);
+    expect(failSql).toMatch(/complete_work_cell_phase_claim/);
+    expect(failSql).toMatch(/running -> failed/);
+    expect(failSql).not.toMatch(/create table/i);
+  });
+
+  it("self-constructed structurally valid source cannot execute through the exported generic path", async () => {
+    const adapter = await import("@/lib/execution-economics-adapter");
+    expect(Object.prototype.hasOwnProperty.call(adapter, "mintTrustedGovernedBinding")).toBe(false);
+    expect(adapter).not.toHaveProperty("mintTrustedGovernedBinding");
+    const adapterSource = readFileSync(resolve(process.cwd(), "src/lib/execution-economics-adapter.ts"), "utf8");
+    expect(adapterSource).not.toMatch(/export function mintTrustedGovernedBinding/);
+    expect(adapterSource).not.toMatch(/export \{[^}]*mintTrustedGovernedBinding/);
+
+    let called = false;
+    const binding = nativeBinding();
+    const homemade = {
+      session: session(),
+      organizationId: ORG,
+      tenantId: TENANT,
+      context: binding.context,
+      envelope: binding.envelope,
+      envelopeHash: binding.envelopeHash,
+      contextHash: binding.contextHash,
+      runtime: mintBinding().runtime,
+      frozenAuthority: frozenFor(binding),
+      proposedAuthority: frozenFor(binding).authority,
+      requestedTier: "cheap" as const,
+      availableTiers: ["cheap"] as const,
+      escalationReason: null,
+      pricing: PRICING,
+      reservationTtlMs: 60_000,
+    };
+    const rejected = await adapter.runGovernedExecution({
+      trustedBinding: homemade,
+      callKind: "model",
+      toolKeys: ["model"],
+      stepKey: "self-construct",
+      estimatedAiCostMicros: 100,
+      estimatedToolCostMicros: 20,
+      estimatedCostMicros: 120,
+      execute: async () => {
+        called = true;
+        return { ok: true };
+      },
+      usageOnSuccess: () => usageFor(mintBinding(), "self-construct"),
+    });
+    expect(called).toBe(false);
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) {
+      expect(rejected.executed).toBe(false);
+      expect(rejected.failures.join(" ")).toMatch(/factory-minted trusted binding|persistence-backed loader/);
+    }
+
+    const lookalikeProjection = {
+      ...binding,
+      inputManifestContentHash: HASH,
+    };
+    const native = adapter.bindNativePublicWebEconomics({
+      session: session(),
+      projection: lookalikeProjection,
+      organizationId: ORG,
+      tenantId: TENANT,
+      now: NOW,
+      deadlineAt: DEADLINE,
+    });
+    expect(native.ok).toBe(false);
+    if (!native.ok) {
+      expect(native.failures.join(" ")).toMatch(/persistence-backed work-cell projection/);
+    }
+  });
+
+  it("handled failure after claim marks the assignment failed and blocks a second fetch", async () => {
+    const store = createMemoryWorkCellPhaseClaim();
+    const binding = nativeBinding();
+    const claimInput = {
+      organizationId: ORG,
+      tenantId: TENANT,
+      runId: binding.context.runId,
+      phase: "prepare" as const,
+      assignmentId: binding.assignmentId,
+      executorKey: PUBLIC_WEB_RESEARCHER_KEY,
+      capabilityKey: "public_web_retrieval",
+      inputManifestContentHash: HASH,
+      envelopeHash: binding.envelopeHash,
+      contextHash: binding.contextHash,
+      now: NOW,
+    };
+    let fetchCalls = 0;
+    await expect(
+      claimThenPrepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
+        claimPhase: store.claim,
+        failPhase: store.fail,
+        claimInput,
+        mintEconomics: () => {
+          const economics = bindNativeEconomics(binding, { attemptNumber: 1, maxAttempts: 3 });
+          if (!economics.ok) throw new Error(economics.failures.join(" "));
+          return economics.value;
+        },
+        fetchPage: async (url) => {
+          fetchCalls += 1;
+          return { url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" };
+        },
+        beforePostflight: () => {
+          throw new Error("postflight exploded after claim");
+        },
+        now: NOW,
+      }),
+    ).rejects.toThrow(/postflight exploded/);
+    expect(fetchCalls).toBe(1);
+    expect([...store.records.values()][0]?.status).toBe("failed");
+
+    let secondFetches = 0;
+    await expect(
+      claimThenPrepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
+        claimPhase: store.claim,
+        failPhase: store.fail,
+        claimInput,
+        mintEconomics: () => {
+          throw new Error("must not mint economics on a stranded retry");
+        },
+        fetchPage: async (url) => {
+          secondFetches += 1;
+          return { url, status: 200, text: "must not fetch" };
+        },
+        now: NOW,
+      }),
+    ).rejects.toThrow(/already has a recorded attempt|Fetch was not started/);
+    expect(secondFetches).toBe(0);
+    expect([...store.records.values()][0]?.status).toBe("failed");
+  });
+
+  it("crash-left running claims block fetch and reclaim to failed without a second fetch", async () => {
+    const store = createMemoryWorkCellPhaseClaim();
+    const binding = nativeBinding();
+    const claimInput = {
+      organizationId: ORG,
+      tenantId: TENANT,
+      runId: binding.context.runId,
+      phase: "prepare" as const,
+      assignmentId: binding.assignmentId,
+      executorKey: PUBLIC_WEB_RESEARCHER_KEY,
+      capabilityKey: "public_web_retrieval",
+      inputManifestContentHash: HASH,
+      envelopeHash: binding.envelopeHash,
+      contextHash: binding.contextHash,
+      now: NOW,
+    };
+    const claimed = await store.claim(claimInput);
+    expect(claimed.ok).toBe(true);
+    expect([...store.records.values()][0]?.status).toBe("running");
+
+    let fetchCalls = 0;
+    await expect(
+      claimThenPrepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
+        claimPhase: store.claim,
+        failPhase: store.fail,
+        claimInput,
+        mintEconomics: () => {
+          throw new Error("must not mint economics against a live running claim");
+        },
+        fetchPage: async (url) => {
+          fetchCalls += 1;
+          return { url, status: 200, text: "must not fetch" };
+        },
+        now: NOW,
+      }),
+    ).rejects.toThrow(/already has a recorded attempt|Fetch was not started/);
+    expect(fetchCalls).toBe(0);
+    expect([...store.records.values()][0]?.status).toBe("running");
+
+    const tooSoon = await expireStaleRunningWorkCellPhaseClaim(store.expireStale, {
+      runId: claimInput.runId,
+      phase: "prepare",
+      now: NOW,
+      ttlMs: WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
+    });
+    expect(tooSoon.ok).toBe(true);
+    if (tooSoon.ok) expect(tooSoon.value).toBeNull();
+    expect([...store.records.values()][0]?.status).toBe("running");
+
+    const reclaimed = await expireStaleRunningWorkCellPhaseClaim(store.expireStale, {
+      runId: claimInput.runId,
+      phase: "prepare",
+      now: "2026-09-10T12:03:00.000Z",
+      ttlMs: WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
+    });
+    expect(reclaimed.ok).toBe(true);
+    if (reclaimed.ok) expect(reclaimed.value?.status).toBe("failed");
+    expect([...store.records.values()][0]?.status).toBe("failed");
+
+    await expect(
+      claimThenPrepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
+        claimPhase: store.claim,
+        failPhase: store.fail,
+        claimInput,
+        mintEconomics: () => {
+          throw new Error("must not mint economics after reclaim");
+        },
+        fetchPage: async (url) => {
+          fetchCalls += 1;
+          return { url, status: 200, text: "must not fetch" };
+        },
+        now: "2026-09-10T12:03:00.000Z",
+      }),
+    ).rejects.toThrow(/already has a recorded attempt|Fetch was not started/);
+    expect(fetchCalls).toBe(0);
+    expect(store.records.size).toBe(1);
+  });
+
+  it("failWorkCellPhaseClaim does not overwrite a completed assignment", async () => {
+    const store = createMemoryWorkCellPhaseClaim();
+    const binding = nativeBinding();
+    const claimInput = {
+      organizationId: ORG,
+      tenantId: TENANT,
+      runId: binding.context.runId,
+      phase: "prepare" as const,
+      assignmentId: binding.assignmentId,
+      executorKey: PUBLIC_WEB_RESEARCHER_KEY,
+      capabilityKey: "public_web_retrieval",
+      inputManifestContentHash: HASH,
+      envelopeHash: binding.envelopeHash,
+      contextHash: binding.contextHash,
+      now: NOW,
+    };
+    expect((await store.claim(claimInput)).ok).toBe(true);
+    expect((await store.complete({ ...claimInput, reason: "done" })).ok).toBe(true);
+    const failed = await failWorkCellPhaseClaim(store.fail, {
+      ...claimInput,
+      reason: "must not overwrite completed",
+    });
+    expect(failed.ok).toBe(false);
+    if (!failed.ok) expect(failed.failures.join(" ")).toMatch(/completed/);
+    expect([...store.records.values()][0]?.status).toBe("completed");
+  });
+
+  it("rolls back the first deferred commit when the second commit fails", async () => {
+    const binding = nativeBinding();
+    const economics = bindNativeEconomics(binding, { attemptNumber: 1, maxAttempts: 3 });
+    if (!economics.ok) throw new Error(economics.failures.join(" "));
+    const fetched = await prepareAuthorizedPublicWebEvidencePacket(twoUrlManifest(), binding, {
+      economics: economics.value,
+      fetchPage: async (url) => ({ url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" }),
+      now: NOW,
+    });
+    expect(fetched.pendingCommits).toHaveLength(2);
+    const remainingBefore = economics.value.session.remainingAiCostMicros;
+    const remainingToolBefore = economics.value.session.remainingToolCostMicros;
+    const releasedAiBefore = economics.value.session.releasedAiCostMicros;
+    const releasedToolBefore = economics.value.session.releasedToolCostMicros;
+    const commitMapSizeBefore = economics.value.session.commitsByIdempotency.size;
+    const firstWouldSucceed = fetched.pendingCommits[0]!;
+    const secondFails = {
+      ...fetched.pendingCommits[1]!,
+      observation: {
+        ...fetched.pendingCommits[1]!.observation,
+        inputTokens: Number.NaN,
+      },
+    };
+
+    const committed = commitDeferredGovernedReservations({
+      session: economics.value.session,
+      organizationId: ORG,
+      tenantId: TENANT,
+      now: NOW,
+      pricing: economics.value.pricing,
+      items: [firstWouldSucceed, secondFails],
+    });
+    expect(committed.ok).toBe(false);
+    if (!committed.ok) {
+      expect(committed.failures.join(" ")).toMatch(/rolled back|Malformed or non-finite usage/);
+    }
+    const states = fetched.economicReservationIds.map(
+      (id) => economics.value.session.reservations.get(id)?.state ?? "missing",
+    );
+    expect(states).toEqual(["reserved", "reserved"]);
+    expect(economics.value.session.remainingAiCostMicros).toBe(remainingBefore);
+    expect(economics.value.session.remainingToolCostMicros).toBe(remainingToolBefore);
+    expect(economics.value.session.releasedAiCostMicros).toBe(releasedAiBefore);
+    expect(economics.value.session.releasedToolCostMicros).toBe(releasedToolBefore);
+    expect(economics.value.session.commitsByIdempotency.size).toBe(commitMapSizeBefore);
+    expect(committed.reservationLedger).toEqual([
+      { reservationId: fetched.economicReservationIds[0], state: "reserved" },
+      { reservationId: fetched.economicReservationIds[1], state: "reserved" },
+    ]);
+    expect([...economics.value.session.reservations.values()].every((reservation) => reservation.state !== "committed")).toBe(
+      true,
+    );
   });
 });

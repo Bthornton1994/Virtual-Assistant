@@ -29,6 +29,7 @@ import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import { CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION } from "@/lib/catalog-evidence-packet";
 import { CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION } from "@/lib/catalog-evidence-review";
 import { bindNativePublicWebEconomics } from "@/lib/execution-economics-adapter";
+import { createPersistedWorkCellProjectionForTests } from "@/lib/execution-economics-binding-internal";
 import { createEconomicsSession } from "@/lib/outcome-economics-governor";
 import {
   PUBLIC_WEB_RESEARCHER_KEY,
@@ -159,11 +160,10 @@ function nativeEconomics(binding: ReturnType<typeof nativeBinding>, now = NOW) {
   if (!created.ok) throw new Error(created.failures.join(" "));
   const bound = bindNativePublicWebEconomics({
     session: created.value,
-    binding,
+    projection: createPersistedWorkCellProjectionForTests(binding, HASH),
     organizationId: "org-loadout-internal-qa",
     tenantId: "org-loadout-internal-qa",
     now,
-    inputManifestContentHash: HASH,
     deadlineAt: "2026-09-09T17:00:00Z",
   });
   if (!bound.ok) throw new Error(bound.failures.join(" "));

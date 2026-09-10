@@ -1,6 +1,4 @@
 import {
-  assignmentToEnvelope,
-  executionStepAssignmentToEnvelope,
   type AssignmentToEnvelopeAssignment,
   type ExecutionStepToEnvelopeAssignment,
 } from "@/lib/assignment-to-envelope";
@@ -19,6 +17,7 @@ import {
   type ToolClass,
 } from "@/lib/execution-context";
 import { checkExecutionLease, type ExecutionLease } from "@/lib/execution-runtime";
+import { requireMintedTrustedGovernedBinding } from "@/lib/execution-economics-binding-internal";
 import {
   ECONOMICS_RESERVATION_IDS_METADATA_KEY,
   ECONOMICS_RESERVATION_METADATA_KEY,
@@ -42,6 +41,11 @@ import {
   type UsageObservation,
 } from "@/lib/outcome-economics-governor";
 
+export {
+  bindNativePublicWebEconomics,
+  type PersistedWorkCellProjection,
+} from "@/lib/execution-economics-binding-internal";
+
 /**
  * Outcome Economics Governor adapter v1.
  *
@@ -54,8 +58,9 @@ import {
  * enforcement. Cross-request economics remain advisory unless a durable
  * authorized seam exists. Native public-web prepare claims the existing
  * run_executor_assignments unique (run_id, phase) slot before fetch.
- * A future SQL economics seam requires separate authorization and
- * runtime verification.
+ * Binding mint lives on the internal loader module; this barrel does not
+ * export mintTrustedGovernedBinding. A future SQL economics seam requires
+ * separate authorization and runtime verification.
  */
 
 export const EXECUTION_ECONOMICS_ADAPTER_SCHEMA_VERSION = "execution-economics-adapter/v1" as const;
@@ -69,6 +74,9 @@ const ACTION_CLASS_RANK: Record<ActionClass, number> = {
 };
 
 export const NATIVE_PUBLIC_WEB_RESERVATION_TTL_MS = 120_000;
+
+/** Bounded reclaim of a stranded running claim uses the existing native prepare window. It fails the slot; it does not insert a second fetch. */
+export const WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS = NATIVE_PUBLIC_WEB_RESERVATION_TTL_MS;
 
 export const ZERO_CALLER_PRICING: CallerPricing = {
   currency: "USD",
@@ -153,9 +161,8 @@ export type TrustedGovernedBindingSource = {
   reservationTtlMs?: number;
 };
 
-const mintedTrustedGovernedBindings = new WeakSet<object>();
-
 export const WORK_CELL_PHASE_CLAIM_SCHEMA_VERSION = "work-cell-phase-prefetch-claim/v1" as const;
+export const WORK_CELL_PHASE_CLAIM_FAIL_SCHEMA_VERSION = "work-cell-phase-claim-fail/v1" as const;
 
 export type WorkCellPhaseClaimInput = {
   organizationId: string;
@@ -174,11 +181,33 @@ export type WorkCellPhaseClaimInput = {
 export type WorkCellPhaseClaimRecord = WorkCellPhaseClaimInput & {
   status: "planned" | "running" | "completed" | "failed";
   claimedAt: string;
+  failedAt?: string;
+  failReason?: string;
+};
+
+export type WorkCellPhaseClaimFailInput = WorkCellPhaseClaimInput & {
+  reason: string;
 };
 
 export type WorkCellPhaseClaimFn = (
   input: WorkCellPhaseClaimInput,
 ) => Promise<GovernorResult<WorkCellPhaseClaimRecord>>;
+
+export type WorkCellPhaseClaimFailFn = (
+  input: WorkCellPhaseClaimFailInput,
+) => Promise<GovernorResult<WorkCellPhaseClaimRecord>>;
+
+export type WorkCellPhaseClaimExpireInput = {
+  runId: string;
+  phase: ExecutorEnvelopeV1["phase"];
+  now: string;
+  ttlMs: number;
+  reason?: string;
+};
+
+export type WorkCellPhaseClaimExpireFn = (
+  input: WorkCellPhaseClaimExpireInput,
+) => Promise<GovernorResult<WorkCellPhaseClaimRecord | null>>;
 
 export type GovernedExecutionMode = "full" | "reserve_only";
 
@@ -924,227 +953,6 @@ export async function runGovernedExecution<T>(
   };
 }
 
-function sealTrustedGovernedBinding(binding: TrustedGovernedBinding): TrustedGovernedBinding {
-  mintedTrustedGovernedBindings.add(binding);
-  return binding;
-}
-
-export function requireMintedTrustedGovernedBinding(value: unknown): GovernorResult<TrustedGovernedBinding> {
-  if (!value || typeof value !== "object" || !mintedTrustedGovernedBindings.has(value)) {
-    return {
-      ok: false,
-      failures: [
-        "Governed execution requires a factory-minted trusted binding. Hash equality is not authenticity.",
-      ],
-    };
-  }
-  return { ok: true, value: value as TrustedGovernedBinding };
-}
-
-export function mintTrustedGovernedBinding(input: TrustedGovernedBindingSource): GovernorResult<TrustedGovernedBinding> {
-  const translated =
-    input.identityKind === "execution_step_assignment"
-      ? executionStepAssignmentToEnvelope(input.assignment, input.spec, input.inputArtifactRefs)
-      : assignmentToEnvelope(input.assignment, input.spec, input.inputArtifactRefs);
-  if (!translated.ok) return translated;
-  if (input.identityKind !== "execution_step_assignment" && input.lease) {
-    return {
-      ok: false,
-      failures: [
-        "Native public-web prepare does not accept a presented lease. Native economics keep lease null rather than treating caller-created lease objects as trusted.",
-      ],
-    };
-  }
-  return sealFromValidatedProjection({
-    session: input.session,
-    organizationId: input.organizationId,
-    tenantId: input.tenantId,
-    now: input.now,
-    deadlineAt: input.deadlineAt,
-    binding: translated.value,
-    inputManifestContentHash:
-      "inputManifestContentHash" in input.assignment && typeof input.assignment.inputManifestContentHash === "string"
-        ? input.assignment.inputManifestContentHash
-        : null,
-    canonicalPlanHash:
-      "planHash" in input.assignment && typeof input.assignment.planHash === "string" ? input.assignment.planHash : null,
-    executionAttemptId: input.executionAttemptId,
-    attemptNumber: input.attemptNumber,
-    maxAttempts: input.maxAttempts,
-    cancelled: input.cancelled,
-    workCellPhaseAlreadyRecorded: input.workCellPhaseAlreadyRecorded,
-    lease: input.lease ?? null,
-    expectedLease: input.expectedLease ?? null,
-    proposedAuthority: input.proposedAuthority,
-    requestedTier: input.requestedTier,
-    availableTiers: input.availableTiers,
-    escalationReason: input.escalationReason,
-    pricing: input.pricing,
-    reservationTtlMs: input.reservationTtlMs,
-  });
-}
-
-function sealFromValidatedProjection(input: {
-  session: EconomicsSession;
-  organizationId: string;
-  tenantId: string;
-  now: string;
-  deadlineAt: string;
-  binding: {
-    assignmentId: string;
-    envelopeHash: string;
-    contextHash: string;
-    context: ExecutionContext;
-    envelope: ExecutorEnvelopeV1;
-  };
-  inputManifestContentHash: string | null;
-  canonicalPlanHash: string | null;
-  executionAttemptId?: string;
-  attemptNumber?: number;
-  maxAttempts?: number;
-  cancelled?: boolean;
-  workCellPhaseAlreadyRecorded?: boolean;
-  lease?: ExecutionLease | null;
-  expectedLease?: ExecutionLease | null;
-  proposedAuthority?: AuthorityFreeze;
-  requestedTier?: ExecutorTier;
-  availableTiers?: readonly ExecutorTier[];
-  escalationReason?: EscalationReason | null;
-  pricing?: CallerPricing;
-  reservationTtlMs?: number;
-}): GovernorResult<TrustedGovernedBinding> {
-  const contextCheck = validateExecutionContext(input.binding.context);
-  if (!contextCheck.ok) return contextCheck;
-  if (
-    contextCheck.value.contextHash !== input.binding.contextHash ||
-    input.binding.contextHash !== input.binding.context.contextHash ||
-    input.binding.assignmentId !== contextCheck.value.assignmentId
-  ) {
-    return { ok: false, failures: ["Native economics binding context hashes do not match."] };
-  }
-  const envelopeCheck = assertExecutorEnvelopeIntegrity({
-    envelope: input.binding.envelope,
-    expectedEnvelopeHash: input.binding.envelopeHash,
-  });
-  if (!envelopeCheck.ok) return envelopeCheck;
-  const frozen = bindFrozenAuthorityFromTrustedContracts({
-    context: contextCheck.value,
-    envelope: envelopeCheck.value,
-    canonicalPlanHash: input.canonicalPlanHash,
-    inputManifestContentHash: input.inputManifestContentHash,
-  });
-  if (!frozen.ok) return frozen;
-  const runtime: TrustedExecutionRuntimeState = {
-    organizationId: input.organizationId,
-    tenantId: input.tenantId,
-    runId: contextCheck.value.runId,
-    executionAttemptId: input.executionAttemptId ?? `native-prepare:${input.binding.assignmentId}`,
-    assignmentId: input.binding.assignmentId,
-    capabilityKey: contextCheck.value.assignmentSnapshot.capabilityKey,
-    executorKey: contextCheck.value.assignmentSnapshot.executorKey,
-    workCellPhase: envelopeCheck.value.phase,
-    workCellPhaseAlreadyRecorded: input.workCellPhaseAlreadyRecorded ?? false,
-    attemptNumber: input.attemptNumber ?? 1,
-    maxAttempts: input.maxAttempts ?? 1,
-    deadlineAt: input.deadlineAt,
-    cancelled: input.cancelled ?? false,
-    lease: input.lease ?? null,
-    expectedLease: input.expectedLease ?? null,
-    specVersion: frozen.value.specVersion,
-    canonicalPlanHash: frozen.value.canonicalPlanHash,
-    inputManifestContentHash: frozen.value.inputManifestContentHash,
-    evaluationClock: input.now,
-  };
-  const identity = assertTrustedIdentityMatch({
-    context: contextCheck.value,
-    envelope: envelopeCheck.value,
-    runtime,
-    frozenAuthority: frozen.value,
-    session: input.session,
-  });
-  if (!identity.ok) return identity;
-  return {
-    ok: true,
-    value: sealTrustedGovernedBinding({
-      session: input.session,
-      organizationId: input.organizationId,
-      tenantId: input.tenantId,
-      context: contextCheck.value,
-      envelope: envelopeCheck.value,
-      envelopeHash: input.binding.envelopeHash,
-      contextHash: input.binding.contextHash,
-      runtime,
-      frozenAuthority: frozen.value,
-      proposedAuthority: input.proposedAuthority ?? frozen.value.authority,
-      requestedTier: input.requestedTier ?? "deterministic",
-      availableTiers: input.availableTiers ?? ["deterministic"],
-      escalationReason: input.escalationReason ?? null,
-      pricing: input.pricing ?? ZERO_CALLER_PRICING,
-      reservationTtlMs: input.reservationTtlMs ?? NATIVE_PUBLIC_WEB_RESERVATION_TTL_MS,
-    }),
-  };
-}
-
-export function bindNativePublicWebEconomics(input: {
-  session: EconomicsSession;
-  binding: {
-    assignmentId: string;
-    envelopeHash: string;
-    contextHash: string;
-    context: ExecutionContext;
-    envelope: ExecutorEnvelopeV1;
-  };
-  organizationId: string;
-  tenantId: string;
-  now: string;
-  inputManifestContentHash: string;
-  deadlineAt: string;
-  executionAttemptId?: string;
-  attemptNumber?: number;
-  maxAttempts?: number;
-  cancelled?: boolean;
-  workCellPhaseAlreadyRecorded?: boolean;
-  lease?: ExecutionLease | null;
-  proposedAuthority?: AuthorityFreeze;
-  requestedTier?: ExecutorTier;
-  availableTiers?: readonly ExecutorTier[];
-  escalationReason?: EscalationReason | null;
-  pricing?: CallerPricing;
-  reservationTtlMs?: number;
-}): GovernorResult<NativePublicWebEconomicsBinding> {
-  if (input.lease) {
-    return {
-      ok: false,
-      failures: [
-        "Native public-web prepare does not accept a presented lease. Native economics keep lease null rather than treating caller-created lease objects as trusted.",
-      ],
-    };
-  }
-  return sealFromValidatedProjection({
-    session: input.session,
-    organizationId: input.organizationId,
-    tenantId: input.tenantId,
-    now: input.now,
-    deadlineAt: input.deadlineAt,
-    binding: input.binding,
-    inputManifestContentHash: input.inputManifestContentHash,
-    canonicalPlanHash: null,
-    executionAttemptId: input.executionAttemptId,
-    attemptNumber: input.attemptNumber,
-    maxAttempts: input.maxAttempts,
-    cancelled: input.cancelled,
-    workCellPhaseAlreadyRecorded: input.workCellPhaseAlreadyRecorded,
-    lease: null,
-    expectedLease: null,
-    proposedAuthority: input.proposedAuthority,
-    requestedTier: input.requestedTier,
-    availableTiers: input.availableTiers,
-    escalationReason: input.escalationReason,
-    pricing: input.pricing,
-    reservationTtlMs: input.reservationTtlMs,
-  });
-}
-
 export function reportedToolUsage(input: {
   runtime: TrustedExecutionRuntimeState;
   executorTier: ExecutorTier;
@@ -1237,8 +1045,38 @@ export function alreadyClaimedPhaseFailure(phase: string, status: string): strin
 
 export function createMemoryWorkCellPhaseClaim(options?: {
   beforeInsert?: () => Promise<void>;
-}): { claim: WorkCellPhaseClaimFn; records: Map<string, WorkCellPhaseClaimRecord> } {
+}): {
+  claim: WorkCellPhaseClaimFn;
+  fail: WorkCellPhaseClaimFailFn;
+  expireStale: WorkCellPhaseClaimExpireFn;
+  complete: WorkCellPhaseClaimFailFn;
+  records: Map<string, WorkCellPhaseClaimRecord>;
+} {
   const records = new Map<string, WorkCellPhaseClaimRecord>();
+  const fail: WorkCellPhaseClaimFailFn = async (input) => {
+    const key = workCellPhaseClaimKey(input.runId, input.phase);
+    const existing = records.get(key);
+    if (!existing) {
+      return { ok: false, failures: ["No work-cell phase claim exists to fail."] };
+    }
+    if (existing.status === "completed") {
+      return {
+        ok: false,
+        failures: ["A completed work-cell phase assignment cannot be overwritten by a claim failure."],
+      };
+    }
+    if (existing.status === "failed") {
+      return { ok: true, value: existing };
+    }
+    const record: WorkCellPhaseClaimRecord = {
+      ...existing,
+      status: "failed",
+      failedAt: input.now,
+      failReason: input.reason,
+    };
+    records.set(key, record);
+    return { ok: true, value: record };
+  };
   return {
     records,
     claim: async (input) => {
@@ -1256,6 +1094,43 @@ export function createMemoryWorkCellPhaseClaim(options?: {
       records.set(key, record);
       return { ok: true, value: record };
     },
+    fail,
+    complete: async (input) => {
+      const key = workCellPhaseClaimKey(input.runId, input.phase);
+      const existing = records.get(key);
+      if (!existing) {
+        return { ok: false, failures: ["No work-cell phase claim exists to complete."] };
+      }
+      if (existing.status === "failed") {
+        return {
+          ok: false,
+          failures: ["A failed work-cell phase assignment cannot be completed."],
+        };
+      }
+      if (existing.status === "completed") {
+        return { ok: true, value: existing };
+      }
+      const record: WorkCellPhaseClaimRecord = { ...existing, status: "completed" };
+      records.set(key, record);
+      return { ok: true, value: record };
+    },
+    expireStale: async (input) => {
+      const key = workCellPhaseClaimKey(input.runId, input.phase);
+      const existing = records.get(key);
+      if (!existing || existing.status !== "running") {
+        return { ok: true, value: null };
+      }
+      const claimedMs = Date.parse(existing.claimedAt);
+      const nowMs = Date.parse(input.now);
+      if (!Number.isFinite(claimedMs) || !Number.isFinite(nowMs) || nowMs - claimedMs < input.ttlMs) {
+        return { ok: true, value: null };
+      }
+      return fail({
+        ...existing,
+        now: input.now,
+        reason: input.reason ?? "Stale running work-cell phase claim reclaimed to failed without fetching.",
+      });
+    },
   };
 }
 
@@ -1264,6 +1139,32 @@ export async function claimWorkCellPhase(
   input: WorkCellPhaseClaimInput,
 ): Promise<GovernorResult<WorkCellPhaseClaimRecord>> {
   return claim(input);
+}
+
+export async function failWorkCellPhaseClaim(
+  fail: WorkCellPhaseClaimFailFn,
+  input: WorkCellPhaseClaimFailInput,
+): Promise<GovernorResult<WorkCellPhaseClaimRecord>> {
+  return fail(input);
+}
+
+export async function expireStaleRunningWorkCellPhaseClaim(
+  expire: WorkCellPhaseClaimExpireFn,
+  input: WorkCellPhaseClaimExpireInput,
+): Promise<GovernorResult<WorkCellPhaseClaimRecord | null>> {
+  return expire(input);
+}
+
+export function claimFailureMetadata(reason: string, now: string, reservationIds: readonly string[] = []): Record<string, unknown> {
+  return {
+    claimFailure: {
+      schemaVersion: WORK_CELL_PHASE_CLAIM_FAIL_SCHEMA_VERSION,
+      reason,
+      failedAt: now,
+      economicReservationIds: [...reservationIds],
+      reclaimedWithoutFetch: reason.includes("reclaimed"),
+    },
+  };
 }
 
 export function claimMetadataFromInput(input: WorkCellPhaseClaimInput): Record<string, unknown> {
@@ -1313,6 +1214,85 @@ export function releaseReservedGovernedExecutions(input: {
   return reservationLedgerFromSession(input.session, input.reservationIds);
 }
 
+type EconomicsSessionSnapshot = {
+  remainingAiCostMicros: number;
+  remainingToolCostMicros: number;
+  releasedAiCostMicros: number;
+  releasedToolCostMicros: number;
+  reservations: Map<
+    string,
+    {
+      state: BudgetReservation["state"];
+      committed: ReservationCommit | undefined;
+    }
+  >;
+  reservationsByIdempotency: Map<string, string>;
+  commitsByIdempotency: Map<string, ReservationCommit>;
+  releasesByIdempotency: Map<string, { reservationId: string; releasedAt: string }>;
+};
+
+function snapshotEconomicsSession(session: EconomicsSession): EconomicsSessionSnapshot {
+  const reservations = new Map<string, { state: BudgetReservation["state"]; committed: ReservationCommit | undefined }>();
+  for (const [id, reservation] of session.reservations) {
+    reservations.set(id, {
+      state: reservation.state,
+      committed: reservation.committed ? { ...reservation.committed } : undefined,
+    });
+  }
+  return {
+    remainingAiCostMicros: session.remainingAiCostMicros,
+    remainingToolCostMicros: session.remainingToolCostMicros,
+    releasedAiCostMicros: session.releasedAiCostMicros,
+    releasedToolCostMicros: session.releasedToolCostMicros,
+    reservations,
+    reservationsByIdempotency: new Map(session.reservationsByIdempotency),
+    commitsByIdempotency: new Map(
+      [...session.commitsByIdempotency.entries()].map(([key, commit]) => [key, { ...commit }]),
+    ),
+    releasesByIdempotency: new Map(
+      [...session.releasesByIdempotency.entries()].map(([key, released]) => [key, { ...released }]),
+    ),
+  };
+}
+
+function restoreEconomicsSession(session: EconomicsSession, snapshot: EconomicsSessionSnapshot): void {
+  session.remainingAiCostMicros = snapshot.remainingAiCostMicros;
+  session.remainingToolCostMicros = snapshot.remainingToolCostMicros;
+  session.releasedAiCostMicros = snapshot.releasedAiCostMicros;
+  session.releasedToolCostMicros = snapshot.releasedToolCostMicros;
+  for (const [id, current] of session.reservations) {
+    const prior = snapshot.reservations.get(id);
+    if (!prior) continue;
+    current.state = prior.state;
+    if (prior.committed) {
+      current.committed = { ...prior.committed };
+    } else {
+      delete current.committed;
+    }
+  }
+  session.reservationsByIdempotency.clear();
+  for (const [key, value] of snapshot.reservationsByIdempotency) {
+    session.reservationsByIdempotency.set(key, value);
+  }
+  session.commitsByIdempotency.clear();
+  for (const [key, value] of snapshot.commitsByIdempotency) {
+    session.commitsByIdempotency.set(key, { ...value });
+  }
+  session.releasesByIdempotency.clear();
+  for (const [key, value] of snapshot.releasesByIdempotency) {
+    session.releasesByIdempotency.set(key, { ...value });
+  }
+}
+
+export type DeferredGovernedCommitResult = GovernorResult<Array<{ reservationId: string; commit: ReservationCommit }>> & {
+  reservationLedger: Array<{ reservationId: string; state: BudgetReservation["state"] | "missing" }>;
+};
+
+/**
+ * All-or-none in-process finalization. Snapshot/rollback is NOT a SQL transaction.
+ * If any deferred commit fails, earlier mutations in this batch are restored so no
+ * reservation remains committed unless it was already committed before this call.
+ */
 export function commitDeferredGovernedReservations(input: {
   session: EconomicsSession;
   organizationId: string;
@@ -1320,7 +1300,28 @@ export function commitDeferredGovernedReservations(input: {
   now: string;
   pricing: CallerPricing;
   items: ReadonlyArray<{ reservation: BudgetReservation; observation: UsageObservation }>;
-}): GovernorResult<Array<{ reservationId: string; commit: ReservationCommit }>> {
+}): DeferredGovernedCommitResult {
+  const reservationIds = input.items.map((item) => item.reservation.reservationId);
+  const failures: string[] = [];
+  for (const item of input.items) {
+    const reservation = input.session.reservations.get(item.reservation.reservationId);
+    if (!reservation) {
+      failures.push(`Deferred commit is missing reservation ${item.reservation.reservationId}.`);
+      continue;
+    }
+    if (reservation.organizationId !== input.organizationId || reservation.tenantId !== input.tenantId) {
+      failures.push(`Deferred commit reservation ${reservation.reservationId} does not match the economics session.`);
+    }
+  }
+  if (failures.length) {
+    return {
+      ok: false,
+      failures,
+      reservationLedger: reservationLedgerFromSession(input.session, reservationIds),
+    };
+  }
+
+  const snapshot = snapshotEconomicsSession(input.session);
   const committed: Array<{ reservationId: string; commit: ReservationCommit }> = [];
   for (const item of input.items) {
     const result = commitReservation({
@@ -1333,8 +1334,24 @@ export function commitDeferredGovernedReservations(input: {
       pricing: input.pricing,
       now: input.now,
     });
-    if (!result.ok) return result;
+    if (!result.ok) {
+      restoreEconomicsSession(input.session, snapshot);
+      const ledger = reservationLedgerFromSession(input.session, reservationIds);
+      return {
+        ok: false,
+        failures: [
+          ...result.failures,
+          "Deferred reservation commit rolled back. No reservation in this batch remains newly committed.",
+          `reservationLedger=${JSON.stringify(ledger)}`,
+        ],
+        reservationLedger: ledger,
+      };
+    }
     committed.push({ reservationId: item.reservation.reservationId, commit: result.value });
   }
-  return { ok: true, value: committed };
+  return {
+    ok: true,
+    value: committed,
+    reservationLedger: reservationLedgerFromSession(input.session, reservationIds),
+  };
 }
