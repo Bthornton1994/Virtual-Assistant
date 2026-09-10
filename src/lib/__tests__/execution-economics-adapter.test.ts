@@ -237,7 +237,7 @@ function inputFor<T>(
   if (overrides.runtime) Object.assign(trusted.runtime, overrides.runtime);
   if (overrides.frozenAuthority) Object.assign(trusted, { frozenAuthority: overrides.frozenAuthority });
   if (overrides.envelope) Object.assign(trusted, { envelope: overrides.envelope });
-  if (overrides.expectedEnvelopeHash) Object.assign(trusted, { envelopeHash: overrides.expectedEnvelopeHash });
+  if (overrides.expectedEnvelopeHash !== undefined) Object.assign(trusted, { envelopeHash: overrides.expectedEnvelopeHash });
   if (overrides.context) Object.assign(trusted, { context: overrides.context });
   const stepKey = overrides.stepKey ?? "model-call-1";
   const base: GovernedExecutionInput<T> = {
@@ -797,7 +797,9 @@ describe("execution economics adapter v1", () => {
     expect(nativeFn.indexOf("bindNativePublicWebEconomics")).toBeLessThan(
       nativeFn.indexOf("prepareAuthorizedPublicWebEvidencePacket"),
     );
-    expect(nativeFn.indexOf("persistPhaseArtifact")).toBeLessThan(nativeFn.indexOf("commitDeferredGovernedReservations"));
+    expect(nativeFn.lastIndexOf("persistPhaseArtifact")).toBeLessThan(
+      nativeFn.lastIndexOf("commitDeferredGovernedReservations"),
+    );
   });
 
   it("rejects envelope mutation against the trusted expected hash before execute", async () => {
@@ -1492,7 +1494,9 @@ describe("execution economics adapter v1", () => {
       workCell.indexOf("export async function runNativePublicWebPrepare"),
       workCell.indexOf("export async function ingestCatalogEvidencePacket"),
     );
-    expect(nativeFn.indexOf("persistPhaseArtifact")).toBeLessThan(nativeFn.indexOf("commitDeferredGovernedReservations"));
+    expect(nativeFn.lastIndexOf("persistPhaseArtifact")).toBeLessThan(
+      nativeFn.lastIndexOf("commitDeferredGovernedReservations"),
+    );
     expect(nativeFn).toMatch(/releaseEconomics\(prepared\.economicReservationIds\)/);
   });
 
