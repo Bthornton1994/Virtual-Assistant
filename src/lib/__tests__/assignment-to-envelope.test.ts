@@ -321,6 +321,97 @@ describe("assignmentToEnvelope", () => {
     ).toMatch(/authoritative state/);
   });
 
+  it("rejects a Delegation Spec that claims authoritative-state ownership", () => {
+    const result = assignmentToEnvelope(
+      prepareAssignment(),
+      { ...spec(), mayOwnAuthoritativeState: true },
+      inputRefs(),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failures.join(" ")).toMatch(/mayOwnAuthoritativeState/);
+  });
+
+  it("rejects a profile action class that exceeds the Delegation Spec ceiling", () => {
+    expect(
+      failuresOf(
+        prepareAssignment({
+          profileAuthoritySnapshot: hermesSnapshot({
+            authorityEnvelope: {
+              actionClass: "external_execution",
+              mayReadSuppliedCatalogRecords: true,
+              mayResearchPublicSources: true,
+              mayOwnAuthoritativeState: false,
+            },
+          }),
+        }),
+        spec({ actionClass: "prepare_only" }),
+      ),
+    ).toMatch(/exceeds Delegation Spec prepare_only/);
+  });
+
+  it("copies the spec action class onto the envelope, not a lower profile class", () => {
+    const result = assignmentToEnvelope(
+      prepareAssignment({
+        profileAuthoritySnapshot: hermesSnapshot({
+          authorityEnvelope: {
+            actionClass: "prepare_only",
+            mayReadSuppliedCatalogRecords: true,
+            mayResearchPublicSources: true,
+            mayOwnAuthoritativeState: false,
+          },
+        }),
+      }),
+      spec({ actionClass: "low_risk_execution" }),
+      inputRefs(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.envelope.authoritySnapshot.actionClass).toBe("low_risk_execution");
+  });
+
+  it("rejects a profile snapshot whose executor identity does not match the assignment", () => {
+    expect(
+      failuresOf(
+        prepareAssignment({
+          profileAuthoritySnapshot: hermesSnapshot({
+            executorKey: FROZEN_WORK_CELL_EXECUTOR_KEYS.review,
+          }),
+        }),
+      ),
+    ).toMatch(/executorKey does not match/);
+    expect(
+      failuresOf(
+        prepareAssignment({
+          profileAuthoritySnapshot: hermesSnapshot({
+            executorKind: "human",
+          }),
+        }),
+      ),
+    ).toMatch(/executorKind does not match/);
+  });
+
+  it("prefers explicit allowedActions over derived may* flags", () => {
+    const result = assignmentToEnvelope(
+      prepareAssignment({
+        profileAuthoritySnapshot: hermesSnapshot({
+          allowedActions: ["research_public_sources"],
+          authorityEnvelope: {
+            actionClass: "prepare_only",
+            mayReadSuppliedCatalogRecords: true,
+            mayResearchPublicSources: true,
+            mayOwnAuthoritativeState: false,
+          },
+        }),
+      }),
+      spec(),
+      inputRefs(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.envelope.authoritySnapshot.allowedActions).toEqual(["research_public_sources"]);
+  });
+
   it("uses the same assignment id at freeze and ingest, ignoring the persistence UUID", () => {
     const freeze = assignmentToEnvelope(prepareAssignment(), spec(), inputRefs());
     const ingest = assignmentToEnvelope(
