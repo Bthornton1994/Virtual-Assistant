@@ -1090,14 +1090,18 @@ export async function runNativePublicWebPrepare(
       `Native public-web prepare is only valid when the frozen prepare executor is ${PUBLIC_WEB_RESEARCHER_KEY}.`,
     );
   }
-  if (await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION)) {
-    throw new DomainError("This run already has a frozen catalog evidence packet. Ingesting another belongs to a new attempt.");
-  }
   const now = new Date().toISOString();
   const existingPrepare = await getAssignment(db, run.id, "prepare");
+  // Running claims must be decided before the broad existing-packet precheck.
+  // A bound accepted packet plus unknown economics is OWNER_ACTION_REQUIRED,
+  // not the generic "already has a frozen catalog evidence packet" error.
+  // Packet presence is not economics proof and never completes this assignment.
   if (existingPrepare?.status === "running") {
     const reclaimed = await expireStaleRunningWorkCellPhaseClaim(db, existingPrepare, now);
     throw new DomainError(alreadyClaimedPhaseFailure("prepare", reclaimed?.status ?? existingPrepare.status));
+  }
+  if (await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION)) {
+    throw new DomainError("This run already has a frozen catalog evidence packet. Ingesting another belongs to a new attempt.");
   }
   const workCellPhaseAlreadyRecorded = workCellPhaseAlreadyRecordedFromAssignment(existingPrepare);
   if (workCellPhaseAlreadyRecorded) {

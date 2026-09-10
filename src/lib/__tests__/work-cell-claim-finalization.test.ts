@@ -108,6 +108,23 @@ describe("work-cell claim finalization — authoritative RPC path", () => {
     expect(nativeFn).toMatch(/economicsCommitUnknownOwnerActionFailure/);
     expect(nativeFn).toMatch(/deferredCommitFailedAfterAcceptedPacketReason/);
     expect(nativeFn).toMatch(/economicsCommitConfirmed: true/);
+    const assignmentIdx = nativeFn.indexOf("getAssignment");
+    const runningBranchIdx = nativeFn.indexOf('existingPrepare?.status === "running"');
+    const expireIdx = nativeFn.indexOf("expireStaleRunningWorkCellPhaseClaim");
+    const packetPrecheckIdx = nativeFn.indexOf("loadTypedArtifact");
+    const packetErrorIdx = nativeFn.indexOf("This run already has a frozen catalog evidence packet");
+    expect(assignmentIdx).toBeGreaterThan(-1);
+    expect(runningBranchIdx).toBeGreaterThan(-1);
+    expect(expireIdx).toBeGreaterThan(-1);
+    expect(packetPrecheckIdx).toBeGreaterThan(-1);
+    expect(packetErrorIdx).toBeGreaterThan(-1);
+    expect(assignmentIdx).toBeLessThan(runningBranchIdx);
+    expect(runningBranchIdx).toBeLessThan(expireIdx);
+    expect(expireIdx).toBeLessThan(packetPrecheckIdx);
+    expect(packetPrecheckIdx).toBeLessThan(packetErrorIdx);
+    expect(nativeFn.indexOf("bindWorkCellPhase")).toBeGreaterThan(packetErrorIdx);
+    expect(nativeFn.indexOf("claimWorkCellPhase")).toBeGreaterThan(expireIdx);
+    expect(nativeFn.indexOf("prepareAuthorizedPublicWebEvidencePacket")).toBeGreaterThan(expireIdx);
     const expireFn = sliceFn(
       workCell,
       "async function expireStaleRunningWorkCellPhaseClaim(",

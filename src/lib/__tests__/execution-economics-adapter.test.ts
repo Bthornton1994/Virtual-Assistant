@@ -811,6 +811,11 @@ describe("execution economics adapter v1", () => {
     expect(nativeFn).toMatch(/inputManifestContentHash: frozen.contentHash/);
     expect(nativeFn).not.toMatch(/canonicalPlanHash: frozen.contentHash/);
     expect(nativeFn.indexOf("getAssignment")).toBeLessThan(nativeFn.indexOf("bindWorkCellPhase"));
+    expect(nativeFn.indexOf("getAssignment")).toBeLessThan(nativeFn.indexOf("loadTypedArtifact"));
+    expect(nativeFn.indexOf("expireStaleRunningWorkCellPhaseClaim")).toBeLessThan(nativeFn.indexOf("loadTypedArtifact"));
+    expect(nativeFn.indexOf("expireStaleRunningWorkCellPhaseClaim")).toBeLessThan(
+      nativeFn.indexOf("This run already has a frozen catalog evidence packet"),
+    );
     expect(nativeFn.indexOf("bindWorkCellPhase")).toBeLessThan(nativeFn.indexOf("claimWorkCellPhase"));
     expect(nativeFn.indexOf("claimWorkCellPhase")).toBeLessThan(nativeFn.indexOf("bindNativePublicWebEconomics"));
     expect(nativeFn.indexOf("claimWorkCellPhase")).toBeLessThan(nativeFn.indexOf("prepareAuthorizedPublicWebEvidencePacket"));
