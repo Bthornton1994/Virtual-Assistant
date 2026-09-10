@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  TWL_DEFAULT_PR_TARGET,
   deriveCiConclusion,
   fetchPublicPullRequestMetadata,
+  parsePublicPullRequestTarget,
   publicCheckRunsUrl,
   publicCommitStatusUrl,
   publicPullUrl,
@@ -223,6 +225,22 @@ describe("fail-closed GitHub write and merge", () => {
 });
 
 describe("public PR reader", () => {
+  it("parses a public PR target and rejects slugs or numbers that could rewrite the API path", () => {
+    expect(parsePublicPullRequestTarget({})).toEqual(TWL_DEFAULT_PR_TARGET);
+    expect(parsePublicPullRequestTarget({ owner: "octocat", repo: "Hello-World", pullNumber: "1" })).toEqual({
+      owner: "octocat",
+      repo: "Hello-World",
+      pullNumber: 1,
+    });
+    expect(() => parsePublicPullRequestTarget({ owner: "owner/extra" })).toThrow(/public GitHub slugs/);
+    expect(() => parsePublicPullRequestTarget({ owner: "../evil" })).toThrow(/public GitHub slugs/);
+    expect(() => parsePublicPullRequestTarget({ repo: "repo with spaces" })).toThrow(/public GitHub slugs/);
+    expect(parsePublicPullRequestTarget({ pullNumber: 0 })).toEqual(TWL_DEFAULT_PR_TARGET);
+    expect(() => parsePublicPullRequestTarget({ pullNumber: "0" })).toThrow(/positive integer/);
+    expect(() => parsePublicPullRequestTarget({ pullNumber: 1.5 })).toThrow(/positive integer/);
+    expect(() => parsePublicPullRequestTarget({ pullNumber: -3 })).toThrow(/positive integer/);
+  });
+
   it("derives CI conclusion from check runs and combined status", () => {
     expect(deriveCiConclusion({ combinedState: "success", checkRuns: [] })).toBe("success");
     expect(
@@ -237,6 +255,20 @@ describe("public PR reader", () => {
         checkRuns: [{ status: "completed", conclusion: "failure" }],
       }),
     ).toBe("failure");
+    expect(
+      deriveCiConclusion({
+        combinedState: "success",
+        checkRuns: [{ status: "completed", conclusion: "timed_out" }],
+      }),
+    ).toBe("failure");
+    expect(
+      deriveCiConclusion({
+        combinedState: "failure",
+        checkRuns: [{ status: "completed", conclusion: "skipped" }],
+      }),
+    ).toBe("success");
+    expect(deriveCiConclusion({ combinedState: "error", checkRuns: [] })).toBe("error");
+    expect(deriveCiConclusion({ combinedState: "pending", checkRuns: [] })).toBe("pending");
   });
 
   it("reads number, SHAs, HTML URL, and CI through GET-only fetches", async () => {
@@ -275,6 +307,35 @@ describe("public PR reader", () => {
     expect(metadata.ciConclusion).toBe("success");
     expect(methods.every((entry) => entry.startsWith("GET "))).toBe(true);
     expect(methods.some((entry) => entry.includes("/merge"))).toBe(false);
+  });
+
+  it("fails closed on a missing, incomplete, or non-success public PR response", async () => {
+    await expect(
+      fetchPublicPullRequestMetadata({ owner: "octocat", repo: "Hello-World", pullNumber: 1 }, async () => ({
+        status: 404,
+        body: { message: "Not Found" },
+      })),
+    ).rejects.toThrow(/not found/i);
+
+    await expect(
+      fetchPublicPullRequestMetadata({ owner: "octocat", repo: "Hello-World", pullNumber: 1 }, async () => ({
+        status: 502,
+        body: { message: "Bad Gateway" },
+      })),
+    ).rejects.toThrow(/HTTP 502/);
+
+    await expect(
+      fetchPublicPullRequestMetadata({ owner: "octocat", repo: "Hello-World", pullNumber: 1 }, async () => ({
+        status: 200,
+        body: {
+          html_url: "https://github.com/octocat/Hello-World/pull/1",
+          title: "Incomplete",
+          state: "open",
+          head: { sha: "not-a-sha" },
+          base: { sha: BASE },
+        },
+      })),
+    ).rejects.toThrow(/incomplete/);
   });
 });
 

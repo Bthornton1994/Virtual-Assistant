@@ -2,11 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   ACTION_CLASSES,
   APPROVAL_KINDS,
+  AuthzError,
   ROLES,
   REQUEST_STATUSES,
+  assertOrgAccess,
   blocksWithoutApproval,
+  canAccessOrganization,
+  canAssignOperators,
+  canDecideApproval,
   canDeliverRequest,
+  canExportData,
+  canManageTeam,
+  canMutateOpsQueue,
+  canRequestCustomerApproval,
   canTransition,
+  canWritePlaybook,
   identifyMissingContext,
   inferApprovalKind,
   requiresExplicitApproval,
@@ -93,6 +103,67 @@ describe("domain contracts", () => {
     ).toEqual([]);
     expect(inferApprovalKind("Send follow-up email to the champion")).toBe("external_email");
     expect(inferApprovalKind("CRM overwrite of closed deals")).toBe("crm_destructive_change");
+    expect(inferApprovalKind("vendor onboarding packet")).toBe("vendor_communication");
+    expect(inferApprovalKind("wire transfer and credential rotation")).toBe("sensitive_action");
+    expect(inferApprovalKind("approve the weekly plan")).toBe("execution_plan");
+    expect(inferApprovalKind("internal status note")).toBeNull();
+    expect(
+      identifyMissingContext({
+        title: "HubSpot cleanup",
+        objective: "Clean the pipeline",
+        description: "Please clean stale deals in the pipeline and attach the export we discussed last week.",
+        deliverable: "Updated deal list",
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "Which CRM and which records or pipeline views should we use?",
+        "Attach the source file or export this request refers to.",
+      ]),
+    );
+  });
+
+  it("keeps tenant and approval permissions explicit", () => {
+    const client = actor({ role: "client_member", organizationId: "org_northline" });
+    const otherClient = actor({ role: "client_admin", organizationId: "org_harbor" });
+    const operator = actor({ role: "operator", operatorId: "op_maya" });
+    const manager = actor({ role: "ops_manager" });
+    const admin = actor({ role: "platform_admin" });
+
+    expect(canAccessOrganization(client, "org_northline")).toBe(true);
+    expect(canAccessOrganization(client, "org_harbor")).toBe(false);
+    expect(canAccessOrganization(otherClient, "org_northline")).toBe(false);
+    expect(canAccessOrganization(operator, "org_harbor")).toBe(true);
+    expect(canAccessOrganization(manager, "org_harbor")).toBe(true);
+    expect(canAccessOrganization(admin, "org_northline")).toBe(true);
+    expect(() => assertOrgAccess(client, "org_harbor")).toThrow(AuthzError);
+    expect(() => assertOrgAccess(client, "org_northline")).not.toThrow();
+
+    expect(canDecideApproval(client)).toBe(true);
+    expect(canDecideApproval(otherClient)).toBe(true);
+    expect(canDecideApproval(operator)).toBe(false);
+    expect(canDecideApproval(manager)).toBe(false);
+    expect(canRequestCustomerApproval(operator)).toBe(true);
+    expect(canRequestCustomerApproval(client)).toBe(false);
+
+    expect(canManageTeam(otherClient)).toBe(true);
+    expect(canManageTeam(client)).toBe(false);
+    expect(canExportData(otherClient)).toBe(true);
+    expect(canExportData(client)).toBe(false);
+    expect(canWritePlaybook(otherClient)).toBe(true);
+    expect(canWritePlaybook(client)).toBe(false);
+    expect(canWritePlaybook(manager)).toBe(true);
+    expect(canAssignOperators(manager)).toBe(true);
+    expect(canAssignOperators(operator)).toBe(false);
+    expect(canMutateOpsQueue(client)).toBe(false);
+    expect(canMutateOpsQueue(operator)).toBe(true);
+  });
+
+  it("does not allow jumping from awaiting approval or delivered into skipped QA states", () => {
+    expect(canTransition("awaiting_action_approval", "delivered")).toBe(false);
+    expect(canTransition("awaiting_action_approval", "ready_to_deliver")).toBe(false);
+    expect(canTransition("delivered", "accepted")).toBe(true);
+    expect(canTransition("accepted", "in_progress")).toBe(false);
+    expect(canTransition("cancelled", "queued")).toBe(false);
   });
 
   it("authorizes delivery only for managers, platform admins, and the assigned operator", () => {
