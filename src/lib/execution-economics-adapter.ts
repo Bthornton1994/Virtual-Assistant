@@ -1,3 +1,9 @@
+import {
+  assignmentToEnvelope,
+  executionStepAssignmentToEnvelope,
+  type AssignmentToEnvelopeAssignment,
+  type ExecutionStepToEnvelopeAssignment,
+} from "@/lib/assignment-to-envelope";
 import { canonicalJsonStringify, sha256Hex } from "@/lib/catalog-evidence-hash";
 import { DomainError, type ActionClass } from "@/lib/domain";
 import {
@@ -8,11 +14,13 @@ import {
 import {
   authorizeToolClass,
   validateExecutionContext,
+  type DelegationSpecSnapshot,
   type ExecutionContext,
   type ToolClass,
 } from "@/lib/execution-context";
 import { checkExecutionLease, type ExecutionLease } from "@/lib/execution-runtime";
 import {
+  ECONOMICS_RESERVATION_IDS_METADATA_KEY,
   ECONOMICS_RESERVATION_METADATA_KEY,
   OUTCOME_ECONOMICS_GOVERNOR_SCHEMA_VERSION,
   assertCheaperRouteDoesNotWeakenAuthority,
@@ -43,9 +51,10 @@ import {
  * budget, lease, planner, queue, evidence, receipt, or memory store.
  *
  * Reservations are process-local Maps. This is not global serverless
- * enforcement. Cross-request and off-box workers remain advisory unless a
- * durable authorized seam exists. Concurrent native prepares are not closed
- * by this slice. A future SQL seam requires separate authorization and
+ * enforcement. Cross-request economics remain advisory unless a durable
+ * authorized seam exists. Native public-web prepare claims the existing
+ * run_executor_assignments unique (run_id, phase) slot before fetch.
+ * A future SQL economics seam requires separate authorization and
  * runtime verification.
  */
 
@@ -99,10 +108,14 @@ export type TrustedExecutionRuntimeState = {
   evaluationClock: string;
 };
 
-export type NativePublicWebEconomicsBinding = {
+export type TrustedGovernedBinding = {
   session: EconomicsSession;
   organizationId: string;
   tenantId: string;
+  context: ExecutionContext;
+  envelope: ExecutorEnvelopeV1;
+  envelopeHash: string;
+  contextHash: string;
   runtime: TrustedExecutionRuntimeState;
   frozenAuthority: FrozenAuthorityBinding;
   proposedAuthority: AuthorityFreeze;
@@ -113,16 +126,67 @@ export type NativePublicWebEconomicsBinding = {
   reservationTtlMs: number;
 };
 
-export type GovernedExecutionInput<T> = {
+export type NativePublicWebEconomicsBinding = TrustedGovernedBinding;
+
+export type TrustedGovernedBindingSource = {
   session: EconomicsSession;
-  context: ExecutionContext;
-  envelope: ExecutorEnvelopeV1;
-  expectedEnvelopeHash: string;
-  runtime: TrustedExecutionRuntimeState;
-  frozenAuthority: FrozenAuthorityBinding;
-  proposedAuthority: AuthorityFreeze;
-  requestedTier: ExecutorTier;
-  availableTiers: readonly ExecutorTier[];
+  organizationId: string;
+  tenantId: string;
+  now: string;
+  deadlineAt: string;
+  identityKind?: "work_cell_assignment" | "execution_step_assignment";
+  assignment: AssignmentToEnvelopeAssignment | ExecutionStepToEnvelopeAssignment;
+  spec: DelegationSpecSnapshot;
+  inputArtifactRefs: ExecutorEnvelopeV1["inputArtifactRefs"];
+  executionAttemptId?: string;
+  attemptNumber?: number;
+  maxAttempts?: number;
+  cancelled?: boolean;
+  workCellPhaseAlreadyRecorded?: boolean;
+  lease?: ExecutionLease | null;
+  expectedLease?: ExecutionLease | null;
+  proposedAuthority?: AuthorityFreeze;
+  requestedTier?: ExecutorTier;
+  availableTiers?: readonly ExecutorTier[];
+  escalationReason?: EscalationReason | null;
+  pricing?: CallerPricing;
+  reservationTtlMs?: number;
+};
+
+const mintedTrustedGovernedBindings = new WeakSet<object>();
+
+export const WORK_CELL_PHASE_CLAIM_SCHEMA_VERSION = "work-cell-phase-prefetch-claim/v1" as const;
+
+export type WorkCellPhaseClaimInput = {
+  organizationId: string;
+  tenantId: string;
+  runId: string;
+  phase: ExecutorEnvelopeV1["phase"];
+  assignmentId: string;
+  executorKey: string;
+  capabilityKey: string;
+  inputManifestContentHash: string;
+  envelopeHash: string;
+  contextHash: string;
+  now: string;
+};
+
+export type WorkCellPhaseClaimRecord = WorkCellPhaseClaimInput & {
+  status: "planned" | "running" | "completed" | "failed";
+  claimedAt: string;
+};
+
+export type WorkCellPhaseClaimFn = (
+  input: WorkCellPhaseClaimInput,
+) => Promise<GovernorResult<WorkCellPhaseClaimRecord>>;
+
+export type GovernedExecutionMode = "full" | "reserve_only";
+
+export type GovernedExecutionInput<T> = {
+  trustedBinding: TrustedGovernedBinding;
+  proposedAuthority?: AuthorityFreeze;
+  requestedTier?: ExecutorTier;
+  availableTiers?: readonly ExecutorTier[];
   escalationReason?: EscalationReason | null;
   callKind: GovernedCallKind;
   toolClass?: ToolClass;
@@ -135,19 +199,19 @@ export type GovernedExecutionInput<T> = {
   usageUnavailable?: boolean;
   usageIncomplete?: boolean;
   streamTerminatedBeforeUsage?: boolean;
-  pricing: CallerPricing;
-  reservationExpiresAt: string;
+  reservationExpiresAt?: string;
   telemetry?: unknown;
-  execute: () => Promise<T>;
-  usageOnSuccess: (result: T) => UsageObservation;
+  mode?: GovernedExecutionMode;
+  execute?: () => Promise<T>;
+  usageOnSuccess?: (result: T) => UsageObservation;
 };
 
 export type GovernedExecutionSuccess<T> = {
   ok: true;
-  executed: true;
-  value: T;
+  executed: boolean;
+  value: T | undefined;
   reservation: BudgetReservation;
-  commit: ReservationCommit;
+  commit: ReservationCommit | null;
   routing: RoutingDecision;
   decision: "allow";
 };
@@ -476,8 +540,19 @@ export function attachEconomicsReservationMetadata(
   metadata: Record<string, unknown> | undefined,
   reservationId: string,
 ): Record<string, unknown> {
+  return attachEconomicsReservationIds(metadata, [reservationId]);
+}
+
+export function attachEconomicsReservationIds(
+  metadata: Record<string, unknown> | undefined,
+  reservationIds: readonly string[],
+): Record<string, unknown> {
   const next = { ...(metadata ?? {}) };
-  next[ECONOMICS_RESERVATION_METADATA_KEY] = reservationId;
+  const ids = [...reservationIds];
+  next[ECONOMICS_RESERVATION_IDS_METADATA_KEY] = ids;
+  if (ids.length > 0) {
+    next[ECONOMICS_RESERVATION_METADATA_KEY] = ids[ids.length - 1];
+  }
   const redacted = assertRedactedEconomicsTelemetry(next, "completionMetadata");
   if (!redacted.ok) {
     throw new DomainError(redacted.failures.join(" "));
@@ -592,13 +667,29 @@ export function releaseAttemptBoundReservation(input: {
 export async function runGovernedExecution<T>(
   input: GovernedExecutionInput<T>,
 ): Promise<GovernedExecutionResult<T>> {
-  const contextCheck = validateExecutionContext(input.context);
+  const minted = requireMintedTrustedGovernedBinding(input.trustedBinding);
+  if (!minted.ok) {
+    return { ok: false, executed: false, decision: "reject", reservation: null, failures: minted.failures };
+  }
+  const binding = minted.value;
+  const mode = input.mode ?? "full";
+  if (mode === "full" && (!input.execute || !input.usageOnSuccess)) {
+    return {
+      ok: false,
+      executed: false,
+      decision: "reject",
+      reservation: null,
+      failures: ["Full governed execution requires execute and usageOnSuccess."],
+    };
+  }
+
+  const contextCheck = validateExecutionContext(binding.context);
   if (!contextCheck.ok) {
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: contextCheck.failures };
   }
   const envelopeCheck = assertExecutorEnvelopeIntegrity({
-    envelope: input.envelope,
-    expectedEnvelopeHash: input.expectedEnvelopeHash,
+    envelope: binding.envelope,
+    expectedEnvelopeHash: binding.envelopeHash,
   });
   if (!envelopeCheck.ok) {
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: envelopeCheck.failures };
@@ -614,13 +705,13 @@ export async function runGovernedExecution<T>(
   const derivedFrozen = bindFrozenAuthorityFromTrustedContracts({
     context: contextCheck.value,
     envelope: envelopeCheck.value,
-    canonicalPlanHash: input.runtime.canonicalPlanHash,
-    inputManifestContentHash: input.runtime.inputManifestContentHash,
+    canonicalPlanHash: binding.runtime.canonicalPlanHash,
+    inputManifestContentHash: binding.runtime.inputManifestContentHash,
   });
   if (!derivedFrozen.ok) {
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: derivedFrozen.failures };
   }
-  if (canonicalFrozenAuthorityBinding(input.frozenAuthority) !== canonicalFrozenAuthorityBinding(derivedFrozen.value)) {
+  if (canonicalFrozenAuthorityBinding(binding.frozenAuthority) !== canonicalFrozenAuthorityBinding(derivedFrozen.value)) {
     return {
       ok: false,
       executed: false,
@@ -632,40 +723,44 @@ export async function runGovernedExecution<T>(
   const identity = assertTrustedIdentityMatch({
     context: contextCheck.value,
     envelope: envelopeCheck.value,
-    runtime: input.runtime,
+    runtime: binding.runtime,
     frozenAuthority: derivedFrozen.value,
-    session: input.session,
+    session: binding.session,
   });
   if (!identity.ok) {
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: identity.failures };
   }
-  const limits = buildExecutionLimitsFromTrustedState(contextCheck.value, input.runtime);
+  const limits = buildExecutionLimitsFromTrustedState(contextCheck.value, binding.runtime);
   if (!limits.ok) {
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: limits.failures };
   }
+  const proposedAuthority = input.proposedAuthority ?? binding.proposedAuthority;
   const cheaper = assertCheaperRouteDoesNotWeakenAuthority({
     frozen: derivedFrozen.value.authority,
-    proposed: input.proposedAuthority,
+    proposed: proposedAuthority,
   });
   if (!cheaper.ok) {
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: cheaper.failures };
   }
 
+  const requestedTier = input.requestedTier ?? binding.requestedTier;
+  const availableTiers = input.availableTiers ?? binding.availableTiers;
+  const escalationReason = input.escalationReason !== undefined ? input.escalationReason : binding.escalationReason;
   const routing = routeExecutorTier({
-    availableTiers: input.availableTiers,
-    requestedTier: input.requestedTier,
-    escalationReason: input.escalationReason ?? null,
+    availableTiers,
+    requestedTier,
+    escalationReason,
   });
   if (!routing.ok) {
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: routing.failures };
   }
 
   const idempotencyKey = deriveGovernedIdempotencyKey({
-    organizationId: input.runtime.organizationId,
-    tenantId: input.runtime.tenantId,
-    runId: input.runtime.runId,
-    executionAttemptId: input.runtime.executionAttemptId,
-    assignmentId: input.runtime.assignmentId,
+    organizationId: binding.runtime.organizationId,
+    tenantId: binding.runtime.tenantId,
+    runId: binding.runtime.runId,
+    executionAttemptId: binding.runtime.executionAttemptId,
+    assignmentId: binding.runtime.assignmentId,
     specVersion: derivedFrozen.value.specVersion,
     canonicalPlanHash: derivedFrozen.value.canonicalPlanHash,
     inputManifestContentHash: derivedFrozen.value.inputManifestContentHash,
@@ -674,14 +769,14 @@ export async function runGovernedExecution<T>(
   });
 
   const reserved = evaluateAndReserve({
-    session: input.session,
-    organizationId: input.runtime.organizationId,
-    tenantId: input.runtime.tenantId,
-    runId: input.runtime.runId,
-    executionAttemptId: input.runtime.executionAttemptId,
-    assignmentId: input.runtime.assignmentId,
-    capabilityKey: input.runtime.capabilityKey,
-    executorKey: input.runtime.executorKey,
+    session: binding.session,
+    organizationId: binding.runtime.organizationId,
+    tenantId: binding.runtime.tenantId,
+    runId: binding.runtime.runId,
+    executionAttemptId: binding.runtime.executionAttemptId,
+    assignmentId: binding.runtime.assignmentId,
+    capabilityKey: binding.runtime.capabilityKey,
+    executorKey: binding.runtime.executorKey,
     executorTier: routing.value.selectedTier,
     toolKeys: input.toolKeys,
     stepKey: input.stepKey,
@@ -692,13 +787,13 @@ export async function runGovernedExecution<T>(
     usageUnavailable: input.usageUnavailable ?? false,
     usageIncomplete: input.usageIncomplete,
     streamTerminatedBeforeUsage: input.streamTerminatedBeforeUsage,
-    pricing: input.pricing,
+    pricing: binding.pricing,
     executionLimits: limits.value,
     frozenAuthority: derivedFrozen.value.authority,
-    proposedAuthority: input.proposedAuthority,
+    proposedAuthority,
     idempotencyKey,
-    now: input.runtime.evaluationClock,
-    expiresAt: input.reservationExpiresAt,
+    now: binding.runtime.evaluationClock,
+    expiresAt: input.reservationExpiresAt ?? reservationExpiresAt(binding.runtime.evaluationClock, binding.reservationTtlMs),
     routing: routing.value,
     telemetry: input.telemetry,
   });
@@ -722,23 +817,35 @@ export async function runGovernedExecution<T>(
   }
 
   const reservation = reserved.value.reservation;
+  if (mode === "reserve_only") {
+    return {
+      ok: true,
+      executed: false,
+      value: undefined,
+      reservation: binding.session.reservations.get(reservation.reservationId) ?? reservation,
+      commit: null,
+      routing: routing.value,
+      decision: "allow",
+    };
+  }
+
   let result: T;
   try {
-    result = await input.execute();
+    result = await input.execute!();
   } catch (error) {
     releaseSafely({
-      session: input.session,
-      organizationId: input.runtime.organizationId,
-      tenantId: input.runtime.tenantId,
+      session: binding.session,
+      organizationId: binding.runtime.organizationId,
+      tenantId: binding.runtime.tenantId,
       reservation,
-      now: input.runtime.evaluationClock,
+      now: binding.runtime.evaluationClock,
     });
     const reason = error instanceof Error ? error.message : "underlying call failed";
     return {
       ok: false,
       executed: true,
       decision: "reject",
-      reservation: input.session.reservations.get(reservation.reservationId) ?? reservation,
+      reservation: binding.session.reservations.get(reservation.reservationId) ?? reservation,
       failures: [
         isAbortTimeoutOrCancel(error)
           ? `Underlying call aborted, timed out, or cancelled: ${reason}`
@@ -749,34 +856,34 @@ export async function runGovernedExecution<T>(
 
   let observation: UsageObservation;
   try {
-    observation = input.usageOnSuccess(result);
+    observation = input.usageOnSuccess!(result);
   } catch (error) {
     releaseSafely({
-      session: input.session,
-      organizationId: input.runtime.organizationId,
-      tenantId: input.runtime.tenantId,
+      session: binding.session,
+      organizationId: binding.runtime.organizationId,
+      tenantId: binding.runtime.tenantId,
       reservation,
-      now: input.runtime.evaluationClock,
+      now: binding.runtime.evaluationClock,
     });
     const reason = error instanceof Error ? error.message : "usage observation failed";
     return {
       ok: false,
       executed: true,
       decision: "reject",
-      reservation: input.session.reservations.get(reservation.reservationId) ?? reservation,
+      reservation: binding.session.reservations.get(reservation.reservationId) ?? reservation,
       failures: [`Provider usage could not be observed: ${reason}`],
     };
   }
 
   const committed = commitReservation({
-    session: input.session,
-    organizationId: input.runtime.organizationId,
-    tenantId: input.runtime.tenantId,
+    session: binding.session,
+    organizationId: binding.runtime.organizationId,
+    tenantId: binding.runtime.tenantId,
     reservationId: reservation.reservationId,
     idempotencyKey,
     observation,
-    pricing: input.pricing,
-    now: input.runtime.evaluationClock,
+    pricing: binding.pricing,
+    now: binding.runtime.evaluationClock,
     telemetry: input.telemetry,
   });
   if (!committed.ok) {
@@ -784,16 +891,16 @@ export async function runGovernedExecution<T>(
       ok: false,
       executed: true,
       decision: "reject",
-      reservation: input.session.reservations.get(reservation.reservationId) ?? reservation,
+      reservation: binding.session.reservations.get(reservation.reservationId) ?? reservation,
       failures: committed.failures,
     };
   }
 
   const completion = assertSuccessfulCompletionMayProceed({
-    session: input.session,
-    organizationId: input.runtime.organizationId,
-    tenantId: input.runtime.tenantId,
-    executionAttemptId: input.runtime.executionAttemptId,
+    session: binding.session,
+    organizationId: binding.runtime.organizationId,
+    tenantId: binding.runtime.tenantId,
+    executionAttemptId: binding.runtime.executionAttemptId,
     reservationId: reservation.reservationId,
   });
   if (!completion.ok) {
@@ -801,7 +908,7 @@ export async function runGovernedExecution<T>(
       ok: false,
       executed: true,
       decision: "reject",
-      reservation: input.session.reservations.get(reservation.reservationId) ?? reservation,
+      reservation: binding.session.reservations.get(reservation.reservationId) ?? reservation,
       failures: completion.failures,
     };
   }
@@ -810,10 +917,171 @@ export async function runGovernedExecution<T>(
     ok: true,
     executed: true,
     value: result,
-    reservation: input.session.reservations.get(reservation.reservationId) ?? reservation,
+    reservation: binding.session.reservations.get(reservation.reservationId) ?? reservation,
     commit: committed.value,
     routing: routing.value,
     decision: "allow",
+  };
+}
+
+function sealTrustedGovernedBinding(binding: TrustedGovernedBinding): TrustedGovernedBinding {
+  mintedTrustedGovernedBindings.add(binding);
+  return binding;
+}
+
+export function requireMintedTrustedGovernedBinding(value: unknown): GovernorResult<TrustedGovernedBinding> {
+  if (!value || typeof value !== "object" || !mintedTrustedGovernedBindings.has(value)) {
+    return {
+      ok: false,
+      failures: [
+        "Governed execution requires a factory-minted trusted binding. Hash equality is not authenticity.",
+      ],
+    };
+  }
+  return { ok: true, value: value as TrustedGovernedBinding };
+}
+
+export function mintTrustedGovernedBinding(input: TrustedGovernedBindingSource): GovernorResult<TrustedGovernedBinding> {
+  const translated =
+    input.identityKind === "execution_step_assignment"
+      ? executionStepAssignmentToEnvelope(input.assignment, input.spec, input.inputArtifactRefs)
+      : assignmentToEnvelope(input.assignment, input.spec, input.inputArtifactRefs);
+  if (!translated.ok) return translated;
+  if (input.identityKind !== "execution_step_assignment" && input.lease) {
+    return {
+      ok: false,
+      failures: [
+        "Native public-web prepare does not accept a presented lease. Native economics keep lease null rather than treating caller-created lease objects as trusted.",
+      ],
+    };
+  }
+  return sealFromValidatedProjection({
+    session: input.session,
+    organizationId: input.organizationId,
+    tenantId: input.tenantId,
+    now: input.now,
+    deadlineAt: input.deadlineAt,
+    binding: translated.value,
+    inputManifestContentHash:
+      "inputManifestContentHash" in input.assignment && typeof input.assignment.inputManifestContentHash === "string"
+        ? input.assignment.inputManifestContentHash
+        : null,
+    canonicalPlanHash:
+      "planHash" in input.assignment && typeof input.assignment.planHash === "string" ? input.assignment.planHash : null,
+    executionAttemptId: input.executionAttemptId,
+    attemptNumber: input.attemptNumber,
+    maxAttempts: input.maxAttempts,
+    cancelled: input.cancelled,
+    workCellPhaseAlreadyRecorded: input.workCellPhaseAlreadyRecorded,
+    lease: input.lease ?? null,
+    expectedLease: input.expectedLease ?? null,
+    proposedAuthority: input.proposedAuthority,
+    requestedTier: input.requestedTier,
+    availableTiers: input.availableTiers,
+    escalationReason: input.escalationReason,
+    pricing: input.pricing,
+    reservationTtlMs: input.reservationTtlMs,
+  });
+}
+
+function sealFromValidatedProjection(input: {
+  session: EconomicsSession;
+  organizationId: string;
+  tenantId: string;
+  now: string;
+  deadlineAt: string;
+  binding: {
+    assignmentId: string;
+    envelopeHash: string;
+    contextHash: string;
+    context: ExecutionContext;
+    envelope: ExecutorEnvelopeV1;
+  };
+  inputManifestContentHash: string | null;
+  canonicalPlanHash: string | null;
+  executionAttemptId?: string;
+  attemptNumber?: number;
+  maxAttempts?: number;
+  cancelled?: boolean;
+  workCellPhaseAlreadyRecorded?: boolean;
+  lease?: ExecutionLease | null;
+  expectedLease?: ExecutionLease | null;
+  proposedAuthority?: AuthorityFreeze;
+  requestedTier?: ExecutorTier;
+  availableTiers?: readonly ExecutorTier[];
+  escalationReason?: EscalationReason | null;
+  pricing?: CallerPricing;
+  reservationTtlMs?: number;
+}): GovernorResult<TrustedGovernedBinding> {
+  const contextCheck = validateExecutionContext(input.binding.context);
+  if (!contextCheck.ok) return contextCheck;
+  if (
+    contextCheck.value.contextHash !== input.binding.contextHash ||
+    input.binding.contextHash !== input.binding.context.contextHash ||
+    input.binding.assignmentId !== contextCheck.value.assignmentId
+  ) {
+    return { ok: false, failures: ["Native economics binding context hashes do not match."] };
+  }
+  const envelopeCheck = assertExecutorEnvelopeIntegrity({
+    envelope: input.binding.envelope,
+    expectedEnvelopeHash: input.binding.envelopeHash,
+  });
+  if (!envelopeCheck.ok) return envelopeCheck;
+  const frozen = bindFrozenAuthorityFromTrustedContracts({
+    context: contextCheck.value,
+    envelope: envelopeCheck.value,
+    canonicalPlanHash: input.canonicalPlanHash,
+    inputManifestContentHash: input.inputManifestContentHash,
+  });
+  if (!frozen.ok) return frozen;
+  const runtime: TrustedExecutionRuntimeState = {
+    organizationId: input.organizationId,
+    tenantId: input.tenantId,
+    runId: contextCheck.value.runId,
+    executionAttemptId: input.executionAttemptId ?? `native-prepare:${input.binding.assignmentId}`,
+    assignmentId: input.binding.assignmentId,
+    capabilityKey: contextCheck.value.assignmentSnapshot.capabilityKey,
+    executorKey: contextCheck.value.assignmentSnapshot.executorKey,
+    workCellPhase: envelopeCheck.value.phase,
+    workCellPhaseAlreadyRecorded: input.workCellPhaseAlreadyRecorded ?? false,
+    attemptNumber: input.attemptNumber ?? 1,
+    maxAttempts: input.maxAttempts ?? 1,
+    deadlineAt: input.deadlineAt,
+    cancelled: input.cancelled ?? false,
+    lease: input.lease ?? null,
+    expectedLease: input.expectedLease ?? null,
+    specVersion: frozen.value.specVersion,
+    canonicalPlanHash: frozen.value.canonicalPlanHash,
+    inputManifestContentHash: frozen.value.inputManifestContentHash,
+    evaluationClock: input.now,
+  };
+  const identity = assertTrustedIdentityMatch({
+    context: contextCheck.value,
+    envelope: envelopeCheck.value,
+    runtime,
+    frozenAuthority: frozen.value,
+    session: input.session,
+  });
+  if (!identity.ok) return identity;
+  return {
+    ok: true,
+    value: sealTrustedGovernedBinding({
+      session: input.session,
+      organizationId: input.organizationId,
+      tenantId: input.tenantId,
+      context: contextCheck.value,
+      envelope: envelopeCheck.value,
+      envelopeHash: input.binding.envelopeHash,
+      contextHash: input.binding.contextHash,
+      runtime,
+      frozenAuthority: frozen.value,
+      proposedAuthority: input.proposedAuthority ?? frozen.value.authority,
+      requestedTier: input.requestedTier ?? "deterministic",
+      availableTiers: input.availableTiers ?? ["deterministic"],
+      escalationReason: input.escalationReason ?? null,
+      pricing: input.pricing ?? ZERO_CALLER_PRICING,
+      reservationTtlMs: input.reservationTtlMs ?? NATIVE_PUBLIC_WEB_RESERVATION_TTL_MS,
+    }),
   };
 }
 
@@ -844,20 +1112,6 @@ export function bindNativePublicWebEconomics(input: {
   pricing?: CallerPricing;
   reservationTtlMs?: number;
 }): GovernorResult<NativePublicWebEconomicsBinding> {
-  const contextCheck = validateExecutionContext(input.binding.context);
-  if (!contextCheck.ok) return contextCheck;
-  if (
-    contextCheck.value.contextHash !== input.binding.contextHash ||
-    input.binding.contextHash !== input.binding.context.contextHash ||
-    input.binding.assignmentId !== contextCheck.value.assignmentId
-  ) {
-    return { ok: false, failures: ["Native economics binding context hashes do not match."] };
-  }
-  const envelopeCheck = assertExecutorEnvelopeIntegrity({
-    envelope: input.binding.envelope,
-    expectedEnvelopeHash: input.binding.envelopeHash,
-  });
-  if (!envelopeCheck.ok) return envelopeCheck;
   if (input.lease) {
     return {
       ok: false,
@@ -866,58 +1120,29 @@ export function bindNativePublicWebEconomics(input: {
       ],
     };
   }
-  const frozen = bindFrozenAuthorityFromTrustedContracts({
-    context: contextCheck.value,
-    envelope: envelopeCheck.value,
-    canonicalPlanHash: null,
-    inputManifestContentHash: input.inputManifestContentHash,
-  });
-  if (!frozen.ok) return frozen;
-  const runtime: TrustedExecutionRuntimeState = {
+  return sealFromValidatedProjection({
+    session: input.session,
     organizationId: input.organizationId,
     tenantId: input.tenantId,
-    runId: contextCheck.value.runId,
-    executionAttemptId: input.executionAttemptId ?? `native-prepare:${input.binding.assignmentId}`,
-    assignmentId: input.binding.assignmentId,
-    capabilityKey: contextCheck.value.assignmentSnapshot.capabilityKey,
-    executorKey: contextCheck.value.assignmentSnapshot.executorKey,
-    workCellPhase: envelopeCheck.value.phase,
-    workCellPhaseAlreadyRecorded: input.workCellPhaseAlreadyRecorded ?? false,
-    attemptNumber: input.attemptNumber ?? 1,
-    maxAttempts: input.maxAttempts ?? 1,
+    now: input.now,
     deadlineAt: input.deadlineAt,
-    cancelled: input.cancelled ?? false,
+    binding: input.binding,
+    inputManifestContentHash: input.inputManifestContentHash,
+    canonicalPlanHash: null,
+    executionAttemptId: input.executionAttemptId,
+    attemptNumber: input.attemptNumber,
+    maxAttempts: input.maxAttempts,
+    cancelled: input.cancelled,
+    workCellPhaseAlreadyRecorded: input.workCellPhaseAlreadyRecorded,
     lease: null,
     expectedLease: null,
-    specVersion: frozen.value.specVersion,
-    canonicalPlanHash: null,
-    inputManifestContentHash: frozen.value.inputManifestContentHash,
-    evaluationClock: input.now,
-  };
-  const identity = assertTrustedIdentityMatch({
-    context: contextCheck.value,
-    envelope: envelopeCheck.value,
-    runtime,
-    frozenAuthority: frozen.value,
-    session: input.session,
+    proposedAuthority: input.proposedAuthority,
+    requestedTier: input.requestedTier,
+    availableTiers: input.availableTiers,
+    escalationReason: input.escalationReason,
+    pricing: input.pricing,
+    reservationTtlMs: input.reservationTtlMs,
   });
-  if (!identity.ok) return identity;
-  return {
-    ok: true,
-    value: {
-      session: input.session,
-      organizationId: input.organizationId,
-      tenantId: input.tenantId,
-      runtime,
-      frozenAuthority: frozen.value,
-      proposedAuthority: input.proposedAuthority ?? frozen.value.authority,
-      requestedTier: input.requestedTier ?? "deterministic",
-      availableTiers: input.availableTiers ?? ["deterministic"],
-      escalationReason: input.escalationReason ?? null,
-      pricing: input.pricing ?? ZERO_CALLER_PRICING,
-      reservationTtlMs: input.reservationTtlMs ?? NATIVE_PUBLIC_WEB_RESERVATION_TTL_MS,
-    },
-  };
 }
 
 export function reportedToolUsage(input: {
@@ -1000,4 +1225,116 @@ export function isReleasedUnderlyingCallFailure(result: GovernedExecutionFailure
     result.reservation?.state === "released" &&
     result.failures.some((failure) => /Underlying call (failed|aborted)/.test(failure))
   );
+}
+
+export function workCellPhaseClaimKey(runId: string, phase: string): string {
+  return `${runId}::${phase}`;
+}
+
+export function alreadyClaimedPhaseFailure(phase: string, status: string): string {
+  return `The ${phase} phase of this run already has a recorded attempt (status: ${status}). Fetch was not started.`;
+}
+
+export function createMemoryWorkCellPhaseClaim(options?: {
+  beforeInsert?: () => Promise<void>;
+}): { claim: WorkCellPhaseClaimFn; records: Map<string, WorkCellPhaseClaimRecord> } {
+  const records = new Map<string, WorkCellPhaseClaimRecord>();
+  return {
+    records,
+    claim: async (input) => {
+      if (options?.beforeInsert) await options.beforeInsert();
+      const key = workCellPhaseClaimKey(input.runId, input.phase);
+      const existing = records.get(key);
+      if (existing) {
+        return { ok: false, failures: [alreadyClaimedPhaseFailure(input.phase, existing.status)] };
+      }
+      const record: WorkCellPhaseClaimRecord = {
+        ...input,
+        status: "running",
+        claimedAt: input.now,
+      };
+      records.set(key, record);
+      return { ok: true, value: record };
+    },
+  };
+}
+
+export async function claimWorkCellPhase(
+  claim: WorkCellPhaseClaimFn,
+  input: WorkCellPhaseClaimInput,
+): Promise<GovernorResult<WorkCellPhaseClaimRecord>> {
+  return claim(input);
+}
+
+export function claimMetadataFromInput(input: WorkCellPhaseClaimInput): Record<string, unknown> {
+  return {
+    schemaVersion: WORK_CELL_PHASE_CLAIM_SCHEMA_VERSION,
+    organizationId: input.organizationId,
+    runId: input.runId,
+    phase: input.phase,
+    executorKey: input.executorKey,
+    capabilityKey: input.capabilityKey,
+    assignmentId: input.assignmentId,
+    envelopeHash: input.envelopeHash,
+    contextHash: input.contextHash,
+    inputManifestContentHash: input.inputManifestContentHash,
+  };
+}
+
+export function reservationLedgerFromSession(
+  session: EconomicsSession,
+  reservationIds: readonly string[],
+): Array<{ reservationId: string; state: BudgetReservation["state"] | "missing" }> {
+  return reservationIds.map((reservationId) => ({
+    reservationId,
+    state: session.reservations.get(reservationId)?.state ?? "missing",
+  }));
+}
+
+export function releaseReservedGovernedExecutions(input: {
+  session: EconomicsSession;
+  organizationId: string;
+  tenantId: string;
+  reservationIds: readonly string[];
+  now: string;
+}): Array<{ reservationId: string; state: BudgetReservation["state"] | "missing" }> {
+  for (const reservationId of input.reservationIds) {
+    const reservation = input.session.reservations.get(reservationId);
+    if (!reservation || reservation.state !== "reserved") continue;
+    releaseReservation({
+      session: input.session,
+      organizationId: input.organizationId,
+      tenantId: input.tenantId,
+      reservationId,
+      idempotencyKey: reservation.idempotencyKey,
+      now: input.now,
+    });
+  }
+  return reservationLedgerFromSession(input.session, input.reservationIds);
+}
+
+export function commitDeferredGovernedReservations(input: {
+  session: EconomicsSession;
+  organizationId: string;
+  tenantId: string;
+  now: string;
+  pricing: CallerPricing;
+  items: ReadonlyArray<{ reservation: BudgetReservation; observation: UsageObservation }>;
+}): GovernorResult<Array<{ reservationId: string; commit: ReservationCommit }>> {
+  const committed: Array<{ reservationId: string; commit: ReservationCommit }> = [];
+  for (const item of input.items) {
+    const result = commitReservation({
+      session: input.session,
+      organizationId: input.organizationId,
+      tenantId: input.tenantId,
+      reservationId: item.reservation.reservationId,
+      idempotencyKey: item.reservation.idempotencyKey,
+      observation: item.observation,
+      pricing: input.pricing,
+      now: input.now,
+    });
+    if (!result.ok) return result;
+    committed.push({ reservationId: item.reservation.reservationId, commit: result.value });
+  }
+  return { ok: true, value: committed };
 }

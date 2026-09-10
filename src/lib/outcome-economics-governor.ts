@@ -1510,6 +1510,7 @@ export function governModelUsage(
 }
 
 export const ECONOMICS_RESERVATION_METADATA_KEY = "economicReservationId";
+export const ECONOMICS_RESERVATION_IDS_METADATA_KEY = "economicReservationIds";
 
 export function readRuntimeEconomicsReservationId(metadata: Record<string, unknown> | undefined): string | null {
   if (!metadata) return null;
