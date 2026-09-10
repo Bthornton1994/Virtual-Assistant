@@ -547,13 +547,14 @@ describe("execution economics adapter v1", () => {
   });
 
   it("malformed usage cannot commit and success cannot complete while reserved", async () => {
-    const request = inputFor(async () => ({ ok: true }), {
+    const request = inputFor(async () => ({ ok: true }));
+    const result = await runGovernedExecution({
+      ...request,
       usageOnSuccess: () => ({
         ...usageFor(request.trustedBinding),
         inputTokens: Number.NaN,
       }),
     });
-    const result = await runGovernedExecution(request);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.executed).toBe(true);

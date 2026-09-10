@@ -70,10 +70,6 @@ export class NativePublicWebFetchError extends Error {
   }
 }
 
-function nativePublicWebFetchError(message: string): NativePublicWebFetchError {
-  return new NativePublicWebFetchError(message);
-}
-
 const SKIP_CLAIM_KEYS = new Set([
   "url",
   "href",
@@ -487,7 +483,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     }
   >();
 
-  const rejectWithLedger = (message: string, release: boolean): never => {
+  function rejectWithLedger(message: string, release: boolean): never {
     if (release && economics) {
       releaseReservedGovernedExecutions({
         session: economics.session,
@@ -539,7 +535,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
       reservationExpiresAt: reservationExpiresAt(economics.runtime.evaluationClock, economics.reservationTtlMs),
       mode: "reserve_only",
     });
-    if (!governed.ok || !governed.reservation) {
+    if (!governed.ok) {
       if (governed.reservation) economicReservationIds.push(governed.reservation.reservationId);
       rejectWithLedger(
         "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
