@@ -17,13 +17,18 @@ import {
 } from "@/lib/execution-context";
 import type { ExecutorEnvelopeV1 } from "@/lib/executor-envelope";
 import {
+  claimWorkCellPhase,
   deriveGovernedIdempotencyKey,
-  isReleasedUnderlyingCallFailure,
   reportedToolUsage,
   reservationExpiresAt,
+  reservationLedgerFromSession,
+  releaseReservedGovernedExecutions,
   runGovernedExecution,
   type NativePublicWebEconomicsBinding,
+  type WorkCellPhaseClaimFn,
+  type WorkCellPhaseClaimInput,
 } from "@/lib/execution-economics-adapter";
+import type { BudgetReservation, UsageObservation } from "@/lib/outcome-economics-governor";
 import {
   buildNativeToolTrace,
   recordNativePublicReadCycle,
@@ -63,10 +68,6 @@ export class NativePublicWebFetchError extends Error {
     super(message);
     this.name = /timeout|timed out|aborted|cancell?ed/i.test(message) ? "AbortError" : "NativePublicWebFetchError";
   }
-}
-
-function nativePublicWebFetchError(message: string): NativePublicWebFetchError {
-  return new NativePublicWebFetchError(message);
 }
 
 const SKIP_CLAIM_KEYS = new Set([
@@ -357,11 +358,39 @@ export async function preparePublicWebEvidencePacket(
   };
 }
 
+export type NativeReservationLedgerEntry = {
+  reservationId: string;
+  state: string;
+  url: string;
+  stepKey: string;
+};
+
+export type NativePendingCommit = {
+  reservation: BudgetReservation;
+  observation: UsageObservation;
+  url: string;
+  stepKey: string;
+};
+
 export type AuthorizedPublicWebPrepareResult = {
   packet: CatalogEvidencePacketV1;
   trace: ToolInvocationTrace;
   economicReservationIds: string[];
+  reservationLedger: NativeReservationLedgerEntry[];
+  pendingCommits: NativePendingCommit[];
 };
+
+export class GovernedNativePrepareError extends DomainError {
+  readonly economicReservationIds: string[];
+  readonly reservationLedger: NativeReservationLedgerEntry[];
+
+  constructor(message: string, economicReservationIds: string[], reservationLedger: NativeReservationLedgerEntry[]) {
+    super(message);
+    this.name = "GovernedNativePrepareError";
+    this.economicReservationIds = economicReservationIds;
+    this.reservationLedger = reservationLedger;
+  }
+}
 
 /**
  * Native public-web prepare. Authorizes public_read before each fetch.
@@ -397,7 +426,13 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     context: ExecutionContext;
     envelope?: ExecutorEnvelopeV1;
   },
-  options?: { fetchPage?: PageFetcher; now?: string; economics?: NativePublicWebEconomicsBinding },
+  options?: {
+    fetchPage?: PageFetcher;
+    now?: string;
+    economics?: NativePublicWebEconomicsBinding;
+    beforeUsageObservation?: (stepKey: string) => void;
+    beforePostflight?: () => void;
+  },
 ): Promise<AuthorizedPublicWebPrepareResult> {
   const contextCheck = validateExecutionContext(binding.context);
   if (!contextCheck.ok) {
@@ -413,7 +448,15 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     throw new DomainError("Native public-web prepare context hashes do not match. Fetch was not started.");
   }
 
-  const urls = manifest.inputRecords.flatMap((item) => extractHttpsUrls(item.record));
+  const planned: Array<{ itemIndex: number; url: string; invocationId: string }> = [];
+  let sequence = 0;
+  for (const [itemIndex, item] of manifest.inputRecords.entries()) {
+    for (const url of extractHttpsUrls(item.record)) {
+      sequence += 1;
+      planned.push({ itemIndex, url, invocationId: "public-read-" + String(sequence) });
+    }
+  }
+  const urls = planned.map((entry) => entry.url);
   const economics = requireNativeEconomics(urls, binding, options?.economics);
   if (urls.length > 0) {
     const preflight = authorizeToolClass(contextCheck.value, "public_read");
@@ -426,134 +469,191 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
 
   const fetchPage = options?.fetchPage ?? fetchPublicHttpsPage;
   const now = options?.now ?? new Date().toISOString();
-  const products: CatalogEvidenceProduct[] = [];
+  const toolKeys = ["public-https-fetch"] as const;
+  const economicReservationIds: string[] = [];
+  const pendingByInvocation = new Map<
+    string,
+    {
+      url: string;
+      invocationId: string;
+      reservation: BudgetReservation;
+      observation: UsageObservation | null;
+      page: FetchedPage | null;
+      fetchFailed: boolean;
+    }
+  >();
+
+  function rejectWithLedger(message: string, release: boolean): never {
+    if (release && economics) {
+      releaseReservedGovernedExecutions({
+        session: economics.session,
+        organizationId: economics.organizationId,
+        tenantId: economics.tenantId,
+        reservationIds: economicReservationIds,
+        now: economics.runtime.evaluationClock,
+      });
+    }
+    const ledger = economics
+      ? reservationLedgerFromSession(economics.session, economicReservationIds).map((entry) => {
+          const pending = [...pendingByInvocation.values()].find(
+            (item) => item.reservation.reservationId === entry.reservationId,
+          );
+          return {
+            reservationId: entry.reservationId,
+            state: entry.state,
+            url: pending?.url ?? "",
+            stepKey: pending?.invocationId ?? "",
+          };
+        })
+      : [];
+    throw new GovernedNativePrepareError(message, economicReservationIds, ledger);
+  };
+
+  for (const entry of planned) {
+    const preflight = authorizeToolClass(contextCheck.value, "public_read");
+    if (!preflight.ok) {
+      throw new DomainError(
+        "Native public-web prepare is blocked_preflight: public_read is not authorized. Fetch was not started.",
+      );
+    }
+    if (!economics || !binding.envelope) {
+      throw new DomainError(
+        "Native public-web prepare requires a governed economics binding. Fetch was not started.",
+      );
+    }
+    const governed = await runGovernedExecution({
+      trustedBinding: economics,
+      callKind: "tool",
+      toolClass: "public_read",
+      toolKeys,
+      stepKey: entry.invocationId,
+      estimatedAiCostMicros: 0,
+      estimatedToolCostMicros: economics.pricing.toolCallMicros ?? 0,
+      estimatedCostMicros: economics.pricing.toolCallMicros ?? 0,
+      unknownPricing: false,
+      usageUnavailable: false,
+      reservationExpiresAt: reservationExpiresAt(economics.runtime.evaluationClock, economics.reservationTtlMs),
+      mode: "reserve_only",
+    });
+    if (!governed.ok) {
+      if (governed.reservation) economicReservationIds.push(governed.reservation.reservationId);
+      rejectWithLedger(
+        "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
+          governed.failures.join(" "),
+        true,
+      );
+    }
+    economicReservationIds.push(governed.reservation.reservationId);
+    pendingByInvocation.set(entry.invocationId, {
+      url: entry.url,
+      invocationId: entry.invocationId,
+      reservation: governed.reservation,
+      observation: null,
+      page: null,
+      fetchFailed: false,
+    });
+  }
+
+  const pagesByItem = new Map<number, FetchedPage[]>();
   const invocations: ToolInvocation[] = [];
   const outcomes: TraceOutcome[] = [];
-  const economicReservationIds: string[] = [];
-  let sequence = 0;
 
-  for (const item of manifest.inputRecords) {
-    const itemUrls = extractHttpsUrls(item.record);
-    const pages: FetchedPage[] = [];
-    for (const url of itemUrls) {
-      sequence += 1;
-      const invocationId = "public-read-" + String(sequence);
-      const preflight = authorizeToolClass(contextCheck.value, "public_read");
-      if (!preflight.ok) {
-        throw new DomainError(
-          "Native public-web prepare is blocked_preflight: public_read is not authorized. Fetch was not started.",
-        );
-      }
-
-      if (!economics || !binding.envelope) {
-        throw new DomainError(
-          "Native public-web prepare requires a governed economics binding. Fetch was not started.",
-        );
-      }
-
-      const toolKeys = ["public-https-fetch"] as const;
-      const governed = await runGovernedExecution({
+  for (const entry of planned) {
+    const pending = pendingByInvocation.get(entry.invocationId);
+    if (!pending || !economics) {
+      throw new DomainError("Native public-web prepare lost a reserved URL before fetch.");
+    }
+    let fetched: FetchedPage | { error: string };
+    try {
+      fetched = await fetchPage(entry.url);
+    } catch (error) {
+      fetched = { error: error instanceof Error ? error.message : "fetch failed" };
+    }
+    if ("error" in fetched) {
+      releaseReservedGovernedExecutions({
         session: economics.session,
-        context: contextCheck.value,
-        envelope: binding.envelope,
-        expectedEnvelopeHash: binding.envelopeHash,
-        runtime: economics.runtime,
-        frozenAuthority: economics.frozenAuthority,
-        proposedAuthority: economics.proposedAuthority,
-        requestedTier: economics.requestedTier,
-        availableTiers: economics.availableTiers,
-        escalationReason: economics.escalationReason,
-        callKind: "tool",
-        toolClass: "public_read",
-        toolKeys,
-        stepKey: invocationId,
-        estimatedAiCostMicros: 0,
-        estimatedToolCostMicros: 0,
-        estimatedCostMicros: 0,
-        unknownPricing: false,
-        usageUnavailable: false,
-        pricing: economics.pricing,
-        reservationExpiresAt: reservationExpiresAt(economics.runtime.evaluationClock, economics.reservationTtlMs),
-        execute: async () => {
-          const fetched = await fetchPage(url);
-          if ("error" in fetched) {
-            throw nativePublicWebFetchError(fetched.error);
-          }
-          return fetched;
-        },
-        usageOnSuccess: () =>
-          reportedToolUsage({
-            runtime: economics.runtime,
-            executorTier: economics.requestedTier,
-            toolKeys,
-            stepKey: invocationId,
-            idempotencyKey: deriveGovernedIdempotencyKey({
-              organizationId: economics.runtime.organizationId,
-              tenantId: economics.runtime.tenantId,
-              runId: economics.runtime.runId,
-              executionAttemptId: economics.runtime.executionAttemptId,
-              assignmentId: economics.runtime.assignmentId,
-              specVersion: economics.frozenAuthority.specVersion,
-              canonicalPlanHash: economics.frozenAuthority.canonicalPlanHash,
-              inputManifestContentHash: economics.frozenAuthority.inputManifestContentHash,
-              callKind: "tool",
-              stepKey: invocationId,
-            }),
-            toolCallCount: 1,
-            recordedAt: now,
-          }),
+        organizationId: economics.organizationId,
+        tenantId: economics.tenantId,
+        reservationIds: [pending.reservation.reservationId],
+        now: economics.runtime.evaluationClock,
       });
-      if (!governed.ok) {
-        if (isReleasedUnderlyingCallFailure(governed)) {
-          const recordedFailed = recordNativePublicReadCycle({
-            context: contextCheck.value,
-            invocationId,
-            toolKey: "public-https-fetch",
-            invokedAt: now,
-            completedAt: now,
-            fetchResult: "fetch_failed",
-          });
-          if (!recordedFailed.ok) throw new DomainError(recordedFailed.failures.join(" "));
-          invocations.push(recordedFailed.value.invocation);
-          outcomes.push(recordedFailed.value.outcome);
-          continue;
-        }
-        throw new DomainError(
-          governed.executed
-            ? "Native public-web prepare cannot complete successfully while the economic reservation is uncommitted. " +
-                governed.failures.join(" ")
-            : "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
-                governed.failures.join(" "),
-        );
-      }
-      economicReservationIds.push(governed.reservation.reservationId);
-      const result = governed.value;
-      const recorded = recordNativePublicReadCycle({
+      pending.fetchFailed = true;
+      const recordedFailed = recordNativePublicReadCycle({
         context: contextCheck.value,
-        invocationId,
+        invocationId: entry.invocationId,
         toolKey: "public-https-fetch",
         invokedAt: now,
         completedAt: now,
-        fetchResult: "fetched",
+        fetchResult: "fetch_failed",
       });
-      if (!recorded.ok) throw new DomainError(recorded.failures.join(" "));
-      invocations.push(recorded.value.invocation);
-      outcomes.push(recorded.value.outcome);
-      pages.push(result);
+      if (!recordedFailed.ok) {
+        rejectWithLedger(recordedFailed.failures.join(" "), true);
+      }
+      invocations.push(recordedFailed.value.invocation);
+      outcomes.push(recordedFailed.value.outcome);
+      continue;
     }
-    products.push(buildProduct(item.productId, item.record, pages, manifest.market));
+    try {
+      options?.beforeUsageObservation?.(entry.invocationId);
+      pending.observation = reportedToolUsage({
+        runtime: economics.runtime,
+        executorTier: economics.requestedTier,
+        toolKeys,
+        stepKey: entry.invocationId,
+        idempotencyKey: deriveGovernedIdempotencyKey({
+          organizationId: economics.runtime.organizationId,
+          tenantId: economics.runtime.tenantId,
+          runId: economics.runtime.runId,
+          executionAttemptId: economics.runtime.executionAttemptId,
+          assignmentId: economics.runtime.assignmentId,
+          specVersion: economics.frozenAuthority.specVersion,
+          canonicalPlanHash: economics.frozenAuthority.canonicalPlanHash,
+          inputManifestContentHash: economics.frozenAuthority.inputManifestContentHash,
+          callKind: "tool",
+          stepKey: entry.invocationId,
+        }),
+        toolCallCount: 1,
+        recordedAt: now,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "usage observation failed";
+      rejectWithLedger(`Provider usage could not be observed: ${reason}`, true);
+    }
+    pending.page = fetched;
+    const recorded = recordNativePublicReadCycle({
+      context: contextCheck.value,
+      invocationId: entry.invocationId,
+      toolKey: "public-https-fetch",
+      invokedAt: now,
+      completedAt: now,
+      fetchResult: "fetched",
+    });
+    if (!recorded.ok) {
+      rejectWithLedger(recorded.failures.join(" "), true);
+    }
+    invocations.push(recorded.value.invocation);
+    outcomes.push(recorded.value.outcome);
+    const itemPages = pagesByItem.get(entry.itemIndex) ?? [];
+    itemPages.push(fetched);
+    pagesByItem.set(entry.itemIndex, itemPages);
   }
 
   if (outcomes.some((outcome) => outcome.result === "blocked_preflight")) {
-    throw new DomainError(
+    rejectWithLedger(
       "Native public-web prepare is blocked_preflight: public_read is not authorized. Fetch was not started.",
+      true,
     );
   }
 
+  options?.beforePostflight?.();
   const postflight = validateToolInvocationTrace(invocations, contextCheck.value);
   if (!postflight.ok) {
-    throw new DomainError("Completed native tool trace is invalid: " + postflight.failures.join(" "));
+    rejectWithLedger("Completed native tool trace is invalid: " + postflight.failures.join(" "), true);
   }
+
+  const products: CatalogEvidenceProduct[] = manifest.inputRecords.map((item, itemIndex) =>
+    buildProduct(item.productId, item.record, pagesByItem.get(itemIndex) ?? [], manifest.market),
+  );
 
   const packet: CatalogEvidencePacketV1 = {
     schemaVersion: "catalog-evidence-packet/v1",
@@ -578,7 +678,65 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     contextHash: binding.contextHash,
   });
   if (!checked.ok) {
-    throw new DomainError("Native observation trace is invalid: " + checked.failures.join(" "));
+    rejectWithLedger("Native observation trace is invalid: " + checked.failures.join(" "), true);
   }
-  return { packet, trace: checked.value, economicReservationIds };
+
+  const pendingCommits: NativePendingCommit[] = [];
+  const reservationLedger: NativeReservationLedgerEntry[] = [];
+  for (const entry of planned) {
+    const pending = pendingByInvocation.get(entry.invocationId);
+    if (!pending || !economics) continue;
+    const state = economics.session.reservations.get(pending.reservation.reservationId)?.state ?? "missing";
+    reservationLedger.push({
+      reservationId: pending.reservation.reservationId,
+      state,
+      url: pending.url,
+      stepKey: pending.invocationId,
+    });
+    if (pending.observation && state === "reserved") {
+      pendingCommits.push({
+        reservation: pending.reservation,
+        observation: pending.observation,
+        url: pending.url,
+        stepKey: pending.invocationId,
+      });
+    }
+  }
+
+  return {
+    packet,
+    trace: checked.value,
+    economicReservationIds,
+    reservationLedger,
+    pendingCommits,
+  };
+}
+
+export async function claimThenPrepareAuthorizedPublicWebEvidencePacket(
+  manifest: CatalogEvidenceInputManifestV1,
+  binding: {
+    assignmentId: string;
+    envelopeHash: string;
+    contextHash: string;
+    context: ExecutionContext;
+    envelope?: ExecutorEnvelopeV1;
+  },
+  options: {
+    claimPhase: WorkCellPhaseClaimFn;
+    claimInput: WorkCellPhaseClaimInput;
+    mintEconomics: () => NativePublicWebEconomicsBinding;
+    fetchPage?: PageFetcher;
+    now?: string;
+  },
+): Promise<AuthorizedPublicWebPrepareResult> {
+  const claimed = await claimWorkCellPhase(options.claimPhase, options.claimInput);
+  if (!claimed.ok) {
+    throw new DomainError(claimed.failures.join(" "));
+  }
+  const economics = options.mintEconomics();
+  return prepareAuthorizedPublicWebEvidencePacket(manifest, binding, {
+    economics,
+    fetchPage: options.fetchPage,
+    now: options.now,
+  });
 }

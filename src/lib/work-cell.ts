@@ -34,15 +34,22 @@ import {
 import {
   PUBLIC_WEB_RESEARCHER_KEY,
   prepareAuthorizedPublicWebEvidencePacket,
+  GovernedNativePrepareError,
 } from "@/lib/public-web-researcher";
 import {
+  alreadyClaimedPhaseFailure,
+  attachEconomicsReservationIds,
   bindNativePublicWebEconomics,
+  claimMetadataFromInput,
+  commitDeferredGovernedReservations,
+  releaseReservedGovernedExecutions,
   requireEconomicsEnvelope,
   workCellPhaseAlreadyRecordedFromAssignment,
+  WORK_CELL_PHASE_CLAIM_SCHEMA_VERSION,
+  type WorkCellPhaseClaimInput,
 } from "@/lib/execution-economics-adapter";
 import {
   createEconomicsSession,
-  ECONOMICS_RESERVATION_METADATA_KEY,
 } from "@/lib/outcome-economics-governor";
 import { parseExtractedJson } from "@/lib/work-cell-json";
 import type { AssignmentToEnvelopeAssignment } from "@/lib/assignment-to-envelope";
@@ -260,6 +267,42 @@ async function getAssignment(db: SupabaseClient, runId: string, phase: ExecutorP
     .maybeSingle();
   if (error) throw new DomainError(error.message);
   return data ? mapAssignment(data as Record<string, unknown>) : null;
+}
+
+async function claimWorkCellPhase(
+  db: SupabaseClient,
+  actor: Actor,
+  run: { id: string; organization_id: string },
+  profile: ExecutorProfile,
+  phase: ExecutorPhase,
+  input: WorkCellPhaseClaimInput,
+  inputArtifactId: string | null,
+): Promise<RunExecutorAssignment> {
+  const { data, error } = await db
+    .from("run_executor_assignments")
+    .insert({
+      organization_id: run.organization_id,
+      run_id: run.id,
+      executor_profile_id: profile.id,
+      phase,
+      status: "running",
+      authority_snapshot: buildAuthoritySnapshot(profile),
+      input_artifact_id: inputArtifactId,
+      metadata: claimMetadataFromInput(input),
+      created_by: actor.id,
+    })
+    .select("*")
+    .single();
+  if (error) {
+    const uniqueConflict =
+      error.code === "23505" || /duplicate|unique/i.test(String(error.message || ""));
+    if (uniqueConflict) {
+      const existing = await getAssignment(db, run.id, phase);
+      throw new DomainError(alreadyClaimedPhaseFailure(phase, existing?.status ?? "claimed"));
+    }
+    throw new DomainError(error.message || "Could not claim the work-cell phase.");
+  }
+  return mapAssignment(data as Record<string, unknown>);
 }
 
 async function insertEvidenceArtifact(
@@ -538,9 +581,18 @@ async function persistPhaseArtifact(
 
   const existing = await getAssignment(db, run.id, input.phase);
   if (existing) {
-    throw new DomainError(
-      `The ${input.phase} phase of this run already has a recorded attempt (status: ${existing.status}). A retry belongs to a new Gauntlet attempt, not an overwrite.`,
-    );
+    const claimSchema = existing.metadata.schemaVersion;
+    const claimMatches =
+      existing.status === "running" &&
+      claimSchema === WORK_CELL_PHASE_CLAIM_SCHEMA_VERSION &&
+      existing.metadata.assignmentId === assignmentMetadata.assignmentId &&
+      existing.metadata.executorKey === identity.executorKey &&
+      existing.executorProfileId === profile.id;
+    if (!claimMatches) {
+      throw new DomainError(
+        `The ${input.phase} phase of this run already has a recorded attempt (status: ${existing.status}). A retry belongs to a new Gauntlet attempt, not an overwrite.`,
+      );
+    }
   }
 
   const { data, error } = await db.rpc("record_work_cell_phase_artifact", {
@@ -840,6 +892,20 @@ export async function runNativePublicWebPrepare(
     ["public_read", "artifact_read", "artifact_write"],
   );
   const now = new Date().toISOString();
+  const claimInput: WorkCellPhaseClaimInput = {
+    organizationId: run.organization_id,
+    tenantId: run.organization_id,
+    runId: run.id,
+    phase: "prepare",
+    assignmentId: binding.assignmentId,
+    executorKey: profile.key,
+    capabilityKey: phaseCapability("prepare", profile.key).capabilityKey,
+    inputManifestContentHash: frozen.contentHash,
+    envelopeHash: binding.envelopeHash,
+    contextHash: binding.contextHash,
+    now,
+  };
+  await claimWorkCellPhase(db, actor, run, profile, "prepare", claimInput, frozen.id);
   const session = createEconomicsSession({
     organizationId: run.organization_id,
     tenantId: run.organization_id,
@@ -859,7 +925,7 @@ export async function runNativePublicWebPrepare(
     now,
     inputManifestContentHash: frozen.contentHash,
     deadlineAt: new Date(Date.parse(now) + 120_000).toISOString(),
-    workCellPhaseAlreadyRecorded,
+    workCellPhaseAlreadyRecorded: false,
     cancelled: run.status !== "running",
   });
   if (!economics.ok) {
@@ -868,11 +934,30 @@ export async function runNativePublicWebPrepare(
         economics.failures.join(" "),
     );
   }
-  const prepared = await prepareAuthorizedPublicWebEvidencePacket(frozen.manifest, binding, {
-    economics: economics.value,
-    now,
-  });
+
+  const releaseEconomics = (reservationIds: readonly string[]) =>
+    releaseReservedGovernedExecutions({
+      session: session.value,
+      organizationId: run.organization_id,
+      tenantId: run.organization_id,
+      reservationIds,
+      now,
+    });
+
+  let prepared: Awaited<ReturnType<typeof prepareAuthorizedPublicWebEvidencePacket>>;
+  try {
+    prepared = await prepareAuthorizedPublicWebEvidencePacket(frozen.manifest, binding, {
+      economics: economics.value,
+      now,
+    });
+  } catch (error) {
+    const reservationIds =
+      error instanceof GovernedNativePrepareError ? error.economicReservationIds : [];
+    releaseEconomics(reservationIds);
+    throw error;
+  }
   if (prepared.trace.outcomes.some((outcome) => outcome.result === "blocked_preflight")) {
+    releaseEconomics(prepared.economicReservationIds);
     throw new DomainError(
       "Native public-web prepare is blocked_preflight and cannot persist a completed assignment. Fetch was not started.",
     );
@@ -884,9 +969,19 @@ export async function runNativePublicWebPrepare(
     contextHash: binding.contextHash,
   });
   if (!checked.ok) {
+    releaseEconomics(prepared.economicReservationIds);
     throw new DomainError("Native observation trace is invalid: " + checked.failures.join(" "));
   }
-  const observation = await persistObservationArtifact(db, actor, run, checked.value);
+
+  const reservationMetadata = attachEconomicsReservationIds({}, prepared.economicReservationIds);
+
+  let observation;
+  try {
+    observation = await persistObservationArtifact(db, actor, run, checked.value);
+  } catch (error) {
+    releaseEconomics(prepared.economicReservationIds);
+    throw error;
+  }
   const pointers = observation.pointers;
 
   const validation = validateCatalogEvidencePacket(prepared.packet, {
@@ -896,41 +991,71 @@ export async function runNativePublicWebPrepare(
     expectedMarket: frozen.manifest.market,
   });
   if (!validation.hardGatePass) {
-    await recordRejectedExecutorOutput(db, actor, run, {
-      phase: "prepare",
-      profile,
-      raw: JSON.stringify(prepared.packet),
-      hardFailures: validation.hardFailures,
-      metrics: validation.metrics as unknown as Record<string, number>,
-      assignmentMetadata: pointers,
+    try {
+      await recordRejectedExecutorOutput(db, actor, run, {
+        phase: "prepare",
+        profile,
+        raw: JSON.stringify(prepared.packet),
+        hardFailures: validation.hardFailures,
+        metrics: validation.metrics as unknown as Record<string, number>,
+        assignmentMetadata: { ...reservationMetadata, ...pointers },
+      });
+    } catch (error) {
+      releaseEconomics(prepared.economicReservationIds);
+      throw error;
+    }
+    const committed = commitDeferredGovernedReservations({
+      session: session.value,
+      organizationId: run.organization_id,
+      tenantId: run.organization_id,
+      now,
+      pricing: economics.value.pricing,
+      items: prepared.pendingCommits,
     });
+    if (!committed.ok) {
+      releaseEconomics(prepared.economicReservationIds);
+      throw new DomainError(committed.failures.join(" "));
+    }
     return { persisted: false, contentHash: null, artifactId: null, validation };
   }
 
   const contentHash = hashCatalogEvidencePacket(prepared.packet);
-  const { artifactId } = await persistPhaseArtifact(db, actor, run, profile, {
-    kind: "source",
-    summary: `Catalog evidence packet v1 from ${profile.key} covering ${prepared.packet.products.length} product(s).`,
-    payload: prepared.packet as unknown as Record<string, unknown>,
-    contentHash,
-    phase: "prepare",
-    assignmentStatus: "completed",
-    inputArtifactId: null,
-    assignmentMetadata: mergeObservationPointers(
-      {
-        packetHash: contentHash,
-        productCount: validation.metrics.productCount,
-        inputHash: frozen.manifest.inputHash,
-        ...(prepared.economicReservationIds.length > 0
-          ? {
-              [ECONOMICS_RESERVATION_METADATA_KEY]:
-                prepared.economicReservationIds[prepared.economicReservationIds.length - 1],
-            }
-          : {}),
-      },
-      pointers,
-    ),
+  let artifactId: string;
+  try {
+    const persisted = await persistPhaseArtifact(db, actor, run, profile, {
+      kind: "source",
+      summary: `Catalog evidence packet v1 from ${profile.key} covering ${prepared.packet.products.length} product(s).`,
+      payload: prepared.packet as unknown as Record<string, unknown>,
+      contentHash,
+      phase: "prepare",
+      assignmentStatus: "completed",
+      inputArtifactId: frozen.id,
+      assignmentMetadata: mergeObservationPointers(
+        {
+          packetHash: contentHash,
+          productCount: validation.metrics.productCount,
+          inputHash: frozen.manifest.inputHash,
+          ...reservationMetadata,
+        },
+        pointers,
+      ),
+    });
+    artifactId = persisted.artifactId;
+  } catch (error) {
+    releaseEconomics(prepared.economicReservationIds);
+    throw error;
+  }
+  const committed = commitDeferredGovernedReservations({
+    session: session.value,
+    organizationId: run.organization_id,
+    tenantId: run.organization_id,
+    now,
+    pricing: economics.value.pricing,
+    items: prepared.pendingCommits,
   });
+  if (!committed.ok) {
+    throw new DomainError(committed.failures.join(" "));
+  }
   return { persisted: true, validation, contentHash, artifactId };
 }
 
