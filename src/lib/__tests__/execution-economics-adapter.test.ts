@@ -16,9 +16,11 @@ import {
   bindNativePublicWebEconomics,
   deriveGovernedIdempotencyKey,
   findAttemptReservations,
+  releaseAttemptBoundReservation,
   reportedToolUsage,
   reservationExpiresAt,
   runGovernedExecution,
+  workCellPhaseAlreadyRecordedFromAssignment,
   type GovernedExecutionInput,
   type TrustedExecutionRuntimeState,
 } from "@/lib/execution-economics-adapter";
@@ -118,7 +120,7 @@ function frozenFor(binding = nativeBinding()) {
   const frozen = bindFrozenAuthorityFromTrustedContracts({
     context: binding.context,
     envelope: binding.envelope,
-    canonicalPlanHash: HASH,
+    inputManifestContentHash: HASH,
   });
   if (!frozen.ok) throw new Error(frozen.failures.join(" "));
   return frozen.value;
@@ -141,8 +143,10 @@ function runtimeFor(binding = nativeBinding(), overrides: Partial<TrustedExecuti
     deadlineAt: DEADLINE,
     cancelled: false,
     lease: null,
+    expectedLease: null,
     specVersion: frozen.specVersion,
     canonicalPlanHash: frozen.canonicalPlanHash,
+    inputManifestContentHash: frozen.inputManifestContentHash,
     evaluationClock: NOW,
     ...overrides,
   };
@@ -167,6 +171,7 @@ function usageFor(
       assignmentId: runtime.assignmentId,
       specVersion: frozen.specVersion,
       canonicalPlanHash: frozen.canonicalPlanHash,
+      inputManifestContentHash: frozen.inputManifestContentHash,
       callKind: "model",
       stepKey,
     }),
@@ -191,6 +196,7 @@ function inputFor<T>(
     session: economics,
     context: binding.context,
     envelope: binding.envelope,
+    expectedEnvelopeHash: binding.envelopeHash,
     runtime,
     frozenAuthority: frozen,
     proposedAuthority: frozen.authority,
@@ -325,6 +331,13 @@ describe("execution economics adapter v1", () => {
         {
           runtime: runtimeFor(binding, {
             lease: {
+              attemptId: "attempt-001",
+              stepKey: "research",
+              workerId: "worker-001",
+              leaseTokenHash: HASH,
+              leaseExpiresAt: "2026-09-10T11:00:00.000Z",
+            },
+            expectedLease: {
               attemptId: "attempt-001",
               stepKey: "research",
               workerId: "worker-001",
@@ -622,7 +635,7 @@ describe("execution economics adapter v1", () => {
       organizationId: ORG,
       tenantId: TENANT,
       now: NOW,
-      canonicalPlanHash: HASH,
+      inputManifestContentHash: HASH,
       deadlineAt: DEADLINE,
       attemptNumber: 1,
       maxAttempts: 3,
@@ -653,7 +666,7 @@ describe("execution economics adapter v1", () => {
       organizationId: ORG,
       tenantId: TENANT,
       now: NOW,
-      canonicalPlanHash: HASH,
+      inputManifestContentHash: HASH,
       deadlineAt: DEADLINE,
       cancelled: true,
     });
@@ -676,10 +689,13 @@ describe("execution economics adapter v1", () => {
     const adapter = readFileSync(resolve(process.cwd(), "src/lib/execution-economics-adapter.ts"), "utf8");
     const native = readFileSync(resolve(process.cwd(), "src/lib/public-web-researcher.ts"), "utf8");
     expect(adapter).not.toMatch(/verifyWorkstreamRun|issueOutcomeReceipt|outcome_receipts/);
-    expect(native.indexOf("runGovernedExecution")).toBeLessThan(native.indexOf("execute: () => fetchPage(url)"));
+    expect(native.indexOf("runGovernedExecution")).toBeLessThan(native.indexOf("execute: async () =>"));
+    expect(native).toMatch(/toolClass: "public_read"/);
+    expect(native).toMatch(/expectedEnvelopeHash: binding.envelopeHash/);
     expect(native).not.toMatch(/openai|@anthropic|generateText/);
     const persistence = readFileSync(resolve(process.cwd(), "src/lib/execution-runtime-persistence.ts"), "utf8");
     expect(persistence).toMatch(/assertSuccessfulCompletionMayProceed/);
+    expect(persistence).toMatch(/releaseAttemptBoundReservation/);
     expect(persistence).toMatch(/economicsSession/);
     const workCell = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
     const nativeFn = workCell.slice(
@@ -687,8 +703,477 @@ describe("execution economics adapter v1", () => {
       workCell.indexOf("export async function ingestCatalogEvidencePacket"),
     );
     expect(nativeFn).toMatch(/bindNativePublicWebEconomics/);
+    expect(nativeFn).toMatch(/getAssignment/);
+    expect(nativeFn).toMatch(/workCellPhaseAlreadyRecordedFromAssignment/);
+    expect(nativeFn).toMatch(/inputManifestContentHash: frozen.contentHash/);
+    expect(nativeFn).not.toMatch(/canonicalPlanHash: frozen.contentHash/);
+    expect(nativeFn.indexOf("getAssignment")).toBeLessThan(nativeFn.indexOf("bindWorkCellPhase"));
+    expect(nativeFn.indexOf("getAssignment")).toBeLessThan(nativeFn.indexOf("bindNativePublicWebEconomics"));
+    expect(nativeFn.indexOf("getAssignment")).toBeLessThan(nativeFn.indexOf("prepareAuthorizedPublicWebEvidencePacket"));
+    expect(nativeFn.indexOf("CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION")).toBeLessThan(
+      nativeFn.indexOf("prepareAuthorizedPublicWebEvidencePacket"),
+    );
     expect(nativeFn.indexOf("bindNativePublicWebEconomics")).toBeLessThan(
       nativeFn.indexOf("prepareAuthorizedPublicWebEvidencePacket"),
     );
+  });
+
+  it("rejects envelope mutation against the trusted expected hash before execute", async () => {
+    let called = false;
+    const binding = nativeBinding();
+    const mutatedEnvelope = {
+      ...binding.envelope,
+      economicLimit: { ...binding.envelope.economicLimit, maxAiCostMicros: 9_999_999 },
+      deadline: "2026-09-10T23:59:59.000Z",
+      allowedToolClasses: [...binding.envelope.allowedToolClasses],
+    };
+    const result = await runGovernedExecution(
+      inputFor(
+        async () => {
+          called = true;
+          return { ok: true };
+        },
+        { envelope: mutatedEnvelope, expectedEnvelopeHash: binding.envelopeHash },
+      ),
+    );
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.executed).toBe(false);
+      expect(result.failures.join(" ")).toMatch(/trusted expected envelope hash/);
+    }
+  });
+
+  it("generic callers without a trusted expected envelope hash fail closed", async () => {
+    let called = false;
+    const result = await runGovernedExecution(
+      inputFor(
+        async () => {
+          called = true;
+          return { ok: true };
+        },
+        { expectedEnvelopeHash: "" },
+      ),
+    );
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.executed).toBe(false);
+  });
+
+  it("native bind rejects envelope mutation before freezing authority", () => {
+    const binding = nativeBinding();
+    const mutated = {
+      ...binding,
+      envelope: {
+        ...binding.envelope,
+        economicLimit: { ...binding.envelope.economicLimit, maxToolCostMicros: 50_000 },
+      },
+    };
+    const economics = bindNativePublicWebEconomics({
+      session: session(),
+      binding: mutated,
+      organizationId: ORG,
+      tenantId: TENANT,
+      now: NOW,
+      inputManifestContentHash: HASH,
+      deadlineAt: DEADLINE,
+    });
+    expect(economics.ok).toBe(false);
+    if (!economics.ok) expect(economics.failures.join(" ")).toMatch(/trusted expected envelope hash/);
+  });
+
+  it("rejects caller-supplied frozen and proposed authority that both drop approval, review, and evidence", async () => {
+    let called = false;
+    const frozen = frozenFor();
+    const weakened: AuthorityFreeze = {
+      ...frozen.authority,
+      requiresHumanApproval: false,
+      independentReviewRequired: false,
+      requiredArtifactSchemaVersions: [],
+    };
+    const result = await runGovernedExecution(
+      inputFor(
+        async () => {
+          called = true;
+          return { ok: true };
+        },
+        {
+          frozenAuthority: { ...frozen, authority: weakened },
+          proposedAuthority: weakened,
+        },
+      ),
+    );
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.executed).toBe(false);
+      expect(result.failures.join(" ")).toMatch(/re-derived from trusted contracts/);
+    }
+  });
+
+  it("does not authorize tool work from toolKeys and rejects credential_use before execute", async () => {
+    let called = false;
+    const result = await runGovernedExecution(
+      inputFor(
+        async () => {
+          called = true;
+          return { ok: true };
+        },
+        { callKind: "tool", toolClass: "credential_use", toolKeys: ["credential_use"] },
+      ),
+    );
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.executed).toBe(false);
+      expect(result.failures.join(" ")).toMatch(/credential_use|outside the execution context envelope/);
+    }
+  });
+
+  it("rejects tool calls that omit an explicit tool class", async () => {
+    let called = false;
+    const result = await runGovernedExecution(
+      inputFor(
+        async () => {
+          called = true;
+          return { ok: true };
+        },
+        { callKind: "tool", toolKeys: ["public_read"] },
+      ),
+    );
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.executed).toBe(false);
+      expect(result.failures.join(" ")).toMatch(/explicit ToolClass/);
+    }
+  });
+
+  it("rejects executor_process without an explicit authorized tool class", async () => {
+    let called = false;
+    const result = await runGovernedExecution(
+      inputFor(
+        async () => {
+          called = true;
+          return { ok: true };
+        },
+        { callKind: "executor_process", toolKeys: ["process"] },
+      ),
+    );
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.executed).toBe(false);
+      expect(result.failures.join(" ")).toMatch(/not authorized by economics presence alone/);
+    }
+  });
+
+  it("rejects a non-null lease without a separate trusted expected lease", async () => {
+    let called = false;
+    const binding = nativeBinding();
+    const result = await runGovernedExecution(
+      inputFor(
+        async () => {
+          called = true;
+          return { ok: true };
+        },
+        {
+          runtime: runtimeFor(binding, {
+            lease: {
+              attemptId: "attempt-001",
+              stepKey: "research",
+              workerId: "worker-001",
+              leaseTokenHash: HASH,
+              leaseExpiresAt: DEADLINE,
+            },
+          }),
+        },
+      ),
+    );
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.executed).toBe(false);
+      expect(result.failures.join(" ")).toMatch(/trusted expected lease/);
+    }
+  });
+
+  it("rejects forged leases that match attemptId but not step, worker, or token", async () => {
+    const binding = nativeBinding();
+    const expectedLease = {
+      attemptId: "attempt-001",
+      stepKey: "research",
+      workerId: "worker-001",
+      leaseTokenHash: HASH,
+      leaseExpiresAt: DEADLINE,
+    };
+    const forgeries = [
+      { ...expectedLease, stepKey: "other-step" },
+      { ...expectedLease, workerId: "worker-002" },
+      { ...expectedLease, leaseTokenHash: "b".repeat(64) },
+    ];
+    for (const presented of forgeries) {
+      let called = false;
+      const result = await runGovernedExecution(
+        inputFor(
+          async () => {
+            called = true;
+            return { ok: true };
+          },
+          { runtime: runtimeFor(binding, { lease: presented, expectedLease }) },
+        ),
+      );
+      expect(called).toBe(false);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.executed).toBe(false);
+        expect(result.failures.join(" ")).toMatch(/lease_identity_mismatch|lease_credential_mismatch/);
+      }
+    }
+  });
+
+  it("does not release another attempt's reservation on the fail path", async () => {
+    const binding = nativeBinding();
+    const economics = session();
+    const failUsage = (attemptId: string, stepKey: string) => ({
+      ...usageFor(binding, runtimeFor(binding, { executionAttemptId: attemptId }), stepKey),
+      inputTokens: Number.NaN,
+    });
+    const reservedA = await runGovernedExecution(
+      inputFor(async () => ({ ok: true }), {
+        session: economics,
+        runtime: runtimeFor(binding, { executionAttemptId: "attempt-A" }),
+        stepKey: "step-a",
+        usageOnSuccess: () => failUsage("attempt-A", "step-a"),
+      }),
+    );
+    const reservedB = await runGovernedExecution(
+      inputFor(async () => ({ ok: true }), {
+        session: economics,
+        runtime: runtimeFor(binding, { executionAttemptId: "attempt-B" }),
+        stepKey: "step-b",
+        usageOnSuccess: () => failUsage("attempt-B", "step-b"),
+      }),
+    );
+    expect(reservedA.ok).toBe(false);
+    expect(reservedB.ok).toBe(false);
+    if (reservedA.ok || reservedB.ok || !reservedA.reservation || !reservedB.reservation) {
+      throw new Error("expected both attempts to remain reserved after malformed usage");
+    }
+    const remainingBefore = economics.remainingAiCostMicros;
+    const crossed = releaseAttemptBoundReservation({
+      session: economics,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId: reservedB.reservation.reservationId,
+      attemptId: "attempt-A",
+      now: NOW,
+    });
+    expect(crossed.ok).toBe(false);
+    if (!crossed.ok) expect(crossed.failures.join(" ")).toMatch(/does not match the failing attempt/);
+    expect(economics.reservations.get(reservedB.reservation.reservationId)?.state).toBe("reserved");
+    expect(economics.reservations.get(reservedA.reservation.reservationId)?.state).toBe("reserved");
+    expect(economics.remainingAiCostMicros).toBe(remainingBefore);
+
+    const first = releaseAttemptBoundReservation({
+      session: economics,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId: reservedA.reservation.reservationId,
+      attemptId: "attempt-A",
+      now: NOW,
+    });
+    const second = releaseAttemptBoundReservation({
+      session: economics,
+      organizationId: ORG,
+      tenantId: TENANT,
+      reservationId: reservedA.reservation.reservationId,
+      attemptId: "attempt-A",
+      now: NOW,
+    });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(economics.reservations.get(reservedA.reservation.reservationId)?.state).toBe("released");
+    expect(economics.reservations.get(reservedB.reservation.reservationId)?.state).toBe("reserved");
+  });
+
+  it("derives work-cell phase-already-recorded from a persisted assignment", () => {
+    expect(workCellPhaseAlreadyRecordedFromAssignment(null)).toBe(false);
+    expect(workCellPhaseAlreadyRecordedFromAssignment(undefined)).toBe(false);
+    expect(workCellPhaseAlreadyRecordedFromAssignment({ status: "failed" })).toBe(true);
+    expect(workCellPhaseAlreadyRecordedFromAssignment({ status: "completed" })).toBe(true);
+    expect(workCellPhaseAlreadyRecordedFromAssignment({ status: "blocked" })).toBe(true);
+    expect(workCellPhaseAlreadyRecordedFromAssignment({ status: "planned" })).toBe(true);
+  });
+
+  it("existing recorded prepare assignment blocks native fetch before economics execute", async () => {
+    const binding = nativeBinding();
+    const economics = bindNativePublicWebEconomics({
+      session: session(),
+      binding,
+      organizationId: ORG,
+      tenantId: TENANT,
+      now: NOW,
+      inputManifestContentHash: HASH,
+      deadlineAt: DEADLINE,
+      workCellPhaseAlreadyRecorded: true,
+    });
+    if (!economics.ok) throw new Error(economics.failures.join(" "));
+    let fetchCalls = 0;
+    await expect(
+      prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
+        economics: economics.value,
+        fetchPage: async (url) => {
+          fetchCalls += 1;
+          return { url, status: 200, text: "must not fetch" };
+        },
+        now: NOW,
+      }),
+    ).rejects.toThrow(/already has a recorded attempt|Fetch was not started/);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("omitted token usage stays null and does not refund a cheap reservation", async () => {
+    const omitted = reportedToolUsage({
+      runtime: runtimeFor(),
+      executorTier: "cheap",
+      toolKeys: ["model"],
+      stepKey: "omit-tokens",
+      idempotencyKey: "omit-tokens",
+      toolCallCount: 1,
+      recordedAt: NOW,
+    });
+    expect(omitted.inputTokens).toBeNull();
+    expect(omitted.outputTokens).toBeNull();
+    expect(omitted.totalTokens).toBeNull();
+    const explicitZero = reportedToolUsage({
+      runtime: runtimeFor(),
+      executorTier: "cheap",
+      toolKeys: ["model"],
+      stepKey: "zero-tokens",
+      idempotencyKey: "zero-tokens",
+      toolCallCount: 1,
+      recordedAt: NOW,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    });
+    expect(explicitZero.inputTokens).toBe(0);
+    expect(explicitZero.outputTokens).toBe(0);
+
+    const request = inputFor(async () => ({ ok: true }), { stepKey: "omit-tokens-call" });
+    const remainingAfterReserveWouldBe = request.session.remainingAiCostMicros - 100;
+    const result = await runGovernedExecution({
+      ...request,
+      usageOnSuccess: () =>
+        reportedToolUsage({
+          runtime: request.runtime,
+          executorTier: "cheap",
+          toolKeys: ["model"],
+          stepKey: "omit-tokens-call",
+          idempotencyKey: deriveGovernedIdempotencyKey({
+            organizationId: request.runtime.organizationId,
+            tenantId: request.runtime.tenantId,
+            runId: request.runtime.runId,
+            executionAttemptId: request.runtime.executionAttemptId,
+            assignmentId: request.runtime.assignmentId,
+            specVersion: request.frozenAuthority.specVersion,
+            canonicalPlanHash: request.frozenAuthority.canonicalPlanHash,
+            inputManifestContentHash: request.frozenAuthority.inputManifestContentHash,
+            callKind: "model",
+            stepKey: "omit-tokens-call",
+          }),
+          toolCallCount: 1,
+          recordedAt: NOW,
+        }),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.commit.unusedAiCostMicros).toBe(0);
+      expect(result.reservation.state).toBe("committed");
+      expect(request.session.remainingAiCostMicros).toBe(remainingAfterReserveWouldBe);
+    }
+  });
+
+  it("releases on native HTTP and timeout fetch failures without committing", async () => {
+    const binding = nativeBinding();
+    const httpSession = session();
+    const httpEconomics = bindNativePublicWebEconomics({
+      session: httpSession,
+      binding,
+      organizationId: ORG,
+      tenantId: TENANT,
+      now: NOW,
+      inputManifestContentHash: HASH,
+      deadlineAt: DEADLINE,
+      attemptNumber: 1,
+      maxAttempts: 3,
+    });
+    if (!httpEconomics.ok) throw new Error(httpEconomics.failures.join(" "));
+    let httpFetches = 0;
+    const httpFailed = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
+      economics: httpEconomics.value,
+      fetchPage: async () => {
+        httpFetches += 1;
+        return { error: "HTTP 503" };
+      },
+      now: NOW,
+    });
+    expect(httpFetches).toBe(1);
+    expect(httpFailed.trace.outcomes[0]?.result).toBe("fetch_failed");
+    expect(httpFailed.economicReservationIds).toHaveLength(0);
+    expect([...httpSession.reservations.values()].every((reservation) => reservation.state !== "committed")).toBe(true);
+    expect([...httpSession.reservations.values()].some((reservation) => reservation.state === "released")).toBe(true);
+
+    const timeoutSession = session();
+    const timeoutEconomics = bindNativePublicWebEconomics({
+      session: timeoutSession,
+      binding,
+      organizationId: ORG,
+      tenantId: TENANT,
+      now: NOW,
+      inputManifestContentHash: HASH,
+      deadlineAt: DEADLINE,
+      attemptNumber: 1,
+      maxAttempts: 3,
+    });
+    if (!timeoutEconomics.ok) throw new Error(timeoutEconomics.failures.join(" "));
+    const timedOut = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), binding, {
+      economics: timeoutEconomics.value,
+      fetchPage: async () => ({ error: "The operation was aborted" }),
+      now: NOW,
+    });
+    expect(timedOut.trace.outcomes[0]?.result).toBe("fetch_failed");
+    expect(timedOut.economicReservationIds).toHaveLength(0);
+    expect([...timeoutSession.reservations.values()].some((reservation) => reservation.state === "released")).toBe(true);
+    expect([...timeoutSession.reservations.values()].every((reservation) => reservation.state !== "committed")).toBe(true);
+  });
+
+  it("releases when usage observation throws before commit", async () => {
+    const request = inputFor(async () => ({ ok: true }), {
+      usageOnSuccess: () => {
+        throw new Error("observer crashed");
+      },
+    });
+    const remainingBefore = request.session.remainingAiCostMicros;
+    const result = await runGovernedExecution(request);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.executed).toBe(true);
+      expect(result.reservation?.state).toBe("released");
+      expect(result.failures.join(" ")).toMatch(/could not be observed/);
+      expect(request.session.remainingAiCostMicros).toBe(remainingBefore);
+    }
+  });
+
+  it("native catalog path binds an input-manifest content hash, not a plan hash", () => {
+    const frozen = frozenFor();
+    expect(frozen.canonicalPlanHash).toBeNull();
+    expect(frozen.inputManifestContentHash).toBe(HASH);
+    const runtime = runtimeFor();
+    expect(runtime.canonicalPlanHash).toBeNull();
+    expect(runtime.inputManifestContentHash).toBe(HASH);
+    const adapter = readFileSync(resolve(process.cwd(), "src/lib/execution-economics-adapter.ts"), "utf8");
+    expect(adapter).not.toMatch(/checkExecutionLease\(runtime\.lease, runtime\.lease/);
   });
 });

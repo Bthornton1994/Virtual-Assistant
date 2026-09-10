@@ -13,10 +13,9 @@ import { sha256Text } from "@/lib/catalog-evidence-hash";
 import {
   assertRedactedEconomicsTelemetry,
   readRuntimeEconomicsReservationId,
-  releaseReservation,
   type EconomicsSession,
 } from "@/lib/outcome-economics-governor";
-import { assertSuccessfulCompletionMayProceed } from "@/lib/execution-economics-adapter";
+import { assertSuccessfulCompletionMayProceed, releaseAttemptBoundReservation } from "@/lib/execution-economics-adapter";
 import {
   validateExecutionPlan,
   type ExecutionFailureClass,
@@ -696,15 +695,15 @@ export async function failExecutionAttempt(input: ExecutionFailureInput & {
   if (input.economicsSession) {
     const reservationId = readRuntimeEconomicsReservationId(metadata);
     if (reservationId) {
-      const released = releaseReservation({
+      const released = releaseAttemptBoundReservation({
         session: input.economicsSession,
         organizationId: input.economicsSession.organizationId,
         tenantId: input.economicsSession.tenantId,
         reservationId,
-        idempotencyKey: reservationId,
+        attemptId: input.attemptId,
         now: new Date().toISOString(),
       });
-      if (!released.ok && !released.failures.some((failure) => /not be released|not found|Committed/.test(failure))) {
+      if (!released.ok) {
         throw new DomainError(released.failures.join(" "));
       }
     }

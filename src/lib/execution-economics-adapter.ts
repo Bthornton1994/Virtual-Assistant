@@ -1,9 +1,15 @@
-import { sha256Hex } from "@/lib/catalog-evidence-hash";
+import { canonicalJsonStringify, sha256Hex } from "@/lib/catalog-evidence-hash";
 import { DomainError, type ActionClass } from "@/lib/domain";
-import type { ExecutorEnvelopeV1 } from "@/lib/executor-envelope";
 import {
+  hashExecutorEnvelope,
+  validateExecutorEnvelope,
+  type ExecutorEnvelopeV1,
+} from "@/lib/executor-envelope";
+import {
+  authorizeToolClass,
   validateExecutionContext,
   type ExecutionContext,
+  type ToolClass,
 } from "@/lib/execution-context";
 import { checkExecutionLease, type ExecutionLease } from "@/lib/execution-runtime";
 import {
@@ -37,8 +43,10 @@ import {
  * budget, lease, planner, queue, evidence, receipt, or memory store.
  *
  * Reservations are process-local Maps. This is not global serverless
- * enforcement. A future SQL seam requires separate authorization and runtime
- * verification.
+ * enforcement. Cross-request and off-box workers remain advisory unless a
+ * durable authorized seam exists. Concurrent native prepares are not closed
+ * by this slice. A future SQL seam requires separate authorization and
+ * runtime verification.
  */
 
 export const EXECUTION_ECONOMICS_ADAPTER_SCHEMA_VERSION = "execution-economics-adapter/v1" as const;
@@ -64,7 +72,8 @@ export type GovernedCallKind = "model" | "tool" | "executor_process";
 
 export type FrozenAuthorityBinding = {
   specVersion: string;
-  canonicalPlanHash: string;
+  canonicalPlanHash: string | null;
+  inputManifestContentHash: string | null;
   authority: AuthorityFreeze;
 };
 
@@ -83,8 +92,10 @@ export type TrustedExecutionRuntimeState = {
   deadlineAt: string;
   cancelled: boolean;
   lease: ExecutionLease | null;
+  expectedLease: ExecutionLease | null;
   specVersion: string;
-  canonicalPlanHash: string;
+  canonicalPlanHash: string | null;
+  inputManifestContentHash: string | null;
   evaluationClock: string;
 };
 
@@ -106,6 +117,7 @@ export type GovernedExecutionInput<T> = {
   session: EconomicsSession;
   context: ExecutionContext;
   envelope: ExecutorEnvelopeV1;
+  expectedEnvelopeHash: string;
   runtime: TrustedExecutionRuntimeState;
   frozenAuthority: FrozenAuthorityBinding;
   proposedAuthority: AuthorityFreeze;
@@ -113,6 +125,7 @@ export type GovernedExecutionInput<T> = {
   availableTiers: readonly ExecutorTier[];
   escalationReason?: EscalationReason | null;
   callKind: GovernedCallKind;
+  toolClass?: ToolClass;
   toolKeys: readonly string[];
   stepKey: string;
   estimatedAiCostMicros: number;
@@ -171,16 +184,136 @@ function requireHex64(value: unknown, label: string, failures: string[]): string
   return identifier;
 }
 
+function optionalHex64(value: unknown, label: string, failures: string[]): string | null {
+  if (value === null || value === undefined) return null;
+  return requireHex64(value, label, failures);
+}
+
 function isAbortTimeoutOrCancel(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (error.name === "AbortError") return true;
   return /timeout|timed out|aborted|cancell?ed/i.test(error.message);
 }
 
+function canonicalFrozenAuthorityBinding(binding: FrozenAuthorityBinding): string {
+  return canonicalJsonStringify({
+    specVersion: binding.specVersion,
+    canonicalPlanHash: binding.canonicalPlanHash,
+    inputManifestContentHash: binding.inputManifestContentHash,
+    authority: {
+      actionClass: binding.authority.actionClass,
+      requiresHumanApproval: binding.authority.requiresHumanApproval,
+      mayOwnAuthoritativeState: binding.authority.mayOwnAuthoritativeState,
+      independentReviewRequired: binding.authority.independentReviewRequired,
+      requiredArtifactSchemaVersions: [...binding.authority.requiredArtifactSchemaVersions].sort(),
+    },
+  });
+}
+
+export function workCellPhaseAlreadyRecordedFromAssignment(
+  assignment: { status?: string } | null | undefined,
+): boolean {
+  return assignment != null;
+}
+
+export function assertExecutorEnvelopeIntegrity(input: {
+  envelope: unknown;
+  expectedEnvelopeHash: unknown;
+}): GovernorResult<ExecutorEnvelopeV1> {
+  const failures: string[] = [];
+  const expectedHash = requireHex64(input.expectedEnvelopeHash, "expectedEnvelopeHash", failures);
+  if (!expectedHash) {
+    return {
+      ok: false,
+      failures: failures.length
+        ? failures
+        : ["Governed execution cannot obtain a trusted expected Executor Envelope hash."],
+    };
+  }
+  const envelopeCheck = validateExecutorEnvelope(input.envelope);
+  if (!envelopeCheck.ok) return envelopeCheck;
+  const observedHash = hashExecutorEnvelope(envelopeCheck.value);
+  if (observedHash !== expectedHash) {
+    return {
+      ok: false,
+      failures: [
+        "Executor Envelope hash does not match the trusted expected envelope hash. Mutated envelope fields cannot execute.",
+      ],
+    };
+  }
+  return { ok: true, value: envelopeCheck.value };
+}
+
+function assertTrustedLeaseBinding(input: {
+  presented: ExecutionLease | null;
+  expected: ExecutionLease | null;
+  evaluationClock: string;
+  executionAttemptId: string;
+}): GovernorResult<true> {
+  const { presented, expected } = input;
+  if (!presented && !expected) return { ok: true, value: true };
+  if (presented && !expected) {
+    return {
+      ok: false,
+      failures: [
+        "Non-null lease requires a trusted expected lease from claimed-attempt persistence. TrustedExecutionRuntimeState is not a source of lease trust.",
+      ],
+    };
+  }
+  if (!presented && expected) {
+    return {
+      ok: false,
+      failures: ["Trusted expected lease is present but no presented lease credentials were supplied."],
+    };
+  }
+  if (!presented || !expected) {
+    return { ok: false, failures: ["Lease binding is incomplete."] };
+  }
+  if (presented.attemptId !== input.executionAttemptId) {
+    return { ok: false, failures: ["Live lease attempt does not match the trusted execution attempt."] };
+  }
+  const lease = checkExecutionLease(expected, presented, input.evaluationClock);
+  if (!lease.ok) {
+    return { ok: false, failures: [`Live lease failed closed (${lease.reason}).`] };
+  }
+  return { ok: true, value: true };
+}
+
+function authorizeGovernedToolClass(input: {
+  context: ExecutionContext;
+  callKind: GovernedCallKind;
+  toolClass: ToolClass | undefined;
+}): GovernorResult<true> {
+  if (input.callKind === "model") return { ok: true, value: true };
+  if (input.callKind === "executor_process" && input.toolClass === undefined) {
+    return {
+      ok: false,
+      failures: [
+        "executor_process is not authorized by economics presence alone. Bind an explicit authorized tool class from execution-context or reject the unsupported combination.",
+      ],
+    };
+  }
+  if (input.callKind === "tool" && input.toolClass === undefined) {
+    return {
+      ok: false,
+      failures: [
+        "Tool execution requires an explicit ToolClass. toolKeys are not tool classes and cannot authorize work.",
+      ],
+    };
+  }
+  if (input.toolClass === undefined) {
+    return { ok: false, failures: ["Governed tool work requires an explicit authorized tool class."] };
+  }
+  const authorized = authorizeToolClass(input.context, input.toolClass);
+  if (!authorized.ok) return authorized;
+  return { ok: true, value: true };
+}
+
 export function bindFrozenAuthorityFromTrustedContracts(input: {
   context: ExecutionContext;
   envelope: ExecutorEnvelopeV1;
-  canonicalPlanHash: string;
+  canonicalPlanHash?: string | null;
+  inputManifestContentHash?: string | null;
 }): GovernorResult<FrozenAuthorityBinding> {
   const failures: string[] = [];
   const spec = input.context.delegationSpecSnapshot;
@@ -193,14 +326,23 @@ export function bindFrozenAuthorityFromTrustedContracts(input: {
   if (ACTION_CLASS_RANK[input.envelope.authoritySnapshot.actionClass] > ACTION_CLASS_RANK[spec.actionClass]) {
     failures.push("Frozen envelope action class cannot exceed the Delegation Spec ceiling.");
   }
-  const planHash = requireHex64(input.canonicalPlanHash, "canonicalPlanHash", failures);
+  const canonicalPlanHash = optionalHex64(input.canonicalPlanHash ?? null, "canonicalPlanHash", failures);
+  const inputManifestContentHash = optionalHex64(
+    input.inputManifestContentHash ?? null,
+    "inputManifestContentHash",
+    failures,
+  );
+  if (!canonicalPlanHash && !inputManifestContentHash) {
+    failures.push("Frozen authority requires a trusted canonical plan hash or a trusted input-manifest content hash.");
+  }
   const specVersion = requireTrimmedIdentifier(spec.specVersion, "specVersion", failures);
-  if (failures.length || !planHash || !specVersion) return { ok: false, failures };
+  if (failures.length || !specVersion) return { ok: false, failures };
   return {
     ok: true,
     value: {
       specVersion,
-      canonicalPlanHash: planHash,
+      canonicalPlanHash,
+      inputManifestContentHash,
       authority: {
         actionClass: spec.actionClass,
         requiresHumanApproval: spec.requiresHumanApproval,
@@ -291,20 +433,24 @@ export function assertTrustedIdentityMatch(input: {
     failures.push("Frozen authority is not bound to the trusted Delegation Spec version.");
   }
   if (frozenAuthority.canonicalPlanHash !== runtime.canonicalPlanHash) {
-    failures.push("Frozen authority is not bound to the canonical plan hash.");
+    failures.push("Frozen authority is not bound to the trusted canonical plan hash.");
+  }
+  if (frozenAuthority.inputManifestContentHash !== runtime.inputManifestContentHash) {
+    failures.push("Frozen authority is not bound to the trusted input-manifest content hash.");
+  }
+  if (!runtime.canonicalPlanHash && !runtime.inputManifestContentHash) {
+    failures.push("Trusted runtime must bind a canonical plan hash or an input-manifest content hash.");
   }
   if (frozenAuthority.authority.mayOwnAuthoritativeState !== false) {
     failures.push("Frozen authority cannot declare executor-owned authoritative state.");
   }
-  if (runtime.lease) {
-    if (runtime.lease.attemptId !== runtime.executionAttemptId) {
-      failures.push("Live lease attempt does not match the trusted execution attempt.");
-    }
-    const lease = checkExecutionLease(runtime.lease, runtime.lease, runtime.evaluationClock);
-    if (!lease.ok) {
-      failures.push(`Live lease failed closed (${lease.reason}).`);
-    }
-  }
+  const lease = assertTrustedLeaseBinding({
+    presented: runtime.lease,
+    expected: runtime.expectedLease,
+    evaluationClock: runtime.evaluationClock,
+    executionAttemptId: runtime.executionAttemptId,
+  });
+  if (!lease.ok) failures.push(...lease.failures);
   return failures.length ? { ok: false, failures } : { ok: true, value: true };
 }
 
@@ -315,7 +461,8 @@ export function deriveGovernedIdempotencyKey(input: {
   executionAttemptId: string;
   assignmentId: string;
   specVersion: string;
-  canonicalPlanHash: string;
+  canonicalPlanHash: string | null;
+  inputManifestContentHash: string | null;
   callKind: GovernedCallKind;
   stepKey: string;
 }): string {
@@ -402,6 +549,46 @@ function releaseSafely(input: {
   });
 }
 
+export function releaseAttemptBoundReservation(input: {
+  session: EconomicsSession;
+  organizationId: string;
+  tenantId: string;
+  reservationId: string;
+  attemptId: string;
+  now: string;
+}): GovernorResult<{ reservationId: string; releasedAt: string }> {
+  const failures: string[] = [];
+  if (input.session.organizationId !== input.organizationId) {
+    failures.push("Economics session organization does not match the reservation release organization.");
+  }
+  if (input.session.tenantId !== input.tenantId) {
+    failures.push("Economics session tenant does not match the reservation release tenant.");
+  }
+  if (failures.length) return { ok: false, failures };
+
+  const reservation = input.session.reservations.get(input.reservationId);
+  if (!reservation) {
+    return { ok: false, failures: ["Reservation was not found."] };
+  }
+  if (reservation.organizationId !== input.organizationId || reservation.tenantId !== input.tenantId) {
+    return { ok: false, failures: ["Reservation tenant does not match the economics session."] };
+  }
+  if (reservation.executionAttemptId !== input.attemptId) {
+    return {
+      ok: false,
+      failures: ["Reservation execution attempt does not match the failing attempt; release was not applied."],
+    };
+  }
+  return releaseReservation({
+    session: input.session,
+    organizationId: input.organizationId,
+    tenantId: input.tenantId,
+    reservationId: input.reservationId,
+    idempotencyKey: reservation.idempotencyKey,
+    now: input.now,
+  });
+}
+
 export async function runGovernedExecution<T>(
   input: GovernedExecutionInput<T>,
 ): Promise<GovernedExecutionResult<T>> {
@@ -409,11 +596,44 @@ export async function runGovernedExecution<T>(
   if (!contextCheck.ok) {
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: contextCheck.failures };
   }
+  const envelopeCheck = assertExecutorEnvelopeIntegrity({
+    envelope: input.envelope,
+    expectedEnvelopeHash: input.expectedEnvelopeHash,
+  });
+  if (!envelopeCheck.ok) {
+    return { ok: false, executed: false, decision: "reject", reservation: null, failures: envelopeCheck.failures };
+  }
+  const toolAuthorization = authorizeGovernedToolClass({
+    context: contextCheck.value,
+    callKind: input.callKind,
+    toolClass: input.toolClass,
+  });
+  if (!toolAuthorization.ok) {
+    return { ok: false, executed: false, decision: "reject", reservation: null, failures: toolAuthorization.failures };
+  }
+  const derivedFrozen = bindFrozenAuthorityFromTrustedContracts({
+    context: contextCheck.value,
+    envelope: envelopeCheck.value,
+    canonicalPlanHash: input.runtime.canonicalPlanHash,
+    inputManifestContentHash: input.runtime.inputManifestContentHash,
+  });
+  if (!derivedFrozen.ok) {
+    return { ok: false, executed: false, decision: "reject", reservation: null, failures: derivedFrozen.failures };
+  }
+  if (canonicalFrozenAuthorityBinding(input.frozenAuthority) !== canonicalFrozenAuthorityBinding(derivedFrozen.value)) {
+    return {
+      ok: false,
+      executed: false,
+      decision: "reject",
+      reservation: null,
+      failures: ["Caller-supplied frozen authority does not match authority re-derived from trusted contracts."],
+    };
+  }
   const identity = assertTrustedIdentityMatch({
     context: contextCheck.value,
-    envelope: input.envelope,
+    envelope: envelopeCheck.value,
     runtime: input.runtime,
-    frozenAuthority: input.frozenAuthority,
+    frozenAuthority: derivedFrozen.value,
     session: input.session,
   });
   if (!identity.ok) {
@@ -424,7 +644,7 @@ export async function runGovernedExecution<T>(
     return { ok: false, executed: false, decision: "reject", reservation: null, failures: limits.failures };
   }
   const cheaper = assertCheaperRouteDoesNotWeakenAuthority({
-    frozen: input.frozenAuthority.authority,
+    frozen: derivedFrozen.value.authority,
     proposed: input.proposedAuthority,
   });
   if (!cheaper.ok) {
@@ -446,8 +666,9 @@ export async function runGovernedExecution<T>(
     runId: input.runtime.runId,
     executionAttemptId: input.runtime.executionAttemptId,
     assignmentId: input.runtime.assignmentId,
-    specVersion: input.frozenAuthority.specVersion,
-    canonicalPlanHash: input.frozenAuthority.canonicalPlanHash,
+    specVersion: derivedFrozen.value.specVersion,
+    canonicalPlanHash: derivedFrozen.value.canonicalPlanHash,
+    inputManifestContentHash: derivedFrozen.value.inputManifestContentHash,
     callKind: input.callKind,
     stepKey: input.stepKey,
   });
@@ -473,7 +694,7 @@ export async function runGovernedExecution<T>(
     streamTerminatedBeforeUsage: input.streamTerminatedBeforeUsage,
     pricing: input.pricing,
     executionLimits: limits.value,
-    frozenAuthority: input.frozenAuthority.authority,
+    frozenAuthority: derivedFrozen.value.authority,
     proposedAuthority: input.proposedAuthority,
     idempotencyKey,
     now: input.runtime.evaluationClock,
@@ -530,12 +751,19 @@ export async function runGovernedExecution<T>(
   try {
     observation = input.usageOnSuccess(result);
   } catch (error) {
+    releaseSafely({
+      session: input.session,
+      organizationId: input.runtime.organizationId,
+      tenantId: input.runtime.tenantId,
+      reservation,
+      now: input.runtime.evaluationClock,
+    });
     const reason = error instanceof Error ? error.message : "usage observation failed";
     return {
       ok: false,
       executed: true,
       decision: "reject",
-      reservation,
+      reservation: input.session.reservations.get(reservation.reservationId) ?? reservation,
       failures: [`Provider usage could not be observed: ${reason}`],
     };
   }
@@ -601,7 +829,7 @@ export function bindNativePublicWebEconomics(input: {
   organizationId: string;
   tenantId: string;
   now: string;
-  canonicalPlanHash: string;
+  inputManifestContentHash: string;
   deadlineAt: string;
   executionAttemptId?: string;
   attemptNumber?: number;
@@ -625,10 +853,24 @@ export function bindNativePublicWebEconomics(input: {
   ) {
     return { ok: false, failures: ["Native economics binding context hashes do not match."] };
   }
+  const envelopeCheck = assertExecutorEnvelopeIntegrity({
+    envelope: input.binding.envelope,
+    expectedEnvelopeHash: input.binding.envelopeHash,
+  });
+  if (!envelopeCheck.ok) return envelopeCheck;
+  if (input.lease) {
+    return {
+      ok: false,
+      failures: [
+        "Native public-web prepare does not accept a presented lease. Native economics keep lease null rather than treating caller-created lease objects as trusted.",
+      ],
+    };
+  }
   const frozen = bindFrozenAuthorityFromTrustedContracts({
     context: contextCheck.value,
-    envelope: input.binding.envelope,
-    canonicalPlanHash: input.canonicalPlanHash,
+    envelope: envelopeCheck.value,
+    canonicalPlanHash: null,
+    inputManifestContentHash: input.inputManifestContentHash,
   });
   if (!frozen.ok) return frozen;
   const runtime: TrustedExecutionRuntimeState = {
@@ -639,20 +881,22 @@ export function bindNativePublicWebEconomics(input: {
     assignmentId: input.binding.assignmentId,
     capabilityKey: contextCheck.value.assignmentSnapshot.capabilityKey,
     executorKey: contextCheck.value.assignmentSnapshot.executorKey,
-    workCellPhase: input.binding.envelope.phase,
+    workCellPhase: envelopeCheck.value.phase,
     workCellPhaseAlreadyRecorded: input.workCellPhaseAlreadyRecorded ?? false,
     attemptNumber: input.attemptNumber ?? 1,
     maxAttempts: input.maxAttempts ?? 1,
     deadlineAt: input.deadlineAt,
     cancelled: input.cancelled ?? false,
-    lease: input.lease ?? null,
+    lease: null,
+    expectedLease: null,
     specVersion: frozen.value.specVersion,
-    canonicalPlanHash: frozen.value.canonicalPlanHash,
+    canonicalPlanHash: null,
+    inputManifestContentHash: frozen.value.inputManifestContentHash,
     evaluationClock: input.now,
   };
   const identity = assertTrustedIdentityMatch({
     context: contextCheck.value,
-    envelope: input.binding.envelope,
+    envelope: envelopeCheck.value,
     runtime,
     frozenAuthority: frozen.value,
     session: input.session,
@@ -693,6 +937,14 @@ export function reportedToolUsage(input: {
   latencyMs?: number;
   usageStatus?: UsageObservation["usageStatus"];
 }): UsageObservation {
+  const inputTokens = input.inputTokens ?? null;
+  const outputTokens = input.outputTokens ?? null;
+  const totalTokens =
+    input.totalTokens !== undefined
+      ? input.totalTokens
+      : typeof inputTokens === "number" && typeof outputTokens === "number"
+        ? inputTokens + outputTokens
+        : null;
   return {
     schemaVersion: OUTCOME_ECONOMICS_GOVERNOR_SCHEMA_VERSION,
     organizationId: input.runtime.organizationId,
@@ -703,9 +955,9 @@ export function reportedToolUsage(input: {
     capabilityKey: input.runtime.capabilityKey,
     executorKey: input.runtime.executorKey,
     executorTier: input.executorTier,
-    inputTokens: input.inputTokens ?? 0,
-    outputTokens: input.outputTokens ?? 0,
-    totalTokens: input.totalTokens ?? (input.inputTokens ?? 0) + (input.outputTokens ?? 0),
+    inputTokens,
+    outputTokens,
+    totalTokens,
     reasoningTokens: input.reasoningTokens ?? null,
     cacheTokens: input.cacheTokens ?? null,
     toolCallCount: input.toolCallCount,
@@ -740,4 +992,12 @@ export function economicsFailures(result: { failures: string[] }): string {
 
 export function requireEconomicsEnvelope(value: unknown): unknown {
   return isObject(value) ? value : {};
+}
+
+export function isReleasedUnderlyingCallFailure(result: GovernedExecutionFailure): boolean {
+  return (
+    result.executed === true &&
+    result.reservation?.state === "released" &&
+    result.failures.some((failure) => /Underlying call (failed|aborted)/.test(failure))
+  );
 }

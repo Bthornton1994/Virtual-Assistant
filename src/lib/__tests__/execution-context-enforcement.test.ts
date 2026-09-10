@@ -163,7 +163,7 @@ function nativeEconomics(binding: ReturnType<typeof nativeBinding>, now = NOW) {
     organizationId: "org-loadout-internal-qa",
     tenantId: "org-loadout-internal-qa",
     now,
-    canonicalPlanHash: HASH,
+    inputManifestContentHash: HASH,
     deadlineAt: "2026-09-09T17:00:00Z",
   });
   if (!bound.ok) throw new Error(bound.failures.join(" "));

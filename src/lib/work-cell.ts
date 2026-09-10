@@ -38,6 +38,7 @@ import {
 import {
   bindNativePublicWebEconomics,
   requireEconomicsEnvelope,
+  workCellPhaseAlreadyRecordedFromAssignment,
 } from "@/lib/execution-economics-adapter";
 import {
   createEconomicsSession,
@@ -812,6 +813,13 @@ export async function runNativePublicWebPrepare(
   if (await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION)) {
     throw new DomainError("This run already has a frozen catalog evidence packet. Ingesting another belongs to a new attempt.");
   }
+  const existingPrepare = await getAssignment(db, run.id, "prepare");
+  const workCellPhaseAlreadyRecorded = workCellPhaseAlreadyRecordedFromAssignment(existingPrepare);
+  if (workCellPhaseAlreadyRecorded) {
+    throw new DomainError(
+      `The prepare phase of this run already has a recorded attempt (status: ${existingPrepare?.status ?? "unknown"}). Fetch was not started.`,
+    );
+  }
   const profile = await getProfileByKey(db, frozen.manifest.prepareExecutorKey);
   assertProfileFitsPhase(profile, "prepare");
 
@@ -849,9 +857,9 @@ export async function runNativePublicWebPrepare(
     organizationId: run.organization_id,
     tenantId: run.organization_id,
     now,
-    canonicalPlanHash: frozen.contentHash,
+    inputManifestContentHash: frozen.contentHash,
     deadlineAt: new Date(Date.parse(now) + 120_000).toISOString(),
-    workCellPhaseAlreadyRecorded: false,
+    workCellPhaseAlreadyRecorded,
     cancelled: run.status !== "running",
   });
   if (!economics.ok) {

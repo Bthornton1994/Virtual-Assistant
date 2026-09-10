@@ -18,6 +18,7 @@ import {
 import type { ExecutorEnvelopeV1 } from "@/lib/executor-envelope";
 import {
   deriveGovernedIdempotencyKey,
+  isReleasedUnderlyingCallFailure,
   reportedToolUsage,
   reservationExpiresAt,
   runGovernedExecution,
@@ -56,6 +57,17 @@ const ZERO_AUTHORITY: AuthorityReport = {
 
 const MAX_PAGE_CHARS = 200_000;
 const FETCH_TIMEOUT_MS = 8_000;
+
+export class NativePublicWebFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = /timeout|timed out|aborted|cancell?ed/i.test(message) ? "AbortError" : "NativePublicWebFetchError";
+  }
+}
+
+function nativePublicWebFetchError(message: string): NativePublicWebFetchError {
+  return new NativePublicWebFetchError(message);
+}
 
 const SKIP_CLAIM_KEYS = new Set([
   "url",
@@ -444,6 +456,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         session: economics.session,
         context: contextCheck.value,
         envelope: binding.envelope,
+        expectedEnvelopeHash: binding.envelopeHash,
         runtime: economics.runtime,
         frozenAuthority: economics.frozenAuthority,
         proposedAuthority: economics.proposedAuthority,
@@ -451,6 +464,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         availableTiers: economics.availableTiers,
         escalationReason: economics.escalationReason,
         callKind: "tool",
+        toolClass: "public_read",
         toolKeys,
         stepKey: invocationId,
         estimatedAiCostMicros: 0,
@@ -460,7 +474,13 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         usageUnavailable: false,
         pricing: economics.pricing,
         reservationExpiresAt: reservationExpiresAt(economics.runtime.evaluationClock, economics.reservationTtlMs),
-        execute: () => fetchPage(url),
+        execute: async () => {
+          const fetched = await fetchPage(url);
+          if ("error" in fetched) {
+            throw nativePublicWebFetchError(fetched.error);
+          }
+          return fetched;
+        },
         usageOnSuccess: () =>
           reportedToolUsage({
             runtime: economics.runtime,
@@ -475,6 +495,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
               assignmentId: economics.runtime.assignmentId,
               specVersion: economics.frozenAuthority.specVersion,
               canonicalPlanHash: economics.frozenAuthority.canonicalPlanHash,
+              inputManifestContentHash: economics.frozenAuthority.inputManifestContentHash,
               callKind: "tool",
               stepKey: invocationId,
             }),
@@ -483,6 +504,20 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
           }),
       });
       if (!governed.ok) {
+        if (isReleasedUnderlyingCallFailure(governed)) {
+          const recordedFailed = recordNativePublicReadCycle({
+            context: contextCheck.value,
+            invocationId,
+            toolKey: "public-https-fetch",
+            invokedAt: now,
+            completedAt: now,
+            fetchResult: "fetch_failed",
+          });
+          if (!recordedFailed.ok) throw new DomainError(recordedFailed.failures.join(" "));
+          invocations.push(recordedFailed.value.invocation);
+          outcomes.push(recordedFailed.value.outcome);
+          continue;
+        }
         throw new DomainError(
           governed.executed
             ? "Native public-web prepare cannot complete successfully while the economic reservation is uncommitted. " +
@@ -493,19 +528,18 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
       }
       economicReservationIds.push(governed.reservation.reservationId);
       const result = governed.value;
-      const fetchResult = "error" in result ? "fetch_failed" : "fetched";
       const recorded = recordNativePublicReadCycle({
         context: contextCheck.value,
         invocationId,
         toolKey: "public-https-fetch",
         invokedAt: now,
         completedAt: now,
-        fetchResult,
+        fetchResult: "fetched",
       });
       if (!recorded.ok) throw new DomainError(recorded.failures.join(" "));
       invocations.push(recorded.value.invocation);
       outcomes.push(recorded.value.outcome);
-      if (!("error" in result)) pages.push(result);
+      pages.push(result);
     }
     products.push(buildProduct(item.productId, item.record, pages, manifest.market));
   }

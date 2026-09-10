@@ -111,10 +111,12 @@ No new database table is added. Reservations bind to `executionAttemptId`, `assi
 | Telemetry key and bypass/injection checks | **Enforcing** in the governor and on execution-attempt complete/fail metadata. |
 | Attempt, deadline, and work-cell limits | **Enforcing** when `executionLimits` is supplied; the adapter always supplies them from trusted runtime/context. |
 | Authority freeze on cheaper routes | **Enforcing** when frozen and proposed snapshots are supplied; the adapter always supplies them. |
-| Native public-web `fetchPage` via `runGovernedExecution` | **Enforcing** in-process. Missing economics fail closed. See `docs/EXECUTION-ECONOMICS-ADAPTER-V1.md`. |
+| Native public-web `fetchPage` via `runGovernedExecution` | **Enforcing** in-process. Envelope hash, re-derived frozen authority, explicit `public_read` authorization, assignment phase-recorded check, fetch-error release, and usage-observation release are in the adapter. Missing economics fail closed. Native catalog path binds an input-manifest content hash, not a plan hash. See `docs/EXECUTION-ECONOMICS-ADAPTER-V1.md`. |
 | Same-process `completeExecutionAttempt` with `economicsSession` | **Enforcing**: success cannot complete while a reservation remains `reserved`. |
+| Same-process `failExecutionAttempt` with `economicsSession` | **Enforcing** attempt-bound release: another attempt's reservation is not released. |
 | Existing `claimExecutionAttempt` / complete / fail without a session | **Advisory**. Serverless requests do not share this in-memory session. |
 | Off-box leased worker spend that skips the adapter | **Advisory**. Process-local Maps are not global serverless enforcement. |
+| Concurrent native public-web prepares | **Unresolved** for extra fetch-before-persist. Packet and assignment uniqueness still apply at persist. No new SQL claim. |
 | Capability router, Gauntlet, receipts | **Unchanged**. The governor still cannot issue receipts or mark runs verified. |
 | SQL remaining-budget locks | **Not present**. Concurrent safety is proved only inside one process. |
 
@@ -126,6 +128,7 @@ Unverified until a later SQL slice:
 
 - durable reservations across processes;
 - row-level concurrent reservation under transaction isolation;
+- concurrent native prepare fetch-before-persist (no existing atomic claim primitive for that path);
 - binding economic evidence rows to `execution_attempts` and `evidence_artifacts` in QA;
 - replay after restart.
 
