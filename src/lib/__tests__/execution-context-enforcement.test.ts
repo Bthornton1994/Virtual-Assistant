@@ -28,6 +28,8 @@ import {
 import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import { CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION } from "@/lib/catalog-evidence-packet";
 import { CATALOG_EVIDENCE_REVIEW_SCHEMA_VERSION } from "@/lib/catalog-evidence-review";
+import { bindNativePublicWebEconomics } from "@/lib/execution-economics-adapter";
+import { createEconomicsSession } from "@/lib/outcome-economics-governor";
 import {
   PUBLIC_WEB_RESEARCHER_KEY,
   prepareAuthorizedPublicWebEvidencePacket,
@@ -148,6 +150,26 @@ function nativeBinding(allowed: DelegationSpecSnapshot["allowedToolClasses"]) {
   return translated.value;
 }
 
+function nativeEconomics(binding: ReturnType<typeof nativeBinding>, now = NOW) {
+  const created = createEconomicsSession({
+    organizationId: "org-loadout-internal-qa",
+    tenantId: "org-loadout-internal-qa",
+    economicEnvelope: { maxAiCostMicros: 1_000, maxToolCostMicros: 500 },
+  });
+  if (!created.ok) throw new Error(created.failures.join(" "));
+  const bound = bindNativePublicWebEconomics({
+    session: created.value,
+    binding,
+    organizationId: "org-loadout-internal-qa",
+    tenantId: "org-loadout-internal-qa",
+    now,
+    inputManifestContentHash: HASH,
+    deadlineAt: "2026-09-09T17:00:00Z",
+  });
+  if (!bound.ok) throw new Error(bound.failures.join(" "));
+  return bound.value;
+}
+
 describe("execution context enforcement v1", () => {
   it("1. authorizeToolClass allows a class inside the envelope without invokedAt or outcome", () => {
     const current = binding();
@@ -263,6 +285,7 @@ describe("execution context enforcement v1", () => {
     expect(authorizeToolClass(unauthorized.context, "public_read").ok).toBe(false);
     await expect(
       prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+        economics: nativeEconomics(unauthorized),
         fetchPage: async () => {
           throw new Error("fetchPage must not run after a blocked preflight");
         },
@@ -275,6 +298,7 @@ describe("execution context enforcement v1", () => {
     const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
     await expect(
       prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+        economics: nativeEconomics(unauthorized),
         fetchPage: async () => {
           throw new Error("fetchPage must not run after a blocked preflight");
         },
@@ -287,6 +311,7 @@ describe("execution context enforcement v1", () => {
     const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
     let fetchCalls = 0;
     const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), authorized, {
+      economics: nativeEconomics(authorized),
       fetchPage: async (url) => {
         fetchCalls += 1;
         return { url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" };
@@ -301,6 +326,7 @@ describe("execution context enforcement v1", () => {
   it("14. native fetched success records an allowed invocation without a failureCode", async () => {
     const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
     const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), authorized, {
+      economics: nativeEconomics(authorized),
       fetchPage: async (url) => ({ url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" }),
       now: NOW,
     });
@@ -317,6 +343,7 @@ describe("execution context enforcement v1", () => {
       record: { name: "SBD 7mm Knee Sleeves", manufacturerUrl: "https://www.sbdapparel.com/fail" },
     };
     const failed = await prepareAuthorizedPublicWebEvidencePacket(failingManifest, authorized, {
+      economics: nativeEconomics(authorized),
       fetchPage: async () => ({ error: "upstream 503" }),
       now: NOW,
     });
@@ -329,6 +356,7 @@ describe("execution context enforcement v1", () => {
   it("16. native completed traces are validated after fetch, not used as preflight", async () => {
     const authorized = nativeBinding(["public_read", "artifact_read", "artifact_write"]);
     const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), authorized, {
+      economics: nativeEconomics(authorized),
       fetchPage: async (url) => ({ url, status: 200, text: "SBD 7mm Knee Sleeves official product page $89.00" }),
       now: NOW,
     });
@@ -341,6 +369,7 @@ describe("execution context enforcement v1", () => {
     const source = readFileSync(resolve(process.cwd(), "src/lib/__tests__/execution-context-enforcement.test.ts"), "utf8");
     expect(source).not.toMatch(/https?:\/\/(?!www\.sbdapparel\.com)/);
     const fetched = await prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), authorized, {
+      economics: nativeEconomics(authorized),
       fetchPage: async (url) => ({ url, status: 200, text: "injected fixture" }),
       now: NOW,
     });
@@ -912,6 +941,7 @@ describe("execution context enforcement v1 adversarial fail-closed gates", () =>
     let fetchCalls = 0;
     await expect(
       prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+        economics: nativeEconomics(unauthorized),
         fetchPage: async () => {
           fetchCalls += 1;
           return { url: "https://www.sbdapparel.com/products/7mm-knee-sleeves", status: 200, text: "injected fake must not be called" };
@@ -926,6 +956,7 @@ describe("execution context enforcement v1 adversarial fail-closed gates", () =>
     const unauthorized = nativeBinding(["artifact_read", "artifact_write"]);
     await expect(
       prepareAuthorizedPublicWebEvidencePacket(nativeManifest(), unauthorized, {
+        economics: nativeEconomics(unauthorized),
         fetchPage: async () => {
           throw new Error("injected fake must not be called");
         },

@@ -15,6 +15,15 @@ import {
   type ExecutionContext,
   type ToolInvocation,
 } from "@/lib/execution-context";
+import type { ExecutorEnvelopeV1 } from "@/lib/executor-envelope";
+import {
+  deriveGovernedIdempotencyKey,
+  isReleasedUnderlyingCallFailure,
+  reportedToolUsage,
+  reservationExpiresAt,
+  runGovernedExecution,
+  type NativePublicWebEconomicsBinding,
+} from "@/lib/execution-economics-adapter";
 import {
   buildNativeToolTrace,
   recordNativePublicReadCycle,
@@ -48,6 +57,17 @@ const ZERO_AUTHORITY: AuthorityReport = {
 
 const MAX_PAGE_CHARS = 200_000;
 const FETCH_TIMEOUT_MS = 8_000;
+
+export class NativePublicWebFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = /timeout|timed out|aborted|cancell?ed/i.test(message) ? "AbortError" : "NativePublicWebFetchError";
+  }
+}
+
+function nativePublicWebFetchError(message: string): NativePublicWebFetchError {
+  return new NativePublicWebFetchError(message);
+}
 
 const SKIP_CLAIM_KEYS = new Set([
   "url",
@@ -340,6 +360,7 @@ export async function preparePublicWebEvidencePacket(
 export type AuthorizedPublicWebPrepareResult = {
   packet: CatalogEvidencePacketV1;
   trace: ToolInvocationTrace;
+  economicReservationIds: string[];
 };
 
 /**
@@ -348,10 +369,35 @@ export type AuthorizedPublicWebPrepareResult = {
  * is returned only after the authorize/fetch cycles and postflight
  * validateToolInvocationTrace.
  */
+function requireNativeEconomics(
+  urls: readonly string[],
+  binding: { envelope?: ExecutorEnvelopeV1 },
+  economics: NativePublicWebEconomicsBinding | undefined,
+): NativePublicWebEconomicsBinding | null {
+  if (urls.length === 0) return economics ?? null;
+  if (!binding.envelope) {
+    throw new DomainError(
+      "Native public-web prepare requires the Executor Envelope to bind frozen authority. Fetch was not started.",
+    );
+  }
+  if (!economics) {
+    throw new DomainError(
+      "Native public-web prepare requires a governed economics binding. Fetch was not started.",
+    );
+  }
+  return economics;
+}
+
 export async function prepareAuthorizedPublicWebEvidencePacket(
   manifest: CatalogEvidenceInputManifestV1,
-  binding: { assignmentId: string; envelopeHash: string; contextHash: string; context: ExecutionContext },
-  options?: { fetchPage?: PageFetcher; now?: string },
+  binding: {
+    assignmentId: string;
+    envelopeHash: string;
+    contextHash: string;
+    context: ExecutionContext;
+    envelope?: ExecutorEnvelopeV1;
+  },
+  options?: { fetchPage?: PageFetcher; now?: string; economics?: NativePublicWebEconomicsBinding },
 ): Promise<AuthorizedPublicWebPrepareResult> {
   const contextCheck = validateExecutionContext(binding.context);
   if (!contextCheck.ok) {
@@ -368,6 +414,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
   }
 
   const urls = manifest.inputRecords.flatMap((item) => extractHttpsUrls(item.record));
+  const economics = requireNativeEconomics(urls, binding, options?.economics);
   if (urls.length > 0) {
     const preflight = authorizeToolClass(contextCheck.value, "public_read");
     if (!preflight.ok) {
@@ -382,6 +429,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
   const products: CatalogEvidenceProduct[] = [];
   const invocations: ToolInvocation[] = [];
   const outcomes: TraceOutcome[] = [];
+  const economicReservationIds: string[] = [];
   let sequence = 0;
 
   for (const item of manifest.inputRecords) {
@@ -397,20 +445,101 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         );
       }
 
-      const result = await fetchPage(url);
-      const fetchResult = "error" in result ? "fetch_failed" : "fetched";
+      if (!economics || !binding.envelope) {
+        throw new DomainError(
+          "Native public-web prepare requires a governed economics binding. Fetch was not started.",
+        );
+      }
+
+      const toolKeys = ["public-https-fetch"] as const;
+      const governed = await runGovernedExecution({
+        session: economics.session,
+        context: contextCheck.value,
+        envelope: binding.envelope,
+        expectedEnvelopeHash: binding.envelopeHash,
+        runtime: economics.runtime,
+        frozenAuthority: economics.frozenAuthority,
+        proposedAuthority: economics.proposedAuthority,
+        requestedTier: economics.requestedTier,
+        availableTiers: economics.availableTiers,
+        escalationReason: economics.escalationReason,
+        callKind: "tool",
+        toolClass: "public_read",
+        toolKeys,
+        stepKey: invocationId,
+        estimatedAiCostMicros: 0,
+        estimatedToolCostMicros: 0,
+        estimatedCostMicros: 0,
+        unknownPricing: false,
+        usageUnavailable: false,
+        pricing: economics.pricing,
+        reservationExpiresAt: reservationExpiresAt(economics.runtime.evaluationClock, economics.reservationTtlMs),
+        execute: async () => {
+          const fetched = await fetchPage(url);
+          if ("error" in fetched) {
+            throw nativePublicWebFetchError(fetched.error);
+          }
+          return fetched;
+        },
+        usageOnSuccess: () =>
+          reportedToolUsage({
+            runtime: economics.runtime,
+            executorTier: economics.requestedTier,
+            toolKeys,
+            stepKey: invocationId,
+            idempotencyKey: deriveGovernedIdempotencyKey({
+              organizationId: economics.runtime.organizationId,
+              tenantId: economics.runtime.tenantId,
+              runId: economics.runtime.runId,
+              executionAttemptId: economics.runtime.executionAttemptId,
+              assignmentId: economics.runtime.assignmentId,
+              specVersion: economics.frozenAuthority.specVersion,
+              canonicalPlanHash: economics.frozenAuthority.canonicalPlanHash,
+              inputManifestContentHash: economics.frozenAuthority.inputManifestContentHash,
+              callKind: "tool",
+              stepKey: invocationId,
+            }),
+            toolCallCount: 1,
+            recordedAt: now,
+          }),
+      });
+      if (!governed.ok) {
+        if (isReleasedUnderlyingCallFailure(governed)) {
+          const recordedFailed = recordNativePublicReadCycle({
+            context: contextCheck.value,
+            invocationId,
+            toolKey: "public-https-fetch",
+            invokedAt: now,
+            completedAt: now,
+            fetchResult: "fetch_failed",
+          });
+          if (!recordedFailed.ok) throw new DomainError(recordedFailed.failures.join(" "));
+          invocations.push(recordedFailed.value.invocation);
+          outcomes.push(recordedFailed.value.outcome);
+          continue;
+        }
+        throw new DomainError(
+          governed.executed
+            ? "Native public-web prepare cannot complete successfully while the economic reservation is uncommitted. " +
+                governed.failures.join(" ")
+            : "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
+                governed.failures.join(" "),
+        );
+      }
+      economicReservationIds.push(governed.reservation.reservationId);
+      const result = governed.value;
       const recorded = recordNativePublicReadCycle({
         context: contextCheck.value,
         invocationId,
         toolKey: "public-https-fetch",
         invokedAt: now,
         completedAt: now,
-        fetchResult,
+        fetchResult: "fetched",
       });
       if (!recorded.ok) throw new DomainError(recorded.failures.join(" "));
       invocations.push(recorded.value.invocation);
       outcomes.push(recorded.value.outcome);
-      if (!("error" in result)) pages.push(result);
+      pages.push(result);
     }
     products.push(buildProduct(item.productId, item.record, pages, manifest.market));
   }
@@ -451,5 +580,5 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
   if (!checked.ok) {
     throw new DomainError("Native observation trace is invalid: " + checked.failures.join(" "));
   }
-  return { packet, trace: checked.value };
+  return { packet, trace: checked.value, economicReservationIds };
 }

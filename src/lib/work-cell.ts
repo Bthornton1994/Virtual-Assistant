@@ -35,6 +35,15 @@ import {
   PUBLIC_WEB_RESEARCHER_KEY,
   prepareAuthorizedPublicWebEvidencePacket,
 } from "@/lib/public-web-researcher";
+import {
+  bindNativePublicWebEconomics,
+  requireEconomicsEnvelope,
+  workCellPhaseAlreadyRecordedFromAssignment,
+} from "@/lib/execution-economics-adapter";
+import {
+  createEconomicsSession,
+  ECONOMICS_RESERVATION_METADATA_KEY,
+} from "@/lib/outcome-economics-governor";
 import { parseExtractedJson } from "@/lib/work-cell-json";
 import type { AssignmentToEnvelopeAssignment } from "@/lib/assignment-to-envelope";
 import type { ActionClass } from "@/lib/domain";
@@ -370,6 +379,17 @@ async function loadSpecSnapshot(db: SupabaseClient, specId: string, allowedToolC
     actionClass: data.action_class as ActionClass,
     allowedToolClasses,
   });
+}
+
+async function loadSpecEconomicEnvelope(db: SupabaseClient, specId: string): Promise<unknown> {
+  const { data, error } = await db
+    .from("delegation_specs")
+    .select("economic_envelope")
+    .eq("id", specId)
+    .maybeSingle();
+  if (error) throw new DomainError(error.message);
+  if (!data) throw new DomainError("Delegation Spec not found for this Workstream Run.");
+  return requireEconomicsEnvelope(data.economic_envelope);
 }
 
 async function bindWorkCellPhase(
@@ -793,6 +813,13 @@ export async function runNativePublicWebPrepare(
   if (await loadTypedArtifact(db, runId, CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION)) {
     throw new DomainError("This run already has a frozen catalog evidence packet. Ingesting another belongs to a new attempt.");
   }
+  const existingPrepare = await getAssignment(db, run.id, "prepare");
+  const workCellPhaseAlreadyRecorded = workCellPhaseAlreadyRecordedFromAssignment(existingPrepare);
+  if (workCellPhaseAlreadyRecorded) {
+    throw new DomainError(
+      `The prepare phase of this run already has a recorded attempt (status: ${existingPrepare?.status ?? "unknown"}). Fetch was not started.`,
+    );
+  }
   const profile = await getProfileByKey(db, frozen.manifest.prepareExecutorKey);
   assertProfileFitsPhase(profile, "prepare");
 
@@ -812,7 +839,39 @@ export async function runNativePublicWebPrepare(
     frozen.manifest.createdAt,
     ["public_read", "artifact_read", "artifact_write"],
   );
-  const prepared = await prepareAuthorizedPublicWebEvidencePacket(frozen.manifest, binding);
+  const now = new Date().toISOString();
+  const session = createEconomicsSession({
+    organizationId: run.organization_id,
+    tenantId: run.organization_id,
+    economicEnvelope: await loadSpecEconomicEnvelope(db, run.delegation_spec_id),
+  });
+  if (!session.ok) {
+    throw new DomainError(
+      "Native public-web prepare cannot start without a trusted economic envelope. Fetch was not started. " +
+        session.failures.join(" "),
+    );
+  }
+  const economics = bindNativePublicWebEconomics({
+    session: session.value,
+    binding,
+    organizationId: run.organization_id,
+    tenantId: run.organization_id,
+    now,
+    inputManifestContentHash: frozen.contentHash,
+    deadlineAt: new Date(Date.parse(now) + 120_000).toISOString(),
+    workCellPhaseAlreadyRecorded,
+    cancelled: run.status !== "running",
+  });
+  if (!economics.ok) {
+    throw new DomainError(
+      "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
+        economics.failures.join(" "),
+    );
+  }
+  const prepared = await prepareAuthorizedPublicWebEvidencePacket(frozen.manifest, binding, {
+    economics: economics.value,
+    now,
+  });
   if (prepared.trace.outcomes.some((outcome) => outcome.result === "blocked_preflight")) {
     throw new DomainError(
       "Native public-web prepare is blocked_preflight and cannot persist a completed assignment. Fetch was not started.",
@@ -858,7 +917,17 @@ export async function runNativePublicWebPrepare(
     assignmentStatus: "completed",
     inputArtifactId: null,
     assignmentMetadata: mergeObservationPointers(
-      { packetHash: contentHash, productCount: validation.metrics.productCount, inputHash: frozen.manifest.inputHash },
+      {
+        packetHash: contentHash,
+        productCount: validation.metrics.productCount,
+        inputHash: frozen.manifest.inputHash,
+        ...(prepared.economicReservationIds.length > 0
+          ? {
+              [ECONOMICS_RESERVATION_METADATA_KEY]:
+                prepared.economicReservationIds[prepared.economicReservationIds.length - 1],
+            }
+          : {}),
+      },
       pointers,
     ),
   });
