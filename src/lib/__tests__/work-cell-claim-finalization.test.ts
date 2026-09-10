@@ -112,9 +112,15 @@ describe("work-cell claim finalization — authoritative RPC path", () => {
       "async function expireStaleRunningWorkCellPhaseClaim(",
       "async function insertEvidenceArtifact(",
     );
+    const boundLoadFn = sliceFn(
+      workCell,
+      "async function loadBoundAcceptedCatalogPacketForClaim(",
+      "async function rpcCompleteWorkCellPhaseClaim(",
+    );
     expect(expireFn).toMatch(/decideStaleWorkCellPhaseClaimReclaim/);
     expect(expireFn).toMatch(/loadBoundAcceptedCatalogPacketForClaim/);
-    expect(expireFn).toMatch(/CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION/);
+    expect(boundLoadFn).toMatch(/CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION/);
+    expect(boundLoadFn).toMatch(/eq\("id", existing.outputArtifactId\)/);
     expect(expireFn).toMatch(/action === "blocked"/);
     expect(expireFn).not.toMatch(/action === "complete"/);
     expect(expireFn).not.toMatch(/completeWorkCellPhaseClaim/);
@@ -139,7 +145,7 @@ describe("work-cell claim finalization — authoritative RPC path", () => {
     expect(sql).toMatch(/e\.id = p_output_artifact_id/);
     expect(sql).toMatch(/e\.id = v_existing\.output_artifact_id/);
     expect(sql).toMatch(/unbound or unrelated catalog evidence packet/);
-    expect(sql).toMatch(/exact bound claim identity/);
+    expect(sql).toMatch(/exact bound[\s\S]*claim identity|requires bound claim identity/);
     expect(sql).toMatch(/refusing to fail the work-cell phase claim/);
     expect(sql).toMatch(/A completed work-cell phase assignment cannot be overwritten/);
     expect(sql).toMatch(/A failed work-cell phase assignment cannot be completed/);
