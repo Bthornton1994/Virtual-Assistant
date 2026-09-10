@@ -10,6 +10,7 @@ import {
   type Actor,
 } from "@/lib/domain";
 import { sha256Text } from "@/lib/catalog-evidence-hash";
+import { assertRedactedEconomicsTelemetry } from "@/lib/outcome-economics-governor";
 import {
   validateExecutionPlan,
   type ExecutionFailureClass,
@@ -159,6 +160,10 @@ function requireSafeMetadata(value: unknown, label: string): RuntimeRow {
     }
   };
   walk(value, label, 0);
+  const redacted = assertRedactedEconomicsTelemetry(value, label);
+  if (!redacted.ok) {
+    throw new DomainError(redacted.failures.join("; "));
+  }
   return value as RuntimeRow;
 }
 
