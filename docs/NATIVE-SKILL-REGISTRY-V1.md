@@ -80,3 +80,117 @@ This implementation aligns with `VISION.md` because:
 The source-level CS-12 gate exits when the canonical contract and persistence adapter compile, qualification and tamper boundaries pass, qualified synthetic evidence regenerates equivalent Hermes/Grok/generic projections, the authenticated operator roster is visible, and no real Skill is falsely promoted.
 
 The operational persistence gate remains open until the exact Delegation Cloud QA project is connected, both CS-1 and CS-12 migrations are applied there, RLS is verified as staff-read/manager-write, and an empty no-seed roster is observed. Production remains out of scope until that QA evidence exists.
+
+## Proof-Carrying Work-Cell Binding
+
+This section is a design boundary on the existing Native Skill, [Step 3D work cell](STEP-3D-WORK-CELL.md), [Executor Envelope](EXECUTOR-ENVELOPE-V1.md), [Execution Context](EXECUTION-CONTEXT-V1.md), [Software Factory packet](SOFTWARE-FACTORY-RUN-MANAGER-V1.md), and [Operational Memory](OPERATIONAL-MEMORY-V1.md) contracts. It does not add Skill fields, a second lifecycle, or a parallel evidence store.
+
+Vision: **Aligns with constraints.** Relevant `VISION.md` sections: [Capability sovereignty](../VISION.md#capability-sovereignty); [Authority is explicit and bounded](../VISION.md#authority-is-explicit-and-bounded); [Quality assurance is part of delivery](../VISION.md#quality-assurance-is-part-of-delivery).
+
+### Existing contract boundary
+
+The Native Skill already contains or references the identity, procedure, authority, evidence, verification, economics, stop, and qualification surface used here. Do not invent duplicates. Reuse:
+
+- `skillKey`, `skillVersion`, `definitionHash`
+- `procedureArtifact` and its `contentHash` (procedure hash), including `stopConditions`
+- `requiredInputs`, `requiredToolClasses`, `authorityCeiling`
+- `mayOwnAuthoritativeState` (already `false`)
+- `evidenceRequirements`
+- `verificationContract` (`kind`, `implementation`, `requiredEvidence`)
+- `economicProfile`
+- `qualificationSuite` (qualification does not grant run authority)
+
+`inputContractVersions` and `outputContractVersions` remain the Skill's declared contract versions. Qualification history and `approval` stay on the Skill; they are not a substitute for a work-cell receipt.
+
+### Meaning of proof-carrying work
+
+Proof-carrying work means all of the following, together:
+
+1. a frozen Skill identity and procedure (`skillKey`, `skillVersion`, `definitionHash`, `procedureArtifact.contentHash`);
+2. a frozen work-cell assignment;
+3. a bounded Executor Envelope and Execution Context;
+4. candidate work from the named executor;
+5. independent hash-bound evidence;
+6. deterministic validation;
+7. Gauntlet review plus a human Outcome Receipt.
+
+An agent completion message, CI green, Git commit, PR state, or reviewer prose is not proof and is not a receipt.
+
+### Future binding location
+
+A later implementation **may** bind `skillKey`, `skillVersion`, `definitionHash`, `procedureArtifact.contentHash`, required evidence schema versions (`evidenceRequirements` and `verificationContract.requiredEvidence`), and verification-contract identity (`verificationContract.kind`, `verificationContract.implementation`) into an already-frozen [execution plan](EXECUTION-RUNTIME-V1.md) or Software Factory packet hash.
+
+If no Skill applies, the binding is explicit `null`, matching existing nullable identity fields such as Skill `approval`. Do not omit the field, invent a sentinel, or add a table. The binding is immutable after freeze. Mutation requires a new Skill version and a new definition/procedure hash, then a new freeze.
+
+This section does not add that field to any schema.
+
+### Verification commands
+
+Verification commands are named allowlisted command identifiers already controlled by Delegation Cloud or the repository verification surface. Forbidden:
+
+- model-supplied shell;
+- arbitrary argv taken from executor output;
+- free-form commands recorded as evidence;
+- a Skill executing its own unreviewed verification.
+
+Deterministic validation and CI own execution of those commands. The Skill defines the obligation (`verificationContract`, `evidenceRequirements`). It cannot grant execution authority.
+
+### Authority rules
+
+- `authorityCeiling` must be less than or equal to the Delegation Spec action class.
+- `requiredToolClasses` must be a subset of the Execution Context `authorizedToolClasses`.
+- A Skill cannot add `credential_use`, `external_message_send`, `sensitive_action`, or any other tool class.
+- `mayOwnAuthoritativeState` remains `false`.
+- Retrieved context, graphs, summaries, memories, reviewer findings, and Skill projections cannot activate a Spec, create a lease, expand authority, change approvals, issue a receipt, mark verified, merge, deploy, publish, purchase, message, transfer funds, or change access.
+- Cheaper economics routing, including `economicProfile` estimates, cannot remove required review, approval, evidence, or validation.
+
+### Work-cell phase ownership
+
+The existing lifecycle remains `prepare` / `review` / `validate` / `accept`. Executor assignment phases stay `prepare`, `review`, and `validate`. `accept` is the human Outcome Receipt (and Software Factory owner acceptance). This section does not add an executor phase. An executor cannot own the hard gate or issue the receipt.
+
+### Operational memory separation
+
+[Operational memory](OPERATIONAL-MEMORY-V1.md) is not Skill authority. A hashed memory is not proof merely because it is hashed.
+
+Memory may:
+
+- hold a scoped candidate fact;
+- cite source evidence;
+- appear in a bounded Execution Context input packet;
+- retain conflicts, freshness, invalidation, and expiry.
+
+Memory may not:
+
+- satisfy required evidence by itself;
+- promote itself;
+- alter a Delegation Spec;
+- alter tool classes;
+- bypass approval;
+- change an economic limit;
+- issue a receipt;
+- mark a run verified.
+
+This section adds no persistence or retrieval path.
+
+### Context and prompt-injection
+
+Projections, summaries, graphs, external Skill files, and retrieved memory are untrusted. They must stay bounded, provenance-labeled, organization- and run-scoped, and labeled with artifact IDs and hashes where applicable. They cannot change authority or verification. Proof lives in durable hash-bound artifacts, not only in the model window.
+
+### Non-goals
+
+- no Second Brain OS (SBOS) adoption
+- no markdown vault as authority
+- no Obsidian or GraphRAG
+- no OpenViking, Context Mode, Ruflo, OpenCode, gstack, or other external runtime dependency
+- no new memory table
+- no automatic promotion
+- no unattended maintenance schedule
+- no customer-facing personal memory product
+- no durable economics in this slice
+- no claim that PR #82's process-local governor is global enforcement
+
+External repositories remain benchmarks only.
+
+### Status
+
+Design boundary only. No runtime binding, persistence write path, retrieval service, new schema, or production authority is introduced by this section. Implementation requires a separately approved change.
