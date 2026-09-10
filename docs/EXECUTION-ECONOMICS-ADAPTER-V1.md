@@ -93,7 +93,7 @@ Claim metadata binds: organization/tenant, run, phase, stable assignment identit
 
 `record_work_cell_phase_artifact` is replaced **in place** (same signature, same tables) so a later packet/rejection persist **updates** that `running` row instead of inserting a second assignment. Operator paste ingest still inserts when no claim row exists. SQL is draft in-repo only: **SQL_VERIFICATION_NOT_AVAILABLE**.
 
-Tests inject a claim function whose in-memory Map simulates the unique constraint. Production uses the durable INSERT. Call-graph order is claimed in `runNativePublicWebPrepare` source: `getAssignment` → `bindWorkCellPhase` → `claimWorkCellPhase` → economics bind → `prepareAuthorizedPublicWebEvidencePacket`.
+Tests inject a claim function whose in-memory Map simulates the unique constraint. Production uses the durable INSERT. Call-graph order is claimed in `runNativePublicWebPrepare` source: `getAssignment` → running-claim stale reclaim (`expireStaleRunningWorkCellPhaseClaim`) → broad existing-packet precheck → `bindWorkCellPhase` → `claimWorkCellPhase` → economics bind → `prepareAuthorizedPublicWebEvidencePacket`. A later authenticated prepare against a still-`running` assignment therefore reaches the explicit economics-unknown `OWNER_ACTION_REQUIRED` result before the generic existing-packet error. That reorder does not implement a durable economics seam.
 
 ### How batch reservation/accounting becomes truthful
 

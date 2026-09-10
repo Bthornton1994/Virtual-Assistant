@@ -622,6 +622,10 @@ describe("execution context enforcement v1", () => {
       native.indexOf("export async function ingestCatalogEvidencePacket"),
     );
     expect(nativeFn.indexOf("persistObservationArtifact")).toBeLessThan(nativeFn.indexOf("persistPhaseArtifact"));
+    expect(nativeFn.indexOf("getAssignment")).toBeLessThan(nativeFn.indexOf("loadTypedArtifact"));
+    expect(nativeFn.indexOf("expireStaleRunningWorkCellPhaseClaim")).toBeLessThan(
+      nativeFn.indexOf("This run already has a frozen catalog evidence packet"),
+    );
     expect(nativeFn).toMatch(/prepareAuthorizedPublicWebEvidencePacket/);
     expect(nativeFn).not.toMatch(/preparePublicWebEvidencePacket\(/);
     expect(nativeFn).toMatch(/blocked_preflight/);
