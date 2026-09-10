@@ -31,6 +31,7 @@ import {
   type WorkCellPhaseClaimInput,
 } from "@/lib/execution-economics-adapter";
 import type { BudgetReservation, UsageObservation } from "@/lib/outcome-economics-governor";
+import type { DurableEconomicsWriter, DurableNativeEconomicsIdentity } from "@/lib/outcome-economics-event";
 import {
   buildNativeToolTrace,
   recordNativePublicReadCycle,
@@ -432,6 +433,8 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     fetchPage?: PageFetcher;
     now?: string;
     economics?: NativePublicWebEconomicsBinding;
+    durableEconomics?: DurableEconomicsWriter;
+    durableIdentity?: DurableNativeEconomicsIdentity;
     beforeUsageObservation?: (stepKey: string) => void;
     beforePostflight?: () => void;
   },
@@ -485,7 +488,41 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     }
   >();
 
-  function rejectWithLedger(message: string, release: boolean): never {
+  const durable = options?.durableEconomics;
+  const durableIdentity = options?.durableIdentity;
+
+  async function persistDurableReserve(reservation: BudgetReservation): Promise<void> {
+    if (!durable || !durableIdentity) return;
+    await durable.reserve({
+      ...durableIdentity,
+      reservationId: reservation.reservationId,
+      idempotencyKey: reservation.idempotencyKey,
+      aiCostMicros: reservation.reservedAiCostMicros,
+      toolCostMicros: reservation.reservedToolCostMicros,
+      expiresAt: reservation.expiresAt,
+    });
+  }
+
+  async function persistDurableInvocationStarted(reservation: BudgetReservation): Promise<void> {
+    if (!durable || !durableIdentity) return;
+    await durable.invocationStarted({
+      ...durableIdentity,
+      reservationId: reservation.reservationId,
+      idempotencyKey: reservation.idempotencyKey,
+    });
+  }
+
+  async function persistDurableRelease(reservation: BudgetReservation, ownerAction: boolean): Promise<void> {
+    if (!durable || !durableIdentity) return;
+    await durable.release({
+      ...durableIdentity,
+      reservationId: reservation.reservationId,
+      idempotencyKey: reservation.idempotencyKey,
+      ownerAction,
+    });
+  }
+
+  async function rejectWithLedger(message: string, release: boolean): Promise<never> {
     if (release && economics) {
       releaseReservedGovernedExecutions({
         session: economics.session,
@@ -494,6 +531,13 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         reservationIds: economicReservationIds,
         now: economics.runtime.evaluationClock,
       });
+      for (const pending of pendingByInvocation.values()) {
+        try {
+          await persistDurableRelease(pending.reservation, false);
+        } catch {
+          // Pre-fetch release is best-effort after Maps rollback. SQL is authority.
+        }
+      }
     }
     const ledger = economics
       ? reservationLedgerFromSession(economics.session, economicReservationIds).map((entry) => {
@@ -509,7 +553,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         })
       : [];
     throw new GovernedNativePrepareError(message, economicReservationIds, ledger);
-  };
+  }
 
   for (const entry of planned) {
     const preflight = authorizeToolClass(contextCheck.value, "public_read");
@@ -539,13 +583,23 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     });
     if (!governed.ok) {
       if (governed.reservation) economicReservationIds.push(governed.reservation.reservationId);
-      rejectWithLedger(
+      await rejectWithLedger(
         "Native public-web prepare is blocked by the Outcome Economics Governor. Fetch was not started. " +
           governed.failures.join(" "),
         true,
       );
     }
     economicReservationIds.push(governed.reservation.reservationId);
+    try {
+      await persistDurableReserve(governed.reservation);
+    } catch (error) {
+      await rejectWithLedger(
+        error instanceof Error
+          ? error.message
+          : "Durable economics reservation failed. Fetch was not started.",
+        true,
+      );
+    }
     pendingByInvocation.set(entry.invocationId, {
       url: entry.url,
       invocationId: entry.invocationId,
@@ -565,6 +619,16 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     if (!pending || !economics) {
       throw new DomainError("Native public-web prepare lost a reserved URL before fetch.");
     }
+    try {
+      await persistDurableInvocationStarted(pending.reservation);
+    } catch (error) {
+      await rejectWithLedger(
+        error instanceof Error
+          ? error.message
+          : "Durable invocation_started could not be persisted. Fetch was not started.",
+        true,
+      );
+    }
     let fetched: FetchedPage | { error: string };
     try {
       fetched = await fetchPage(entry.url);
@@ -579,6 +643,12 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         reservationIds: [pending.reservation.reservationId],
         now: economics.runtime.evaluationClock,
       });
+      try {
+        await persistDurableRelease(pending.reservation, true);
+      } catch {
+        // Maps already released. Durable owner_action is required because
+        // invocation_started was persisted; leave unresolved if the RPC fails.
+      }
       pending.fetchFailed = true;
       const recordedFailed = recordNativePublicReadCycle({
         context: contextCheck.value,
@@ -589,7 +659,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         fetchResult: "fetch_failed",
       });
       if (!recordedFailed.ok) {
-        rejectWithLedger(recordedFailed.failures.join(" "), true);
+        await rejectWithLedger(recordedFailed.failures.join(" "), true);
       }
       invocations.push(recordedFailed.value.invocation);
       outcomes.push(recordedFailed.value.outcome);
@@ -619,7 +689,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "usage observation failed";
-      rejectWithLedger(`Provider usage could not be observed: ${reason}`, true);
+      await rejectWithLedger(`Provider usage could not be observed: ${reason}`, true);
     }
     pending.page = fetched;
     const recorded = recordNativePublicReadCycle({
@@ -631,7 +701,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
       fetchResult: "fetched",
     });
     if (!recorded.ok) {
-      rejectWithLedger(recorded.failures.join(" "), true);
+      await rejectWithLedger(recorded.failures.join(" "), true);
     }
     invocations.push(recorded.value.invocation);
     outcomes.push(recorded.value.outcome);
@@ -641,7 +711,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
   }
 
   if (outcomes.some((outcome) => outcome.result === "blocked_preflight")) {
-    rejectWithLedger(
+    await rejectWithLedger(
       "Native public-web prepare is blocked_preflight: public_read is not authorized. Fetch was not started.",
       true,
     );
@@ -650,7 +720,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
   options?.beforePostflight?.();
   const postflight = validateToolInvocationTrace(invocations, contextCheck.value);
   if (!postflight.ok) {
-    rejectWithLedger("Completed native tool trace is invalid: " + postflight.failures.join(" "), true);
+    await rejectWithLedger("Completed native tool trace is invalid: " + postflight.failures.join(" "), true);
   }
 
   const products: CatalogEvidenceProduct[] = manifest.inputRecords.map((item, itemIndex) =>
@@ -680,7 +750,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
     contextHash: binding.contextHash,
   });
   if (!checked.ok) {
-    rejectWithLedger("Native observation trace is invalid: " + checked.failures.join(" "), true);
+    await rejectWithLedger("Native observation trace is invalid: " + checked.failures.join(" "), true);
   }
 
   const pendingCommits: NativePendingCommit[] = [];

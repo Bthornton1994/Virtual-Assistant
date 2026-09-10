@@ -55,13 +55,13 @@ export {
  * mark Workstream Runs verified, talk to a provider SDK, or create a second
  * budget, lease, planner, queue, evidence, receipt, or memory store.
  *
- * Reservations are process-local Maps. This is not global serverless
- * enforcement. Cross-request economics remain advisory unless a durable
- * authorized seam exists. Native public-web prepare claims the existing
- * run_executor_assignments unique (run_id, phase) slot before fetch.
- * Binding mint lives on the internal loader module; this barrel does not
- * export mintTrustedGovernedBinding. A future SQL economics seam requires
- * separate authorization and runtime verification.
+ * Reservations are process-local Maps unless the native durable event seam
+ * is used. Maps are not global serverless enforcement. Native public-web
+ * prepare claims the existing run_executor_assignments unique (run_id, phase)
+ * slot before fetch and appends outcome-economics-event/v1 rows through
+ * trusted RPCs. Binding mint lives on the internal loader module; this barrel
+ * does not export mintTrustedGovernedBinding. Leased complete/fail remain
+ * out of scope for durable reservation IDs. SQL_VERIFICATION_NOT_AVAILABLE.
  */
 
 export const EXECUTION_ECONOMICS_ADAPTER_SCHEMA_VERSION = "execution-economics-adapter/v1" as const;
@@ -252,6 +252,14 @@ export type WorkCellPhaseClaimCompleteFn = (
 
 export const FAIL_WORK_CELL_PHASE_CLAIM_RPC = "fail_work_cell_phase_claim" as const;
 export const COMPLETE_WORK_CELL_PHASE_CLAIM_RPC = "complete_work_cell_phase_claim" as const;
+
+export {
+  FINALIZE_WORK_CELL_PHASE_ECONOMICS_RPC,
+  RELEASE_OUTCOME_ECONOMICS_EVENT_RPC,
+  RESERVE_OUTCOME_ECONOMICS_EVENT_RPC,
+  START_OUTCOME_ECONOMICS_INVOCATION_RPC,
+  OUTCOME_ECONOMICS_EVENT_SCHEMA_VERSION,
+} from "@/lib/outcome-economics-event";
 
 export type WorkCellPhaseClaimReclaimAction = "noop" | "blocked" | "fail";
 

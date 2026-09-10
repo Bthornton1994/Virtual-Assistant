@@ -42,10 +42,8 @@ import {
   bindNativePublicWebEconomics,
   claimFailureAllowedAfterPrepareOutcome,
   claimMetadataFromInput,
-  COMPLETE_WORK_CELL_PHASE_CLAIM_RPC,
   commitDeferredGovernedReservations,
   decideStaleWorkCellPhaseClaimReclaim,
-  deferredCommitFailedAfterAcceptedPacketReason,
   economicsCommitUnknownOwnerActionFailure,
   economicsReservationIdsFromMetadata,
   FAIL_WORK_CELL_PHASE_CLAIM_RPC,
@@ -58,6 +56,10 @@ import {
   type WorkCellPhaseClaimCompleteInput,
   type WorkCellPhaseClaimInput,
 } from "@/lib/execution-economics-adapter";
+import {
+  createSupabaseDurableEconomicsWriter,
+  type DurableNativeEconomicsIdentity,
+} from "@/lib/outcome-economics-event";
 import { sealPersistedWorkCellProjectionFromWorkCellLoader } from "@/lib/execution-economics-binding-internal";
 import {
   createEconomicsSession,
@@ -410,45 +412,52 @@ async function loadBoundAcceptedCatalogPacketForClaim(
   };
 }
 
-async function rpcCompleteWorkCellPhaseClaim(
+async function rpcFinalizeWorkCellPhaseEconomics(
   db: SupabaseClient,
   run: { id: string },
   phase: ExecutorPhase,
   metadataPatch: Record<string, unknown>,
-  identity: WorkCellPhaseClaimCompleteInput,
+  identity: WorkCellPhaseClaimCompleteInput & { packetContentHash: string; reservationIds: readonly string[] },
 ): Promise<RunExecutorAssignment> {
-  const { data, error } = await db.rpc(COMPLETE_WORK_CELL_PHASE_CLAIM_RPC, {
-    p_run_id: run.id,
-    p_phase: phase,
-    p_metadata_patch: metadataPatch,
-    p_assignment_id: identity.assignmentId,
-    p_output_artifact_id: identity.outputArtifactId,
-    p_input_manifest_content_hash: identity.inputManifestContentHash,
-    p_envelope_hash: identity.envelopeHash,
-    p_context_hash: identity.contextHash,
-    p_executor_key: identity.executorKey,
-    p_capability_key: identity.capabilityKey,
+  const writer = createSupabaseDurableEconomicsWriter(db, {
+    runId: run.id,
+    phase,
+    assignmentId: identity.assignmentId,
+    executorKey: identity.executorKey,
+    capabilityKey: identity.capabilityKey,
+    inputManifestContentHash: identity.inputManifestContentHash,
+    envelopeHash: identity.envelopeHash,
+    contextHash: identity.contextHash,
   });
-  if (error) throw new DomainError(error.message || "Could not complete the work-cell phase claim.");
+  const finalized = await writer.finalize({
+    runId: run.id,
+    phase,
+    assignmentId: identity.assignmentId,
+    executorKey: identity.executorKey,
+    capabilityKey: identity.capabilityKey,
+    inputManifestContentHash: identity.inputManifestContentHash,
+    envelopeHash: identity.envelopeHash,
+    contextHash: identity.contextHash,
+    outputArtifactId: identity.outputArtifactId ?? "",
+    packetContentHash: identity.packetContentHash,
+    reservationIds: identity.reservationIds,
+    metadataPatch,
+  });
   const existing = await getAssignment(db, run.id, phase);
   if (existing?.status === "completed") return existing;
-  const rows = (Array.isArray(data) ? data : data ? [data] : []) as Array<{
-    assignment_id?: string;
-    assignment_status?: string;
-  }>;
-  if (rows[0]?.assignment_status === "completed" && existing) return existing;
+  if (finalized.assignmentStatus === "completed" && existing) return existing;
   throw new DomainError(
-    "Cannot complete a work-cell phase claim that is not running with output evidence. Assignment cannot be successful with an incomplete economics commit set.",
+    "OWNER_ACTION_REQUIRED: An accepted catalog evidence packet is persisted, but durable economics finalization did not complete. Packet presence is not economics proof. The assignment remains running.",
   );
 }
 
-async function completeWorkCellPhaseClaim(
+async function finalizeWorkCellPhaseClaim(
   db: SupabaseClient,
   run: { id: string },
   phase: ExecutorPhase,
   _now: string,
   metadataPatch: Record<string, unknown>,
-  identity: WorkCellPhaseClaimCompleteInput,
+  identity: WorkCellPhaseClaimCompleteInput & { packetContentHash: string; reservationIds: readonly string[] },
 ): Promise<RunExecutorAssignment> {
   const existing = await getAssignment(db, run.id, phase);
   if (!existing) {
@@ -464,13 +473,8 @@ async function completeWorkCellPhaseClaim(
   });
   if (mismatch) throw new DomainError(mismatch);
   if (existing.status === "completed") return existing;
-  if (identity.economicsCommitConfirmed !== true) {
-    throw new DomainError(
-      "Successful completion requires a confirmed process-local economics commit. An accepted catalog evidence packet is not economics proof.",
-    );
-  }
   try {
-    return await rpcCompleteWorkCellPhaseClaim(db, run, phase, metadataPatch, identity);
+    return await rpcFinalizeWorkCellPhaseEconomics(db, run, phase, metadataPatch, identity);
   } catch (error) {
     const raced = await getAssignment(db, run.id, phase);
     if (raced?.status === "completed") {
@@ -481,9 +485,6 @@ async function completeWorkCellPhaseClaim(
       });
       if (racedMismatch) throw new DomainError(racedMismatch);
       return raced;
-    }
-    if (raced?.status === "running" && raced.outputArtifactId === identity.outputArtifactId) {
-      return rpcCompleteWorkCellPhaseClaim(db, run, phase, metadataPatch, identity);
     }
     throw error;
   }
@@ -1176,6 +1177,18 @@ export async function runNativePublicWebPrepare(
       );
     }
 
+    const durableIdentity: DurableNativeEconomicsIdentity = {
+      runId: run.id,
+      phase: "prepare",
+      assignmentId: binding.assignmentId,
+      executorKey: profile.key,
+      capabilityKey: phaseCapability("prepare", profile.key).capabilityKey,
+      inputManifestContentHash: frozen.contentHash,
+      envelopeHash: binding.envelopeHash,
+      contextHash: binding.contextHash,
+    };
+    const durableEconomics = createSupabaseDurableEconomicsWriter(db, durableIdentity);
+
     const releaseEconomics = (reservationIds: readonly string[]) =>
       releaseReservedGovernedExecutions({
         session: session.value,
@@ -1190,6 +1203,8 @@ export async function runNativePublicWebPrepare(
       prepared = await prepareAuthorizedPublicWebEvidencePacket(frozen.manifest, binding, {
         economics: economics.value,
         now,
+        durableEconomics,
+        durableIdentity,
       });
     } catch (error) {
       const reservationIds =
@@ -1290,44 +1305,45 @@ export async function runNativePublicWebPrepare(
       releaseEconomics(prepared.economicReservationIds);
       throw error;
     }
-    const committed = commitDeferredGovernedReservations({
+    try {
+      await finalizeWorkCellPhaseClaim(db, run, "prepare", now, reservationMetadata, {
+        organizationId: run.organization_id,
+        tenantId: run.organization_id,
+        runId: run.id,
+        phase: "prepare",
+        assignmentId: binding.assignmentId,
+        executorKey: profile.key,
+        capabilityKey: phaseCapability("prepare", profile.key).capabilityKey,
+        inputManifestContentHash: frozen.contentHash,
+        envelopeHash: binding.envelopeHash,
+        contextHash: binding.contextHash,
+        now,
+        outputArtifactId: artifactId,
+        acceptedCatalogPacketExists: true,
+        boundPacket: {
+          artifactId,
+          runId: run.id,
+          executorKey: profile.key,
+          schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
+        },
+        packetContentHash: contentHash,
+        reservationIds: prepared.pendingCommits.map((item) => item.reservation.reservationId),
+      });
+    } catch (error) {
+      // Packet is durable. Leave the assignment running. Do not complete from
+      // packet presence. Do not fail an accepted packet. SQL is authority.
+      const message = error instanceof Error ? error.message : "Durable economics finalization failed.";
+      throw new DomainError(
+        `${message} ${economicsCommitUnknownOwnerActionFailure(prepared.economicReservationIds)}`,
+      );
+    }
+    commitDeferredGovernedReservations({
       session: session.value,
       organizationId: run.organization_id,
       tenantId: run.organization_id,
       now,
       pricing: economics.value.pricing,
       items: prepared.pendingCommits,
-    });
-    if (!committed.ok) {
-      releaseEconomics(prepared.economicReservationIds);
-      // Packet is durable. Leave the assignment running. Do not complete.
-      // Do not fail a successful packet because process-local commit rolled back.
-      // Packet presence is not economics proof; stale reclaim will not complete.
-      throw new DomainError(
-        `${deferredCommitFailedAfterAcceptedPacketReason(committed.failures)} ${economicsCommitUnknownOwnerActionFailure(prepared.economicReservationIds)}`,
-      );
-    }
-    await completeWorkCellPhaseClaim(db, run, "prepare", now, reservationMetadata, {
-      organizationId: run.organization_id,
-      tenantId: run.organization_id,
-      runId: run.id,
-      phase: "prepare",
-      assignmentId: binding.assignmentId,
-      executorKey: profile.key,
-      capabilityKey: phaseCapability("prepare", profile.key).capabilityKey,
-      inputManifestContentHash: frozen.contentHash,
-      envelopeHash: binding.envelopeHash,
-      contextHash: binding.contextHash,
-      now,
-      outputArtifactId: artifactId,
-      acceptedCatalogPacketExists: true,
-      economicsCommitConfirmed: true,
-      boundPacket: {
-        artifactId,
-        runId: run.id,
-        executorKey: profile.key,
-        schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
-      },
     });
     assignmentIsTerminal = true;
     return { persisted: true, validation, contentHash, artifactId };

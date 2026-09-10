@@ -9,6 +9,7 @@ import { CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION } from "@/lib/catalog-evidence-p
 import {
   COMPLETE_WORK_CELL_PHASE_CLAIM_RPC,
   FAIL_WORK_CELL_PHASE_CLAIM_RPC,
+  FINALIZE_WORK_CELL_PHASE_ECONOMICS_RPC,
   WORK_CELL_PHASE_CLAIM_RECLAIM_TTL_MS,
 } from "@/lib/execution-economics-adapter";
 import { PUBLIC_WEB_RESEARCHER_KEY } from "@/lib/public-web-researcher";
@@ -261,6 +262,7 @@ describe("native public-web prepare entrypoint — owner-action routing", () => 
     );
     expect(store.currentAssignment()?.status).toBe("running");
     expect(store.rpcs.map((rpc) => rpc.name)).not.toContain(COMPLETE_WORK_CELL_PHASE_CLAIM_RPC);
+    expect(store.rpcs.map((rpc) => rpc.name)).not.toContain(FINALIZE_WORK_CELL_PHASE_ECONOMICS_RPC);
     expect(store.rpcs.map((rpc) => rpc.name)).not.toContain(FAIL_WORK_CELL_PHASE_CLAIM_RPC);
     expect(store.queries.some((query) => query.op === "insert" && query.table === "run_executor_assignments")).toBe(
       false,
@@ -307,6 +309,8 @@ describe("native public-web prepare entrypoint — owner-action routing", () => 
     expect(store.currentAssignment()?.status).toBe("failed");
     expect(store.rpcs.map((rpc) => rpc.name)).toEqual([FAIL_WORK_CELL_PHASE_CLAIM_RPC]);
     expect(store.rpcs.map((rpc) => rpc.name)).not.toContain(COMPLETE_WORK_CELL_PHASE_CLAIM_RPC);
+    expect(store.rpcs.map((rpc) => rpc.name)).not.toContain(FINALIZE_WORK_CELL_PHASE_ECONOMICS_RPC);
+    expect(store.rpcs.map((rpc) => rpc.name)).not.toContain(FINALIZE_WORK_CELL_PHASE_ECONOMICS_RPC);
     expect(store.queries.some((query) => query.op === "insert" && query.table === "run_executor_assignments")).toBe(
       false,
     );
