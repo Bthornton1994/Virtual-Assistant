@@ -26,7 +26,7 @@ export const TOOL_CLASSES = [
 export const TOOL_INVOCATION_STATUSES = ["allowed", "blocked"] as const;
 
 type ActionClass = (typeof ACTION_CLASSES)[number];
-type ToolClass = (typeof TOOL_CLASSES)[number];
+export type ToolClass = (typeof TOOL_CLASSES)[number];
 
 const ACTION_CLASS_RANK: Record<ActionClass, number> = {
   prepare_only: 0,
@@ -305,13 +305,20 @@ export function validateToolInvocation(
   if (invocation.data.contextHash !== context.value.contextHash) {
     failures.push("Invocation contextHash does not match the execution context.");
   }
-  if (!context.value.authorizedToolClasses.includes(invocation.data.toolClass)) {
+  const authorized = context.value.authorizedToolClasses.includes(invocation.data.toolClass);
+  if (
+    !authorized &&
+    !(invocation.data.status === "blocked" && invocation.data.failureCode === "tool_class_not_authorized")
+  ) {
     failures.push(
       "Tool invocation class " + invocation.data.toolClass + " is outside the execution context envelope.",
     );
   }
   if (invocation.data.status === "blocked" && invocation.data.failureCode !== "tool_class_not_authorized") {
     failures.push("Blocked tool invocations must use failureCode tool_class_not_authorized.");
+  }
+  if (authorized && invocation.data.status === "blocked") {
+    failures.push("An authorized tool class cannot be recorded as blocked for tool_class_not_authorized.");
   }
 
   return failures.length > 0 ? { ok: false, failures } : { ok: true, value: invocation.data };
@@ -336,4 +343,32 @@ export function validateToolInvocationTrace(
   });
 
   return failures.length > 0 ? { ok: false, failures } : { ok: true, value: invocations };
+}
+
+/**
+ * Preflight authorization. Validates the Execution Context and whether
+ * `toolClass` is inside `authorizedToolClasses`. It does not require
+ * invokedAt, completedAt, or an observed outcome, and it is not a persisted
+ * trace row.
+ */
+export function authorizeToolClass(
+  contextInput: unknown,
+  toolClassInput: unknown,
+): ExecutionContextValidationResult<{ context: ExecutionContext; toolClass: ToolClass }> {
+  const context = validateExecutionContext(contextInput);
+  if (!context.ok) return context;
+
+  const parsed = z.enum(TOOL_CLASSES).safeParse(toolClassInput);
+  if (!parsed.success) {
+    return { ok: false, failures: ["Tool class is not a registered execution-context tool class."] };
+  }
+  if (!context.value.authorizedToolClasses.includes(parsed.data)) {
+    return {
+      ok: false,
+      failures: [
+        "Tool class " + parsed.data + " is outside the execution context envelope.",
+      ],
+    };
+  }
+  return { ok: true, value: { context: context.value, toolClass: parsed.data } };
 }

@@ -132,7 +132,10 @@ const manifest = {
   ...base,
 };
 
-const packet = await preparePublicWebEvidencePacket(manifest, { now: new Date().toISOString() });
+const packet = await preparePublicWebEvidencePacket(manifest, {
+  now: new Date().toISOString(),
+  allowUngatedPacketBuild: true,
+});
 const validation = validateCatalogEvidencePacket(packet, {
   expectedRunId: base.runId,
   expectedExecutorKey: PUBLIC_WEB_RESEARCHER_KEY,

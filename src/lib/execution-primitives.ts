@@ -799,7 +799,8 @@ export async function verifyWorkstreamRun(
   const { count: evidenceCount, error: evidenceError } = await db
     .from("evidence_artifacts")
     .select("id", { count: "exact", head: true })
-    .eq("run_id", runId);
+    .eq("run_id", runId)
+    .not("payload->>schemaVersion", "eq", "tool-invocation-trace/v1");
   if (evidenceError) throw new DomainError(evidenceError.message);
   if (input.verificationStatus === "passed" && requiresEvidence(spec.verificationRules) && !evidenceCount) {
     throw new DomainError("This Delegation Spec requires evidence before a run can pass verification");

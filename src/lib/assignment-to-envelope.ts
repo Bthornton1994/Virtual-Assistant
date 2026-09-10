@@ -78,35 +78,48 @@ const executionStepAssignmentIdentitySchema = z
 export type WorkCellAssignmentIdentityInputs = z.input<typeof workCellAssignmentIdentitySchema>;
 export type ExecutionStepAssignmentIdentityInputs = z.input<typeof executionStepAssignmentIdentitySchema>;
 
+const assignmentFields = {
+  organizationId: identifierString,
+  runId: identifierString,
+  phase: z.enum(EXECUTOR_PHASES),
+  capabilityKey: identifierString,
+  executorKey: identifierString,
+  executorKind: z.enum(EXECUTOR_KINDS),
+  provider: identifierString,
+  protocolVersion: identifierString,
+  modelId: identifierString.nullable(),
+  configHash: sha256HexSchema.nullable(),
+  objective: identifierString,
+  createdAt: isoDateTimeSchema,
+  deadline: isoDateTimeSchema,
+  outputContract: outputContractSchema,
+  evidenceRequirements: evidenceRequirementsSchema,
+  economicLimit: economicLimitSchema,
+  profileAuthoritySnapshot: z.record(z.string(), z.unknown()),
+  persistenceAssignmentId: identifierString.optional(),
+  id: identifierString.optional(),
+  attemptId: identifierString.optional(),
+  attemptNumber: z.number().int().positive().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+};
+
 const assignmentToEnvelopeInputSchema = z
   .object({
-    organizationId: identifierString,
-    runId: identifierString,
-    phase: z.enum(EXECUTOR_PHASES),
-    capabilityKey: identifierString,
-    executorKey: identifierString,
-    executorKind: z.enum(EXECUTOR_KINDS),
-    provider: identifierString,
-    protocolVersion: identifierString,
-    modelId: identifierString.nullable(),
-    configHash: sha256HexSchema.nullable(),
-    objective: identifierString,
-    createdAt: isoDateTimeSchema,
-    deadline: isoDateTimeSchema,
-    outputContract: outputContractSchema,
-    evidenceRequirements: evidenceRequirementsSchema,
-    economicLimit: economicLimitSchema,
+    ...assignmentFields,
     inputManifestContentHash: sha256HexSchema,
-    profileAuthoritySnapshot: z.record(z.string(), z.unknown()),
-    persistenceAssignmentId: identifierString.optional(),
-    id: identifierString.optional(),
-    attemptId: identifierString.optional(),
-    attemptNumber: z.number().int().positive().optional(),
-    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strip();
+
+const executionStepToEnvelopeInputSchema = z
+  .object({
+    ...assignmentFields,
+    planHash: sha256HexSchema,
+    stepKey: identifierString,
   })
   .strip();
 
 export type AssignmentToEnvelopeAssignment = z.input<typeof assignmentToEnvelopeInputSchema>;
+export type ExecutionStepToEnvelopeAssignment = z.input<typeof executionStepToEnvelopeInputSchema>;
 
 function issueMessages(issues: readonly z.ZodIssue[], prefix: string): string[] {
   return issues.map((issue) => prefix + issue.path.join(".") + ": " + issue.message);
@@ -235,31 +248,30 @@ function mapAuthoritySnapshot(
   };
 }
 
-/**
- * Translates a frozen assignment into ExecutorEnvelopeV1 and Execution Context.
- * Copies executor and capability keys. Does not route or persist.
- */
-export function assignmentToEnvelope(
-  assignmentInput: unknown,
-  specSnapshotInput: unknown,
-  inputArtifactRefsInput: unknown,
+function translateResolvedAssignment(
+  assignment: {
+    runId: string;
+    phase: (typeof EXECUTOR_PHASES)[number];
+    capabilityKey: string;
+    executorKey: string;
+    executorKind: (typeof EXECUTOR_KINDS)[number];
+    provider: string;
+    protocolVersion: string;
+    modelId: string | null;
+    configHash: string | null;
+    objective: string;
+    createdAt: string;
+    deadline: string;
+    outputContract: ExecutorEnvelopeV1["outputContract"];
+    evidenceRequirements: ExecutorEnvelopeV1["evidenceRequirements"];
+    economicLimit: ExecutorEnvelopeV1["economicLimit"];
+    profileAuthoritySnapshot: Record<string, unknown>;
+  },
+  spec: DelegationSpecSnapshot,
+  inputArtifactRefs: ExecutorEnvelopeV1["inputArtifactRefs"],
+  assignmentId: string,
 ): AssignmentTranslationResult {
-  const assignmentParsed = assignmentToEnvelopeInputSchema.safeParse(assignmentInput);
-  const specParsed = delegationSpecSnapshotSchema.safeParse(specSnapshotInput);
-  const refsParsed = z.array(artifactReferenceSchema).safeParse(inputArtifactRefsInput);
   const failures: string[] = [];
-
-  if (!assignmentParsed.success) failures.push(...issueMessages(assignmentParsed.error.issues, "Assignment "));
-  if (!specParsed.success) failures.push(...issueMessages(specParsed.error.issues, "Delegation Spec "));
-  if (!refsParsed.success) failures.push(...issueMessages(refsParsed.error.issues, "Input artifact refs "));
-  if (!assignmentParsed.success || !specParsed.success || !refsParsed.success) {
-    return { ok: false, failures };
-  }
-
-  const assignment = assignmentParsed.data;
-  const spec = specParsed.data;
-  const inputArtifactRefs = refsParsed.data;
-
   if (assignment.phase === "validate" && assignment.executorKind !== "deterministic") {
     failures.push("Validate assignments require a deterministic executor.");
   }
@@ -277,14 +289,6 @@ export function assignmentToEnvelope(
     return { ok: false, failures: [...failures, ...authority.failures] };
   }
   if (failures.length > 0) return { ok: false, failures };
-
-  const assignmentId = stableWorkCellAssignmentId({
-    organizationId: assignment.organizationId,
-    runId: assignment.runId,
-    phase: assignment.phase,
-    executorKey: assignment.executorKey,
-    inputManifestContentHash: assignment.inputManifestContentHash,
-  });
 
   const envelopeCandidate: ExecutorEnvelopeV1 = {
     schemaVersion: EXECUTOR_ENVELOPE_SCHEMA_VERSION,
@@ -341,4 +345,68 @@ export function assignmentToEnvelope(
       contextHash: contextCheck.value.contextHash,
     },
   };
+}
+
+/**
+ * Translates a frozen assignment into ExecutorEnvelopeV1 and Execution Context.
+ * Copies executor and capability keys. Does not route or persist.
+ */
+export function assignmentToEnvelope(
+  assignmentInput: unknown,
+  specSnapshotInput: unknown,
+  inputArtifactRefsInput: unknown,
+): AssignmentTranslationResult {
+  const assignmentParsed = assignmentToEnvelopeInputSchema.safeParse(assignmentInput);
+  const specParsed = delegationSpecSnapshotSchema.safeParse(specSnapshotInput);
+  const refsParsed = z.array(artifactReferenceSchema).safeParse(inputArtifactRefsInput);
+  const failures: string[] = [];
+
+  if (!assignmentParsed.success) failures.push(...issueMessages(assignmentParsed.error.issues, "Assignment "));
+  if (!specParsed.success) failures.push(...issueMessages(specParsed.error.issues, "Delegation Spec "));
+  if (!refsParsed.success) failures.push(...issueMessages(refsParsed.error.issues, "Input artifact refs "));
+  if (!assignmentParsed.success || !specParsed.success || !refsParsed.success) {
+    return { ok: false, failures };
+  }
+
+  const assignment = assignmentParsed.data;
+  const assignmentId = stableWorkCellAssignmentId({
+    organizationId: assignment.organizationId,
+    runId: assignment.runId,
+    phase: assignment.phase,
+    executorKey: assignment.executorKey,
+    inputManifestContentHash: assignment.inputManifestContentHash,
+  });
+  return translateResolvedAssignment(assignment, specParsed.data, refsParsed.data, assignmentId);
+}
+
+/**
+ * Translates a frozen execution-step assignment using stableExecutionStepAssignmentId.
+ * Does not route or persist. Does not reimplement identity hashing.
+ */
+export function executionStepAssignmentToEnvelope(
+  assignmentInput: unknown,
+  specSnapshotInput: unknown,
+  inputArtifactRefsInput: unknown,
+): AssignmentTranslationResult {
+  const assignmentParsed = executionStepToEnvelopeInputSchema.safeParse(assignmentInput);
+  const specParsed = delegationSpecSnapshotSchema.safeParse(specSnapshotInput);
+  const refsParsed = z.array(artifactReferenceSchema).safeParse(inputArtifactRefsInput);
+  const failures: string[] = [];
+
+  if (!assignmentParsed.success) failures.push(...issueMessages(assignmentParsed.error.issues, "Assignment "));
+  if (!specParsed.success) failures.push(...issueMessages(specParsed.error.issues, "Delegation Spec "));
+  if (!refsParsed.success) failures.push(...issueMessages(refsParsed.error.issues, "Input artifact refs "));
+  if (!assignmentParsed.success || !specParsed.success || !refsParsed.success) {
+    return { ok: false, failures };
+  }
+
+  const assignment = assignmentParsed.data;
+  const assignmentId = stableExecutionStepAssignmentId({
+    organizationId: assignment.organizationId,
+    runId: assignment.runId,
+    planHash: assignment.planHash,
+    stepKey: assignment.stepKey,
+    capabilityKey: assignment.capabilityKey,
+  });
+  return translateResolvedAssignment(assignment, specParsed.data, refsParsed.data, assignmentId);
 }

@@ -6,7 +6,22 @@ import type {
   PrimarySource,
 } from "@/lib/catalog-evidence-packet";
 import type { AuthorityReport, ClaimValue } from "@/lib/catalog-evidence-shared";
+import { DomainError } from "@/lib/domain";
 import { validateEvidenceUrl } from "@/lib/catalog-evidence-validator";
+import {
+  authorizeToolClass,
+  validateExecutionContext,
+  validateToolInvocationTrace,
+  type ExecutionContext,
+  type ToolInvocation,
+} from "@/lib/execution-context";
+import {
+  buildNativeToolTrace,
+  recordNativePublicReadCycle,
+  validateToolInvocationTraceArtifact,
+  type ToolInvocationTrace,
+  type TraceOutcome,
+} from "@/lib/tool-invocation-trace";
 
 export const PUBLIC_WEB_RESEARCHER_KEY = "delegation-cloud-public-web-researcher-v1" as const;
 export const PUBLIC_WEB_RESEARCHER_PROTOCOL = "delegation-cloud-public-web-prepare/v1" as const;
@@ -290,8 +305,13 @@ function buildProduct(
 
 export async function preparePublicWebEvidencePacket(
   manifest: CatalogEvidenceInputManifestV1,
-  options?: { fetchPage?: PageFetcher; now?: string },
+  options?: { fetchPage?: PageFetcher; now?: string; allowUngatedPacketBuild?: boolean },
 ): Promise<CatalogEvidencePacketV1> {
+  if (process.env.NODE_ENV === "production" || !options?.allowUngatedPacketBuild) {
+    throw new DomainError(
+      "Ungated public-web prepare cannot run without a validated Execution Context binding. Use prepareAuthorizedPublicWebEvidencePacket.",
+    );
+  }
   const fetchPage = options?.fetchPage ?? fetchPublicHttpsPage;
   const products: CatalogEvidenceProduct[] = [];
 
@@ -315,4 +335,121 @@ export async function preparePublicWebEvidencePacket(
     products,
     authorityReport: { ...ZERO_AUTHORITY },
   };
+}
+
+export type AuthorizedPublicWebPrepareResult = {
+  packet: CatalogEvidencePacketV1;
+  trace: ToolInvocationTrace;
+};
+
+/**
+ * Native public-web prepare. Authorizes public_read before each fetch.
+ * Preflight authorization is not a persisted row. A completed observation
+ * is returned only after the authorize/fetch cycles and postflight
+ * validateToolInvocationTrace.
+ */
+export async function prepareAuthorizedPublicWebEvidencePacket(
+  manifest: CatalogEvidenceInputManifestV1,
+  binding: { assignmentId: string; envelopeHash: string; contextHash: string; context: ExecutionContext },
+  options?: { fetchPage?: PageFetcher; now?: string },
+): Promise<AuthorizedPublicWebPrepareResult> {
+  const contextCheck = validateExecutionContext(binding.context);
+  if (!contextCheck.ok) {
+    throw new DomainError(
+      "Native public-web prepare requires a validated Execution Context. Fetch was not started. " +
+        contextCheck.failures.join(" "),
+    );
+  }
+  if (
+    contextCheck.value.contextHash !== binding.contextHash ||
+    binding.contextHash !== binding.context.contextHash
+  ) {
+    throw new DomainError("Native public-web prepare context hashes do not match. Fetch was not started.");
+  }
+
+  const urls = manifest.inputRecords.flatMap((item) => extractHttpsUrls(item.record));
+  if (urls.length > 0) {
+    const preflight = authorizeToolClass(contextCheck.value, "public_read");
+    if (!preflight.ok) {
+      throw new DomainError(
+        "Native public-web prepare is blocked_preflight: public_read is not authorized. Fetch was not started.",
+      );
+    }
+  }
+
+  const fetchPage = options?.fetchPage ?? fetchPublicHttpsPage;
+  const now = options?.now ?? new Date().toISOString();
+  const products: CatalogEvidenceProduct[] = [];
+  const invocations: ToolInvocation[] = [];
+  const outcomes: TraceOutcome[] = [];
+  let sequence = 0;
+
+  for (const item of manifest.inputRecords) {
+    const itemUrls = extractHttpsUrls(item.record);
+    const pages: FetchedPage[] = [];
+    for (const url of itemUrls) {
+      sequence += 1;
+      const invocationId = "public-read-" + String(sequence);
+      const preflight = authorizeToolClass(contextCheck.value, "public_read");
+      if (!preflight.ok) {
+        throw new DomainError(
+          "Native public-web prepare is blocked_preflight: public_read is not authorized. Fetch was not started.",
+        );
+      }
+
+      const result = await fetchPage(url);
+      const fetchResult = "error" in result ? "fetch_failed" : "fetched";
+      const recorded = recordNativePublicReadCycle({
+        context: contextCheck.value,
+        invocationId,
+        toolKey: "public-https-fetch",
+        invokedAt: now,
+        completedAt: now,
+        fetchResult,
+      });
+      if (!recorded.ok) throw new DomainError(recorded.failures.join(" "));
+      invocations.push(recorded.value.invocation);
+      outcomes.push(recorded.value.outcome);
+      if (!("error" in result)) pages.push(result);
+    }
+    products.push(buildProduct(item.productId, item.record, pages, manifest.market));
+  }
+
+  if (outcomes.some((outcome) => outcome.result === "blocked_preflight")) {
+    throw new DomainError(
+      "Native public-web prepare is blocked_preflight: public_read is not authorized. Fetch was not started.",
+    );
+  }
+
+  const postflight = validateToolInvocationTrace(invocations, contextCheck.value);
+  if (!postflight.ok) {
+    throw new DomainError("Completed native tool trace is invalid: " + postflight.failures.join(" "));
+  }
+
+  const packet: CatalogEvidencePacketV1 = {
+    schemaVersion: "catalog-evidence-packet/v1",
+    runId: manifest.runId,
+    executorKey: PUBLIC_WEB_RESEARCHER_KEY,
+    generatedAt: now,
+    market: manifest.market,
+    products,
+    authorityReport: { ...ZERO_AUTHORITY },
+  };
+  const trace = buildNativeToolTrace({
+    assignmentId: binding.assignmentId,
+    envelopeHash: binding.envelopeHash,
+    contextHash: binding.contextHash,
+    invocations: postflight.value,
+    outcomes,
+  });
+  const checked = validateToolInvocationTraceArtifact(trace, contextCheck.value, {
+    productionClass: "native_tool_execution",
+    assignmentId: binding.assignmentId,
+    envelopeHash: binding.envelopeHash,
+    contextHash: binding.contextHash,
+  });
+  if (!checked.ok) {
+    throw new DomainError("Native observation trace is invalid: " + checked.failures.join(" "));
+  }
+  return { packet, trace: checked.value };
 }
