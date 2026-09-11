@@ -416,7 +416,7 @@ async function rpcFinalizeWorkCellPhaseEconomics(
   db: SupabaseClient,
   run: { id: string },
   phase: ExecutorPhase,
-  metadataPatch: Record<string, unknown>,
+  _metadataPatch: Record<string, unknown>,
   identity: WorkCellPhaseClaimCompleteInput & { packetContentHash: string; reservationIds: readonly string[] },
 ): Promise<RunExecutorAssignment> {
   const writer = createSupabaseDurableEconomicsWriter(db);
@@ -432,7 +432,6 @@ async function rpcFinalizeWorkCellPhaseEconomics(
     outputArtifactId: identity.outputArtifactId ?? "",
     packetContentHash: identity.packetContentHash,
     reservationIds: identity.reservationIds,
-    metadataPatch,
   });
   const existing = await getAssignment(db, run.id, phase);
   if (existing?.status === "completed") return existing;

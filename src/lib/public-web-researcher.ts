@@ -490,6 +490,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
 
   const durable = options?.durableEconomics;
   const durableIdentity = options?.durableIdentity;
+  const durableInvocationStartedIds = new Set<string>();
 
   async function persistDurableReserve(reservation: BudgetReservation): Promise<void> {
     if (!durable || !durableIdentity) return;
@@ -510,6 +511,7 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
       reservationId: reservation.reservationId,
       idempotencyKey: reservation.idempotencyKey,
     });
+    durableInvocationStartedIds.add(reservation.reservationId);
   }
 
   async function persistDurableRelease(reservation: BudgetReservation, ownerAction: boolean): Promise<void> {
@@ -532,10 +534,13 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         now: economics.runtime.evaluationClock,
       });
       for (const pending of pendingByInvocation.values()) {
+        const ownerAction = durableInvocationStartedIds.has(pending.reservation.reservationId);
         try {
-          await persistDurableRelease(pending.reservation, false);
+          await persistDurableRelease(pending.reservation, ownerAction);
         } catch {
-          // Pre-fetch release is best-effort after Maps rollback. SQL is authority.
+          // Unstarted release is best-effort. Started reservations must attempt
+          // owner_action_required; if that write fails, invocation_started remains
+          // held. SQL remaining is authority; TTL must not release started rows.
         }
       }
     }
@@ -647,7 +652,8 @@ export async function prepareAuthorizedPublicWebEvidencePacket(
         await persistDurableRelease(pending.reservation, true);
       } catch {
         // Maps already released. Durable owner_action is required because
-        // invocation_started was persisted; leave unresolved if the RPC fails.
+        // invocation_started was persisted; leave invocation_started held if
+        // the RPC fails. Later TTL must not make this financially available.
       }
       pending.fetchFailed = true;
       const recordedFailed = recordNativePublicReadCycle({

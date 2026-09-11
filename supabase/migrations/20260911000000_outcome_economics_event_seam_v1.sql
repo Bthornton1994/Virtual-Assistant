@@ -11,10 +11,15 @@
 -- / fail_execution_attempt callers cannot supply durable reservation IDs and
 -- transactional economics finalization. Do not claim universal enforcement.
 --
--- Remaining budget is computed in SQL: envelope ceiling - committed -
--- open_reserved. Never reuse workstream_runs.ai_cost_micros,
--- run_executor_assignments.ai_cost_micros, assignment metadata, or process-local
--- Maps as remaining.
+-- Remaining budget is computed in SQL:
+--   remaining = ceiling - committed
+--             - unexpired_unstarted_reservations
+--             - unresolved_started_or_owner_action_reservations
+-- Lifecycle-terminal is not the remaining formula. owner_action_required and
+-- invocation_started continue to hold budget, including after TTL.
+-- released and expired release reserved budget ONLY when invocation never started.
+-- Never reuse workstream_runs.ai_cost_micros, run_executor_assignments.ai_cost_micros,
+-- assignment metadata, or process-local Maps as remaining.
 --
 -- Lock order (everywhere in this file):
 --   1. workstream_runs FOR UPDATE
@@ -208,14 +213,33 @@ create or replace function public.outcome_economics_event_is_terminal(p_event_ty
 returns boolean
 language sql
 immutable
+set search_path = public
 as $$
+  -- Lifecycle-terminal only. Not remaining. owner_action_required is unresolved.
   select p_event_type in ('committed', 'released', 'expired', 'owner_action_required');
 $$;
 
--- Remaining: ceiling - committed - open_reserved.
--- open_reserved = reserved with no terminal event and expiresAt > now().
--- When the run is not running, expired rows cannot be inserted; remaining still
--- derives TTL from reserved payload expiresAt.
+revoke all on function public.outcome_economics_event_is_terminal(text) from public;
+grant execute on function public.outcome_economics_event_is_terminal(text) to authenticated;
+
+create or replace function public.outcome_economics_event_is_financially_releasing(p_event_type text)
+returns boolean
+language sql
+immutable
+set search_path = public
+as $$
+  select p_event_type in ('released', 'expired');
+$$;
+
+revoke all on function public.outcome_economics_event_is_financially_releasing(text) from public;
+grant execute on function public.outcome_economics_event_is_financially_releasing(text) to authenticated;
+
+-- Remaining: ceiling - committed - unexpired_unstarted - unresolved_started_or_owner_action.
+-- unexpired_unstarted: reserved, no later event, expiresAt > now().
+-- unresolved_started_or_owner_action: invocation_started without committed, or
+-- owner_action_required. TTL does not release those. When the run is not running,
+-- expired rows cannot be inserted; remaining still derives TTL from reserved
+-- payload expiresAt for unstarted reservations only.
 create or replace function public.outcome_economics_remaining_for_run(p_run_id uuid)
 returns table (
   remaining_ai_cost_micros bigint,
@@ -269,15 +293,37 @@ begin
    where r.run_id = p_run_id
      and r.payload->>'schemaVersion' = 'outcome-economics-event/v1'
      and r.payload->>'eventType' = 'reserved'
-     and coalesce(r.payload->>'expiresAt', '') <> ''
-     and (r.payload->>'expiresAt')::timestamptz > now()
      and not exists (
        select 1
-         from public.evidence_artifacts t
-        where t.run_id = p_run_id
-          and t.payload->>'schemaVersion' = 'outcome-economics-event/v1'
-          and t.payload->>'reservationId' = r.payload->>'reservationId'
-          and public.outcome_economics_event_is_terminal(t.payload->>'eventType')
+         from public.evidence_artifacts c
+        where c.run_id = p_run_id
+          and c.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+          and c.payload->>'reservationId' = r.payload->>'reservationId'
+          and c.payload->>'eventType' = 'committed'
+     )
+     and (
+       exists (
+         select 1
+           from public.evidence_artifacts s
+          where s.run_id = p_run_id
+            and s.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+            and s.payload->>'reservationId' = r.payload->>'reservationId'
+            and s.payload->>'eventType' in ('invocation_started', 'owner_action_required')
+       )
+       or (
+         coalesce(r.payload->>'expiresAt', '') <> ''
+         and (r.payload->>'expiresAt')::timestamptz > now()
+         and not exists (
+           select 1
+             from public.evidence_artifacts t
+            where t.run_id = p_run_id
+              and t.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+              and t.payload->>'reservationId' = r.payload->>'reservationId'
+              and t.payload->>'eventType' in (
+                'committed', 'released', 'expired', 'owner_action_required', 'invocation_started'
+              )
+         )
+       )
      );
 
   remaining_ai_cost_micros := case
@@ -513,6 +559,12 @@ begin
   elsif p_event_type = 'expired' then
     if v_terminal = 'committed' then
       raise exception 'A committed reservation cannot expire';
+    end if;
+    if v_has_started then
+      raise exception 'A reservation that reached invocation_started cannot expire; budget remains held until committed or an explicit owner-resolution event exists';
+    end if;
+    if v_terminal = 'owner_action_required' then
+      raise exception 'An owner_action_required reservation cannot expire; budget remains held until an explicit owner-resolution event exists';
     end if;
   elsif p_event_type = 'owner_action_required' then
     if v_terminal = 'committed' then
@@ -876,9 +928,12 @@ begin
 end;
 $$;
 
--- Combined finalizer: lock, verify reservations belong to the assignment,
--- verify packet identity, insert committed events, mark assignment completed,
--- commit atomically. Packet presence alone cannot complete.
+-- Combined finalizer: lock workstream_runs then run_executor_assignments,
+-- verify packet identity, require the exact durable reservation set, insert
+-- committed events only for reservations that are not already explicitly
+-- released/expired without invocation, mark assignment completed, commit
+-- atomically. Packet presence alone cannot complete. owner_action_required
+-- is not completion-eligible. Caller metadata is not merged.
 create or replace function public.finalize_work_cell_phase_economics(
   p_run_id uuid,
   p_phase text,
@@ -903,8 +958,12 @@ declare
   v_bound boolean;
   v_reservation_id text;
   v_reserved public.evidence_artifacts%rowtype;
-  v_open_count integer;
   v_ids text[];
+  v_durable_count integer;
+  v_supplied_count integer;
+  v_unresolved_count integer;
+  v_forbidden_key text;
+  v_types text[];
 begin
   if auth.uid() is null or coalesce(public.is_ops_manager(), false) is not true then
     raise exception 'Only operations managers can finalize native work-cell economics';
@@ -912,12 +971,26 @@ begin
   if p_metadata_patch is not null and jsonb_typeof(p_metadata_patch) <> 'object' then
     raise exception 'Work-cell economics finalization metadata must be a JSON object';
   end if;
-  if p_metadata_patch ? 'workerId'
-     or p_metadata_patch ? 'leaseToken'
-     or p_metadata_patch ? 'leaseTokenHash'
-     or p_metadata_patch ? 'tokenHash' then
-    raise exception 'Work-cell economics finalization must not invent worker, lease, or token fields';
-  end if;
+  for v_forbidden_key in
+    select t.key
+      from jsonb_object_keys(coalesce(p_metadata_patch, '{}'::jsonb)) as t(key)
+     where lower(t.key) in (
+       'assignmentid', 'organizationid', 'runid', 'phase', 'executorkey',
+       'capabilitykey', 'actionclass', 'authoritysnapshot',
+       'inputmanifestcontenthash', 'envelopehash', 'contexthash',
+       'canonicalplanhash', 'outputartifactid', 'economicreservationids',
+       'economicreservationid', 'economicsfinalized', 'workerid', 'leasetoken',
+       'leasetokenhash', 'tokenhash', 'status',
+       'assignment_id', 'organization_id', 'run_id', 'executor_key',
+       'capability_key', 'action_class', 'authority_snapshot',
+       'input_manifest_content_hash', 'envelope_hash', 'context_hash',
+       'canonical_plan_hash', 'output_artifact_id', 'economic_reservation_ids',
+       'economic_reservation_id', 'economics_finalized', 'worker_id',
+       'lease_token', 'lease_token_hash', 'token_hash'
+     )
+  loop
+    raise exception 'Work-cell economics finalization must not rewrite binding, authority, identity, lease, or economic metadata';
+  end loop;
   if p_assignment_id is null or btrim(p_assignment_id) = ''
      or p_output_artifact_id is null or btrim(p_output_artifact_id) = ''
      or p_input_manifest_content_hash is null or btrim(p_input_manifest_content_hash) = ''
@@ -976,6 +1049,53 @@ begin
   end if;
 
   v_ids := coalesce(p_reservation_ids, '{}'::text[]);
+  v_supplied_count := coalesce(array_length(v_ids, 1), 0);
+  if v_supplied_count = 0 then
+    raise exception 'Economics finalization requires the exact durable reservation set; an empty reservation list cannot complete a native assignment';
+  end if;
+  if (select count(*) from unnest(v_ids) as x(id))
+     is distinct from (select count(distinct x.id) from unnest(v_ids) as x(id)) then
+    raise exception 'Economics finalization reservation IDs must not contain duplicates';
+  end if;
+
+  select count(*) into v_durable_count
+    from public.evidence_artifacts r
+   where r.run_id = p_run_id
+     and r.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+     and r.payload->>'eventType' = 'reserved'
+     and r.payload->>'nativeAssignmentId' = p_assignment_id;
+
+  if v_supplied_count is distinct from v_durable_count then
+    raise exception 'Economics finalization omitted a durable reservation or supplied extras; the exact reservation set is required';
+  end if;
+
+  if exists (
+    select 1
+      from unnest(v_ids) as supplied(id)
+     where not exists (
+       select 1
+         from public.evidence_artifacts r
+        where r.run_id = p_run_id
+          and r.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+          and r.payload->>'eventType' = 'reserved'
+          and r.payload->>'reservationId' = supplied.id
+          and r.payload->>'nativeAssignmentId' = p_assignment_id
+     )
+  ) then
+    raise exception 'Economics finalization reservation does not belong to this native assignment or is not in the durable reservation set';
+  end if;
+
+  if exists (
+    select 1
+      from public.evidence_artifacts r
+     where r.run_id = p_run_id
+       and r.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+       and r.payload->>'eventType' = 'reserved'
+       and r.payload->>'nativeAssignmentId' = p_assignment_id
+       and r.payload->>'reservationId' <> all (v_ids)
+  ) then
+    raise exception 'Economics finalization omitted a durable reservation; the exact reservation set is required';
+  end if;
 
   foreach v_reservation_id in array v_ids
   loop
@@ -989,9 +1109,36 @@ begin
       raise exception 'Economics finalization reservation does not exist';
     end if;
     if v_reserved.payload->>'nativeAssignmentId' is distinct from p_assignment_id
-       or v_reserved.payload->>'ownerKind' is distinct from 'native_assignment' then
-      raise exception 'Economics finalization reservation does not belong to this native assignment';
+       or v_reserved.payload->>'ownerKind' is distinct from 'native_assignment'
+       or v_reserved.payload->>'organizationId' is distinct from v_parents.run.organization_id::text
+       or v_reserved.payload->>'runId' is distinct from p_run_id::text
+       or v_reserved.payload->>'executorKey' is distinct from p_executor_key
+       or v_reserved.payload->>'capabilityKey' is distinct from p_capability_key
+       or v_reserved.payload->>'inputManifestContentHash' is distinct from p_input_manifest_content_hash
+       or v_reserved.payload->>'envelopeHash' is distinct from p_envelope_hash
+       or v_reserved.payload->>'contextHash' is distinct from p_context_hash then
+      raise exception 'Economics finalization reservation does not belong to this native assignment, run, organization, executor, capability, or binding hash';
     end if;
+
+    select coalesce(array_agg(t.payload->>'eventType'), '{}'::text[]) into v_types
+      from public.evidence_artifacts t
+     where t.run_id = p_run_id
+       and t.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+       and t.payload->>'reservationId' = v_reservation_id;
+
+    if 'owner_action_required' = any (v_types) then
+      raise exception 'Economics finalization cannot complete while a reservation is owner_action_required; budget remains held';
+    end if;
+    if 'committed' = any (v_types) then
+      continue;
+    end if;
+    if 'released' = any (v_types) or 'expired' = any (v_types) then
+      if 'invocation_started' = any (v_types) then
+        raise exception 'A started reservation cannot be financially released without owner resolution';
+      end if;
+      continue;
+    end if;
+
     perform public.outcome_economics_event_append(
       v_parents.run,
       v_parents.assignment,
@@ -1012,7 +1159,7 @@ begin
     );
   end loop;
 
-  select count(*) into v_open_count
+  select count(*) into v_unresolved_count
     from public.evidence_artifacts r
    where r.run_id = p_run_id
      and r.payload->>'schemaVersion' = 'outcome-economics-event/v1'
@@ -1024,17 +1171,34 @@ begin
         where t.run_id = p_run_id
           and t.payload->>'schemaVersion' = 'outcome-economics-event/v1'
           and t.payload->>'reservationId' = r.payload->>'reservationId'
-          and public.outcome_economics_event_is_terminal(t.payload->>'eventType')
+          and t.payload->>'eventType' = 'committed'
+     )
+     and not (
+       exists (
+         select 1
+           from public.evidence_artifacts t
+          where t.run_id = p_run_id
+            and t.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+            and t.payload->>'reservationId' = r.payload->>'reservationId'
+            and t.payload->>'eventType' in ('released', 'expired')
+       )
+       and not exists (
+         select 1
+           from public.evidence_artifacts s
+          where s.run_id = p_run_id
+            and s.payload->>'schemaVersion' = 'outcome-economics-event/v1'
+            and s.payload->>'reservationId' = r.payload->>'reservationId'
+            and s.payload->>'eventType' in ('invocation_started', 'owner_action_required')
+       )
      );
-  if v_open_count > 0 then
-    raise exception 'Economics finalization requires every native reservation to be committed or otherwise terminal';
+  if v_unresolved_count > 0 then
+    raise exception 'Economics finalization requires every native reservation to be committed or explicitly released/expired without invocation';
   end if;
 
   update public.run_executor_assignments
      set status = 'completed',
          completed_at = coalesce(completed_at, now()),
          metadata = coalesce(metadata, '{}'::jsonb)
-           || coalesce(p_metadata_patch, '{}'::jsonb)
            || jsonb_build_object(
              'economicsFinalized', jsonb_build_object(
                'schemaVersion', 'outcome-economics-event/v1',
@@ -1083,11 +1247,15 @@ grant execute on function public.finalize_work_cell_phase_economics(
   uuid, text, text, text, text, text, text, text, text, text[], text, jsonb
 ) to authenticated;
 
--- Old completion path: lock run then assignment, refuse unless committed events
--- already cover every reserved event for this assignment. Managers cannot
--- complete native-prepare without the transactional finalizer. This function
--- does not insert committed events, so commit+complete through this path is
--- not atomic; TypeScript must call finalize_work_cell_phase_economics.
+-- Drop prior overloads that could complete a running native assignment without
+-- durable financially resolved economics events.
+drop function if exists public.complete_work_cell_phase_claim(uuid, text);
+drop function if exists public.complete_work_cell_phase_claim(uuid, text, jsonb, text);
+
+-- Old completion path: lock run then assignment, refuse unless already completed.
+-- Managers cannot complete native-prepare without the transactional finalizer.
+-- This function does not insert committed events. TypeScript must call
+-- finalize_work_cell_phase_economics.
 create or replace function public.complete_work_cell_phase_claim(
   p_run_id uuid,
   p_phase text,
@@ -1254,5 +1422,5 @@ revoke execute on function public.fail_work_cell_phase_claim(uuid, text, text, b
 grant execute on function public.fail_work_cell_phase_claim(uuid, text, text, boolean, integer, text[]) to authenticated, service_role;
 
 revoke all on function public.complete_work_cell_phase_claim(uuid, text, jsonb, text, text, text, text, text, text, text) from public;
-revoke execute on function public.complete_work_cell_phase_claim(uuid, text, jsonb, text, text, text, text, text, text, text) from anon;
-grant execute on function public.complete_work_cell_phase_claim(uuid, text, jsonb, text, text, text, text, text, text, text) to authenticated, service_role;
+revoke execute on function public.complete_work_cell_phase_claim(uuid, text, jsonb, text, text, text, text, text, text, text) from anon, service_role;
+grant execute on function public.complete_work_cell_phase_claim(uuid, text, jsonb, text, text, text, text, text, text, text) to authenticated;

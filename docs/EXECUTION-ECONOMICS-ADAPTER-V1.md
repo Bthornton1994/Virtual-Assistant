@@ -162,9 +162,10 @@ Native catalog path: `inputManifestContentHash` is the frozen input-manifest con
 
 ## After the call
 
-- Native multi-URL: reserve all URLs in SQL before fetch; persist `invocation_started` before each `fetchPage`; after a valid packet persist, `finalize_work_cell_phase_economics` commits events and assignment completion atomically. Process-local Maps may update after that as advisory state in this isolate. Assignment `completed` is not written by `complete_work_cell_phase_claim`.
-- Failure, cancellation, timeout, abort, and native `{error}` fetch results release **that** URL. They do not commit as successful usage.
-- If `usageOnSuccess` throws **before** commit, remaining reserved IDs are released.
+- Native multi-URL: reserve all URLs in SQL before fetch; persist `invocation_started` before each `fetchPage`; after a valid packet persist, `finalize_work_cell_phase_economics` commits events and assignment completion atomically when the caller supplies the exact durable reservation set and every reservation is committed or explicitly released/expired without invocation. Process-local Maps may update after that as advisory state in this isolate. Assignment `completed` is not written by `complete_work_cell_phase_claim`.
+- Failure, cancellation, timeout, abort, and native `{error}` fetch results after `invocation_started` attempt `owner_action_required`. They do not silently release and do not commit as successful usage. If that owner-action write fails, durable `invocation_started` remains held. Later TTL must not make it financially available.
+- Unstarted reserved IDs may still be released when invocation never started.
+- If `usageOnSuccess` throws **before** commit, remaining reserved IDs are released in Maps; durable started reservations attempt owner-action and otherwise stay held.
 - Malformed, incomplete, stale, non-finite, contradictory, or over-reported usage that reaches `commitReservation` cannot commit (PR #80 fail-closed: NaN/Infinity stay reserved, no refund). Omitted token fields remain null; explicit `0` remains `0`. Cheap + null tokens consume the reserved amount rather than refunding.
 - Duplicate commit/release stay idempotent on the existing governor keys.
 - Fail-path release requires the reservation to exist, match session org/tenant, and match `reservation.executionAttemptId`.
@@ -185,10 +186,15 @@ Owner decision `APPROVE_EXISTING_EVIDENCE_EVENT_SEAM`. Draft SQL: `supabase/migr
 
 - Distinct schema `outcome-economics-event/v1`. Existing `outcome-economics-evidence/v1` snapshots are unchanged.
 - Event types: `reserved`, `invocation_started`, `committed`, `released`, `expired`, `owner_action_required`. Append-only. Never UPDATE reserved → committed.
-- Remaining is computed in SQL: envelope ceiling from `delegation_specs.economic_envelope` via `workstream_runs.delegation_spec_id`, minus committed event amounts, minus open reserved (`reserved` with no terminal event and `expiresAt > now()`). Derived TTL still applies when the run is not running because expired rows cannot be inserted then.
+- Lifecycle-terminal (`committed`, `released`, `expired`, `owner_action_required`) is not the remaining formula. Remaining is computed in SQL from `delegation_specs.economic_envelope` via `workstream_runs.delegation_spec_id`:
+  - remaining = ceiling − committed − unexpired unstarted reservations − unresolved started or `owner_action_required` reservations
+  - `released` and `expired` release reserved budget **only** when invocation never started
+  - `committed` consumes budget
+  - `invocation_started` is unresolved and continues to hold budget, including after TTL
+  - `owner_action_required` is unresolved and continues to hold budget, including after TTL, until an explicit separately authorized owner-resolution event exists (not invented in this slice)
 - Lock order: `workstream_runs FOR UPDATE` then `run_executor_assignments FOR UPDATE`.
 - Native identity stays `native-prepare:${assignmentId}`. No invented UUID. Native does not route through `execution_attempts`.
-- Reserve RPC before fetch. `invocation_started` before `fetchPage`. After packet persist, `finalize_work_cell_phase_economics` inserts committed events and marks the assignment completed in one transaction. Rollback leaves neither. `complete_work_cell_phase_claim` refuses native completion without that finalizer.
+- Reserve RPC before fetch. `invocation_started` before `fetchPage`. After packet persist, `finalize_work_cell_phase_economics` requires the **exact** durable reservation set for the locked assignment, inserts committed events only for reservations that are not already explicitly released/expired without invocation, and marks the assignment completed in one transaction. Rollback leaves neither. Empty lists, duplicates, omitted IDs, extras, and `owner_action_required` cannot complete. `complete_work_cell_phase_claim` refuses native completion without that finalizer. Caller metadata is not merged; binding, authority, identity, lease, and economic keys are rejected.
 - Direct PostgREST inserts for this schema are denied, including platform staff. Writes are SECURITY DEFINER, manager-only, `search_path` fixed, public/anon/service_role execute revoked.
 - **Leased path out of scope.** `complete_execution_attempt` / `fail_execution_attempt` are not changed to require reservation IDs. Do not claim universal economics enforcement for callers outside the durable RPC path.
 

@@ -19,12 +19,76 @@ export const OUTCOME_ECONOMICS_EVENT_TYPES = [
 
 export type OutcomeEconomicsEventType = (typeof OUTCOME_ECONOMICS_EVENT_TYPES)[number];
 
+/**
+ * Lifecycle-terminal events. These stop further appends for a reservation.
+ * They are NOT the remaining/budget formula. `owner_action_required` is
+ * lifecycle-terminal and financially unresolved: it continues to hold budget.
+ */
 export const OUTCOME_ECONOMICS_TERMINAL_EVENT_TYPES = [
   "committed",
   "released",
   "expired",
   "owner_action_required",
 ] as const;
+
+/** Explicit financial release is allowed only when invocation never started. */
+export const OUTCOME_ECONOMICS_FINANCIALLY_RELEASING_EVENT_TYPES = ["released", "expired"] as const;
+
+/** Financially resolved for remaining AND for assignment completion eligibility. */
+export const OUTCOME_ECONOMICS_FINANCIALLY_RESOLVED_EVENT_TYPES = [
+  "committed",
+  "released",
+  "expired",
+] as const;
+
+export const OUTCOME_ECONOMICS_FINALIZER_FORBIDDEN_METADATA_KEYS = [
+  "assignmentId",
+  "organizationId",
+  "runId",
+  "phase",
+  "executorKey",
+  "capabilityKey",
+  "actionClass",
+  "authoritySnapshot",
+  "inputManifestContentHash",
+  "envelopeHash",
+  "contextHash",
+  "canonicalPlanHash",
+  "outputArtifactId",
+  "economicReservationIds",
+  "economicReservationId",
+  "economicsFinalized",
+  "workerId",
+  "leaseToken",
+  "leaseTokenHash",
+  "tokenHash",
+  "status",
+] as const;
+
+const FINALIZER_FORBIDDEN_METADATA_KEY_SET = new Set(
+  [
+    ...OUTCOME_ECONOMICS_FINALIZER_FORBIDDEN_METADATA_KEYS,
+    "assignment_id",
+    "organization_id",
+    "run_id",
+    "executor_key",
+    "capability_key",
+    "action_class",
+    "authority_snapshot",
+    "input_manifest_content_hash",
+    "envelope_hash",
+    "context_hash",
+    "canonical_plan_hash",
+    "output_artifact_id",
+    "economic_reservation_ids",
+    "economic_reservation_id",
+    "economics_finalized",
+    "worker_id",
+    "lease_token",
+    "lease_token_hash",
+    "token_hash",
+  ].map((key) => key.toLowerCase()),
+);
 
 export type OutcomeEconomicsOwnerKind = "native_assignment" | "leased_attempt";
 
@@ -132,6 +196,62 @@ export function isTerminalOutcomeEconomicsEventType(value: string): boolean {
   return (OUTCOME_ECONOMICS_TERMINAL_EVENT_TYPES as readonly string[]).includes(value);
 }
 
+export function isFinanciallyReleasingOutcomeEconomicsEventType(value: string): boolean {
+  return (OUTCOME_ECONOMICS_FINANCIALLY_RELEASING_EVENT_TYPES as readonly string[]).includes(value);
+}
+
+export function isFinanciallyResolvedOutcomeEconomicsEventType(value: string): boolean {
+  return (OUTCOME_ECONOMICS_FINANCIALLY_RESOLVED_EVENT_TYPES as readonly string[]).includes(value);
+}
+
+export function assertOutcomeEconomicsFinalizerMetadataPatch(patch: Record<string, unknown> | undefined): void {
+  if (patch == null) return;
+  for (const key of Object.keys(patch)) {
+    if (FINALIZER_FORBIDDEN_METADATA_KEY_SET.has(key.toLowerCase())) {
+      throw new DomainError(
+        "Work-cell economics finalization must not rewrite binding, authority, identity, lease, or economic metadata",
+      );
+    }
+  }
+}
+
+export type ReservationBudgetHoldKind =
+  | "committed"
+  | "unexpired_unstarted"
+  | "unresolved_started_or_owner_action"
+  | "financially_released";
+
+export function classifyOutcomeEconomicsReservationHold(
+  events: readonly OutcomeEconomicsEventPayload[],
+  reservationId: string,
+  nowMs: number,
+): ReservationBudgetHoldKind {
+  const forReservation = events.filter((event) => event.reservationId === reservationId);
+  const types = new Set(forReservation.map((event) => event.eventType));
+  if (types.has("committed")) return "committed";
+  if (types.has("owner_action_required") || types.has("invocation_started")) {
+    return "unresolved_started_or_owner_action";
+  }
+  if (types.has("released") || types.has("expired")) return "financially_released";
+  const reserved = forReservation.find((event) => event.eventType === "reserved");
+  if (!reserved) return "financially_released";
+  if (!reserved.expiresAt || Date.parse(reserved.expiresAt) <= nowMs) return "financially_released";
+  return "unexpired_unstarted";
+}
+
+export function reservationIsCompletionEligible(
+  events: readonly OutcomeEconomicsEventPayload[],
+  reservationId: string,
+): boolean {
+  const forReservation = events.filter((event) => event.reservationId === reservationId);
+  const types = new Set(forReservation.map((event) => event.eventType));
+  if (types.has("owner_action_required")) return false;
+  if (types.has("committed")) return true;
+  if (types.has("invocation_started")) return false;
+  if (types.has("released") || types.has("expired")) return true;
+  return false;
+}
+
 export function assertSafeMicros(value: number, label: string): number {
   if (!Number.isInteger(value) || value < 0 || value > MAX_SAFE_MICROS) {
     throw new DomainError(`${label} must be a safe non-negative integer`);
@@ -218,6 +338,10 @@ export type ComputedEconomicsRemaining = {
   committedToolCostMicros: number;
   openReservedAiCostMicros: number;
   openReservedToolCostMicros: number;
+  unexpiredUnstartedAiCostMicros: number;
+  unexpiredUnstartedToolCostMicros: number;
+  unresolvedStartedOrOwnerActionAiCostMicros: number;
+  unresolvedStartedOrOwnerActionToolCostMicros: number;
   ceilingAiCostMicros: number | null;
   ceilingToolCostMicros: number | null;
 };
@@ -247,25 +371,28 @@ export function computeOutcomeEconomicsRemaining(input: {
 }): ComputedEconomicsRemaining {
   const committed = input.events.filter((event) => event.eventType === "committed");
   const reserved = input.events.filter((event) => event.eventType === "reserved");
-  const terminalByReservation = new Set(
-    input.events
-      .filter((event) => isTerminalOutcomeEconomicsEventType(event.eventType))
-      .map((event) => event.reservationId),
-  );
   let committedAi = 0;
   let committedTool = 0;
   for (const event of committed) {
     committedAi += event.aiCostMicros;
     committedTool += event.toolCostMicros;
   }
-  let openAi = 0;
-  let openTool = 0;
+  let unexpiredUnstartedAi = 0;
+  let unexpiredUnstartedTool = 0;
+  let unresolvedStartedOrOwnerActionAi = 0;
+  let unresolvedStartedOrOwnerActionTool = 0;
   for (const event of reserved) {
-    if (terminalByReservation.has(event.reservationId)) continue;
-    if (!event.expiresAt || Date.parse(event.expiresAt) <= input.nowMs) continue;
-    openAi += event.aiCostMicros;
-    openTool += event.toolCostMicros;
+    const hold = classifyOutcomeEconomicsReservationHold(input.events, event.reservationId, input.nowMs);
+    if (hold === "unexpired_unstarted") {
+      unexpiredUnstartedAi += event.aiCostMicros;
+      unexpiredUnstartedTool += event.toolCostMicros;
+    } else if (hold === "unresolved_started_or_owner_action") {
+      unresolvedStartedOrOwnerActionAi += event.aiCostMicros;
+      unresolvedStartedOrOwnerActionTool += event.toolCostMicros;
+    }
   }
+  const openAi = unexpiredUnstartedAi + unresolvedStartedOrOwnerActionAi;
+  const openTool = unexpiredUnstartedTool + unresolvedStartedOrOwnerActionTool;
   const ceilingAi = envelopeCeiling(input.envelope, "maxAiCostMicros", "max_ai_cost_micros");
   const ceilingTool = envelopeCeiling(input.envelope, "maxToolCostMicros", "max_tool_cost_micros");
   return {
@@ -275,6 +402,10 @@ export function computeOutcomeEconomicsRemaining(input: {
     committedToolCostMicros: committedTool,
     openReservedAiCostMicros: openAi,
     openReservedToolCostMicros: openTool,
+    unexpiredUnstartedAiCostMicros: unexpiredUnstartedAi,
+    unexpiredUnstartedToolCostMicros: unexpiredUnstartedTool,
+    unresolvedStartedOrOwnerActionAiCostMicros: unresolvedStartedOrOwnerActionAi,
+    unresolvedStartedOrOwnerActionToolCostMicros: unresolvedStartedOrOwnerActionTool,
     ceilingAiCostMicros: ceilingAi,
     ceilingToolCostMicros: ceilingTool,
   };
@@ -299,6 +430,7 @@ type MemoryRun = {
 export type MemoryDurableEconomicsStore = DurableEconomicsWriter & {
   events: OutcomeEconomicsEventPayload[];
   remaining(runId: string, nowMs?: number): ComputedEconomicsRemaining;
+  assignmentStatus(): "running" | "completed" | "failed";
   setPacket(input: {
     runId: string;
     outputArtifactId: string;
@@ -415,6 +547,19 @@ export function createMemoryDurableEconomicsStore(input: {
         throw new DomainError("invocation_started cannot be silently released; owner_action_required is required");
       }
     }
+    if (payloadInput.eventType === "expired") {
+      if (terminal?.eventType === "committed") throw new DomainError("A committed reservation cannot expire");
+      if (started) {
+        throw new DomainError(
+          "A reservation that reached invocation_started cannot expire; budget remains held until committed or an explicit owner-resolution event exists",
+        );
+      }
+      if (terminal?.eventType === "owner_action_required") {
+        throw new DomainError(
+          "An owner_action_required reservation cannot expire; budget remains held until an explicit owner-resolution event exists",
+        );
+      }
+    }
     if (payloadInput.eventType === "committed" && reserved) {
       const expiresAt = reserved.expiresAt ? Date.parse(reserved.expiresAt) : NaN;
       if (Number.isFinite(expiresAt) && expiresAt <= Date.parse(payloadInput.eventAt)) {
@@ -446,6 +591,9 @@ export function createMemoryDurableEconomicsStore(input: {
     remaining(runId, nowMs = Date.now()) {
       if (runId !== run.id) throw new DomainError("Workstream run was not found");
       return computeOutcomeEconomicsRemaining({ envelope: run.envelope, events, nowMs });
+    },
+    assignmentStatus() {
+      return run.assignment?.status ?? "failed";
     },
     setPacket(packet) {
       if (!run.assignment) return;
@@ -560,6 +708,7 @@ export function createMemoryDurableEconomicsStore(input: {
         const snapshot = events.map((event) => event);
         const priorStatus = assignment.status;
         try {
+          assertOutcomeEconomicsFinalizerMetadataPatch(finalizeInput.metadataPatch);
           if (
             !assignment.outputArtifactId ||
             assignment.outputArtifactId !== finalizeInput.outputArtifactId ||
@@ -571,18 +720,71 @@ export function createMemoryDurableEconomicsStore(input: {
               "An unbound or unrelated catalog evidence packet cannot complete this work-cell phase claim",
             );
           }
-          for (const reservationId of finalizeInput.reservationIds) {
-            const reserved = events.find(
-              (event) => event.reservationId === reservationId && event.eventType === "reserved",
+          const suppliedIds = [...finalizeInput.reservationIds];
+          if (suppliedIds.length === 0) {
+            throw new DomainError(
+              "Economics finalization requires the exact durable reservation set; an empty reservation list cannot complete a native assignment",
             );
-            if (!reserved || reserved.nativeAssignmentId !== finalizeInput.assignmentId) {
-              throw new DomainError("Economics finalization reservation does not belong to this native assignment");
+          }
+          if (new Set(suppliedIds).size !== suppliedIds.length) {
+            throw new DomainError("Economics finalization reservation IDs must not contain duplicates");
+          }
+          const durableReserved = events.filter(
+            (event) =>
+              event.eventType === "reserved" && event.nativeAssignmentId === finalizeInput.assignmentId,
+          );
+          const durableIds = durableReserved.map((event) => event.reservationId);
+          const durableSet = new Set(durableIds);
+          const suppliedSet = new Set(suppliedIds);
+          for (const reservationId of suppliedIds) {
+            if (!durableSet.has(reservationId)) {
+              throw new DomainError(
+                "Economics finalization reservation does not belong to this native assignment or is not in the durable reservation set",
+              );
+            }
+          }
+          for (const reservationId of durableIds) {
+            if (!suppliedSet.has(reservationId)) {
+              throw new DomainError(
+                "Economics finalization omitted a durable reservation; the exact reservation set is required",
+              );
+            }
+          }
+          for (const reserved of durableReserved) {
+            if (
+              reserved.nativeAssignmentId !== finalizeInput.assignmentId ||
+              reserved.organizationId !== run.organizationId ||
+              reserved.runId !== finalizeInput.runId ||
+              reserved.executorKey !== finalizeInput.executorKey ||
+              reserved.capabilityKey !== finalizeInput.capabilityKey ||
+              reserved.inputManifestContentHash !== finalizeInput.inputManifestContentHash ||
+              reserved.envelopeHash !== finalizeInput.envelopeHash ||
+              reserved.contextHash !== finalizeInput.contextHash
+            ) {
+              throw new DomainError(
+                "Economics finalization reservation does not belong to this native assignment, run, organization, executor, capability, or binding hash",
+              );
+            }
+            const types = new Set(
+              events.filter((event) => event.reservationId === reserved.reservationId).map((event) => event.eventType),
+            );
+            if (types.has("owner_action_required")) {
+              throw new DomainError(
+                "Economics finalization cannot complete while a reservation is owner_action_required; budget remains held",
+              );
+            }
+            if (types.has("committed")) continue;
+            if (types.has("released") || types.has("expired")) {
+              if (types.has("invocation_started")) {
+                throw new DomainError("A started reservation cannot be financially released without owner resolution");
+              }
+              continue;
             }
             append({
               eventType: "committed",
               organizationId: run.organizationId,
               runId: finalizeInput.runId,
-              reservationId,
+              reservationId: reserved.reservationId,
               idempotencyKey: reserved.idempotencyKey,
               ownerKind: "native_assignment",
               nativeAssignmentId: finalizeInput.assignmentId,
@@ -601,19 +803,12 @@ export function createMemoryDurableEconomicsStore(input: {
               packetContentHash: finalizeInput.packetContentHash,
             });
           }
-          const open = events.filter(
-            (event) =>
-              event.eventType === "reserved" &&
-              event.nativeAssignmentId === finalizeInput.assignmentId &&
-              !events.some(
-                (other) =>
-                  other.reservationId === event.reservationId && isTerminalOutcomeEconomicsEventType(other.eventType),
-              ),
-          );
-          if (open.length > 0) {
-            throw new DomainError(
-              "Economics finalization requires every native reservation to be committed or otherwise terminal",
-            );
+          for (const reserved of durableReserved) {
+            if (!reservationIsCompletionEligible(events, reserved.reservationId)) {
+              throw new DomainError(
+                "Economics finalization requires every native reservation to be committed or explicitly released/expired without invocation",
+              );
+            }
           }
           assignment.status = "completed";
           return { assignmentId: assignment.assignmentId, assignmentStatus: "completed" };

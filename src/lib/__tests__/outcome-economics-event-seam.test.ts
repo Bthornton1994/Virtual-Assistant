@@ -18,6 +18,7 @@ import {
   OUTCOME_ECONOMICS_EVENT_SCHEMA_VERSION,
   type DurableNativeEconomicsIdentity,
 } from "@/lib/outcome-economics-event";
+import { canonicalJsonStringify, sha256Hex as catalogSha256Hex } from "@/lib/catalog-evidence-hash";
 
 const HEX_A = "a".repeat(64);
 const HEX_B = "b".repeat(64);
@@ -362,6 +363,16 @@ describe("outcome economics event seam — SQL catalog and native wiring", () =>
     expect(sql).toMatch(/Lock order: workstream_runs then run_executor_assignments/);
     expect(sql).toMatch(/for update/);
     expect(sql).toMatch(/ceiling_ai - v_committed_ai - v_open_ai/);
+    expect(sql).toMatch(/unexpired_unstarted/);
+    expect(sql).toMatch(/unresolved_started_or_owner_action/);
+    expect(sql).toMatch(/invocation_started', 'owner_action_required/);
+    expect(sql).toMatch(/exact durable reservation set/);
+    expect(sql).toMatch(/must not rewrite binding, authority, identity, lease, or economic metadata/);
+    expect(sql).toMatch(/drop function if exists public\.complete_work_cell_phase_claim\(uuid, text\)/);
+    expect(sql).toMatch(/drop function if exists public\.complete_work_cell_phase_claim\(uuid, text, jsonb, text\)/);
+    expect(sql).toMatch(/revoke execute on function public\.complete_work_cell_phase_claim[\s\S]*from anon, service_role/);
+    expect(sql).toMatch(/revoke execute on function public\.finalize_work_cell_phase_economics[\s\S]*from anon, service_role/);
+    expect(sql).toMatch(/A reservation that reached invocation_started cannot expire/);
     expect(sql).toMatch(/EXPLICITLY OUT OF SCOPE/);
     expect(sql).not.toMatch(/create table/i);
     expect(sql).toMatch(/revoke execute on function public\.reserve_outcome_economics_event[\s\S]*from anon, service_role/);
@@ -392,6 +403,8 @@ describe("outcome economics event seam — SQL catalog and native wiring", () =>
     expect(native).toMatch(/persistDurableInvocationStarted/);
     expect(native.indexOf("persistDurableInvocationStarted")).toBeLessThan(native.indexOf("fetchPage(entry.url)"));
     expect(native.indexOf("persistDurableReserve")).toBeLessThan(native.indexOf("persistDurableInvocationStarted"));
+    expect(native).toMatch(/persistDurableRelease\(pending.reservation, true\)/);
+    expect(native).toMatch(/durableInvocationStartedIds/);
     expect(nativeFn).toMatch(/native-prepare:|assignmentId: binding.assignmentId/);
     expect(nativeFn).not.toMatch(/execution_attempts/);
   });
@@ -405,7 +418,7 @@ describe("outcome economics event seam — SQL catalog and native wiring", () =>
     expect(adapter).toMatch(/FINALIZE_WORK_CELL_PHASE_ECONOMICS_RPC/);
   });
 
-  it("remaining formula uses envelope ceilings minus committed and unexpired open reserved", () => {
+  it("remaining formula uses envelope ceilings minus committed, unexpired unstarted, and unresolved started or owner-action holds", () => {
     const remaining = computeOutcomeEconomicsRemaining({
       envelope: { maxAiCostMicros: 100, maxToolCostMicros: 50 },
       nowMs: Date.parse(NOW),
@@ -458,5 +471,372 @@ describe("outcome economics event seam — SQL catalog and native wiring", () =>
     });
     expect(remaining.remainingAiCostMicros).toBe(85);
     expect(remaining.remainingToolCostMicros).toBe(25);
+    expect(remaining.unexpiredUnstartedToolCostMicros).toBe(20);
+    expect(remaining.unresolvedStartedOrOwnerActionToolCostMicros).toBe(0);
+  });
+});
+
+describe("outcome economics remaining — terminal vs financially resolved", () => {
+  it("owner_action_required continues to hold budget", async () => {
+    const ledger = store();
+    const reservation = reservationId("hold-owner-action");
+    const key = idempotency("hold-owner-action");
+    await ledger.reserve({
+      ...identity,
+      reservationId: reservation,
+      idempotencyKey: key,
+      aiCostMicros: 0,
+      toolCostMicros: 40,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: reservation, idempotencyKey: key });
+    await ledger.release({ ...identity, reservationId: reservation, idempotencyKey: key, ownerAction: true });
+    const remaining = ledger.remaining(identity.runId, Date.parse(NOW));
+    expect(remaining.unresolvedStartedOrOwnerActionToolCostMicros).toBe(40);
+    expect(remaining.openReservedToolCostMicros).toBe(40);
+    expect(remaining.remainingToolCostMicros).toBe(460);
+    expect(remaining.committedToolCostMicros).toBe(0);
+  });
+
+  it("owner_action_required does not disappear from remaining after TTL", async () => {
+    const ledger = store();
+    const reservation = reservationId("owner-action-ttl");
+    const key = idempotency("hold-owner-action-ttl");
+    await ledger.reserve({
+      ...identity,
+      reservationId: reservation,
+      idempotencyKey: key,
+      aiCostMicros: 0,
+      toolCostMicros: 40,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: reservation, idempotencyKey: key });
+    await ledger.release({ ...identity, reservationId: reservation, idempotencyKey: key, ownerAction: true });
+    const afterTtl = ledger.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z"));
+    expect(afterTtl.unresolvedStartedOrOwnerActionToolCostMicros).toBe(40);
+    expect(afterTtl.remainingToolCostMicros).toBe(460);
+  });
+
+  it("invocation_started continues to hold budget after TTL", async () => {
+    const ledger = store();
+    const reservation = reservationId("started-ttl");
+    const key = idempotency("started-ttl");
+    await ledger.reserve({
+      ...identity,
+      reservationId: reservation,
+      idempotencyKey: key,
+      aiCostMicros: 0,
+      toolCostMicros: 25,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: reservation, idempotencyKey: key });
+    const afterTtl = ledger.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z"));
+    expect(afterTtl.unresolvedStartedOrOwnerActionToolCostMicros).toBe(25);
+    expect(afterTtl.unexpiredUnstartedToolCostMicros).toBe(0);
+    expect(afterTtl.remainingToolCostMicros).toBe(475);
+  });
+
+  it("a failed owner-action write cannot make a started reservation financially available", async () => {
+    const ledger = store();
+    const reservation = reservationId("failed-owner-action");
+    const key = idempotency("failed-owner-action");
+    await ledger.reserve({
+      ...identity,
+      reservationId: reservation,
+      idempotencyKey: key,
+      aiCostMicros: 0,
+      toolCostMicros: 30,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: reservation, idempotencyKey: key });
+    await expect(
+      ledger.release({ ...identity, reservationId: reservation, idempotencyKey: key, ownerAction: false }),
+    ).rejects.toThrow(/cannot be silently released/);
+    const failingWriter = {
+      ...ledger,
+      async release() {
+        throw new Error("owner-action write failed");
+      },
+    };
+    await expect(
+      failingWriter.release({
+        ...identity,
+        reservationId: reservation,
+        idempotencyKey: key,
+        ownerAction: true,
+      }),
+    ).rejects.toThrow(/owner-action write failed/);
+    expect(ledger.events.some((event) => event.eventType === "owner_action_required")).toBe(false);
+    expect(ledger.events.some((event) => event.eventType === "released")).toBe(false);
+    const afterTtl = ledger.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z"));
+    expect(afterTtl.unresolvedStartedOrOwnerActionToolCostMicros).toBe(30);
+    expect(afterTtl.remainingToolCostMicros).toBe(470);
+  });
+
+  it("only an unstarted reservation can become expired automatically", async () => {
+    const unstarted = store();
+    const unstartedId = reservationId("auto-expire-unstarted");
+    await unstarted.reserve({
+      ...identity,
+      reservationId: unstartedId,
+      idempotencyKey: idempotency("auto-expire-unstarted"),
+      aiCostMicros: 0,
+      toolCostMicros: 15,
+      expiresAt: FUTURE,
+    });
+    expect(unstarted.remaining(identity.runId, Date.parse(NOW)).remainingToolCostMicros).toBe(485);
+    expect(unstarted.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z")).remainingToolCostMicros).toBe(
+      500,
+    );
+
+    const started = store();
+    const startedId = reservationId("auto-expire-started");
+    const startedKey = idempotency("auto-expire-started");
+    await started.reserve({
+      ...identity,
+      reservationId: startedId,
+      idempotencyKey: startedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 15,
+      expiresAt: FUTURE,
+    });
+    await started.invocationStarted({ ...identity, reservationId: startedId, idempotencyKey: startedKey });
+    expect(started.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z")).remainingToolCostMicros).toBe(485);
+  });
+    const releasedLedger = store();
+    const releasedId = reservationId("released-unstarted");
+    const releasedKey = idempotency("released-unstarted");
+    await releasedLedger.reserve({
+      ...identity,
+      reservationId: releasedId,
+      idempotencyKey: releasedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 12,
+      expiresAt: FUTURE,
+    });
+    await releasedLedger.release({ ...identity, reservationId: releasedId, idempotencyKey: releasedKey });
+    expect(releasedLedger.remaining(identity.runId, Date.parse(NOW)).remainingToolCostMicros).toBe(500);
+    expect(releasedLedger.events.some((event) => event.eventType === "released")).toBe(true);
+
+    const committedLedger = store();
+    const committedId = reservationId("committed-valid");
+    await committedLedger.reserve({
+      ...identity,
+      reservationId: committedId,
+      idempotencyKey: idempotency("committed-valid"),
+      aiCostMicros: 0,
+      toolCostMicros: 8,
+      expiresAt: FUTURE,
+    });
+    committedLedger.setPacket({
+      runId: identity.runId,
+      outputArtifactId: "artifact-committed",
+      packetContentHash: HEX_B,
+      executorKey: identity.executorKey,
+    });
+    await committedLedger.finalize({
+      ...identity,
+      outputArtifactId: "artifact-committed",
+      packetContentHash: HEX_B,
+      reservationIds: [committedId],
+    });
+    expect(committedLedger.assignmentStatus()).toBe("completed");
+    expect(committedLedger.remaining(identity.runId, Date.parse(NOW)).committedToolCostMicros).toBe(8);
+    expect(committedLedger.remaining(identity.runId, Date.parse(NOW)).remainingToolCostMicros).toBe(492);
+  });
+});
+
+describe("outcome economics finalizer — exact reservation set and metadata", () => {
+  it("rejects a subset of successful reservation IDs when another URL is owner_action_required", async () => {
+    const ledger = store();
+    const urlA = reservationId("url-a-owner-action");
+    const urlB = reservationId("url-b-commit");
+    const keyA = idempotency("url-a-owner-action");
+    const keyB = idempotency("url-b-commit");
+    await ledger.reserve({
+      ...identity,
+      reservationId: urlA,
+      idempotencyKey: keyA,
+      aiCostMicros: 0,
+      toolCostMicros: 20,
+      expiresAt: FUTURE,
+    });
+    await ledger.reserve({
+      ...identity,
+      reservationId: urlB,
+      idempotencyKey: keyB,
+      aiCostMicros: 0,
+      toolCostMicros: 20,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: urlA, idempotencyKey: keyA });
+    await ledger.release({ ...identity, reservationId: urlA, idempotencyKey: keyA, ownerAction: true });
+    await ledger.invocationStarted({ ...identity, reservationId: urlB, idempotencyKey: keyB });
+    ledger.setPacket({
+      runId: identity.runId,
+      outputArtifactId: "artifact-subset",
+      packetContentHash: HEX_B,
+      executorKey: identity.executorKey,
+    });
+    await expect(
+      ledger.finalize({
+        ...identity,
+        outputArtifactId: "artifact-subset",
+        packetContentHash: HEX_B,
+        reservationIds: [urlB],
+      }),
+    ).rejects.toThrow(/omitted a durable reservation|exact reservation set/);
+    expect(ledger.assignmentStatus()).toBe("running");
+    expect(ledger.events.some((event) => event.eventType === "committed" && event.reservationId === urlA)).toBe(false);
+    expect(ledger.events.some((event) => event.eventType === "committed")).toBe(false);
+    const remaining = ledger.remaining(identity.runId, Date.parse(NOW));
+    expect(remaining.unresolvedStartedOrOwnerActionToolCostMicros).toBe(40);
+    expect(remaining.remainingToolCostMicros).toBe(460);
+  });
+
+  it("empty reservation list cannot complete an assignment with a valid packet", async () => {
+    const ledger = store();
+    const reservation = reservationId("empty-list");
+    await ledger.reserve({
+      ...identity,
+      reservationId: reservation,
+      idempotencyKey: idempotency("empty-list"),
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    ledger.setPacket({
+      runId: identity.runId,
+      outputArtifactId: "artifact-empty",
+      packetContentHash: HEX_B,
+      executorKey: identity.executorKey,
+    });
+    await expect(
+      ledger.finalize({
+        ...identity,
+        outputArtifactId: "artifact-empty",
+        packetContentHash: HEX_B,
+        reservationIds: [],
+      }),
+    ).rejects.toThrow(/empty reservation list cannot complete/);
+    expect(ledger.assignmentStatus()).toBe("running");
+    expect(ledger.events.some((event) => event.eventType === "committed")).toBe(false);
+  });
+
+  it("rejects duplicate reservation IDs and extras from another assignment", async () => {
+    const ledger = store();
+    const reservation = reservationId("dup-extra");
+    await ledger.reserve({
+      ...identity,
+      reservationId: reservation,
+      idempotencyKey: idempotency("dup-extra"),
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    ledger.setPacket({
+      runId: identity.runId,
+      outputArtifactId: "artifact-dup",
+      packetContentHash: HEX_B,
+      executorKey: identity.executorKey,
+    });
+    await expect(
+      ledger.finalize({
+        ...identity,
+        outputArtifactId: "artifact-dup",
+        packetContentHash: HEX_B,
+        reservationIds: [reservation, reservation],
+      }),
+    ).rejects.toThrow(/must not contain duplicates/);
+    const other = reservationId("other-assignment");
+    await expect(
+      ledger.finalize({
+        ...identity,
+        outputArtifactId: "artifact-dup",
+        packetContentHash: HEX_B,
+        reservationIds: [reservation, other],
+      }),
+    ).rejects.toThrow(/does not belong to this native assignment|exact reservation set/);
+    expect(ledger.assignmentStatus()).toBe("running");
+  });
+
+  it("caller cannot rewrite binding or authority metadata through finalization", async () => {
+    const ledger = store();
+    const reservation = reservationId("metadata-rewrite");
+    await ledger.reserve({
+      ...identity,
+      reservationId: reservation,
+      idempotencyKey: idempotency("metadata-rewrite"),
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    ledger.setPacket({
+      runId: identity.runId,
+      outputArtifactId: "artifact-meta",
+      packetContentHash: HEX_B,
+      executorKey: identity.executorKey,
+    });
+    await expect(
+      ledger.finalize({
+        ...identity,
+        outputArtifactId: "artifact-meta",
+        packetContentHash: HEX_B,
+        reservationIds: [reservation],
+        metadataPatch: { assignmentId: "forged-assignment", authoritySnapshot: { actionClass: "external_execution" } },
+      }),
+    ).rejects.toThrow(/must not rewrite binding, authority, identity, lease, or economic metadata/);
+    expect(ledger.assignmentStatus()).toBe("running");
+    expect(ledger.events.some((event) => event.eventType === "committed")).toBe(false);
+  });
+});
+
+describe("outcome economics event / packet hash known vectors", () => {
+  it("TS hashes a frozen catalog packet vector; SQL parity is SQL_VERIFICATION_NOT_AVAILABLE", () => {
+    const packetVector = {
+      schemaVersion: "catalog-evidence-packet/v1",
+      executorKey: "delegation-cloud-public-web-researcher-v1",
+      runId: "run-econ-hash-vector",
+    };
+    const tsHash = catalogSha256Hex(packetVector);
+    expect(tsHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(canonicalJsonStringify(packetVector)).toBe(
+      '{"executorKey":"delegation-cloud-public-web-researcher-v1","runId":"run-econ-hash-vector","schemaVersion":"catalog-evidence-packet/v1"}',
+    );
+    expect(tsHash).toBe("38a58241805c654c82ff21f6c91a5304bdc11ba3e0ebdaadddee973f115231f3");
+    const event = buildOutcomeEconomicsEventPayload({
+      eventType: "reserved",
+      organizationId: "org-econ-event",
+      runId: identity.runId,
+      reservationId: HEX_A,
+      idempotencyKey: HEX_B,
+      ownerKind: "native_assignment",
+      nativeAssignmentId: identity.assignmentId,
+      leasedAttemptId: null,
+      eventAt: NOW,
+      expiresAt: FUTURE,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      executorKey: identity.executorKey,
+      capabilityKey: identity.capabilityKey,
+      inputManifestContentHash: HEX_A,
+      envelopeHash: HEX_A,
+      contextHash: HEX_A,
+      planHash: null,
+      outputArtifactId: null,
+      packetContentHash: null,
+    });
+    expect(event.contentHash).toBe(catalogSha256Hex({ ...event, contentHash: undefined }));
+    const sql = readFileSync(
+      resolve(process.cwd(), "supabase/migrations/20260911000000_outcome_economics_event_seam_v1.sql"),
+      "utf8",
+    );
+    expect(sql).toMatch(/outcome_economics_event_canonical_sha256\(e\.payload\) = p_packet_content_hash/);
+    expect(sql).toMatch(/public\.twl_prepare_proof_sha256\(p_value\)/);
+    const proof = readFileSync(
+      resolve(process.cwd(), "supabase/qa/outcome_economics_event_seam_proof.sql"),
+      "utf8",
+    );
+    expect(proof).toMatch(/KNOWN_VECTOR_SQL_PARITY_NOT_EXECUTED/);
   });
 });
