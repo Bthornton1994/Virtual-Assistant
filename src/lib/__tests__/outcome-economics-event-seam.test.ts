@@ -24,9 +24,11 @@ const HEX_A = "a".repeat(64);
 const HEX_B = "b".repeat(64);
 const HEX_C = "c".repeat(64);
 const HEX_D = "d".repeat(64);
-const NOW = "2026-09-11T00:00:00.000Z";
-const FUTURE = "2026-09-11T00:02:00.000Z";
-const PAST = "2026-09-10T00:00:00.000Z";
+const NOW_MS = Date.now();
+const NOW = new Date(NOW_MS).toISOString();
+const FUTURE = new Date(NOW_MS + 120_000).toISOString();
+const PAST = new Date(NOW_MS - 86_400_000).toISOString();
+const AFTER_TTL = new Date(NOW_MS + 180_000).toISOString();
 
 const identity: DurableNativeEconomicsIdentity = {
   runId: "run-econ-event-0001",
@@ -512,7 +514,7 @@ describe("outcome economics remaining — terminal vs financially resolved", () 
     });
     await ledger.invocationStarted({ ...identity, reservationId: reservation, idempotencyKey: key });
     await ledger.release({ ...identity, reservationId: reservation, idempotencyKey: key, ownerAction: true });
-    const afterTtl = ledger.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z"));
+    const afterTtl = ledger.remaining(identity.runId, Date.parse(AFTER_TTL));
     expect(afterTtl.unresolvedStartedOrOwnerActionToolCostMicros).toBe(40);
     expect(afterTtl.remainingToolCostMicros).toBe(460);
   });
@@ -530,7 +532,7 @@ describe("outcome economics remaining — terminal vs financially resolved", () 
       expiresAt: FUTURE,
     });
     await ledger.invocationStarted({ ...identity, reservationId: reservation, idempotencyKey: key });
-    const afterTtl = ledger.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z"));
+    const afterTtl = ledger.remaining(identity.runId, Date.parse(AFTER_TTL));
     expect(afterTtl.unresolvedStartedOrOwnerActionToolCostMicros).toBe(25);
     expect(afterTtl.unexpiredUnstartedToolCostMicros).toBe(0);
     expect(afterTtl.remainingToolCostMicros).toBe(475);
@@ -553,8 +555,7 @@ describe("outcome economics remaining — terminal vs financially resolved", () 
       ledger.release({ ...identity, reservationId: reservation, idempotencyKey: key, ownerAction: false }),
     ).rejects.toThrow(/cannot be silently released/);
     const failingWriter = {
-      ...ledger,
-      async release() {
+      async release(_input: Parameters<typeof ledger.release>[0]) {
         throw new Error("owner-action write failed");
       },
     };
@@ -568,7 +569,7 @@ describe("outcome economics remaining — terminal vs financially resolved", () 
     ).rejects.toThrow(/owner-action write failed/);
     expect(ledger.events.some((event) => event.eventType === "owner_action_required")).toBe(false);
     expect(ledger.events.some((event) => event.eventType === "released")).toBe(false);
-    const afterTtl = ledger.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z"));
+    const afterTtl = ledger.remaining(identity.runId, Date.parse(AFTER_TTL));
     expect(afterTtl.unresolvedStartedOrOwnerActionToolCostMicros).toBe(30);
     expect(afterTtl.remainingToolCostMicros).toBe(470);
   });
@@ -585,7 +586,7 @@ describe("outcome economics remaining — terminal vs financially resolved", () 
       expiresAt: FUTURE,
     });
     expect(unstarted.remaining(identity.runId, Date.parse(NOW)).remainingToolCostMicros).toBe(485);
-    expect(unstarted.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z")).remainingToolCostMicros).toBe(
+    expect(unstarted.remaining(identity.runId, Date.parse(AFTER_TTL)).remainingToolCostMicros).toBe(
       500,
     );
 
@@ -601,8 +602,10 @@ describe("outcome economics remaining — terminal vs financially resolved", () 
       expiresAt: FUTURE,
     });
     await started.invocationStarted({ ...identity, reservationId: startedId, idempotencyKey: startedKey });
-    expect(started.remaining(identity.runId, Date.parse("2026-09-12T00:00:00.000Z")).remainingToolCostMicros).toBe(485);
+    expect(started.remaining(identity.runId, Date.parse(AFTER_TTL)).remainingToolCostMicros).toBe(485);
   });
+
+  it("committed, released, and unstarted expired remaining behavior is unchanged where valid", async () => {
     const releasedLedger = store();
     const releasedId = reservationId("released-unstarted");
     const releasedKey = idempotency("released-unstarted");
