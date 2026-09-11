@@ -438,6 +438,7 @@ export type MemoryDurableEconomicsStore = DurableEconomicsWriter & {
     executorKey: string;
   }): void;
   completeAssignment(runId: string): void;
+  failAssignment(runId: string): void;
 };
 
 function eventKey(runId: string, reservationId: string, eventType: string): string {
@@ -525,6 +526,11 @@ export function createMemoryDurableEconomicsStore(input: {
       }
       return existing;
     }
+    if (run.assignment?.status === "failed" || run.assignment?.status === "completed") {
+      throw new DomainError(
+        "New economics events cannot be appended after the native assignment is failed or completed",
+      );
+    }
     const reserved = events.find(
       (event) => event.reservationId === payloadInput.reservationId && event.eventType === "reserved",
     );
@@ -546,6 +552,9 @@ export function createMemoryDurableEconomicsStore(input: {
       if (started) {
         throw new DomainError("invocation_started cannot be silently released; owner_action_required is required");
       }
+      if (terminal?.eventType === "expired" || terminal?.eventType === "owner_action_required") {
+        throw new DomainError(`A reservation that is ${terminal.eventType} cannot be released`);
+      }
     }
     if (payloadInput.eventType === "expired") {
       if (terminal?.eventType === "committed") throw new DomainError("A committed reservation cannot expire");
@@ -554,11 +563,34 @@ export function createMemoryDurableEconomicsStore(input: {
           "A reservation that reached invocation_started cannot expire; budget remains held until committed or an explicit owner-resolution event exists",
         );
       }
+      if (terminal?.eventType === "released") {
+        throw new DomainError("A released reservation cannot expire");
+      }
       if (terminal?.eventType === "owner_action_required") {
         throw new DomainError(
           "An owner_action_required reservation cannot expire; budget remains held until an explicit owner-resolution event exists",
         );
       }
+    }
+    if (payloadInput.eventType === "owner_action_required") {
+      if (
+        terminal?.eventType === "committed" ||
+        terminal?.eventType === "released" ||
+        terminal?.eventType === "expired"
+      ) {
+        throw new DomainError(`A ${terminal.eventType} reservation cannot move to owner_action_required`);
+      }
+      if (!started) {
+        throw new DomainError(
+          "owner_action_required is only valid for reservations that reached invocation_started",
+        );
+      }
+    }
+    if (payloadInput.eventType === "invocation_started" && terminal) {
+      throw new DomainError(`A reservation that is ${terminal.eventType} cannot start invocation`);
+    }
+    if (payloadInput.eventType === "reserved" && (terminal || started)) {
+      throw new DomainError("A reservation cannot be re-opened after a later economics event");
     }
     if (payloadInput.eventType === "committed" && reserved) {
       const expiresAt = reserved.expiresAt ? Date.parse(reserved.expiresAt) : NaN;
@@ -605,6 +637,10 @@ export function createMemoryDurableEconomicsStore(input: {
     completeAssignment(runId) {
       if (run.id !== runId || !run.assignment) return;
       run.assignment.status = "completed";
+    },
+    failAssignment(runId) {
+      if (run.id !== runId || !run.assignment) return;
+      run.assignment.status = "failed";
     },
     async reserve(reserveInput) {
       return withRunLock(() => {

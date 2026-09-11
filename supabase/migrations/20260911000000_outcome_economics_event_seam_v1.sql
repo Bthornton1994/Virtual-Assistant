@@ -116,7 +116,7 @@ begin
       'prompt', 'completion', 'content', 'payload', 'body', 'message', 'raw',
       'chainofthought', 'chain_of_thought', 'reasoning', 'credential',
       'credentials', 'secret', 'secrets', 'token', 'password', 'apikey',
-      'api_key', 'leaseToken', 'leasetoken', 'leaseTokenHash', 'tokenHash'
+      'api_key', 'leasetoken', 'leasetokenhash', 'tokenhash'
     ) then
       return true;
     end if;
@@ -503,6 +503,12 @@ begin
     return v_existing.id;
   end if;
 
+  -- New events only. Matching idempotent replay already returned above and
+  -- must not reopen a failed or completed native assignment.
+  if p_assignment.status in ('failed', 'completed') then
+    raise exception 'New economics events cannot be appended after the native assignment is failed or completed';
+  end if;
+
   select * into v_reserved
     from public.evidence_artifacts e
    where e.run_id = p_run.id
@@ -563,15 +569,18 @@ begin
     if v_has_started then
       raise exception 'A reservation that reached invocation_started cannot expire; budget remains held until committed or an explicit owner-resolution event exists';
     end if;
+    if v_terminal = 'released' then
+      raise exception 'A released reservation cannot expire';
+    end if;
     if v_terminal = 'owner_action_required' then
       raise exception 'An owner_action_required reservation cannot expire; budget remains held until an explicit owner-resolution event exists';
     end if;
   elsif p_event_type = 'owner_action_required' then
-    if v_terminal = 'committed' then
-      raise exception 'A committed reservation cannot move to owner_action_required';
+    if v_terminal in ('committed', 'released', 'expired') then
+      raise exception 'A % reservation cannot move to owner_action_required', v_terminal;
     end if;
-    if v_terminal = 'released' then
-      raise exception 'A released reservation cannot move to owner_action_required';
+    if not v_has_started then
+      raise exception 'owner_action_required is only valid for reservations that reached invocation_started';
     end if;
   elsif p_event_type = 'invocation_started' then
     if v_terminal is not null then
@@ -767,9 +776,6 @@ begin
 
   select * into v_parents
     from public.outcome_economics_lock_native_parents(p_run_id, p_phase, p_assignment_id);
-  if v_parents.assignment.status is distinct from 'running' then
-    raise exception 'Economics reservation requires a running native work-cell assignment';
-  end if;
   if coalesce(v_parents.assignment.metadata->>'executorKey', '') is distinct from p_executor_key
      or coalesce(v_parents.assignment.metadata->>'capabilityKey', '') is distinct from p_capability_key
      or coalesce(v_parents.assignment.metadata->>'inputManifestContentHash', '') is distinct from p_input_manifest_content_hash

@@ -70,6 +70,20 @@ describe("outcome-economics-event/v1 contract", () => {
     expect(outcomeEconomicsEventHasForbiddenKeys({ prompt: "hi" })).toBe(true);
     expect(outcomeEconomicsEventHasForbiddenKeys({ nested: { chain_of_thought: "x" } })).toBe(true);
     expect(outcomeEconomicsEventHasForbiddenKeys({ credential: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ tokenHash: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ TokenHash: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ leaseToken: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ LeaseToken: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ leaseTokenHash: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ LEASETOKENHASH: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ apiKey: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ completion: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ content: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ payload: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ raw: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ secret: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ password: "x" })).toBe(true);
+    expect(outcomeEconomicsEventHasForbiddenKeys({ api_key: "x" })).toBe(true);
     const payload = buildOutcomeEconomicsEventPayload({
       eventType: "reserved",
       organizationId: "org-econ-event",
@@ -380,6 +394,32 @@ describe("outcome economics event seam — SQL catalog and native wiring", () =>
     expect(sql).toMatch(/revoke execute on function public\.reserve_outcome_economics_event[\s\S]*from anon, service_role/);
     expect(sql).toMatch(/Work-cell phase claim completion requires committed economics events from finalize_work_cell_phase_economics/);
     expect(sql).toMatch(/invocation_started cannot be silently released/);
+    expect(sql).toMatch(/New economics events cannot be appended after the native assignment is failed or completed/);
+    expect(sql).toMatch(/owner_action_required is only valid for reservations that reached invocation_started/);
+    expect(sql).toMatch(/A % reservation cannot move to owner_action_required/);
+    expect(sql).toMatch(/A released reservation cannot expire/);
+    const forbiddenFn = sql.slice(
+      sql.indexOf("function public.outcome_economics_event_has_forbidden_keys"),
+      sql.indexOf("revoke all on function public.outcome_economics_event_has_forbidden_keys"),
+    );
+    expect(forbiddenFn).toMatch(/if lower\(v_key\) in \(/);
+    expect(forbiddenFn).toMatch(/'tokenhash'/);
+    expect(forbiddenFn).toMatch(/'leasetoken'/);
+    expect(forbiddenFn).toMatch(/'leasetokenhash'/);
+    expect(forbiddenFn).toMatch(/'prompt'/);
+    expect(forbiddenFn).toMatch(/'completion'/);
+    expect(forbiddenFn).toMatch(/'content'/);
+    expect(forbiddenFn).toMatch(/'payload'/);
+    expect(forbiddenFn).toMatch(/'raw'/);
+    expect(forbiddenFn).toMatch(/'credential'/);
+    expect(forbiddenFn).toMatch(/'secret'/);
+    expect(forbiddenFn).toMatch(/'password'/);
+    expect(forbiddenFn).toMatch(/'apikey'/);
+    expect(forbiddenFn).toMatch(/'api_key'/);
+    expect(forbiddenFn).not.toMatch(/'leaseToken'/);
+    expect(forbiddenFn).not.toMatch(/'leaseTokenHash'/);
+    expect(forbiddenFn).not.toMatch(/'tokenHash'/);
+    expect(forbiddenFn).not.toMatch(/'apiKey'/);
     expect(RESERVE_OUTCOME_ECONOMICS_EVENT_RPC).toBe("reserve_outcome_economics_event");
     expect(START_OUTCOME_ECONOMICS_INVOCATION_RPC).toBe("start_outcome_economics_invocation");
     expect(RELEASE_OUTCOME_ECONOMICS_EVENT_RPC).toBe("release_outcome_economics_event");
@@ -396,6 +436,8 @@ describe("outcome economics event seam — SQL catalog and native wiring", () =>
     expect(nativeFn).toMatch(/createSupabaseDurableEconomicsWriter/);
     expect(nativeFn).toMatch(/durableEconomics/);
     expect(nativeFn).toMatch(/finalizeWorkCellPhaseClaim/);
+    expect(nativeFn).toMatch(/reservationIds:\s*prepared\.economicReservationIds/);
+    expect(nativeFn).not.toMatch(/reservationIds:\s*prepared\.pendingCommits\.map/);
     expect(nativeFn).not.toMatch(/completeWorkCellPhaseClaim/);
     expect(nativeFn.lastIndexOf("persistPhaseArtifact")).toBeLessThan(nativeFn.lastIndexOf("finalizeWorkCellPhaseClaim"));
     expect(nativeFn.lastIndexOf("finalizeWorkCellPhaseClaim")).toBeLessThan(
@@ -791,6 +833,281 @@ describe("outcome economics finalizer — exact reservation set and metadata", (
     ).rejects.toThrow(/must not rewrite binding, authority, identity, lease, or economic metadata/);
     expect(ledger.assignmentStatus()).toBe("running");
     expect(ledger.events.some((event) => event.eventType === "committed")).toBe(false);
+  });
+
+  it("passes the complete durable reservation set and still rejects unresolved economics", async () => {
+    const ledger = store();
+    const unresolved = reservationId("full-set-owner-action");
+    const successful = reservationId("full-set-success");
+    const unresolvedKey = idempotency("full-set-owner-action");
+    const successfulKey = idempotency("full-set-success");
+    await ledger.reserve({
+      ...identity,
+      reservationId: unresolved,
+      idempotencyKey: unresolvedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 20,
+      expiresAt: FUTURE,
+    });
+    await ledger.reserve({
+      ...identity,
+      reservationId: successful,
+      idempotencyKey: successfulKey,
+      aiCostMicros: 0,
+      toolCostMicros: 20,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: unresolved, idempotencyKey: unresolvedKey });
+    await ledger.release({
+      ...identity,
+      reservationId: unresolved,
+      idempotencyKey: unresolvedKey,
+      ownerAction: true,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: successful, idempotencyKey: successfulKey });
+    ledger.setPacket({
+      runId: identity.runId,
+      outputArtifactId: "artifact-full-set",
+      packetContentHash: HEX_B,
+      executorKey: identity.executorKey,
+    });
+    const fullSet = [unresolved, successful];
+    await expect(
+      ledger.finalize({
+        ...identity,
+        outputArtifactId: "artifact-full-set",
+        packetContentHash: HEX_B,
+        reservationIds: fullSet,
+      }),
+    ).rejects.toThrow(/owner_action_required|budget remains held|unresolved/);
+    expect(ledger.assignmentStatus()).toBe("running");
+    expect(ledger.events.some((event) => event.eventType === "committed")).toBe(false);
+    expect(
+      ledger.events.some((event) => event.eventType === "committed" && event.reservationId === unresolved),
+    ).toBe(false);
+    expect(ledger.events.some((event) => event.eventType === "owner_action_required")).toBe(true);
+    expect(ledger.events.filter((event) => event.eventType === "reserved")).toHaveLength(2);
+  });
+});
+
+describe("outcome economics assignment lifecycle — new events vs idempotent replay", () => {
+  it("rejects a new invocation_started after assignment completion and allows matching replay", async () => {
+    const ledger = store();
+    const startedId = reservationId("lifecycle-started");
+    const unstartedId = reservationId("lifecycle-unstarted");
+    const startedKey = idempotency("lifecycle-started");
+    const unstartedKey = idempotency("lifecycle-unstarted");
+    await ledger.reserve({
+      ...identity,
+      reservationId: startedId,
+      idempotencyKey: startedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    await ledger.reserve({
+      ...identity,
+      reservationId: unstartedId,
+      idempotencyKey: unstartedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: startedId, idempotencyKey: startedKey });
+    ledger.completeAssignment(identity.runId);
+    const snapshot = ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`);
+    expect(ledger.assignmentStatus()).toBe("completed");
+    await expect(
+      ledger.invocationStarted({ ...identity, reservationId: unstartedId, idempotencyKey: unstartedKey }),
+    ).rejects.toThrow(/failed or completed/);
+    expect(ledger.assignmentStatus()).toBe("completed");
+    expect(ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`)).toEqual(
+      snapshot,
+    );
+    const replayed = await ledger.invocationStarted({
+      ...identity,
+      reservationId: startedId,
+      idempotencyKey: startedKey,
+    });
+    expect(replayed.artifactId).toMatch(/^[0-9a-f]{64}$/);
+    expect(ledger.assignmentStatus()).toBe("completed");
+    expect(ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`)).toEqual(
+      snapshot,
+    );
+  });
+
+  it("rejects a new release or owner-action after assignment failure and allows matching replay", async () => {
+    const ledger = store();
+    const startedId = reservationId("fail-started");
+    const unstartedId = reservationId("fail-unstarted");
+    const startedKey = idempotency("fail-started");
+    const unstartedKey = idempotency("fail-unstarted");
+    await ledger.reserve({
+      ...identity,
+      reservationId: startedId,
+      idempotencyKey: startedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    await ledger.reserve({
+      ...identity,
+      reservationId: unstartedId,
+      idempotencyKey: unstartedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: startedId, idempotencyKey: startedKey });
+    const reservedReplay = await ledger.reserve({
+      ...identity,
+      reservationId: startedId,
+      idempotencyKey: startedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    ledger.failAssignment(identity.runId);
+    const snapshot = ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`);
+    expect(ledger.assignmentStatus()).toBe("failed");
+    await expect(
+      ledger.release({ ...identity, reservationId: unstartedId, idempotencyKey: unstartedKey }),
+    ).rejects.toThrow(/failed or completed/);
+    await expect(
+      ledger.release({
+        ...identity,
+        reservationId: startedId,
+        idempotencyKey: startedKey,
+        ownerAction: true,
+      }),
+    ).rejects.toThrow(/failed or completed/);
+    expect(ledger.assignmentStatus()).toBe("failed");
+    expect(ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`)).toEqual(
+      snapshot,
+    );
+    const replayed = await ledger.reserve({
+      ...identity,
+      reservationId: startedId,
+      idempotencyKey: startedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    expect(replayed.artifactId).toBe(reservedReplay.artifactId);
+    expect(ledger.assignmentStatus()).toBe("failed");
+    expect(ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`)).toEqual(
+      snapshot,
+    );
+  });
+});
+
+describe("outcome economics terminal transitions", () => {
+  it("lifecycle-terminal events stop later appends including owner_action_required after released", async () => {
+    const ledger = store();
+    const releasedId = reservationId("terminal-released");
+    const releasedKey = idempotency("terminal-released");
+    await ledger.reserve({
+      ...identity,
+      reservationId: releasedId,
+      idempotencyKey: releasedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    await ledger.release({ ...identity, reservationId: releasedId, idempotencyKey: releasedKey });
+    const snapshot = ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`);
+    await expect(
+      ledger.invocationStarted({ ...identity, reservationId: releasedId, idempotencyKey: releasedKey }),
+    ).rejects.toThrow(/cannot start invocation/);
+    expect(ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`)).toEqual(
+      snapshot,
+    );
+    expect(ledger.assignmentStatus()).toBe("running");
+  });
+
+  it("owner_action_required cannot follow committed while the assignment remains running until finalization completes", async () => {
+    const ledger = store();
+    const committedId = reservationId("terminal-committed");
+    const committedKey = idempotency("terminal-committed");
+    await ledger.reserve({
+      ...identity,
+      reservationId: committedId,
+      idempotencyKey: committedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 10,
+      expiresAt: FUTURE,
+    });
+    await ledger.invocationStarted({ ...identity, reservationId: committedId, idempotencyKey: committedKey });
+    ledger.setPacket({
+      runId: identity.runId,
+      outputArtifactId: "artifact-terminal-committed",
+      packetContentHash: HEX_B,
+      executorKey: identity.executorKey,
+    });
+    await ledger.finalize({
+      ...identity,
+      outputArtifactId: "artifact-terminal-committed",
+      packetContentHash: HEX_B,
+      reservationIds: [committedId],
+    });
+    expect(ledger.assignmentStatus()).toBe("completed");
+    expect(ledger.events.some((event) => event.eventType === "committed")).toBe(true);
+    const snapshot = ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`);
+    await expect(
+      ledger.release({
+        ...identity,
+        reservationId: committedId,
+        idempotencyKey: committedKey,
+        ownerAction: true,
+      }),
+    ).rejects.toThrow(/failed or completed|cannot move to owner_action_required/);
+    expect(ledger.assignmentStatus()).toBe("completed");
+    expect(ledger.events.map((event) => `${event.eventType}:${event.reservationId}:${event.contentHash}`)).toEqual(
+      snapshot,
+    );
+  });
+
+  it("started and owner-action reservations remain held after TTL and are not TTL-released", async () => {
+    const started = store();
+    const startedId = reservationId("ttl-started-hold");
+    const startedKey = idempotency("ttl-started-hold");
+    await started.reserve({
+      ...identity,
+      reservationId: startedId,
+      idempotencyKey: startedKey,
+      aiCostMicros: 0,
+      toolCostMicros: 18,
+      expiresAt: FUTURE,
+    });
+    await started.invocationStarted({ ...identity, reservationId: startedId, idempotencyKey: startedKey });
+    const startedAfterTtl = started.remaining(identity.runId, Date.parse(AFTER_TTL));
+    expect(startedAfterTtl.unresolvedStartedOrOwnerActionToolCostMicros).toBe(18);
+    expect(startedAfterTtl.unexpiredUnstartedToolCostMicros).toBe(0);
+    expect(started.events.some((event) => event.eventType === "expired" || event.eventType === "released")).toBe(
+      false,
+    );
+
+    const ownerAction = store();
+    const ownerId = reservationId("ttl-owner-hold");
+    const ownerKey = idempotency("ttl-owner-hold");
+    await ownerAction.reserve({
+      ...identity,
+      reservationId: ownerId,
+      idempotencyKey: ownerKey,
+      aiCostMicros: 0,
+      toolCostMicros: 18,
+      expiresAt: FUTURE,
+    });
+    await ownerAction.invocationStarted({ ...identity, reservationId: ownerId, idempotencyKey: ownerKey });
+    await ownerAction.release({
+      ...identity,
+      reservationId: ownerId,
+      idempotencyKey: ownerKey,
+      ownerAction: true,
+    });
+    const ownerAfterTtl = ownerAction.remaining(identity.runId, Date.parse(AFTER_TTL));
+    expect(ownerAfterTtl.unresolvedStartedOrOwnerActionToolCostMicros).toBe(18);
+    expect(ownerAction.events.some((event) => event.eventType === "expired")).toBe(false);
   });
 });
 

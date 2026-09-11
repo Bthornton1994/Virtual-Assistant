@@ -1317,7 +1317,7 @@ export async function runNativePublicWebPrepare(
           schemaVersion: CATALOG_EVIDENCE_PACKET_SCHEMA_VERSION,
         },
         packetContentHash: contentHash,
-        reservationIds: prepared.pendingCommits.map((item) => item.reservation.reservationId),
+        reservationIds: prepared.economicReservationIds,
       });
     } catch (error) {
       // Packet is durable. Leave the assignment running. Do not complete from
