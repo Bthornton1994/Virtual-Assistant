@@ -804,7 +804,7 @@ describe("execution economics adapter v1", () => {
     expect(nativeFn).toMatch(/getAssignment/);
     expect(nativeFn).toMatch(/claimWorkCellPhase/);
     expect(nativeFn).toMatch(/failWorkCellPhaseClaim/);
-    expect(nativeFn).toMatch(/completeWorkCellPhaseClaim/);
+    expect(nativeFn).toMatch(/finalizeWorkCellPhaseClaim/);
     expect(nativeFn).toMatch(/claimFailureAllowedAfterPrepareOutcome/);
     expect(nativeFn).toMatch(/acceptedCatalogPacketPersisted/);
     expect(nativeFn).toMatch(/workCellPhaseAlreadyRecordedFromAssignment/);
@@ -830,10 +830,10 @@ describe("execution economics adapter v1", () => {
       nativeFn.indexOf("bindNativePublicWebEconomics"),
     );
     expect(nativeFn.lastIndexOf("persistPhaseArtifact")).toBeLessThan(
-      nativeFn.lastIndexOf("commitDeferredGovernedReservations"),
+      nativeFn.lastIndexOf("finalizeWorkCellPhaseClaim"),
     );
-    expect(nativeFn.lastIndexOf("commitDeferredGovernedReservations")).toBeLessThan(
-      nativeFn.lastIndexOf("completeWorkCellPhaseClaim"),
+    expect(nativeFn.lastIndexOf("finalizeWorkCellPhaseClaim")).toBeLessThan(
+      nativeFn.lastIndexOf("commitDeferredGovernedReservations"),
     );
   });
 
@@ -1447,10 +1447,10 @@ describe("execution economics adapter v1", () => {
       workCell.indexOf("export async function ingestCatalogEvidencePacket"),
     );
     expect(nativeFn.lastIndexOf("persistPhaseArtifact")).toBeLessThan(
-      nativeFn.lastIndexOf("commitDeferredGovernedReservations"),
+      nativeFn.lastIndexOf("finalizeWorkCellPhaseClaim"),
     );
-    expect(nativeFn.lastIndexOf("commitDeferredGovernedReservations")).toBeLessThan(
-      nativeFn.lastIndexOf("completeWorkCellPhaseClaim"),
+    expect(nativeFn.lastIndexOf("finalizeWorkCellPhaseClaim")).toBeLessThan(
+      nativeFn.lastIndexOf("commitDeferredGovernedReservations"),
     );
     expect(nativeFn).toMatch(/releaseEconomics\(prepared\.economicReservationIds\)/);
   });

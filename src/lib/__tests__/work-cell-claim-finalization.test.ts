@@ -61,7 +61,7 @@ function sliceFn(source: string, startNeedle: string, endNeedle: string): string
 }
 
 describe("work-cell claim finalization — authoritative RPC path", () => {
-  it("production TypeScript calls fail_work_cell_phase_claim and complete_work_cell_phase_claim", () => {
+  it("production TypeScript fails via fail_work_cell_phase_claim and finalizes via the durable economics RPC", () => {
     const workCell = readFileSync(resolve(process.cwd(), "src/lib/work-cell.ts"), "utf8");
     const failFn = sliceFn(
       workCell,
@@ -70,21 +70,16 @@ describe("work-cell claim finalization — authoritative RPC path", () => {
     );
     const completeFn = sliceFn(
       workCell,
-      "async function rpcCompleteWorkCellPhaseClaim(",
+      "async function rpcFinalizeWorkCellPhaseEconomics(",
       "async function expireStaleRunningWorkCellPhaseClaim(",
     );
     expect(failFn).toMatch(/db\.rpc\(FAIL_WORK_CELL_PHASE_CLAIM_RPC/);
-    expect(completeFn).toMatch(/db\.rpc\(COMPLETE_WORK_CELL_PHASE_CLAIM_RPC/);
-    expect(completeFn).toMatch(/p_output_artifact_id/);
-    expect(completeFn).toMatch(/p_input_manifest_content_hash/);
-    expect(completeFn).toMatch(/p_envelope_hash/);
-    expect(completeFn).toMatch(/p_context_hash/);
-    expect(completeFn).toMatch(/p_executor_key/);
-    expect(completeFn).toMatch(/p_capability_key/);
+    expect(completeFn).toMatch(/writer\.finalize/);
+    expect(completeFn).toMatch(/packetContentHash/);
+    expect(completeFn).toMatch(/reservationIds/);
     expect(failFn).not.toMatch(/\.from\("run_executor_assignments"\)/);
     expect(completeFn).not.toMatch(/\.from\("run_executor_assignments"\)\.update/);
     expect(workCell).toMatch(`FAIL_WORK_CELL_PHASE_CLAIM_RPC`);
-    expect(workCell).toMatch(`COMPLETE_WORK_CELL_PHASE_CLAIM_RPC`);
     expect(FAIL_WORK_CELL_PHASE_CLAIM_RPC).toBe("fail_work_cell_phase_claim");
     expect(COMPLETE_WORK_CELL_PHASE_CLAIM_RPC).toBe("complete_work_cell_phase_claim");
     expect(workCell).not.toMatch(/claimFailureMetadata/);
@@ -101,13 +96,12 @@ describe("work-cell claim finalization — authoritative RPC path", () => {
     expect(nativeFn.lastIndexOf("acceptedCatalogPacketPersisted = true")).toBeGreaterThan(
       nativeFn.lastIndexOf("persistPhaseArtifact"),
     );
-    expect(nativeFn.lastIndexOf("commitDeferredGovernedReservations")).toBeLessThan(
-      nativeFn.lastIndexOf("completeWorkCellPhaseClaim"),
+    expect(nativeFn.lastIndexOf("persistPhaseArtifact")).toBeLessThan(
+      nativeFn.lastIndexOf("finalizeWorkCellPhaseClaim"),
     );
     expect(nativeFn).toMatch(/expireStaleRunningWorkCellPhaseClaim/);
     expect(nativeFn).toMatch(/economicsCommitUnknownOwnerActionFailure/);
-    expect(nativeFn).toMatch(/deferredCommitFailedAfterAcceptedPacketReason/);
-    expect(nativeFn).toMatch(/economicsCommitConfirmed: true/);
+    expect(nativeFn).toMatch(/createSupabaseDurableEconomicsWriter/);
     const assignmentIdx = nativeFn.indexOf("getAssignment");
     const runningBranchIdx = nativeFn.indexOf('existingPrepare?.status === "running"');
     const expireIdx = nativeFn.indexOf("expireStaleRunningWorkCellPhaseClaim");
@@ -133,7 +127,7 @@ describe("work-cell claim finalization — authoritative RPC path", () => {
     const boundLoadFn = sliceFn(
       workCell,
       "async function loadBoundAcceptedCatalogPacketForClaim(",
-      "async function rpcCompleteWorkCellPhaseClaim(",
+      "async function rpcFinalizeWorkCellPhaseEconomics(",
     );
     expect(expireFn).toMatch(/decideStaleWorkCellPhaseClaimReclaim/);
     expect(expireFn).toMatch(/loadBoundAcceptedCatalogPacketForClaim/);

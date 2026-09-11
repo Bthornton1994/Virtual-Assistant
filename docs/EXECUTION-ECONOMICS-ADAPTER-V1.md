@@ -162,26 +162,45 @@ Native catalog path: `inputManifestContentHash` is the frozen input-manifest con
 
 ## After the call
 
-- Native multi-URL: valid usage **commits only after** observation/packet or rejection persistence, and only as an all-or-none in-process batch. Assignment `completed` is written only after that commit succeeds.
-- Failure, cancellation, timeout, abort, and native `{error}` fetch results release **that** URL. They do not commit as successful usage.
-- If `usageOnSuccess` throws **before** commit, remaining reserved IDs are released.
+- Native multi-URL: reserve all URLs in SQL before fetch; persist `invocation_started` before each `fetchPage`; after a valid packet persist, `finalize_work_cell_phase_economics` commits events and assignment completion atomically when the caller supplies the exact durable reservation set and every reservation is committed or explicitly released/expired without invocation. Process-local Maps may update after that as advisory state in this isolate. Assignment `completed` is not written by `complete_work_cell_phase_claim`.
+- Failure, cancellation, timeout, abort, and native `{error}` fetch results after `invocation_started` attempt `owner_action_required`. They do not silently release and do not commit as successful usage. If that owner-action write fails, durable `invocation_started` remains held. Later TTL must not make it financially available.
+- Unstarted reserved IDs may still be released when invocation never started.
+- If `usageOnSuccess` throws **before** commit, remaining reserved IDs are released in Maps; durable started reservations attempt owner-action and otherwise stay held.
 - Malformed, incomplete, stale, non-finite, contradictory, or over-reported usage that reaches `commitReservation` cannot commit (PR #80 fail-closed: NaN/Infinity stay reserved, no refund). Omitted token fields remain null; explicit `0` remains `0`. Cheap + null tokens consume the reserved amount rather than refunding.
 - Duplicate commit/release stay idempotent on the existing governor keys.
 - Fail-path release requires the reservation to exist, match session org/tenant, and match `reservation.executionAttemptId`.
 
 ## Native phase-recorded gate
 
-`runNativePublicWebPrepare` calls `getAssignment(db, run.id, "prepare")` and `workCellPhaseAlreadyRecordedFromAssignment` **before** bind, claim, economics, and fetch. A prior failed, blocked, completed, planned, or running prepare assignment blocks another fetch. A stale `running` claim may be reclaimed without fetching: if a bound accepted packet exists, leave `running` and return `OWNER_ACTION_REQUIRED` (economics unknown); otherwise fail. The resulting row still blocks retry on this run. After a successful claim INSERT, this request proceeds with `workCellPhaseAlreadyRecorded: false` because **this** claim owns the slot. Packet uniqueness remains and is not sufficient alone. Handled post-claim failures without an accepted packet mark `failed`. A stale running claim with a bound accepted packet is blocked for owner action, not completed. Completion requires the exact bound identity (run, phase, assignment, output artifact, input-manifest content hash, envelope hash, context hash, executor, capability) plus a confirmed process-local commit. An unrelated catalog packet on the same run cannot complete the current claim.
+`runNativePublicWebPrepare` calls `getAssignment(db, run.id, "prepare")` and `workCellPhaseAlreadyRecordedFromAssignment` **before** bind, claim, economics, and fetch. A prior failed, blocked, completed, planned, or running prepare assignment blocks another fetch. A stale `running` claim may be reclaimed without fetching: if a bound accepted packet exists, leave `running` and return `OWNER_ACTION_REQUIRED` (economics unknown); otherwise fail. The resulting row still blocks retry on this run. After a successful claim INSERT, this request proceeds with `workCellPhaseAlreadyRecorded: false` because **this** claim owns the slot. Packet uniqueness remains and is not sufficient alone. Handled post-claim failures without an accepted packet mark `failed`. A stale running claim with a bound accepted packet is blocked for owner action, not completed. Completion is `finalize_work_cell_phase_economics` with bound identity plus committed economics events. Packet presence is not economics proof. An unrelated catalog packet on the same run cannot complete the current claim.
 
 ## Remaining limitations (not global serverless enforcement)
 
-Reservations live in `EconomicsSession` Maps inside one Node isolate. Concurrent serverless requests, other workers, and a restarted process do not share remaining budget. Cross-request **fetch** is closed only by the durable assignment claim, not by the Maps. Off-box workers remain **advisory** unless a durable authorized economics seam exists. Isolate death after process-local commit and before complete is **OWNER_BLOCKED** for remaining-budget accounting.
+Reservations live in `EconomicsSession` Maps inside one Node isolate. Concurrent serverless requests, other workers, and a restarted process do not share remaining budget. Cross-request **fetch** is closed by the durable assignment claim. Native public-web **spend** now also appends `outcome-economics-event/v1` rows through trusted RPCs; SQL remaining is authority inside that path. Process-local Maps remain advisory within the isolate for pre-RPC governor checks. They are not a global ledger and are not durable proof. Off-box workers remain **advisory**. Isolate death after packet persist and before `finalize_work_cell_phase_economics` leaves the assignment `running` and economics unresolved. Packet presence is not commitment.
 
-PR #79 remains a separate parked draft. This adapter does not modify it. PR #83 remains a separate docs-only Skill-binding draft; this adapter does not copy it. This slice does not amend PR #85 or PR #86.
+PR #79 remains a separate parked draft. This adapter does not modify it. PR #83 remains a separate docs-only Skill-binding draft; this adapter does not copy it. This slice does not amend PR #85, PR #86, PR #87, or PR #88.
+
+## Durable economics event seam (native prepare)
+
+Owner decision `APPROVE_EXISTING_EVIDENCE_EVENT_SEAM`. Draft SQL: `supabase/migrations/20260911000000_outcome_economics_event_seam_v1.sql`. QA catalog/predicate file: `supabase/qa/outcome_economics_event_seam_proof.sql`. **SQL_VERIFICATION_NOT_AVAILABLE**. Not Production enforcement.
+
+- Distinct schema `outcome-economics-event/v1`. Existing `outcome-economics-evidence/v1` snapshots are unchanged.
+- Event types: `reserved`, `invocation_started`, `committed`, `released`, `expired`, `owner_action_required`. Append-only. Never UPDATE reserved → committed.
+- Lifecycle-terminal (`committed`, `released`, `expired`, `owner_action_required`) is not the remaining formula. Remaining is computed in SQL from `delegation_specs.economic_envelope` via `workstream_runs.delegation_spec_id`:
+  - remaining = ceiling − committed − unexpired unstarted reservations − unresolved started or `owner_action_required` reservations
+  - `released` and `expired` release reserved budget **only** when invocation never started
+  - `committed` consumes budget
+  - `invocation_started` is unresolved and continues to hold budget, including after TTL
+  - `owner_action_required` is unresolved and continues to hold budget, including after TTL, until an explicit separately authorized owner-resolution event exists (not invented in this slice)
+- Lock order: `workstream_runs FOR UPDATE` then `run_executor_assignments FOR UPDATE`.
+- Native identity stays `native-prepare:${assignmentId}`. No invented UUID. Native does not route through `execution_attempts`.
+- Reserve RPC before fetch. `invocation_started` before `fetchPage`. After packet persist, `finalize_work_cell_phase_economics` requires the **exact** durable reservation set for the locked assignment, inserts committed events only for reservations that are not already explicitly released/expired without invocation, and marks the assignment completed in one transaction. Rollback leaves neither. Empty lists, duplicates, omitted IDs, extras, and `owner_action_required` cannot complete. `complete_work_cell_phase_claim` refuses native completion without that finalizer. Caller metadata is not merged; binding, authority, identity, lease, and economic keys are rejected.
+- Direct PostgREST inserts for this schema are denied, including platform staff. Writes are SECURITY DEFINER, manager-only, `search_path` fixed, public/anon/service_role execute revoked.
+- **Leased path out of scope.** `complete_execution_attempt` / `fail_execution_attempt` are not changed to require reservation IDs. Do not claim universal economics enforcement for callers outside the durable RPC path.
 
 ## Future durable-accounting requirement
 
-A later authorized SQL seam must be separately designed, authorized, and runtime-verified. It should attach to existing `execution_attempts` and `evidence_artifacts` (`outcome-economics-evidence/v1`), not a second totals table. Remaining budget must be computed from committed artifacts plus open reservations. Executors still must not own that write. Until that seam exists and is verified against PostgreSQL, do not claim global enforcement.
+Leased `execution_attempts` remain a follow-up. This slice does not add reservation IDs to `complete_execution_attempt` / `fail_execution_attempt` and does not claim universal enforcement. A later authorized, runtime-verified slice must attach leased spend to the same `outcome-economics-event/v1` writer with `workstream_runs` then `execution_attempts` lock order. Until PostgreSQL runtime verification exists, do not claim Production or global enforcement.
 
 ## Out of scope
 
@@ -189,6 +208,6 @@ A later authorized SQL seam must be separately designed, authorized, and runtime
 - Provider rate cards or SDKs.
 - Creating or modifying a Supabase account, project, branch, migration, database, or hosted environment.
 - Contacting the live Delegation Cloud database.
-- Changing PR #79, PR #82, PR #83, PR #84, PR #85, or PR #86.
+- Changing PR #79, PR #82, PR #83, PR #84, PR #85, PR #86, PR #87, or PR #88.
 - Inventing an execution plan or a second plan store.
 - Runtime Skill binding, nullable Skill fields, or a verification-command registry.
