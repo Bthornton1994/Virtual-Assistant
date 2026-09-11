@@ -2,12 +2,12 @@ import Link from "next/link";
 import { HeroDashboard, LiveDemo, OperationsCatalog, PainStream } from "@/components/marketing/home-interactive";
 import { Button } from "@/components/ui";
 
-export const metadata = { title: "Give us the work. Get your time back." };
+export const metadata = { title: "Delegate the result. Keep the authority." };
 
 export default function HomePage() {
   return (
-    <>
-      <section className="relative overflow-hidden">
+    <main className="dc-home">
+      <section className="dc-section dc-hero relative overflow-hidden">
         <div className="mx-auto grid max-w-6xl gap-12 px-5 pb-20 pt-14 lg:grid-cols-[0.95fr_1.05fr] lg:items-end lg:pt-20">
           <div className="dc-rise">
             <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">
@@ -36,7 +36,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="border-y border-line bg-bg-elevated">
+      <section className="dc-section dc-origin border-y border-line bg-bg-elevated">
         <div className="mx-auto max-w-6xl px-5 py-20">
           <h2 className="text-balance max-w-xl text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">
             You probably didn’t start your company to do this.
@@ -52,7 +52,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-5 py-20">
+      <section className="dc-section dc-compare mx-auto max-w-6xl px-5 py-20">
         <h2 className="text-balance max-w-2xl text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">
           Not another assistant you have to manage.
         </h2>
@@ -82,11 +82,11 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="border-y border-line bg-surface">
+      <section className="dc-section dc-live-demo-section border-y border-line bg-surface">
         <div className="mx-auto max-w-6xl px-5 py-20">
           <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">What would you hand off right now?</h2>
           <p className="mt-4 max-w-xl text-ink-soft">
-            Type the outcome. We’ll show a sample plan | not a worker profile, and not a live action in your systems.
+            Type the outcome. We’ll show a sample plan, not a worker profile or a live action in your systems.
           </p>
           <div className="mt-10">
             <LiveDemo />
@@ -94,7 +94,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-5 py-20">
+      <section className="dc-section dc-catalog-section mx-auto max-w-6xl px-5 py-20">
         <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">The work we take on</h2>
         <p className="mt-4 max-w-xl text-ink-soft">
           Not a menu of job titles. The categories of work that quietly become a founder’s week.
@@ -104,7 +104,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="border-t border-line bg-bg-elevated">
+      <section className="dc-section dc-control-section border-t border-line bg-bg-elevated">
         <div className="mx-auto max-w-6xl px-5 py-20">
           <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">You stay in control.</h2>
           <div className="mt-12 grid gap-5 lg:grid-cols-2">
@@ -160,7 +160,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="bg-ink text-accent-fg">
+      <section className="dc-section dc-final-cta bg-ink text-accent-fg">
         <div className="mx-auto max-w-6xl px-5 py-24">
           <h2 className="text-balance max-w-3xl text-3xl font-semibold leading-[1.08] tracking-[-0.03em] sm:text-5xl">
             Imagine opening your laptop tomorrow
@@ -184,6 +184,6 @@ export default function HomePage() {
           </Link>
         </div>
       </section>
-    </>
+    </main>
   );
 }

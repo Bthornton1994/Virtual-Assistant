@@ -14,6 +14,10 @@ Delegation Cloud is a clear, trustworthy front door for managed work and verifie
 - Keep visible copy direct, specific, and truthful. Do not add invented proof, metrics, testimonials, partners, outcomes, or urgency.
 - Design the complete state set: loading, empty, error, disabled, focus, keyboard, narrow viewport, and reduced motion.
 
+## Brand direction
+
+The current visual direction is documented in `BRAND.md`: **Operational Signal**, a midnight-blue service rail around pale work surfaces with teal movement and amber authority signals. Keep this direction distinct from consumer SaaS gradients, freelancer marketplaces, and generic AI dashboards. The brand layer may change hierarchy, color, type, and material cues, but it must not change authority, access, QA, or capability boundaries.
+
 ## Responsive and accessibility gate
 
 Before handoff, inspect the actual rendered surface at the repository's supported viewports, including narrow mobile and wide desktop states. Check:

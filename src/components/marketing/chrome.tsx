@@ -35,7 +35,7 @@ export function MarketingHeader() {
   }, [open]);
 
   return (
-    <header className="sticky top-0 z-40 border-b border-line/70 bg-[color:var(--bg)]/90 backdrop-blur-md">
+    <header className="dc-marketing-header sticky top-0 z-40 border-b border-line/70 bg-[color:var(--bg)]/90 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
         <Wordmark />
         <nav className="hidden items-center gap-7 text-sm text-ink-soft md:flex">
@@ -132,7 +132,7 @@ export function MarketingHeader() {
 
 export function MarketingFooter() {
   return (
-    <footer className="border-t border-line bg-accent text-accent-fg">
+    <footer className="dc-marketing-footer border-t border-line bg-accent text-accent-fg">
       <div className="mx-auto flex max-w-6xl flex-col gap-10 px-5 py-14 md:flex-row md:justify-between">
         <div>
           <Wordmark invert />

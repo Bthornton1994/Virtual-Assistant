@@ -126,3 +126,357 @@ a {
     scroll-behavior: auto !important;
   }
 }
+
+
+/* Delegation Cloud Operational Signal system
+   A clear handoff rail: midnight operations chrome, paper work surfaces,
+   and a teal/amber signal for status and authority. */
+:root {
+  --bg: #edf2f1;
+  --bg-elevated: #f7faf8;
+  --surface: #ffffff;
+  --ink: #102a37;
+  --ink-soft: #40535b;
+  --muted: #66767b;
+  --line: #d7e1df;
+  --line-strong: #b8cbc7;
+  --accent: #102f45;
+  --accent-hover: #0a2434;
+  --accent-fg: #f1f7f6;
+  --gold: #d3a13e;
+  --signal: #4fb8a4;
+  --signal-soft: #dff3ed;
+  --signal-deep: #1f7569;
+  --blue-soft: #e2f0f7;
+  --blue: #296581;
+  --shadow: 0 1px 2px rgba(16, 42, 55, 0.05), 0 18px 44px rgba(16, 42, 55, 0.08);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+::selection {
+  background: #cde9e1;
+  color: var(--ink);
+}
+
+.dc-site {
+  background:
+    linear-gradient(rgba(16, 42, 55, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(16, 42, 55, 0.028) 1px, transparent 1px),
+    var(--bg);
+  background-size: 34px 34px;
+}
+
+.dc-marketing-header {
+  border-bottom-color: rgba(241, 247, 246, 0.16) !important;
+  background: rgba(16, 47, 69, 0.97) !important;
+  color: var(--accent-fg);
+  box-shadow: 0 10px 28px rgba(16, 42, 55, 0.16);
+}
+
+.dc-marketing-header .dc-wordmark {
+  color: var(--accent-fg);
+}
+
+.dc-marketing-header .dc-wordmark > span {
+  color: var(--accent-fg) !important;
+}
+
+.dc-marketing-header nav a,
+.dc-marketing-header > div > div a {
+  color: rgba(241, 247, 246, 0.68) !important;
+}
+
+.dc-marketing-header nav a:hover,
+.dc-marketing-header > div > div a:hover {
+  color: var(--accent-fg) !important;
+}
+
+.dc-marketing-header nav a[aria-current="page"] {
+  color: var(--accent-fg) !important;
+}
+
+.dc-marketing-header nav a[aria-current="page"]::after {
+  background: var(--gold) !important;
+  height: 2px;
+}
+
+.dc-marketing-header > div > button {
+  color: var(--accent-fg);
+}
+
+.dc-marketing-header > div > button span span {
+  background: var(--accent-fg) !important;
+}
+
+.dc-marketing-header #marketing-mobile-menu {
+  background: rgba(16, 47, 69, 0.98) !important;
+}
+
+.dc-marketing-header #marketing-mobile-menu nav a {
+  color: rgba(241, 247, 246, 0.84) !important;
+}
+
+.dc-marketing-header #marketing-mobile-menu nav a[aria-current="page"],
+.dc-marketing-header #marketing-mobile-menu nav a:hover {
+  background: rgba(241, 247, 246, 0.1);
+  color: var(--accent-fg) !important;
+}
+
+.dc-site .dc-home {
+  overflow: hidden;
+}
+
+.dc-home .dc-hero {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 76% 18%, rgba(79, 184, 164, 0.2), transparent 30%),
+    linear-gradient(135deg, #102f45 0%, #123e50 55%, #0d293c 100%);
+  color: var(--accent-fg);
+}
+
+.dc-home .dc-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.5;
+  background:
+    linear-gradient(rgba(241, 247, 246, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(241, 247, 246, 0.055) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(90deg, black 0%, transparent 92%);
+}
+
+.dc-home .dc-hero h1 {
+  color: var(--accent-fg);
+  letter-spacing: -0.055em;
+}
+
+.dc-home .dc-hero > div > div:first-child > p {
+  color: rgba(241, 247, 246, 0.64);
+}
+
+.dc-home .dc-hero > div > div:first-child > p:last-of-type {
+  color: rgba(241, 247, 246, 0.8);
+}
+
+.dc-home .dc-hero .bg-accent,
+.dc-home .dc-hero .bg-ink {
+  background: #091f2c !important;
+}
+
+.dc-home .dc-hero > div > .relative.overflow-hidden.rounded-2xl {
+  border: 1px solid rgba(241, 247, 246, 0.16);
+  border-radius: 24px;
+  box-shadow: 0 28px 70px rgba(5, 22, 31, 0.34);
+}
+
+.dc-home .dc-hero .text-[#c5a46e],
+.dc-home .dc-hero .text-[#e8d5a3] {
+  color: #f1c86b !important;
+}
+
+.dc-home .dc-hero .bg-[#c5a46e] {
+  background: #e0ad45 !important;
+}
+
+.dc-home .dc-hero .bg-[#161915] {
+  background: #123142 !important;
+}
+
+.dc-home .dc-origin {
+  background: var(--bg-elevated);
+}
+
+.dc-home .dc-origin h2,
+.dc-home .dc-compare h2,
+.dc-home .dc-live-demo-section h2,
+.dc-home .dc-catalog-section h2,
+.dc-home .dc-control-section h2 {
+  letter-spacing: -0.045em;
+}
+
+.dc-home .dc-origin .border-l {
+  border-color: var(--signal-deep);
+}
+
+.dc-home .dc-compare {
+  background:
+    radial-gradient(circle at 80% 0%, rgba(79, 184, 164, 0.1), transparent 34%),
+    var(--bg);
+}
+
+.dc-home .dc-compare > div > .grid {
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+}
+
+.dc-home .dc-compare > div > .grid > div:first-child {
+  background: #e2e8e5 !important;
+}
+
+.dc-home .dc-compare > div > .grid > div:last-child {
+  background: var(--accent) !important;
+}
+
+.dc-home .dc-live-demo-section {
+  background: var(--surface);
+}
+
+.dc-home .dc-live-demo-section textarea {
+  border-color: var(--line-strong) !important;
+  border-radius: 16px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.9), 0 10px 28px rgba(16, 42, 55, 0.06);
+}
+
+.dc-home .dc-live-demo-section textarea:focus {
+  border-color: var(--signal-deep) !important;
+  box-shadow: 0 0 0 4px rgba(79, 184, 164, 0.18);
+}
+
+.dc-home .dc-live-demo-section #live-demo > div {
+  border: 1px solid rgba(241, 247, 246, 0.14);
+  box-shadow: 0 22px 52px rgba(16, 42, 55, 0.18);
+}
+
+.dc-home .dc-catalog-section {
+  background:
+    linear-gradient(90deg, rgba(16, 42, 55, 0.03) 1px, transparent 1px),
+    var(--bg);
+  background-size: 32px 32px;
+}
+
+.dc-home .dc-catalog-section > div > div > div:first-child {
+  padding: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.58);
+}
+
+.dc-home .dc-catalog-section > div > div > div:first-child button {
+  justify-content: flex-start;
+}
+
+.dc-home .dc-catalog-section > div > div > div:first-child button[aria-pressed="true"] {
+  background: var(--accent) !important;
+  color: var(--accent-fg) !important;
+  box-shadow: 0 8px 18px rgba(16, 47, 69, 0.14);
+}
+
+.dc-home .dc-catalog-section > div > div > div:first-child button:not([aria-pressed="true"]):hover {
+  background: var(--signal-soft);
+  color: var(--ink);
+}
+
+.dc-home .dc-catalog-section .dc-rise {
+  padding: 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(255,255,255,0.72);
+  box-shadow: var(--shadow);
+}
+
+.dc-home .dc-control-section {
+  background: var(--bg-elevated);
+}
+
+.dc-home .dc-control-section .bg-[#111410] {
+  background: #0b202c !important;
+}
+
+.dc-home .dc-control-section .bg-accent {
+  background: var(--accent) !important;
+}
+
+.dc-home .dc-control-section > div > div > div {
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 32px rgba(16, 42, 55, 0.07);
+}
+
+.dc-home .dc-control-section > div > div > div.bg-[#111410] {
+  border-color: rgba(241, 247, 246, 0.12);
+}
+
+.dc-home .dc-final-cta {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 82% 18%, rgba(79, 184, 164, 0.2), transparent 28%),
+    #071d29;
+}
+
+.dc-home .dc-final-cta::after {
+  content: "";
+  position: absolute;
+  right: 8%;
+  top: 18%;
+  width: 160px;
+  height: 160px;
+  border: 1px solid rgba(79, 184, 164, 0.3);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 20px rgba(79, 184, 164, 0.05),
+    0 0 0 42px rgba(79, 184, 164, 0.035);
+  pointer-events: none;
+}
+
+.dc-home .dc-final-cta > div {
+  position: relative;
+  z-index: 1;
+}
+
+.dc-marketing-footer {
+  background: #0b2635 !important;
+  border-top-color: rgba(241, 247, 246, 0.14) !important;
+}
+
+.dc-marketing-footer .dc-wordmark > span {
+  color: var(--accent-fg) !important;
+}
+
+.dc-marketing-footer a:hover {
+  color: var(--accent-fg) !important;
+}
+
+.dc-site :focus-visible {
+  outline-color: var(--gold);
+}
+
+@media (max-width: 767px) {
+  .dc-site {
+    background-size: 26px 26px;
+  }
+
+  .dc-home .dc-hero > div {
+    padding-top: 3.25rem;
+    padding-bottom: 3.75rem;
+  }
+
+  .dc-home .dc-hero h1 {
+    font-size: clamp(2.7rem, 13vw, 4rem);
+  }
+
+  .dc-home .dc-catalog-section .dc-rise {
+    padding: 1rem;
+  }
+
+  .dc-home .dc-final-cta::after {
+    right: -64px;
+    top: 24%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dc-site *,
+  .dc-site *::before,
+  .dc-site *::after {
+    scroll-behavior: auto !important;
+  }
+}
