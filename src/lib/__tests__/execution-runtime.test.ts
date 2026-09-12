@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  blockedStepKeys,
+  canTransitionExecutionPlan,
+  canTransitionExecutionStep,
   checkExecutionLease,
   decideExecutionRetry,
   dependencyState,
   deriveExecutionPlanStatus,
   hashExecutionPlan,
   readyStepKeys,
+  retryDelayMs,
   validateExecutionPlan,
+  type ExecutionFailureClass,
   type ExecutionPlanInput,
   type ExecutionPlanStep,
 } from "@/lib/execution-runtime";
@@ -254,6 +259,205 @@ describe("execution runtime v1", () => {
       reason: "lease_credential_mismatch",
     });
     expect(checkExecutionLease(lease, lease, "2026-09-03T10:05:00.000Z")).toEqual({
+      ok: false,
+      reason: "lease_expired",
+    });
+  });
+
+  it("rejects a plan that claims authoritative-state ownership, unknown deps, or a forged hash", () => {
+    const authoritative = validateExecutionPlan(plan({ mayOwnAuthoritativeState: true as unknown as false }));
+    expect(authoritative.ok).toBe(false);
+    expect(authoritative.ok ? "" : authoritative.failures.join(" ")).toContain("mayOwnAuthoritativeState");
+
+    const unknownDep = validateExecutionPlan(plan({ steps: [step({ dependsOn: ["missing-review"] })] }));
+    expect(unknownDep.ok).toBe(false);
+    expect(unknownDep.ok ? "" : unknownDep.failures.join(" ")).toContain("unknown step missing-review");
+
+    const duplicateKey = validateExecutionPlan(
+      plan({
+        steps: [step(), step({ stepKey: "research", sequence: 2, title: "Duplicate research key" })],
+      }),
+    );
+    expect(duplicateKey.ok).toBe(false);
+    expect(duplicateKey.ok ? "" : duplicateKey.failures.join(" ")).toContain("Duplicate stepKey");
+
+    const sensitive = validateExecutionPlan(
+      plan({
+        authorityClass: "sensitive_execution",
+        steps: [step({ actionClass: "sensitive_execution", requiresHumanApproval: false })],
+      }),
+    );
+    expect(sensitive.ok).toBe(false);
+    expect(sensitive.ok ? "" : sensitive.failures.join(" ")).toContain("require human approval");
+
+    const forgedHash = validateExecutionPlan(plan({ planHash: "b".repeat(64) }));
+    expect(forgedHash.ok).toBe(false);
+    expect(forgedHash.ok ? "" : forgedHash.failures.join(" ")).toContain("planHash does not match");
+  });
+
+  it("freezes terminal plan and step statuses and refuses skipped lifecycle jumps", () => {
+    expect(canTransitionExecutionPlan("proposed", "frozen")).toBe(true);
+    expect(canTransitionExecutionPlan("proposed", "running")).toBe(false);
+    expect(canTransitionExecutionPlan("proposed", "completed")).toBe(false);
+    expect(canTransitionExecutionPlan("frozen", "running")).toBe(true);
+    expect(canTransitionExecutionPlan("blocked", "running")).toBe(true);
+    expect(canTransitionExecutionPlan("blocked", "completed")).toBe(false);
+    expect(canTransitionExecutionPlan("awaiting_approval", "completed")).toBe(false);
+    expect(canTransitionExecutionPlan("completed", "running")).toBe(false);
+    expect(canTransitionExecutionPlan("failed", "frozen")).toBe(false);
+    expect(canTransitionExecutionPlan("cancelled", "proposed")).toBe(false);
+
+    expect(canTransitionExecutionStep("pending", "ready")).toBe(true);
+    expect(canTransitionExecutionStep("pending", "succeeded")).toBe(false);
+    expect(canTransitionExecutionStep("ready", "leased")).toBe(true);
+    expect(canTransitionExecutionStep("leased", "running")).toBe(true);
+    expect(canTransitionExecutionStep("leased", "succeeded")).toBe(false);
+    expect(canTransitionExecutionStep("blocked", "ready")).toBe(true);
+    expect(canTransitionExecutionStep("blocked", "succeeded")).toBe(false);
+    expect(canTransitionExecutionStep("succeeded", "running")).toBe(false);
+    expect(canTransitionExecutionStep("failed", "ready")).toBe(false);
+    expect(canTransitionExecutionStep("cancelled", "pending")).toBe(false);
+  });
+
+  it("lists only pending descendants of failed, blocked, or cancelled work", () => {
+    const steps = plan().steps;
+    expect(blockedStepKeys(steps, { research: "failed", review: "pending" })).toEqual(["review"]);
+    expect(blockedStepKeys(steps, { research: "blocked", review: "pending" })).toEqual(["review"]);
+    expect(blockedStepKeys(steps, { research: "cancelled", review: "pending" })).toEqual(["review"]);
+    expect(blockedStepKeys(steps, { research: "failed", review: "running" })).toEqual([]);
+    expect(blockedStepKeys(steps, { research: "succeeded", review: "pending" })).toEqual([]);
+  });
+
+  it("derives failed and approval states without letting mixed cancellation look complete", () => {
+    expect(deriveExecutionPlanStatus([{ status: "failed" }, { status: "cancelled" }])).toBe("failed");
+    expect(deriveExecutionPlanStatus([{ status: "succeeded" }, { status: "cancelled" }])).toBe("blocked");
+    expect(deriveExecutionPlanStatus([{ status: "awaiting_approval" }, { status: "pending" }])).toBe(
+      "awaiting_approval",
+    );
+    expect(deriveExecutionPlanStatus([{ status: "pending" }, { status: "pending" }])).toBe("frozen");
+  });
+
+  it("classifies remaining failure classes instead of retrying authority, cost, or strategy stops", () => {
+    const escalate = ["authority_limit", "policy_conflict", "cost_limit", "unknown"] as const;
+    for (const failureClass of escalate) {
+      const outcome = decideExecutionRetry({
+        failureClass,
+        attemptNumber: 1,
+        maxAttempts: 3,
+        now: CREATED_AT,
+      });
+      expect(outcome.decision).toBe("escalate_human");
+      expect(outcome.shouldRetry).toBe(false);
+      expect(outcome.terminalStepStatus).toBe("blocked");
+    }
+
+    const unclassified = decideExecutionRetry({
+      failureClass: "not_a_class" as ExecutionFailureClass,
+      attemptNumber: 1,
+      maxAttempts: 3,
+      now: CREATED_AT,
+    });
+    expect(unclassified.decision).toBe("escalate_human");
+    expect(unclassified.shouldRetry).toBe(false);
+
+    const strategy = decideExecutionRetry({
+      failureClass: "business_strategy_failure",
+      attemptNumber: 1,
+      maxAttempts: 3,
+      now: CREATED_AT,
+    });
+    expect(strategy.decision).toBe("replan");
+    expect(strategy.shouldRetry).toBe(false);
+
+    const qa = decideExecutionRetry({
+      failureClass: "qa_failure",
+      attemptNumber: 1,
+      maxAttempts: 3,
+      now: CREATED_AT,
+    });
+    expect(qa.decision).toBe("retry_different_executor");
+    expect(qa.shouldRetry).toBe(true);
+
+    const evidence = decideExecutionRetry({
+      failureClass: "evidence_failure",
+      attemptNumber: 1,
+      maxAttempts: 3,
+      now: CREATED_AT,
+    });
+    expect(evidence.decision).toBe("retry_different_executor");
+
+    const dependency = decideExecutionRetry({
+      failureClass: "external_dependency",
+      attemptNumber: 1,
+      maxAttempts: 3,
+      now: CREATED_AT,
+    });
+    expect(dependency.decision).toBe("retry_same_executor");
+    expect(dependency.shouldRetry).toBe(true);
+
+    const correctable = decideExecutionRetry({
+      failureClass: "bad_input",
+      attemptNumber: 1,
+      maxAttempts: 3,
+      now: CREATED_AT,
+    });
+    expect(correctable.decision).toBe("correct_inputs_then_retry");
+    expect(correctable.shouldRetry).toBe(true);
+
+    const exhaustedInput = decideExecutionRetry({
+      failureClass: "bad_input",
+      attemptNumber: 3,
+      maxAttempts: 3,
+      now: CREATED_AT,
+    });
+    expect(exhaustedInput.decision).toBe("escalate_human");
+    expect(exhaustedInput.shouldRetry).toBe(false);
+    expect(exhaustedInput.terminalStepStatus).toBe("blocked");
+  });
+
+  it("caps retry backoff and refuses non-positive attempt numbers", () => {
+    expect(retryDelayMs(1)).toBe(1000);
+    expect(retryDelayMs(2)).toBe(2000);
+    expect(retryDelayMs(3)).toBe(4000);
+    expect(retryDelayMs(21)).toBe(900_000);
+    expect(() => retryDelayMs(0)).toThrow(/positive integer/);
+  });
+
+  it("fails closed on malformed lease credentials and identity swaps", () => {
+    const token = "a".repeat(64);
+    const lease = {
+      attemptId: "attempt-001",
+      stepKey: "research",
+      workerId: "worker-001",
+      leaseTokenHash: token,
+      leaseExpiresAt: "2026-09-03T10:05:00.000Z",
+    };
+
+    expect(checkExecutionLease(lease, { ...lease, attemptId: "attempt-002" }, CREATED_AT)).toEqual({
+      ok: false,
+      reason: "lease_identity_mismatch",
+    });
+    expect(checkExecutionLease(lease, { ...lease, stepKey: "review" }, CREATED_AT)).toEqual({
+      ok: false,
+      reason: "lease_identity_mismatch",
+    });
+    expect(checkExecutionLease(lease, { ...lease, attemptId: "" }, CREATED_AT)).toEqual({
+      ok: false,
+      reason: "invalid_attempt_id",
+    });
+    expect(checkExecutionLease(lease, { ...lease, stepKey: "bad key" }, CREATED_AT)).toEqual({
+      ok: false,
+      reason: "invalid_step_key",
+    });
+    expect(checkExecutionLease(lease, { ...lease, workerId: "" }, CREATED_AT)).toEqual({
+      ok: false,
+      reason: "invalid_worker_id",
+    });
+    expect(checkExecutionLease(lease, { ...lease, leaseTokenHash: "NOT-A-HASH" }, CREATED_AT)).toEqual({
+      ok: false,
+      reason: "invalid_lease_token_hash",
+    });
+    expect(checkExecutionLease(lease, lease, "not-a-date")).toEqual({
       ok: false,
       reason: "lease_expired",
     });
