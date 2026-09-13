@@ -310,4 +310,32 @@ describe("Native Skill Registry v1", () => {
     expect(registeredNativeSkills()).toEqual([]);
     expect(qualifiedNativeSkills()).toEqual([]);
   });
+
+  it("will not move a non-candidate Skill into shadow or qualify a non-shadow Skill", () => {
+    const shadow = buildShadowSkill();
+    const movedAgain = moveNativeSkillToShadow(shadow);
+    expect(movedAgain.ok).toBe(false);
+    expect(movedAgain.ok ? "" : movedAgain.failures.join(" ")).toContain("Only a candidate Skill can enter shadow qualification.");
+
+    const evaluated = evaluateSkillQualification(qualificationCandidate(shadow), [
+      observation(shadow, "run-one"),
+      observation(shadow, "run-two"),
+    ]);
+    expect(evaluated.ok).toBe(true);
+    if (!evaluated.ok) return;
+    const qualified = buildQualifiedSkill();
+    const requalified = qualifyNativeSkill(
+      qualified,
+      evaluated.value,
+      {
+        artifactId: "qualification-decision-002",
+        schemaVersion: "skill-qualification-decision/v1",
+        contentHash: evaluated.value.decisionHash,
+      },
+      "manager-001",
+      "2026-08-26T04:45:00Z",
+    );
+    expect(requalified.ok).toBe(false);
+    expect(requalified.ok ? "" : requalified.failures.join(" ")).toContain("Only a shadow Skill can be qualified.");
+  });
 });
