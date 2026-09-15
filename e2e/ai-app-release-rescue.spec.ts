@@ -32,6 +32,7 @@ test.describe("AI App Release Rescue offer", () => {
     }
     await page.getByRole("button", { name: /Submit demo request/i }).click();
     await expect(page.getByText(/credential or token/i)).toBeVisible();
+    await expect(page.locator('textarea[name="evidenceNotes"]')).toHaveValue("");
     await expect(page.locator("body")).not.toContainText("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
     await expect(page).toHaveURL(/\/intake/);
   });
@@ -70,8 +71,10 @@ test.describe("AI App Release Rescue offer", () => {
     await expect(page.getByText(/ready with caveats/i).first()).toBeVisible();
     await expect(page.locator("body")).not.toContainText("exec_demo_internal");
     await expect(page.locator("body")).not.toContainText("org_demo_internal");
-    await page.getByRole("link", { name: /Structured JSON/i }).click();
-    await expect(page.locator("pre code")).toContainText("schema_version");
-    await expect(page.locator("pre code")).not.toContainText("executor_id");
+    await page.getByRole("link", { name: "Structured JSON" }).click();
+    await expect(page).toHaveURL(/view=json/);
+    const json = page.locator("pre code").filter({ hasText: "schema_version" });
+    await expect(json).toBeVisible();
+    await expect(json).not.toContainText("executor_id");
   });
 });

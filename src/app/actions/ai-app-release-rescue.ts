@@ -9,6 +9,7 @@ import {
   parseRescueIntake,
   type RescueIntakeState,
 } from "@/lib/ai-app-release-rescue/intake";
+import { scanTextForSecrets } from "@/lib/ai-app-release-rescue/secrets";
 
 const ECHO_FIELDS = [
   "contactName",
@@ -34,7 +35,9 @@ function echoSafeFields(formData: FormData): Record<string, string> {
   const values: Record<string, string> = {};
   for (const key of ECHO_FIELDS) {
     const value = formData.get(key);
-    if (typeof value === "string") values[key] = value;
+    if (typeof value !== "string") continue;
+    if (!scanTextForSecrets(value).ok) continue;
+    values[key] = value;
   }
   return values;
 }
