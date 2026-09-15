@@ -88,7 +88,7 @@ export default function RescueLandingPage() {
           {[
             {
               title: "A fixed rubric",
-              body: "Twenty-four checks across nine areas. Every check gets a recorded outcome and evidence, and a check we could not assess is reported as exactly that.",
+              body: "Thirty-two checks across twelve areas, covering security, release safety, AI-specific risk, accessibility, code quality, and documentation. Every check gets a recorded outcome and evidence, and a check we could not assess is reported as exactly that.",
             },
             {
               title: "Findings you can check",

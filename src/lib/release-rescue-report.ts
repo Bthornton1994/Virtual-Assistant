@@ -98,6 +98,7 @@ export const reportScopeSchema = z
     application: applicationScopeSchema,
     criticalWorkflow: criticalWorkflowScopeSchema,
     customerExclusions: z.array(nonEmptyString.max(500)).max(20),
+    aiAssistedReviewAccepted: z.boolean(),
   })
   .strict();
 
@@ -349,6 +350,9 @@ export const STANDING_LIMITATIONS: readonly string[] = [
   "The review read source, configuration, and dependency manifests. It did not attack, load-test, or otherwise exercise a running system.",
   "Findings describe what this review identified. The absence of a finding is not evidence that a problem does not exist.",
   "Severity reflects the impact, exploitability, and confidence recorded for each finding, judged against the one critical workflow in scope.",
+  // Stated plainly, because the honest answer is uncomfortable and a customer
+  // who believes otherwise will over-trust the report.
+  "Part of this review is performed by an AI system reading your source. Text inside a repository can attempt to influence such a system. Our controls prevent that text from changing this report's findings, severity, counts, or verdict, which are computed by deterministic code from recorded observations. They cannot rule out that it caused a real problem to go unreported. This residual risk is not solved, and a human reviewer signing this report is the mitigation, not a guarantee.",
 ];
 
 export function assembleReleaseRescueReport(input: AssembleReportInput): ReleaseRescueReportV1 {
@@ -560,6 +564,17 @@ export function validateReleaseRescueReport(candidate: unknown): ValidationResul
     hardFailures.push(`Report states verdict "${report.verdict}"; recomputation gives "${metrics.verdict}".`);
   }
 
+  // --- the customer's review-mode choice ---
+  // A customer who declined AI-assisted review and receives an agent-prepared
+  // report did not get what they agreed to. This is a hard failure rather than a
+  // warning: the breach happened when the report was produced, and delivering it
+  // would only compound it.
+  if (!report.scope.aiAssistedReviewAccepted && report.preparedBy.executorKind === "agent") {
+    hardFailures.push(
+      "This engagement declined AI-assisted review, but the report was prepared by an agent executor.",
+    );
+  }
+
   // --- authority ---
   // The auditor is prepare-only. Any external action it reports is an incident,
   // not a detail: it means the engagement's authority boundary was crossed.
@@ -635,6 +650,13 @@ export function releaseRescueDeliveryGate(
   }
   if (report.preparedBy.executorKind === "agent" && report.reviewedBy === null) {
     blockers.push("An agent-prepared report may never be delivered without human review.");
+  }
+  // Checked again here, and not only in validation, because this is the last
+  // point before the artifact reaches the person who made the choice.
+  if (!report.scope.aiAssistedReviewAccepted && report.preparedBy.executorKind === "agent") {
+    blockers.push(
+      "This engagement declined AI-assisted review. An agent-prepared report cannot be delivered for it.",
+    );
   }
 
   return { deliverable: blockers.length === 0, blockers };

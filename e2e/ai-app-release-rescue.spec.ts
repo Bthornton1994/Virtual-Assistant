@@ -6,6 +6,7 @@ const FAKE_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 
 const ATTESTATIONS = [
   "authorizedToGrantRepositoryAccess",
+  "ownsOrIsAuthorisedByOwnerOfTheCode",
   "accessGrantedIsReadOnly",
   "noProductionCredentialsProvided",
   "noEndUserPersonalDataProvided",
@@ -102,6 +103,10 @@ test.describe("AI App Release Rescue offer", () => {
     await expect(page.getByText(/Synthetic sample/i)).toBeVisible();
     await expect(page.getByText("RR-001").first()).toBeVisible();
     await expect(page.getByText(/not a penetration test/i).first()).toBeVisible();
+    // The report states which review mode the customer agreed to.
+    await expect(page.getByText(/AI-assisted, signed by a human reviewer/i)).toBeVisible();
+    // And it states the injection limitation rather than implying the risk is solved.
+    await expect(page.getByText(/This residual risk is not solved/i)).toBeVisible();
     // Internal identity must not reach a customer-facing document.
     await expect(page.locator("body")).not.toContainText("release-rescue-auditor");
     await expect(page.locator("body")).not.toContainText("demo-organization");

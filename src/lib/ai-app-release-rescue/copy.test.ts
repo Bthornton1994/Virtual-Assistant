@@ -46,8 +46,8 @@ describe("rescue customer copy", () => {
       resolve(process.cwd(), "src/app/(marketing)/ai-app-release-rescue/page.tsx"),
       "utf8",
     );
-    expect(RELEASE_RESCUE_RUBRIC_V1).toHaveLength(24);
-    expect(RUBRIC_DIMENSIONS).toHaveLength(9);
-    expect(landing).toMatch(/Twenty-four checks across nine areas/);
+    expect(RELEASE_RESCUE_RUBRIC_V1).toHaveLength(32);
+    expect(RUBRIC_DIMENSIONS).toHaveLength(12);
+    expect(landing).toMatch(/Thirty-two checks across twelve areas/);
   });
 });

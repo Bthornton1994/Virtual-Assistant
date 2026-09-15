@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { ENGAGEMENT_STATUSES } from "@/lib/ai-app-release-rescue/constants";
 
 // Static analysis of the Release Rescue migration.
 //
@@ -210,6 +211,20 @@ describe("release rescue migration: retention", () => {
     expect(tableBody("release_rescue_reports")).toContain(
       "report_artifact_id uuid references public.evidence_artifacts(id) on delete set null",
     );
+  });
+});
+
+describe("release rescue migration: lifecycle vocabulary", () => {
+  it("matches the engagement statuses the application declares", () => {
+    // Drift here is invisible until something tries to persist and the check
+    // constraint rejects it.
+    const constraint = /status text not null default 'intake' check \(status in \(([\s\S]*?)\)\)/.exec(
+      tableBody("release_rescue_engagements"),
+    );
+    expect(constraint, "status check constraint should be present").not.toBeNull();
+    const schemaStatuses = [...(constraint?.[1] ?? "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
+
+    expect(schemaStatuses).toEqual([...ENGAGEMENT_STATUSES].sort());
   });
 });
 

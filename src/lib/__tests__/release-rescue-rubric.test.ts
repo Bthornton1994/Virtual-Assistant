@@ -19,7 +19,7 @@ describe("release readiness rubric", () => {
 
     expect(new Set(ids).size).toBe(ids.length);
     for (const id of ids) {
-      expect(id, `${id} should be dimension-prefixed`).toMatch(/^[a-z]+\.[a-z0-9_]+$/);
+      expect(id, `${id} should be dimension-prefixed`).toMatch(/^[a-z][a-z0-9]*\.[a-z0-9_]+$/);
     }
   });
 
@@ -33,6 +33,26 @@ describe("release readiness rubric", () => {
     for (const check of RELEASE_RESCUE_RUBRIC_V1) {
       expect(RUBRIC_DIMENSIONS).toContain(check.dimension);
       expect(check.id.startsWith(`${check.id.split(".")[0]}.`)).toBe(true);
+    }
+  });
+
+  it("adds release-readiness coverage beyond security", () => {
+    // The offer is sold as release readiness, not as a security review, so the
+    // rubric has to cover what would actually stop a release: an unusable
+    // workflow, an untested critical path, an application nobody else can run.
+    for (const dimension of ["accessibility", "code_quality_and_tests", "documentation_and_handover"] as const) {
+      expect(checksForDimension(dimension).length, dimension).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the added coverage non-gating", () => {
+    // A missing keyboard path is a real finding and a real release problem, but
+    // it is not the kind of thing this review blocks a release over. Gating stays
+    // with the checks where being wrong is unrecoverable.
+    for (const dimension of ["accessibility", "code_quality_and_tests", "documentation_and_handover"] as const) {
+      for (const check of checksForDimension(dimension)) {
+        expect(check.blocking, check.id).toBe(false);
+      }
     }
   });
 

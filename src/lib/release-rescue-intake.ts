@@ -130,6 +130,40 @@ export const REPOSITORY_ACCESS_MODES = [
 ] as const;
 export type RepositoryAccessMode = (typeof REPOSITORY_ACCESS_MODES)[number];
 
+/**
+ * Whether granting access this way also DEMONSTRATES control of the code.
+ *
+ * This distinction is the control against the worst abuse of this service:
+ * pointing us at someone else's repository, buying a security report on it, and
+ * using the findings against them.
+ *
+ * Installing an app or adding a collaborator requires an action inside the
+ * customer's own provider account on that specific repository. Only someone who
+ * already controls it can do that, so the grant is itself evidence.
+ *
+ * Uploading an archive demonstrates nothing at all. Anyone can download a public
+ * repository, or receive a private one, and upload the zip. An attestation is a
+ * promise, not proof, so an archive engagement additionally requires a named
+ * human at Delegation Cloud to confirm ownership before the review may start.
+ */
+export const ACCESS_MODE_DEMONSTRATES_CONTROL: Record<RepositoryAccessMode, boolean> = {
+  customer_installed_readonly_app: true,
+  customer_added_readonly_collaborator: true,
+  customer_uploaded_archive: false,
+};
+
+export function accessModeDemonstratesControl(mode: RepositoryAccessMode): boolean {
+  return ACCESS_MODE_DEMONSTRATES_CONTROL[mode];
+}
+
+/** How an archive engagement's ownership was established by a human, not asserted by the customer. */
+export const ARCHIVE_OWNERSHIP_CONFIRMATIONS = [
+  "provider_ownership_verified_by_operator",
+  "signed_authorization_letter_on_file",
+  "existing_contracted_customer_of_record",
+] as const;
+export type ArchiveOwnershipConfirmation = (typeof ARCHIVE_OWNERSHIP_CONFIRMATIONS)[number];
+
 export const MAX_GRANT_WINDOW_DAYS = 30;
 
 // --- Schemas ------------------------------------------------------------------------
@@ -210,7 +244,12 @@ export const criticalWorkflowScopeSchema = z
  */
 export const intakeAttestationsSchema = z
   .object({
+    /**
+     * Necessary, never sufficient. For an archive this is the ONLY thing the
+     * customer offers, which is why an archive also needs operator confirmation.
+     */
     authorizedToGrantRepositoryAccess: z.literal(true),
+    ownsOrIsAuthorisedByOwnerOfTheCode: z.literal(true),
     accessGrantedIsReadOnly: z.literal(true),
     noProductionCredentialsProvided: z.literal(true),
     noEndUserPersonalDataProvided: z.literal(true),
@@ -231,6 +270,16 @@ export const releaseRescueIntakeV1Schema = z
     repository: repositoryIntakeSchema,
     application: applicationScopeSchema,
     criticalWorkflow: criticalWorkflowScopeSchema,
+    /**
+     * Whether the customer accepts an AI-assisted review.
+     *
+     * False means human-only, and that is ENFORCED rather than noted: the frozen
+     * scope carries this value, the report validator rejects an agent-prepared
+     * report for a human-only engagement, and the delivery gate refuses it
+     * again. A privacy choice a customer makes at intake and the pipeline then
+     * ignores is worse than not offering the choice.
+     */
+    aiAssistedReviewAccepted: z.boolean(),
     requestedServices: z.array(z.enum(REQUESTABLE_SERVICES)).min(1),
     /** Areas the customer explicitly asks the review to leave alone. */
     customerExclusions: z.array(nonEmptyString.max(500)).max(20),
@@ -256,6 +305,8 @@ export type ReleaseRescueScope = {
   application: z.infer<typeof applicationScopeSchema>;
   criticalWorkflow: z.infer<typeof criticalWorkflowScopeSchema>;
   customerExclusions: string[];
+  /** Carried into the frozen scope so the report is bound to the choice. */
+  aiAssistedReviewAccepted: boolean;
 };
 
 /**
@@ -273,6 +324,7 @@ export function freezeScope(intake: ReleaseRescueIntakeV1, commitSha: string): R
     application: intake.application,
     criticalWorkflow: intake.criticalWorkflow,
     customerExclusions: [...intake.customerExclusions],
+    aiAssistedReviewAccepted: intake.aiAssistedReviewAccepted,
   };
 }
 
@@ -303,6 +355,14 @@ export type IntakeDecision =
       accepted: true;
       intake: ReleaseRescueIntakeV1;
       retentionDays: number;
+      /**
+       * True when the chosen access mode proves nothing about who controls the
+       * code. The engagement may be created, but the review must not start until
+       * a named operator records how ownership was established. Enforced again in
+       * the database, because an application-only gate is a gate someone can
+       * route around.
+       */
+      requiresOperatorOwnershipConfirmation: boolean;
       /** In-scope services, in rubric-facing order. */
       acceptedServices: RequestableService[];
       /** Out-of-scope asks that were dropped, each with the reason the customer is told. */
@@ -383,6 +443,7 @@ export function evaluateIntake(input: unknown, now: Date): IntakeDecision {
     accepted: true,
     intake,
     retentionDays,
+    requiresOperatorOwnershipConfirmation: !accessModeDemonstratesControl(intake.repository.accessMode),
     acceptedServices,
     declinedServices,
   };

@@ -54,6 +54,7 @@ export function makeScope(overrides: Partial<ReleaseRescueScope> = {}): ReleaseR
       triggersExternalActions: true,
     },
     customerExclusions: [],
+    aiAssistedReviewAccepted: true,
     ...overrides,
   };
 }
@@ -71,12 +72,14 @@ export function makeIntake(overrides: Record<string, unknown> = {}) {
     },
     application: makeScope().application,
     criticalWorkflow: makeScope().criticalWorkflow,
+    aiAssistedReviewAccepted: true,
     requestedServices: ["release_readiness_review"],
     customerExclusions: [],
     retentionPolicy: "minimum_7_day",
     grantExpiresAt: "2026-09-20T12:00:00.000Z",
     attestations: {
       authorizedToGrantRepositoryAccess: true,
+      ownsOrIsAuthorisedByOwnerOfTheCode: true,
       accessGrantedIsReadOnly: true,
       noProductionCredentialsProvided: true,
       noEndUserPersonalDataProvided: true,

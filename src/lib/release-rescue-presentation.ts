@@ -34,6 +34,9 @@ export const DIMENSION_TITLES: Record<RubricDimension, string> = {
   dependency_and_supply_chain: "Dependencies and supply chain",
   release_operations: "Release operations",
   observability_and_incident_response: "Observability and incident response",
+  accessibility: "Accessibility",
+  code_quality_and_tests: "Code quality and tests",
+  documentation_and_handover: "Documentation and handover",
 };
 
 /**
@@ -111,6 +114,7 @@ export type CustomerReportView = {
     criticalWorkflowName: string;
     criticalWorkflowDescription: string;
     exclusions: string[];
+    aiAssistedReviewAccepted: boolean;
   };
   verdict: ReleaseVerdict;
   verdictHeadline: string;
@@ -228,6 +232,7 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       criticalWorkflowName: report.scope.criticalWorkflow.name,
       criticalWorkflowDescription: report.scope.criticalWorkflow.description,
       exclusions: [...report.scope.customerExclusions],
+      aiAssistedReviewAccepted: report.scope.aiAssistedReviewAccepted,
     },
     verdict: report.verdict,
     verdictHeadline: verdictCopy.headline,

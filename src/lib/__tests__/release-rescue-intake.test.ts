@@ -138,6 +138,7 @@ describe("release rescue intake boundary", () => {
     const intake = releaseRescueIntakeV1Schema.parse(makeIntake());
     const scope = freezeScope(intake, COMMIT_SHA);
     const reordered = {
+      aiAssistedReviewAccepted: scope.aiAssistedReviewAccepted,
       customerExclusions: scope.customerExclusions,
       criticalWorkflow: scope.criticalWorkflow,
       application: scope.application,

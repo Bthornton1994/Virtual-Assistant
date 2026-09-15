@@ -66,7 +66,7 @@ The offer is a fixed-price review of one repository, one application, and one cr
 
 The review is prepare-only. Severity is derived from recorded observations, never chosen by an executor. Coverage, counts, and the verdict are computed in deterministic code and rejected when a stored value disagrees. Delivery requires a named human reviewer holding manager authority. Repository access is read-only, time-boxed, customer-revocable, and never stored as a credential.
 
-`VISION.md` is silent on whether Delegation Cloud sells engineering-adjacent assurance work. That is an open owner decision recorded in the document; do not launch or widen this workstream before it is resolved.
+`VISION.md` § Scope and non-goals now admits bounded technical assurance work, on stated terms (decision `D-009`). Those terms are the boundary: prepare-only authority, read-only revocable access with ownership established by an accountable human where the access method does not demonstrate control, deterministic severity and completion, a named human signature before delivery, and remediation as a separate engagement. A proposal that needs to attack a running system, certify compliance, take production access, or promise an unverifiable outcome is out of scope regardless of demand. Admission is not launch: payment activation, production access, and any increase in executor authority remain separate owner decisions.
 
 ## Software Factory model economy
 

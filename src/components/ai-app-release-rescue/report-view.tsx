@@ -79,6 +79,14 @@ export function ReportView({
               <Item term="Critical workflow" detail={report.scope.criticalWorkflowName} />
               <Item term="Workflow entry point" detail={report.scope.criticalWorkflowDescription} />
               <Item term="Reviewed by" detail={report.reviewedByName ?? "Pending human review"} />
+              <Item
+                term="Review mode"
+                detail={
+                  report.scope.aiAssistedReviewAccepted
+                    ? "AI-assisted, signed by a human reviewer"
+                    : "Human-only, as you requested"
+                }
+              />
             </dl>
             {report.scope.exclusions.length > 0 ? (
               <p className="mt-4 text-sm text-ink-soft">

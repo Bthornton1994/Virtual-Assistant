@@ -21,7 +21,7 @@ describe("demo engagement store", () => {
   it("creates an engagement that holds no access and collects no payment", () => {
     const engagement = createDemoEngagement(intake());
 
-    expect(engagement.status).toBe("scope_confirmed");
+    expect(engagement.status).toBe("scoped");
     expect(engagement.payment).toBe("not_collected");
     expect(engagement.accessGranted).toBe(false);
     expect(engagement.source).toBe("demo_memory");
@@ -44,8 +44,9 @@ describe("demo engagement store", () => {
   });
 
   it("permits only forward transitions", () => {
-    expect(canTransitionEngagement("scope_confirmed", "access_granted")).toBe(true);
+    expect(canTransitionEngagement("scoped", "access_granted")).toBe(true);
     expect(canTransitionEngagement("delivered", "auditing")).toBe(false);
+    expect(canTransitionEngagement("purged", "auditing")).toBe(false);
     expect(canTransitionEngagement("cancelled", "auditing")).toBe(false);
   });
 

@@ -64,3 +64,13 @@ Status: active
 Decision: The owner authorized merging PRs #53–#58 in Virtual-Assistant and PR #24 in Loadout while GitHub Actions was unavailable. This was a bounded source-integration decision only. It did not waive post-merge verification, production, external-action, supplier, catalog, commerce, legal, or autonomy gates.
 
 Source: [Virtual-Assistant main](https://github.com/Bthornton1994/Virtual-Assistant/commit/85000a45560e9291d68ea32b609fb087fcdebf2b), [Loadout main](https://github.com/Bthornton1994/Loadout/commit/af42f7afdbbc5af8d88451d4a2fbfd618b9711ae), [Virtual-Assistant Actions run](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/33179339710), [Loadout Actions run](https://github.com/Bthornton1994/Loadout/actions/runs/33179347590).
+
+## D-009 — Bounded technical assurance work is in scope
+
+Date: 2026-09-15  
+Status: active  
+Decision: Delegation Cloud may sell bounded technical assurance work where the delegated outcome is a verified judgment, not a change to the customer's systems. The release-readiness review is the first such workstream. Admission is conditional on the constraints written into `VISION.md` § Scope and non-goals: prepare-only authority, read-only and revocable access with ownership established by an accountable human where the access method does not demonstrate control, deterministic computation of severity and completion, a named human signature before delivery, remediation as a separate engagement, and a standing prohibition on describing the work as penetration testing, compliance certification, or a security guarantee.
+
+This admits one workstream on stated terms. It does not make Delegation Cloud a security consultancy, and it does not authorize launch, payment activation, production access, or any increase in executor authority.
+
+Source: [VISION.md](VISION.md), [AI App Release Rescue v1](docs/AI-APP-RELEASE-RESCUE-V1.md).

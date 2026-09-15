@@ -31,25 +31,32 @@ export const RESCUE_SCOPE_LIMIT = RELEASE_RESCUE_OFFER.scopeCeiling;
 export const RESCUE_GRANT_WINDOW_DAYS = MAX_GRANT_WINDOW_DAYS;
 export const RESCUE_RETENTION_DAYS = RETENTION_DAYS;
 
+/**
+ * Mirrors the status check constraint on public.release_rescue_engagements.
+ * The database is authoritative for lifecycle vocabulary; a value here that the
+ * schema rejects is drift that only shows up when something tries to persist.
+ */
 export const ENGAGEMENT_STATUSES = [
   "intake",
-  "scope_confirmed",
+  "scoped",
   "access_granted",
   "auditing",
   "report_ready",
   "delivered",
   "cancelled",
+  "purged",
 ] as const;
 export type EngagementStatus = (typeof ENGAGEMENT_STATUSES)[number];
 
 export const ENGAGEMENT_TRANSITIONS: Record<EngagementStatus, readonly EngagementStatus[]> = {
-  intake: ["scope_confirmed", "cancelled"],
-  scope_confirmed: ["access_granted", "cancelled"],
+  intake: ["scoped", "cancelled"],
+  scoped: ["access_granted", "cancelled"],
   access_granted: ["auditing", "cancelled"],
   auditing: ["report_ready", "cancelled"],
   report_ready: ["delivered", "cancelled"],
-  delivered: [],
-  cancelled: [],
+  delivered: ["purged"],
+  cancelled: ["purged"],
+  purged: [],
 };
 
 /** The access modes the schema permits. Read-only, every one of them. */
@@ -112,6 +119,18 @@ export const RUBRIC_CATEGORY_COPY: Record<RubricCategory, { title: string; exami
   observability_and_incident_response: {
     title: DIMENSION_TITLES.observability_and_incident_response,
     examines: "Whether consequential actions leave an audit trail and whether logs or errors leak secrets or customer data.",
+  },
+  accessibility: {
+    title: DIMENSION_TITLES.accessibility,
+    examines: "Whether the reviewed workflow can be completed by keyboard, whether controls carry names and errors, and contrast and motion preferences.",
+  },
+  code_quality_and_tests: {
+    title: DIMENSION_TITLES.code_quality_and_tests,
+    examines: "Automated coverage of the critical workflow, how failures on that path are handled, and whether type and lint checks actually block a merge.",
+  },
+  documentation_and_handover: {
+    title: DIMENSION_TITLES.documentation_and_handover,
+    examines: "Whether a new engineer can run and verify the application, and whether known limits and the on-call path are written down.",
   },
 };
 

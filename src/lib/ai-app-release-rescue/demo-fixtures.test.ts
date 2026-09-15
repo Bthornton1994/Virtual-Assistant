@@ -4,6 +4,7 @@ import { findInternalIdentityLeaks } from "@/lib/release-rescue-presentation";
 import { findProhibitedClaims } from "@/lib/release-rescue-intake";
 import { scanForSecrets } from "@/lib/release-rescue-redaction";
 import { severityRank } from "@/lib/release-rescue-findings";
+import { RUBRIC_DIMENSIONS } from "@/lib/release-rescue-rubric";
 import {
   SAMPLE_CUSTOMER_REPORT,
   SAMPLE_REPORT,
@@ -72,6 +73,6 @@ describe("the sample report shown to prospective customers", () => {
 
   it("covers every rubric check", () => {
     expect(SAMPLE_CUSTOMER_REPORT.coverage.notAssessedChecks).toBe(0);
-    expect(SAMPLE_CUSTOMER_REPORT.dimensions).toHaveLength(9);
+    expect(SAMPLE_CUSTOMER_REPORT.dimensions).toHaveLength(RUBRIC_DIMENSIONS.length);
   });
 });

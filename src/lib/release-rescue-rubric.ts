@@ -32,6 +32,9 @@ export const RUBRIC_DIMENSIONS = [
   "dependency_and_supply_chain",
   "release_operations",
   "observability_and_incident_response",
+  "accessibility",
+  "code_quality_and_tests",
+  "documentation_and_handover",
 ] as const;
 
 export type RubricDimension = (typeof RUBRIC_DIMENSIONS)[number];
@@ -317,6 +320,84 @@ export const RELEASE_RESCUE_RUBRIC_V1: readonly RubricCheck[] = [
     acceptableEvidence: ["code_reference", "configuration_reference", "runtime_observation"],
     blocking: false,
     weight: 2,
+  },
+  {
+    id: "a11y.keyboard_and_focus",
+    dimension: "accessibility",
+    title: "The critical workflow is operable by keyboard",
+    question:
+      "Can the reviewed workflow be completed with a keyboard alone, with visible focus and no traps?",
+    acceptableEvidence: ["code_reference", "runtime_observation", "test_reference"],
+    blocking: false,
+    weight: 3,
+  },
+  {
+    id: "a11y.semantics_and_labels",
+    dimension: "accessibility",
+    title: "Controls carry names, roles, and error text",
+    question:
+      "Does every control in the workflow have an accessible name, a correct role, and errors announced to assistive technology?",
+    acceptableEvidence: ["code_reference", "runtime_observation", "test_reference"],
+    blocking: false,
+    weight: 2,
+  },
+  {
+    id: "a11y.contrast_and_motion",
+    dimension: "accessibility",
+    title: "Contrast and motion preferences are respected",
+    question: "Does text meet contrast requirements, and does the interface honour reduced-motion?",
+    acceptableEvidence: ["code_reference", "runtime_observation"],
+    blocking: false,
+    weight: 1,
+  },
+  {
+    id: "quality.tests_cover_the_critical_workflow",
+    dimension: "code_quality_and_tests",
+    title: "The critical workflow has automated coverage",
+    question:
+      "Is there an automated test that would fail if the reviewed workflow broke, and does the suite currently pass?",
+    acceptableEvidence: ["test_reference", "runtime_observation"],
+    blocking: false,
+    weight: 3,
+  },
+  {
+    id: "quality.error_handling_on_the_critical_path",
+    dimension: "code_quality_and_tests",
+    title: "Failures on the critical path are handled",
+    question:
+      "When a dependency, network call, or model call fails inside the workflow, does the application degrade predictably rather than breaking or silently continuing?",
+    acceptableEvidence: ["code_reference", "test_reference", "runtime_observation"],
+    blocking: false,
+    weight: 2,
+  },
+  {
+    id: "quality.type_and_lint_discipline",
+    dimension: "code_quality_and_tests",
+    title: "Type and lint checks are enforced, not merely present",
+    question: "Do typecheck and lint run in CI and block a merge, or can a red result be ignored?",
+    acceptableEvidence: ["configuration_reference", "code_reference", "runtime_observation"],
+    blocking: false,
+    weight: 2,
+  },
+  {
+    id: "docs.run_and_verify_locally",
+    dimension: "documentation_and_handover",
+    title: "A new engineer can run and verify the application",
+    question:
+      "Do the setup instructions get a new engineer to a running application and a passing check without tribal knowledge?",
+    acceptableEvidence: ["code_reference", "configuration_reference", "reasoned_argument"],
+    blocking: false,
+    weight: 2,
+  },
+  {
+    id: "docs.known_limits_and_operational_contacts",
+    dimension: "documentation_and_handover",
+    title: "Known limits and the on-call path are written down",
+    question:
+      "Are the application's known limitations recorded, and is it clear who is called when the workflow fails in production?",
+    acceptableEvidence: ["code_reference", "configuration_reference", "reasoned_argument"],
+    blocking: false,
+    weight: 1,
   },
 ] as const;
 

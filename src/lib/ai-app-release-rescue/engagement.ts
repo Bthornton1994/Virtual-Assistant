@@ -43,7 +43,7 @@ export function canTransitionEngagement(from: EngagementStatus, to: EngagementSt
 export function createDemoEngagement(intake: RescueIntake): DemoEngagement {
   const engagement: DemoEngagement = {
     id: uid("rescue"),
-    status: "scope_confirmed",
+    status: "scoped",
     intake,
     createdAt: nowIso(),
     source: "demo_memory",

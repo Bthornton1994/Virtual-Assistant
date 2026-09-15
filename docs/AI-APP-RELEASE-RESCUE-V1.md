@@ -10,7 +10,7 @@ This document is the security foundation. It does not authorize a launch, a paym
 
 ## Vision classification
 
-**Aligns with constraints.**
+**Aligns with constraints.** `VISION.md` § *Scope and non-goals* now admits bounded technical assurance work on stated terms (decision `D-009`).
 
 The workstream fits `VISION.md` § *Quality assurance is part of delivery*, § *Use the right executor for each step*, and § *Security follows delegated authority*: a customer delegates an outcome ("tell me whether this is safe to ship"), Delegation Cloud routes it, verifies it, and a human remains accountable. Findings are drafted by an AI executor and are never authoritative on their own, which is § *Manual first, automation after proof*.
 
@@ -20,9 +20,9 @@ The constraints, each of which is implemented rather than promised:
 - Repository access is **least-privilege, intentional, logged, and removable** (§ *Security follows delegated authority*). Read-only, time-boxed at 30 days, customer-granted, customer-revocable, and never held as a credential by us.
 - Customer source **never crosses organizations** (§ *Workflow memory compounds value*). Row level security on every table; no cross-tenant generalization of findings in v1.
 
-**One tension the owner should resolve.** `VISION.md` § *Scope and non-goals* lists the initial workstreams as "executive operations, inbox, sales support, meetings, research, customer operations, content operations, and back-office operations." A technical release-readiness review is not among them, and its buyer is a technical founder rather than the operator accountable for administrative throughput. The vision is **silent** on whether Delegation Cloud sells engineering-adjacent assurance work.
+**The vision question is now settled, on narrow terms.** `VISION.md` previously listed only operational workstreams and was silent on engineering-adjacent assurance work. It has been amended to admit it, with the constraints written into the vision itself rather than into this document: prepare-only authority; read-only, time-boxed, customer-revocable access never held as a credential; ownership established by an accountable human where the access method does not demonstrate control; deterministic severity and completion; a named human signature before delivery; remediation as a separate engagement; and a standing prohibition on describing the work as penetration testing, compliance certification, or a security guarantee.
 
-This foundation is built so that answering "no" costs little: the workstream is self-contained behind its own contracts and tables. **It should not be launched until the owner decides whether this workstream belongs in the product.** I have not edited `VISION.md`; that is an owner decision.
+Admission is not launch. Payment activation, production access, and any increase in executor authority remain separate owner decisions.
 
 ## Architecture
 
@@ -42,7 +42,7 @@ Three tables are new, because nothing existing carries their meaning:
 - `release_rescue_repository_grants` — the fact that access was granted, its window, and its revocation.
 - `release_rescue_reports` — the accounting row binding a report body to its engagement, rubric, hash, verdict, and human reviewer.
 
-Seven application modules, all pure and deterministic:
+Nine application modules, all pure and deterministic:
 
 | Module | Responsibility |
 | --- | --- |
@@ -52,11 +52,16 @@ Seven application modules, all pure and deterministic:
 | `src/lib/release-rescue-findings.ts` | The finding contract and the derived severity model |
 | `src/lib/release-rescue-report.ts` | Report schema, deterministic assembly, validation, delivery gate |
 | `src/lib/release-rescue-presentation.ts` | The customer-facing view, built by construction so internal identity cannot leak into it |
+| `src/lib/release-rescue-snapshot-limits.ts` | Fail-closed limits on what the review will ingest |
+| `src/lib/release-rescue-retention-schedule.ts` | Authorization for the scheduled retention sweep |
 | `supabase/migrations/20260915120000_release_rescue_v1.sql` | Isolation, credential refusal, immutability, retention |
+| `supabase/migrations/20260915183000_release_rescue_hardening_v1.sql` | Ownership evidence, snapshot record, scheduled sweep |
 
 ## Release-readiness audit rubric
 
-`release-rescue-rubric/v1` — 24 checks, 9 dimensions, total coverage weight 57.
+`release-rescue-rubric/v2 scope` — 32 checks across 12 dimensions.
+
+The offer is sold as release READINESS, not as a security review, so the rubric covers what would actually stop a release: not only the security and AI-boundary dimensions, but an unusable workflow, an untested critical path, and an application nobody else can run.
 
 Each check has one question, a set of acceptable evidence kinds, a coverage weight (1–3), and a `blocking` flag. The rubric is hashed at module load; every report records `rubricVersion` and `rubricHash`, so editing the rubric without a version bump makes previously issued reports visibly stop matching instead of silently drifting.
 
@@ -71,6 +76,11 @@ Each check has one question, a set of acceptable evidence kinds, a coverage weig
 | Dependency and supply chain | 1 | — |
 | Release operations | 3 | environment separation, migration and rollback |
 | Observability and incident response | 2 | — |
+| Accessibility | 3 | — |
+| Code quality and tests | 3 | — |
+| Documentation and handover | 2 | — |
+
+The three added dimensions are deliberately non-gating. A missing keyboard path is a real finding and a real release problem, but it is not something this review blocks a release over; gating stays with the checks where being wrong is unrecoverable.
 
 Weight is **coverage** weight — how much of a dimension was actually examined. It is deliberately not a security score. A single number claiming "your app is 84% secure" is exactly the false precision this offer promises not to sell.
 
@@ -234,7 +244,7 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 
 ## Test plan
 
-**Implemented and passing** — 168 tests across eleven suites, plus 42 live database cases.
+**Implemented and passing** — 226 tests across fourteen suites, 42 live database cases for isolation and 24 for hardening, and 8 browser tests in real Chromium against the production build.
 
 | Area | Coverage | Where |
 | --- | --- | --- |
@@ -253,6 +263,49 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 3. Adversarial injection corpus: a fixture repository of files that attempt to steer the auditor, asserting the verdict is unaffected.
 4. Snapshot ingestion limits (file count, file size, archive expansion, symlink handling) and their tests.
 5. Executor calibration measurement — confirmed-to-unconfirmed ratio and sprint-scope rate per executor, to detect severity inflation over time.
+
+## Production hardening
+
+### An uploaded archive is not evidence of ownership
+
+The worst abuse of this service is buying a security report on somebody else's code. Installing a read-only app, or adding a read-only collaborator, requires an action inside the customer's own provider account on that specific repository, so only someone who already controls it can do it: the grant is itself evidence. Uploading an archive proves nothing, and the customer's attestation is a promise rather than proof.
+
+So access modes are now classified by whether they demonstrate control (`ACCESS_MODE_DEMONSTRATES_CONTROL`), and an archive engagement cannot reach `auditing`, `report_ready`, or `delivered` until a named ops manager records **how** ownership was established, with a written note. That gate lives in the database, not only in the application, because an application-only gate is one someone can route around. The confirmation is one-way, its attribution cannot be rewritten, and the retention sweep clears the note while keeping who confirmed it and when.
+
+An engagement whose access mode is not recorded at all also cannot start a review: an unclassified mode is not assumed safe.
+
+### Fail-closed ingestion limits
+
+The reviewed repository is hostile input. `release-rescue-snapshot-limits.ts` decides what may be read before anything is read:
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Files | 5,000 | A larger repository is a different engagement |
+| One file | 2 MB | Larger is generated, vendored, or binary |
+| Snapshot | 200 MB | Bounds the whole review |
+| Archive | 100 MB | Bounds the upload |
+| Expansion ratio | 12x | Source compresses 3-5x; a bomb is thousands |
+| Path depth / length | 24 / 400 | Bounds pathological trees |
+
+Symlinks are **recorded and never followed**. Resolving one means deciding whether its target is inside the snapshot, and that decision is where every traversal bug in every archive extractor has ever lived; not following them has no such failure mode. Absolute paths, `..` traversal, control characters, and backslashes are refused. A file whose whole content is a credential is recorded as present and not read.
+
+Per-entry problems skip that entry; whole-snapshot breaches refuse the **entire** snapshot rather than truncating it, because a truncated review reporting "no findings" is worse than no review — the customer believes it. Archive limits are checked against the archive's declared index, which is the only point a decompression bomb can still be refused cheaply; the declared size is attacker-controlled, so the extractor must also stop at the real limit. This function bounds the claim, the extractor bounds the reality, and neither is sufficient alone.
+
+### The retention sweep is scheduled, and says so
+
+A retention promise nothing executes is not a retention control. The sweep now runs on two paths that call the same idempotent function: `pg_cron` inside the database where the extension exists, and an authenticated route (`/api/internal/release-rescue/retention-sweep`) on the same daily schedule where it does not.
+
+Every sweep writes a row to `release_rescue_retention_runs`, **including a sweep that purges nothing** — a retention control that leaves no trace when it finds nothing is indistinguishable from one that never ran. The route's authorization is a pure function tested exhaustively: no configured secret means nobody is authorized (503, distinct from 401, so a misconfigured deployment cannot hide behind what looks like a routine auth failure), a secret under 24 characters is treated as a placeholder rather than a credential, and comparison is constant-time with the length check that `timingSafeEqual` would otherwise throw on. The sweep claims rows `for update skip locked`, so overlapping schedules cannot deadlock.
+
+### The AI-assisted opt-in is enforced, not noted
+
+A privacy choice a customer makes at intake and the pipeline then ignores is worse than not offering the choice. `aiAssistedReviewAccepted` is now part of the intake contract, carried into the frozen scope (so it is inside the scope hash and cannot be edited after the fact), rejected as a **hard validation failure** if an agent prepared a report for an engagement that declined, blocked again at the delivery gate, and displayed on the report itself.
+
+### Prompt injection: what is proven, and what is not
+
+**Proven.** Injected prose cannot move a gate. Twenty tests feed hostile text — instruction overrides, fake system messages, forged JSON fields, closing-tag attacks, a right-to-left override, an exfiltration request — through every free-text field of a report and assert the verdict, severity counts, blocking count, and coverage are byte-identical to the uninjected baseline. Text claiming authority does not become authority; a prohibited claim or a credential smuggled in as injected text is still caught; a report carrying injection still requires a human signature.
+
+**Not proven, and not solved.** None of this prevents a false NEGATIVE. An auditor steered away from a file reports nothing about it, and a report with a missing finding is structurally perfect. Coverage rules and human review reduce that risk; they do not eliminate it. Every report now carries a standing limitation saying exactly this, and a test asserts the limitations never claim the risk is prevented, eliminated, or solved.
 
 ## Reconciliation with the customer surface
 
@@ -303,19 +356,9 @@ would be free to promise a shape the pipeline cannot produce.
 
 ### Carried over, and still open
 
-- The surface previously advertised "nine categories, each with a 1–5 score".
-  This rubric produces no such number — it records an outcome and evidence per
-  check — so that copy was corrected and a test now guards against a numeric
-  score reappearing. **Cursor should restyle the corrected sentences; they were
-  written for accuracy, not for voice.**
-- The other rubric covered **accessibility, code quality, and documentation**;
-  this one does not, being focused on release safety and the AI boundary. That is
-  a genuine loss of coverage for an offer sold as "release readiness", and it is
-  an owner decision whether to extend the rubric or narrow the promise.
-- The form keeps an **AI-assisted opt-in** so a customer can ask for human-only
-  review. The contract does not yet carry it and the pipeline does not yet honour
-  it. It is recorded as a customer preference and must not be presented as
-  enforced until it is.
+- The corrected landing-page sentences were written for accuracy, not for voice. **Cursor should restyle them**, and owns the customer-facing copy for the three added rubric dimensions.
+- The snapshot limits are a decision function. **The extractor that enforces them at read time is not built**, because this pass performs no checkout. The limits are proven in unit tests, not against a real archive.
+- The retention sweep is scheduled in configuration and in the migration. **It has not run in a deployed environment**, because nothing is deployed.
 
 ## What this slice deliberately does not do
 

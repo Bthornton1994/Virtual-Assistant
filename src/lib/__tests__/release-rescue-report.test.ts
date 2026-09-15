@@ -345,6 +345,63 @@ describe("report integrity", () => {
   });
 });
 
+describe("the customer's review-mode choice is enforced", () => {
+  function humanOnlyScope() {
+    return { ...makeScope(), aiAssistedReviewAccepted: false };
+  }
+
+  it("rejects an agent-prepared report for an engagement that declined AI review", () => {
+    // The choice is offered at intake. A pipeline that records it and proceeds
+    // anyway is worse than one that never offered it.
+    const report = assembleReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
+
+    expect(failures(report)).toContain("declined AI-assisted review");
+  });
+
+  it("refuses to deliver it as well", () => {
+    const report = assembleReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
+    const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
+
+    expect(gate.deliverable).toBe(false);
+    expect(gate.blockers.join(" ")).toContain("declined AI-assisted review");
+  });
+
+  it("accepts a human-prepared report for the same engagement", () => {
+    const report = assembleReleaseRescueReport(
+      makeReportInput({
+        scope: humanOnlyScope(),
+        preparedBy: {
+          executorKey: "operator-sam",
+          executorKind: "human",
+          provider: "",
+          modelId: null,
+          protocolVersion: "v1",
+        },
+      }),
+    );
+    const validation = validateReleaseRescueReport(report);
+
+    expect(validation.hardFailures).toEqual([]);
+    expect(releaseRescueDeliveryGate(report, validation).deliverable).toBe(true);
+  });
+
+  it("leaves an engagement that accepted AI review unaffected", () => {
+    const report = assembleReleaseRescueReport(makeReportInput());
+
+    expect(report.scope.aiAssistedReviewAccepted).toBe(true);
+    expect(validateReleaseRescueReport(report).hardFailures).toEqual([]);
+  });
+
+  it("binds the choice into the scope hash", () => {
+    // Otherwise the choice could be edited after the fact without invalidating
+    // the report it governs.
+    const accepted = assembleReleaseRescueReport(makeReportInput());
+    const declined = assembleReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
+
+    expect(declined.scopeHash).not.toBe(accepted.scopeHash);
+  });
+});
+
 describe("delivery gate", () => {
   it("clears a validated, human-reviewed report", () => {
     const report = assembleReleaseRescueReport(makeReportInput());

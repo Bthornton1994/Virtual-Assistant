@@ -15,7 +15,7 @@ export function OfferPricing() {
         <p className="mt-3 font-semibold text-5xl tracking-tight tabular-nums">${RESCUE_REVIEW_PRICE_USD}</p>
         <p className="mt-2 text-sm text-accent-fg/70">Fixed price. One repository, one web app, one workflow.</p>
         <ul className="mt-8 space-y-3 text-sm">
-          <li>Twenty-four checks across nine areas, each with a recorded outcome</li>
+          <li>Thirty-two checks across twelve areas, each with a recorded outcome</li>
           <li>Findings with evidence you can check in the repo</li>
           <li>A readiness call: ready, ready with caveats, or not ready</li>
           <li>Prepare-only. No writes to your repository.</li>

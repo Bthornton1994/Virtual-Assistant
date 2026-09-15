@@ -48,6 +48,7 @@ export type IntakeFieldErrors = Partial<Record<IntakeFieldName, string>>;
 /** One checkbox per attestation, so the form and the contract cannot drift apart. */
 export const ATTESTATION_FIELDS = [
   "authorizedToGrantRepositoryAccess",
+  "ownsOrIsAuthorisedByOwnerOfTheCode",
   "accessGrantedIsReadOnly",
   "noProductionCredentialsProvided",
   "noEndUserPersonalDataProvided",
@@ -62,6 +63,8 @@ export type AttestationField = (typeof ATTESTATION_FIELDS)[number];
 export const ATTESTATION_COPY: Record<AttestationField, string> = {
   authorizedToGrantRepositoryAccess:
     "I am authorised to grant access to this repository on behalf of whoever owns it.",
+  ownsOrIsAuthorisedByOwnerOfTheCode:
+    "My organisation owns this code, or its owner has authorised this review in writing.",
   accessGrantedIsReadOnly: "I will grant read-only access, and I can revoke it at any time.",
   noProductionCredentialsProvided: "I will not send production credentials, keys, or database access.",
   noEndUserPersonalDataProvided: "I will not send my end users' personal data.",
@@ -87,9 +90,9 @@ export type RescueIntakeContact = {
   contactName: string;
   workEmail: string;
   /**
-   * Whether the customer accepts an AI-assisted review. Recorded as a customer
-   * preference; the contract does not yet carry it, and the execution pipeline
-   * does not yet honour it. Do not present it as enforced until it does.
+   * Mirrors `intake.aiAssistedReviewAccepted` for the demo page. The contract is
+   * authoritative and the report gate enforces it; this copy exists so the
+   * confirmation screen can show the choice without reaching into the contract.
    */
   aiAssistedOptIn: boolean;
   remediationInterest: boolean;
@@ -310,6 +313,7 @@ export function parseRescueIntake(source: Record<string, unknown>, now: Date = n
         handlesCustomerData: true,
         triggersExternalActions: true,
       },
+      aiAssistedReviewAccepted: readChecked(source, "aiAssistedOptIn"),
       requestedServices: ["release_readiness_review", "ai_boundary_review"],
       customerExclusions: [],
       retentionPolicy: retentionPolicy!,
