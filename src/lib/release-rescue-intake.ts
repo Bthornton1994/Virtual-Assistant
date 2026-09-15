@@ -538,13 +538,126 @@ const REFERRAL_PHRASES = [
   "outside the scope",
 ];
 
+/**
+ * One word of the text, with the strongest punctuation break that precedes it.
+ *
+ * The guard works on this stream rather than on the raw string because every
+ * evasion it previously fell to was a difference the raw string preserved and
+ * meaning does not: "penetration-test" versus "penetration test",
+ * "certifications" versus "certification", "tests" versus "test". Normalising
+ * separators and inflection into the token model removes the whole class rather
+ * than the three examples.
+ */
+type ClaimToken = {
+  readonly word: string;
+  readonly stem: string;
+  /** The strongest break between the previous token and this one. */
+  readonly breakBefore: "none" | "clause" | "sentence";
+};
+
+const CLAUSE_MARKS = new Set([",", ";", ":", "(", ")", "—", "–"]);
+const SENTENCE_MARKS = new Set([".", "!", "?", "\n", "\r"]);
+
+/**
+ * Reduces a word to the form it shares with its inflections.
+ *
+ * Deliberately shallow. It exists to collapse the plural and gerund forms a
+ * copywriter reaches for — "tests", "testing", "certifications" — not to be a
+ * general stemmer. The minimum-length lookbehinds keep short words ("is", "no")
+ * intact, and leaving "-ly" and "-er" alone is what keeps "securely" out of
+ * "secure" and "pentester" out of "pentest".
+ */
+function stemWord(word: string): string {
+  if (word.length < 4) return word;
+  if (/ies$/.test(word)) return `${word.slice(0, -3)}y`;
+  if (/(?:sses|ses|xes|zes|ches|shes)$/.test(word)) return word.slice(0, -2);
+  if (/(?<=[a-z]{3})ing$/.test(word)) return word.slice(0, -3);
+  if (/(?<=[a-z]{3})ed$/.test(word)) return word.slice(0, -2);
+  if (/(?<=[a-z]{3})s$/.test(word)) return word.slice(0, -1);
+  return word;
+}
+
+/**
+ * Splits text into tokens, recording clause and sentence breaks.
+ *
+ * Hyphens, underscores and slashes are separators with NO break, which is what
+ * makes "penetration-test" and "pen/test" read as the phrases they are.
+ */
+function tokenizeClaimText(text: string): ClaimToken[] {
+  const tokens: ClaimToken[] = [];
+  let word = "";
+  let pending: ClaimToken["breakBefore"] = "none";
+
+  const flush = () => {
+    if (word.length === 0) return;
+    const lowered = word.toLowerCase();
+    tokens.push({ word: lowered, stem: stemWord(lowered), breakBefore: pending });
+    word = "";
+    pending = "none";
+  };
+
+  for (const character of text) {
+    if (/[a-z0-9']/i.test(character)) {
+      word += character;
+      continue;
+    }
+    flush();
+    if (SENTENCE_MARKS.has(character)) pending = "sentence";
+    else if (CLAUSE_MARKS.has(character) && pending !== "sentence") pending = "clause";
+  }
+  flush();
+  return tokens;
+}
+
 /** Lowercased, whitespace-normalised, punctuation-stripped word tokens. */
 function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9'\s-]/g, " ")
-    .split(/\s+/)
-    .filter((token) => token.length > 0);
+  return tokenizeClaimText(text).map((token) => token.word);
+}
+
+/**
+ * Finds every position where a claim's token sequence occurs.
+ *
+ * Tokens are compared by stem, so inflection does not matter, and a sentence
+ * break inside the phrase disqualifies it, so a claim cannot be assembled from
+ * the end of one sentence and the start of the next.
+ */
+function claimOccurrences(tokens: readonly ClaimToken[], claim: string): number[] {
+  const wanted = tokenizeClaimText(claim).map((token) => token.stem);
+  if (wanted.length === 0) return [];
+  const hits: number[] = [];
+
+  for (let start = 0; start + wanted.length <= tokens.length; start += 1) {
+    let matched = true;
+    for (let offset = 0; offset < wanted.length; offset += 1) {
+      const token = tokens[start + offset];
+      if (token.stem !== wanted[offset]) {
+        matched = false;
+        break;
+      }
+      if (offset > 0 && token.breakBefore === "sentence") {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) hits.push(start);
+  }
+  return hits;
+}
+
+/** Index of the first token of the clause containing `index`. */
+function clauseStartIndex(tokens: readonly ClaimToken[], index: number): number {
+  for (let cursor = index; cursor > 0; cursor -= 1) {
+    if (tokens[cursor].breakBefore !== "none") return cursor;
+  }
+  return 0;
+}
+
+/** Index one past the last token of the clause containing `index`. */
+function clauseEndIndex(tokens: readonly ClaimToken[], index: number): number {
+  for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+    if (tokens[cursor].breakBefore !== "none") return cursor;
+  }
+  return tokens.length;
 }
 
 function containsNegation(clause: string): boolean {
@@ -554,32 +667,79 @@ function containsNegation(clause: string): boolean {
   return NEGATION_PHRASES.some((phrase) => normalised.includes(phrase));
 }
 
-/**
- * Referral is matched against the whole SENTENCE, negation only against the
- * clause. The scopes differ because the failure modes differ.
- *
- * A referral naturally lists several things at once — "customers who need
- * penetration testing, compliance certification, or ongoing monitoring should
- * engage a qualified specialist" — and clause splitting on the comma would
- * isolate "compliance certification" from the "who need" that licenses it.
- * Sentence scope is safe here only because REFERRAL_PHRASES are narrow; the
- * earlier version scanned sentences for "engage" and "specialist", which
- * exempted every sentence containing the word "engagement".
- *
- * Negation stays clause-scoped so an earlier denial cannot license a later
- * claim: "We are not a consultancy; we deliver a penetration test."
- */
-function containsReferral(sentence: string): boolean {
-  const normalised = tokenize(sentence).join(" ");
-  return REFERRAL_PHRASES.some((phrase) => normalised.includes(phrase));
+/** Words that may sit between a referral and the items it refers away. */
+const REFERRAL_LIST_GLUE = new Set(["or", "and", "nor", "a", "an", "the"]);
+
+/** Every position where a referral phrase starts, with the length in tokens. */
+function referralSpans(tokens: readonly ClaimToken[]): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+
+  for (const phrase of REFERRAL_PHRASES) {
+    const wanted = phrase.split(" ");
+    for (let start = 0; start + wanted.length <= tokens.length; start += 1) {
+      let matched = true;
+      for (let offset = 0; offset < wanted.length; offset += 1) {
+        if (tokens[start + offset].word !== wanted[offset]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) spans.push({ start, end: start + wanted.length });
+    }
+  }
+  return spans;
 }
 
-function sentenceAround(text: string, index: number): string {
-  const start = Math.max(
-    ...[".", "\n", "!", "?"].map((mark) => text.lastIndexOf(mark, index - 1)),
-  );
-  const rest = text.slice(index).search(/[.\n!?]/);
-  return text.slice(start + 1, rest === -1 ? text.length : index + rest);
+/**
+ * Whether a referral licenses the claim occurring at `claimStart`.
+ *
+ * Two shapes count, and nothing else does:
+ *
+ *   (a) The referral sits in the SAME clause as the claim, which covers
+ *       "penetration testing is out of scope".
+ *   (b) The referral precedes the claim and everything between them is other
+ *       prohibited items and list glue, which covers "customers who need
+ *       penetration testing, compliance certification, or ongoing monitoring
+ *       should engage a qualified specialist" without letting the referral
+ *       reach across into unrelated material.
+ *
+ * The previous version licensed any claim anywhere in a sentence containing a
+ * referral phrase, so "If you need a short answer, your application is secure"
+ * and "Ongoing monitoring is outside the scope; we deliver a penetration test"
+ * both passed. Clause scope is the property; the two shapes are how a genuine
+ * multi-item referral survives it.
+ */
+function referralLicenses(
+  tokens: readonly ClaimToken[],
+  claimStart: number,
+  claimEnd: number,
+  claimTokenIndices: ReadonlySet<number>,
+): boolean {
+  const spans = referralSpans(tokens);
+  if (spans.length === 0) return false;
+
+  const start = clauseStartIndex(tokens, claimStart);
+  const end = clauseEndIndex(tokens, claimEnd - 1);
+
+  for (const span of spans) {
+    // (a) same clause, in either direction.
+    if (span.start >= start && span.end <= end) return true;
+    // (b) earlier referral, separated only by other claims and list glue.
+    if (span.end > claimStart) continue;
+    let bridged = true;
+    for (let cursor = span.end; cursor < claimStart; cursor += 1) {
+      if (tokens[cursor].breakBefore === "sentence") {
+        bridged = false;
+        break;
+      }
+      if (claimTokenIndices.has(cursor)) continue;
+      if (REFERRAL_LIST_GLUE.has(tokens[cursor].word)) continue;
+      bridged = false;
+      break;
+    }
+    if (bridged) return true;
+  }
+  return false;
 }
 
 /**
@@ -592,29 +752,36 @@ function sentenceAround(text: string, index: number): string {
  * a qualified specialist") are required copy, not violations.
  */
 export function findProhibitedClaims(text: string): string[] {
-  // Normalise whitespace so "penetration  test" and "penetration\ntest" cannot
-  // slip past a literal match, while keeping clause punctuation for splitting.
-  const normalised = text.replace(/\s+/g, " ");
-  const lower = normalised.toLowerCase();
+  const tokens = tokenizeClaimText(text);
+  if (tokens.length === 0) return [];
+
+  // Every token belonging to ANY prohibited phrase, so a multi-item referral can
+  // tell "another item it is referring away" from unrelated material.
+  const claimTokenIndices = new Set<number>();
+  const occurrences = new Map<string, number[]>();
+
+  for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
+    const hits = claimOccurrences(tokens, claim);
+    occurrences.set(claim, hits);
+    const length = tokenizeClaimText(claim).length;
+    for (const hit of hits) {
+      for (let offset = 0; offset < length; offset += 1) claimTokenIndices.add(hit + offset);
+    }
+  }
+
   const found: string[] = [];
 
   for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
-    // Word-bounded search, so "is secure" does not fire inside "this is securely
-    // stored" and "pentest" does not fire inside "pentester".
-    const pattern = new RegExp(`(^|[^a-z0-9])${claim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "g");
-    let match = pattern.exec(lower);
-    while (match !== null) {
-      const index = match.index + match[1].length;
-      const clauseStart = Math.max(
-        ...[".", ";", ",", ":", "\u2014", "(", "?", "!"].map((mark) => lower.lastIndexOf(mark, index - 1)),
-      );
-      const clause = lower.slice(clauseStart + 1, index);
-      if (!containsNegation(clause) && !containsReferral(sentenceAround(lower, index))) {
-        found.push(claim);
-        break;
-      }
-      pattern.lastIndex = index + claim.length;
-      match = pattern.exec(lower);
+    const length = tokenizeClaimText(claim).length;
+    for (const start of occurrences.get(claim) ?? []) {
+      const clauseBefore = tokens
+        .slice(clauseStartIndex(tokens, start), start)
+        .map((token) => token.word)
+        .join(" ");
+      if (containsNegation(clauseBefore)) continue;
+      if (referralLicenses(tokens, start, start + length, claimTokenIndices)) continue;
+      found.push(claim);
+      break;
     }
   }
 

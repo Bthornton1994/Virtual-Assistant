@@ -104,7 +104,9 @@ $q$);
 
 select rrv2.expect_refusal(
   'the archive engagement still cannot start a review on its own',
-  'not evidence of ownership',
+  -- v3 generalised the message with the gate: it no longer names archives,
+  -- because it no longer branches on the customer-declared mode.
+  'ownership',
   $q$
   update public.release_rescue_engagements set status = 'auditing'
    where id = 'ffff0000-0000-0000-0000-000000000001';
@@ -115,7 +117,7 @@ $q$);
 
 select rrv2.expect_refusal(
   'a direct insert at auditing with no grant row is refused',
-  'before a repository access grant is recorded',
+  'the frozen scope must name the repository',
   $q$
   set local role authenticated;
   set local request.jwt.claim.sub = 'dddd0000-0000-0000-0000-000000000001';

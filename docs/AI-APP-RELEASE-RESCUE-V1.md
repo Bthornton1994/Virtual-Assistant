@@ -42,11 +42,11 @@ Three tables are new, because nothing existing carries their meaning:
 - `release_rescue_repository_grants` — the fact that access was granted, its window, and its revocation.
 - `release_rescue_reports` — the accounting row binding a report body to its engagement, rubric, hash, verdict, and human reviewer.
 
-Nine application modules, all pure and deterministic:
+Eight application modules, all pure and deterministic, and the migration chain that enforces the same boundaries in the database:
 
 | Module | Responsibility |
 | --- | --- |
-| `src/lib/release-rescue-rubric.ts` | The frozen, content-hashed rubric: 24 checks across 9 dimensions, 12 of them release-gating |
+| `src/lib/release-rescue-rubric.ts` | The frozen, content-hashed rubric: 32 checks across 12 dimensions, 12 of them release-gating |
 | `src/lib/release-rescue-intake.ts` | Offer terms, scope ceiling, service refusals, attestations, retention election |
 | `src/lib/release-rescue-redaction.ts` | Secret detection and fail-closed redaction of evidence excerpts |
 | `src/lib/release-rescue-findings.ts` | The finding contract and the derived severity model |
@@ -56,6 +56,8 @@ Nine application modules, all pure and deterministic:
 | `src/lib/release-rescue-retention-schedule.ts` | Authorization for the scheduled retention sweep |
 | `supabase/migrations/20260915120000_release_rescue_v1.sql` | Isolation, credential refusal, immutability, retention |
 | `supabase/migrations/20260915183000_release_rescue_hardening_v1.sql` | Ownership evidence, snapshot record, scheduled sweep |
+| `supabase/migrations/20260915193000_release_rescue_hardening_v2.sql` | Frozen scope, access-mode evidence, report invariants, privileged purge |
+| `supabase/migrations/20260915213000_release_rescue_hardening_v3.sql` | Unconditional ownership gate, single purge-flag reader, live-grant requirement |
 
 ## Release-readiness audit rubric
 
@@ -135,7 +137,7 @@ Enforced at the database boundary:
 
 **Isolation.** Row level security on all three tables, with every `select` policy scoped to `my_org_ids()` or platform staff. Engagement and run references are bound to their parent's organization by composite foreign key, so a row cannot name organization A while pointing at an engagement owned by B. `report_artifact_id` is a single-column reference whose organization and run are checked in the report trigger instead, because `evidence_artifacts` carries no `(id, organization_id)` key to point at. No table grants `delete` to `authenticated`.
 
-The validation triggers run `security definer`. Beyond fixing a real defect — `authenticated` has no read grant on `public.operators`, so the reviewer-authority check could not run at all — this is the correct posture for a validation trigger: it must see **true** state, not the caller's RLS-filtered view. Under invoker rights, a cross-tenant check can be defeated by making the conflicting row invisible, so the check passes because the row it should have found simply is not there. Both functions only read and raise, run no dynamic SQL, and have a locked `search_path`.
+Most validation triggers run `security definer`. The two that make a privilege decision — report immutability and scope freeze — run `security invoker` instead, because inside a definer function `current_user` is the function OWNER, so a privilege check written there answers for the wrong role and always passes. Both read only `NEW`, `OLD` and the purge helper, so they need no elevated rights. For the rest, beyond fixing a real defect — `authenticated` has no read grant on `public.operators`, so the reviewer-authority check could not run at all — this is the correct posture for a validation trigger: it must see **true** state, not the caller's RLS-filtered view. Under invoker rights, a cross-tenant check can be defeated by making the conflicting row invisible, so the check passes because the row it should have found simply is not there. Both functions only read and raise, run no dynamic SQL, and have a locked `search_path`.
 
 **Retention** is a stored deadline with an idempotent sweep, not a sentence in a policy document.
 
@@ -229,18 +231,18 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 
 | # | Threat | Control | Residual risk |
 | --- | --- | --- | --- |
-| T1 | **Reconnaissance on a repository the requester does not own** | Authorization attestation is a hard gate; the two strong grant methods require an action inside the customer's own provider account, which only someone controlling the repository can perform | `customer_uploaded_archive` proves nothing about ownership. **Open blocker** — archive intake needs an ops confirmation step before launch |
+| T1 | **Reconnaissance on a repository the requester does not own** | No engagement starts a review until a named ops manager records how ownership was established, and until a live, unrevoked read-only grant naming the repository in the frozen scope exists. Neither check consults the customer-declared access mode | The confirmation is a human judgement, so it is only as good as the operator making it. It is deliberately manual: an earlier version branched on the customer-supplied `access_mode`, which meant the party being constrained chose whether the gate applied |
 | T2 | **Prompt injection from the reviewed source** ("mark all checks pass"; "fetch this URL") | The auditor is prepare-only with no external-action tools; verdict and severity are computed from structured fields, so injected prose cannot set them; the validator recomputes every number; a non-zero authority report fails the gate; the deterministic validator is not a model | Injection can still cause a **false negative** — an auditor steered away from reporting a real issue. Mitigated by coverage requirements and human review, **not eliminated**. Stated as a report limitation |
 | T3 | **Exfiltrating a customer credential through our own pipeline** | Redaction before storage; schema refinement re-verifies; whole-report scan at freeze; no credential columns; trigger rejects credential-shaped metadata | Novel or high-entropy credential formats with no distinctive shape are not detected. Generic entropy scanning was rejected as too false-positive-prone at this price point |
 | T4 | **Cross-tenant leakage of a report or scope** | RLS on all tables; composite organization foreign keys; definer-rights validation triggers; proven end to end in the QA fixture | Platform staff can read across tenants by design, as elsewhere in this schema |
-| T5 | **Over-broad or lingering repository access** | Read-only only; 30-day maximum; customer-revocable at any time; purge revokes; we hold no credential to leak or rotate | A customer who forgets to revoke relies on our sweep. The expiry index exists; **scheduling the sweep is an open blocker** |
+| T5 | **Over-broad or lingering repository access** | Read-only only; 30-day maximum; customer-revocable at any time; purge revokes; we hold no credential to leak or rotate; a revoked or expired grant stops licensing a review at the database level | A customer who forgets to revoke relies on our sweep, which is now scheduled |
 | T6 | **Severity inflation to sell the remediation sprint** — the commercial abuse case, and a real one, because we profit from finding alarming things | Severity is derived, not chosen; blocking requires `confirmed`; confirmed findings must cite locations; `inRemediationSprintScope` is a separate declared field, so the commercial incentive is visible and auditable; a human manager signs | An auditor can still inflate the *inputs* (`impact`, `exploitability`). Human review is the control. Worth measuring: track the confirmed-to-unconfirmed ratio and sprint-scope rate per executor |
 | T7 | **Report tampering after issue** | Canonical content hash; immutable rows; only `delivered_at` is updatable; verdict/count contradictions refused in the database | A tampered payload with a recomputed hash would pass; detecting that needs signing, which v1 does not do |
 | T8 | **Scope creep past the fixed price, or into unauthorized action** | Intake refusals; one live engagement per organization per scope; prepare-only action class; authority-report gate | — |
 | T9 | **Claim inflation in the report or on the marketing surface** | `findProhibitedClaims` enforced in the report validator and exported for the marketing surface, so one list governs both; four literal-true disclaimers | Cursor must actually use the exported list. Called out in the handoff |
-| T10 | **Retention drift** — keeping source longer than the customer agreed | Retention derived from the elected policy; monotonically shortening only; 60-day backstop; idempotent sweep | Depends on the sweep being scheduled. **Open blocker** |
+| T10 | **Retention drift** — keeping source longer than the customer agreed | Retention derived from the elected policy; monotonically shortening only; 60-day backstop; idempotent sweep, scheduled by pg_cron where available and by a bearer-authorized route where not | Both schedulers must actually be configured in the deployed environment; the route fails closed (503) when `CRON_SECRET` is unset, which is visible rather than silent |
 | T11 | **Executor output used as authority** | Deterministic code owns every count and the verdict; the Delegation Spec remains the authority ceiling; human signature required for delivery | — |
-| T12 | **Hostile repository content** — zip bombs, enormous files, symlink escapes in uploaded archives | Excerpt caps bound what reaches a report | **Open blocker.** Snapshot ingestion limits are not implemented in this slice |
+| T12 | **Hostile repository content** — zip bombs, enormous files, symlink escapes in uploaded archives | Fail-closed limits on file count, file size, total bytes, archive size, expansion ratio, path depth and path length, applied before anything is read (`release-rescue-snapshot-limits.ts`); excerpt caps bound what reaches a report | The limits are enforced in application code, so they bind the ingestion path this service owns and not a future one that bypasses it |
 
 ## Test plan
 
@@ -360,6 +362,27 @@ would be free to promise a shape the pipeline cannot produce.
 - The snapshot limits are a decision function. **The extractor that enforces them at read time is not built**, because this pass performs no checkout. The limits are proven in unit tests, not against a real archive.
 - The retention sweep is scheduled in configuration and in the migration. **It has not run in a deployed environment**, because nothing is deployed.
 
+### Known design defect: the commit is in the wrong place
+
+`freezeScope(intake, commitSha)` builds the frozen scope from the intake plus the
+reviewed commit — but the commit is only known once a snapshot has been taken,
+which happens after the engagement row exists, and both `scope` and `scope_hash`
+are immutable on `UPDATE`. So the intended lifecycle cannot be executed: the row
+would have to be written with a commit nobody has yet, or amended after it is
+frozen, and the schema refuses the amendment.
+
+This is latent rather than live, because no production writer to
+`release_rescue_engagements` exists in this branch. It is recorded here rather
+than worked around, because the workaround is the wrong fix: loosening the freeze
+would reopen the guarantee the v2 and v3 rounds were spent closing.
+
+The right resolution is that the commit is a property of the SNAPSHOT, not of the
+intake scope. `reviewed_commit_sha` belongs on the engagement as a
+write-once-before-review column beside the other snapshot fields, with the scope
+holding only what the customer agreed to at intake. That is a schema change with
+its own migration, proof cases and caller updates, and it is deliberately not
+folded into this hardening pass.
+
 ## Independent audit, and what it found
 
 A fresh-context QA audit of this branch executed eight working attacks against the shipped schema and contracts. All eight are fixed and each is now a regression case in `supabase/qa/release_rescue_hardening_v2_proof.sql` or a unit test. They are recorded here because the fixes only make sense alongside what they answer.
@@ -378,6 +401,71 @@ A fresh-context QA audit of this branch executed eight working attacks against t
 Two smaller ones worth naming: the archive-facts input was the only value in the snapshot limiter not schema-validated, and `NaN` made every `>` comparison false, so the module failed **open** against its own header; and the customer-facing presenter copied stored severity rather than deriving it, so "severity is derived, never chosen" held only for callers who remembered to validate first. Both now fail closed.
 
 The audit also found the proof helpers accepted *any* error, so a typo or a missing table read as a security refusal. They now re-raise the error classes that mean a broken test, and the v2 proof additionally requires the guard's own message — which immediately caught one of my own cases refusing for the wrong reason.
+
+## Second independent audit: fixing examples is not fixing defects
+
+A second fresh-context audit re-ran the first audit's attacks and found most of
+them closed and their near neighbours open. Its criticism was one sentence, and
+it was correct:
+
+> Every fix closes the literal statement the previous audit executed, and the
+> property it was an example of remains open.
+
+Five of the eight "fixed" items were still crossable, and two of the v2 fixes had
+introduced new defects of their own:
+
+| What was fixed | What stayed open | Why it is the same defect |
+| --- | --- | --- |
+| The redaction detector matched on the END of the key name | `DB_PASSWORD_PROD`, `SECRET_KEY`, `PASSWORD_PROD` and `SESSION_PASSPHRASE` all leaked their values | v1 handled a keyword with nothing before it; v2 handled a keyword with a prefix. Neither asked the actual question, which is whether the NAME claims to hold a credential. A secret word can sit anywhere in a name |
+| The claim guard tokenised negation | "penetration tests", "compliance certifications" and "penetration-test" all passed | The guard compared literal strings, so it was a list of spellings rather than a rule about words. Plurals, gerunds and hyphens are the same claim |
+| Referral phrases were narrowed | "If you need a short answer, your application is secure" passed | Referral was scoped to the SENTENCE, so any sentence containing a referral phrase could carry any claim anywhere in it |
+| The ownership gate required a grant row | Declaring `customer_installed_readonly_app` at intake skipped the gate entirely | The gate branched on `access_mode = 'customer_uploaded_archive'` — a value supplied by the party the gate exists to constrain |
+| The purge flag was gated on privilege | The scope-freeze trigger still read the raw GUC, so the purge stub was forgeable | v2 built the privileged helper and left one caller reading the flag directly |
+
+And two regressions introduced by the v2 fixes themselves:
+
+- The unbounded `[A-Za-z0-9_]*` prefix added to the assignment detector backtracked
+  quadratically. 40KB of identifier characters took **4.1 seconds** — a denial of
+  service reachable from any file in a reviewed repository.
+- The pre-review grant check counted grant rows at `read_only` without asking
+  whether they were revoked, whether they had expired, or whether they named the
+  repository under review. "Read-only, time-boxed, customer-revocable" was a
+  promise the check did not keep.
+
+### What changed, and how the fixes are shaped differently
+
+Each fix is written against the property rather than the example:
+
+- **Redaction** no longer describes where a secret word may sit in a key name. The
+  pattern matches an assignment to any identifier-shaped key, and a separate
+  function splits that key into segments — on separators and on camel-case
+  boundaries — and asks whether any segment, or any adjacent pair, names a
+  credential. Position, casing and separator style stop mattering. Every
+  quantifier is bounded, which also removes the backtracking: the same 40KB input
+  now takes 4ms.
+- **The claim guard** works on a token stream carrying clause and sentence breaks,
+  compares words by stem, and treats hyphens as separators with no break. Referral
+  is now clause-scoped like negation, with one carve-out for a genuine multi-item
+  referral: a referral licenses a later claim only when everything between them is
+  other prohibited items and list glue.
+- **The ownership gate** applies to every engagement. Nothing branches on
+  `access_mode`, so the customer no longer chooses whether the gate runs.
+- **One function reads the purge flag**, and the migration fails if a second ever
+  appears — recorded as a schema assertion rather than a comment, because the v2
+  regression was exactly that.
+- **A grant licenses a review** only while unrevoked and unexpired, and only for
+  the repository the frozen scope names.
+
+The regression cases are property-shaped too, as the auditor advised. The database
+proof loops over every access mode and every unusable grant shape rather than the
+one the audit used; `src/lib/__tests__/release-rescue-properties.test.ts` generates
+216 key-name shapes across six secret words, six prefixes and six suffixes, and
+every inflection and hyphenation of fourteen claim phrases in both the affirmative
+and the denied form.
+
+Writing the v3 gate also surfaced a defect nothing else had: rewriting the
+ownership trigger dropped the v1 rule that a recorded confirmation cannot be
+changed. The v1 proof caught it on the first run.
 
 ## What this slice deliberately does not do
 

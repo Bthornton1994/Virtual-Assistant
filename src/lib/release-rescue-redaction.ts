@@ -38,6 +38,7 @@ export type SecretDetectorName =
   | "json_web_token"
   | "credential_in_url"
   | "credential_in_query"
+  | "bearer_credential"
   | "assigned_secret";
 
 type SecretDetector = {
@@ -54,6 +55,13 @@ type SecretDetector = {
    * first group that actually matched is the one replaced.
    */
   readonly captureGroups?: readonly number[];
+  /**
+   * When set, the match counts as a secret only if the named capture group's
+   * text satisfies this predicate. Used by `assigned_secret` to decide from the
+   * KEY name rather than from a keyword baked into the pattern, which is what
+   * lets the key be examined as a whole token instead of as a prefix.
+   */
+  readonly keyGuard?: { readonly group: number; readonly test: (key: string) => boolean };
 };
 
 /**
@@ -80,6 +88,92 @@ function isNonSecretValue(value: string): boolean {
   const trimmed = value.trim().replace(/^["'`]|["'`]$/g, "");
   if (trimmed.length === 0) return true;
   return NON_SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+/**
+ * Key-name segments that name a credential on their own.
+ *
+ * Matched as whole segments, never as substrings: "tokenizer" is not "token",
+ * and "bypass" is not "pass". A substring match here would hard-fail reports
+ * over ordinary prose, and this scanner blocks delivery when it fires.
+ */
+const SECRET_KEY_WORDS: ReadonlySet<string> = new Set([
+  "password",
+  "passwords",
+  "passwd",
+  "pwd",
+  "passphrase",
+  "passphrases",
+  "secret",
+  "secrets",
+  "token",
+  "tokens",
+  "apikey",
+  "apikeys",
+  "credential",
+  "credentials",
+  "creds",
+  "authorization",
+  "bearer",
+  "privatekey",
+  "dsn",
+  "salt",
+]);
+
+/** Key names that are credential-shaped only when they are the WHOLE name. */
+const SECRET_WHOLE_KEYS: ReadonlySet<string> = new Set(["key", "keys", "pass", "auth", "pat"]);
+
+/** Adjacent segment pairs that name a credential together but not apart. */
+const SECRET_KEY_PHRASES: ReadonlySet<string> = new Set([
+  "api key",
+  "api keys",
+  "access key",
+  "access keys",
+  "secret key",
+  "private key",
+  "signing key",
+  "encryption key",
+  "session key",
+  "master key",
+  "shared key",
+  "account key",
+  "security key",
+  "auth key",
+  "service role",
+  "connection string",
+  "service account",
+]);
+
+/**
+ * Splits a key name into lowercase segments on separators AND camel-case
+ * boundaries, so `DB_PASSWORD_PROD`, `dbPasswordProd` and `db.password.prod`
+ * all reduce to the same three words.
+ */
+export function keyNameSegments(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter((segment) => segment.length > 0)
+    .map((segment) => segment.toLowerCase());
+}
+
+/**
+ * True when a key name claims to hold a credential, wherever the claim sits.
+ *
+ * This is the property the detector is really about: a name is secret-shaped if
+ * any of its parts names a secret. Prefixes, suffixes, infixes, casing and
+ * separator style are all irrelevant, which is why none of them appears here.
+ */
+export function keyLooksSecret(key: string): boolean {
+  const segments = keyNameSegments(key);
+  if (segments.length === 0) return false;
+  if (segments.length === 1 && SECRET_WHOLE_KEYS.has(segments[0])) return true;
+  if (segments.some((segment) => SECRET_KEY_WORDS.has(segment))) return true;
+  for (let index = 0; index + 1 < segments.length; index += 1) {
+    if (SECRET_KEY_PHRASES.has(`${segments[index]} ${segments[index + 1]}`)) return true;
+  }
+  return false;
 }
 
 // Ordered most-specific first. A vendor-shaped token should be named by its
@@ -121,21 +215,35 @@ const DETECTORS: readonly SecretDetector[] = [
     captureGroup: 2,
   },
   {
-    // Matched on the END of the key name, not on a word boundary before it.
+    // A bearer or basic credential, with or without an Authorization key.
     //
-    // The previous pattern required \b before the keyword, and \b does not match
-    // between "_" and a letter. So NEXTAUTH_SECRET, AWS_SECRET_ACCESS_KEY,
-    // DB_PASSWORD_PROD and every other prefixed environment variable defeated it
-    // \u2014 which is exactly the shape of a .env file, the single most likely thing a
-    // "secrets committed to the repository" finding wants to quote.
+    // `Authorization: Bearer <token>` defeats the assignment detector because
+    // the value the assignment sees is the word "Bearer", not the credential.
+    name: "bearer_credential",
+    pattern: /\b(?:bearer|basic)\s+([A-Za-z0-9._~+/=-]{16,})/gi,
+    captureGroup: 1,
+  },
+  {
+    // Decided from the WHOLE key name, not from a keyword glued to the pattern.
     //
-    // An optional [A-Za-z0-9_]* prefix absorbs the namespace, and the value is
-    // captured either from a quoted string (which may contain spaces) or from a
-    // bare token.
+    // Two earlier versions failed the same way in opposite directions. The
+    // first required a word boundary before the keyword, so every prefixed
+    // variable (NEXTAUTH_SECRET, AWS_SECRET_ACCESS_KEY) escaped. The second
+    // added an optional prefix, so every SUFFIXED one still escaped
+    // (DB_PASSWORD_PROD, SESSION_PASSPHRASE) — and the unbounded prefix
+    // backtracked quadratically on long identifier runs.
+    //
+    // Both were the same mistake: the pattern tried to describe where in a name
+    // a secret word may sit. It can sit anywhere. So the pattern now matches an
+    // assignment to ANY identifier-shaped key, and `keyLooksSecret` decides by
+    // splitting that key into segments and asking whether any segment — or any
+    // adjacent pair — names a credential. Position stops mattering, and every
+    // quantifier is bounded.
     name: "assigned_secret",
     pattern:
-      /[A-Za-z0-9_]*(?:passwords?|passwd|pwd|secrets?|api[-_]?keys?|apikey|access[-_]?keys?|auth[-_]?tokens?|refresh[-_]?tokens?|id[-_]?tokens?|tokens?|client[-_]?secrets?|private[-_]?keys?|service[-_]?role|bearer|credentials?|session[-_]?keys?|signing[-_]?keys?|encryption[-_]?keys?|dsn|connection[-_]?strings?)\s*[:=]\s*(?:(["'`])([^"'`\n]{6,})\1|([^\s"'`,;)}\]]{8,}))/gi,
-    captureGroups: [2, 3],
+      /(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_.-]{0,80})["'`]?\s*[:=]>?\s*(?:(["'`])([^"'`\n]{6,})\2|([^\s"'`,;)}\]]{8,}))/g,
+    captureGroups: [3, 4],
+    keyGuard: { group: 1, test: keyLooksSecret },
   },
 ];
 
@@ -173,6 +281,10 @@ export function redactSecrets(input: string): RedactionResult {
     // lastIndex, which would make this function's result depend on call order.
     const pattern = new RegExp(detector.pattern.source, detector.pattern.flags);
     working = working.replace(pattern, (match, ...groups) => {
+      if (detector.keyGuard) {
+        const key = groups[detector.keyGuard.group - 1];
+        if (typeof key !== "string" || !detector.keyGuard.test(key)) return match;
+      }
       const candidates =
         detector.captureGroups ?? (detector.captureGroup === undefined ? [] : [detector.captureGroup]);
       if (candidates.length > 0) {

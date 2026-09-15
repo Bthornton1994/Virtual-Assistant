@@ -62,11 +62,24 @@ insert into public.release_rescue_engagements
   (id, organization_id, scope, scope_hash, retention_policy, retention_days, access_mode)
 values
   ('cccc0000-0000-0000-0000-000000000001', 'bbbb0000-0000-0000-0000-000000000001',
-   '{"repositoryRef":"someone/else"}'::jsonb, repeat('1', 64), 'minimum_7_day', 7, 'customer_uploaded_archive'),
+   '{"repository":{"repositoryRef":"someone/else","accessMode":"customer_uploaded_archive"}}'::jsonb,
+   repeat('1', 64), 'minimum_7_day', 7, 'customer_uploaded_archive'),
   ('cccc0000-0000-0000-0000-000000000002', 'bbbb0000-0000-0000-0000-000000000001',
-   '{"repositoryRef":"acme/theirs"}'::jsonb, repeat('2', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app'),
+   '{"repository":{"repositoryRef":"acme/theirs","accessMode":"customer_installed_readonly_app"}}'::jsonb,
+   repeat('2', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app'),
   ('cccc0000-0000-0000-0000-000000000003', 'bbbb0000-0000-0000-0000-000000000001',
-   '{"repositoryRef":"acme/unknown"}'::jsonb, repeat('3', 64), 'minimum_7_day', 7, null);
+   '{"repository":{"repositoryRef":"acme/unknown"}}'::jsonb,
+   repeat('3', 64), 'minimum_7_day', 7, null);
+
+-- Engagement 3 carries its ownership confirmation from the start, so the only
+-- thing it is missing is the access mode. Without this the ownership gate (which
+-- hardening v3 applies to every engagement) would fire first and the access-mode
+-- case below would be asserting the wrong refusal.
+update public.release_rescue_engagements
+   set ownership_confirmation = 'existing_contracted_customer_of_record',
+       ownership_confirmed_by = 'aaaa0000-0000-0000-0000-000000000002',
+       ownership_confirmation_note = 'Master services agreement on file, signed 2026-01-08.'
+ where id = 'cccc0000-0000-0000-0000-000000000003';
 
 -- A recorded read-only grant, which hardening v2 now requires before any review
 -- may start. The grant is the evidence that the customer could act on the
@@ -157,9 +170,27 @@ select rrh.expect_error('a recorded ownership confirmation cannot be changed', $
 $q$);
 
 \echo ''
-\echo '=== 2. Modes that do demonstrate control are not obstructed ==='
+\echo '=== 2. Ownership evidence is required of EVERY mode, not only of archives ==='
 
-select rrh.expect_ok('an app-install engagement starts its review without extra confirmation', $q$
+-- Hardening v3 generalised this gate. It previously branched on
+-- `access_mode = 'customer_uploaded_archive'`, a value the customer supplies at
+-- intake, so declaring any other mode skipped the ownership requirement entirely.
+-- The gate now applies to every engagement and nothing branches on the label.
+
+select rrh.expect_error('an app-install engagement cannot start a review without ownership evidence either', $q$
+  update public.release_rescue_engagements set status = 'auditing'
+   where id = 'cccc0000-0000-0000-0000-000000000002';
+$q$);
+
+select rrh.expect_ok('an ops manager records ownership for the app-install engagement', $q$
+  update public.release_rescue_engagements
+     set ownership_confirmation = 'provider_ownership_verified_by_operator',
+         ownership_confirmed_by = 'aaaa0000-0000-0000-0000-000000000002',
+         ownership_confirmation_note = 'Repository owner confirmed against the GitHub organisation record.'
+   where id = 'cccc0000-0000-0000-0000-000000000002';
+$q$);
+
+select rrh.expect_ok('and only then does its review start', $q$
   update public.release_rescue_engagements set status = 'auditing'
    where id = 'cccc0000-0000-0000-0000-000000000002';
 $q$);
