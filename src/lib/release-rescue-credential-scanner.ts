@@ -1,4 +1,11 @@
 import { keyLooksSecret } from "@/lib/release-rescue-redaction-keys";
+import {
+  classifyAssignment,
+  strongerClassification,
+  tailReadsAsSentence,
+  valueShape,
+  type SecretClassification,
+} from "@/lib/release-rescue-secret-classification";
 
 // A bounded, linear scanner for credential assignments.
 //
@@ -94,8 +101,20 @@ export function isNonSecretValue(value: string): boolean {
   return NON_SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
-/** A half-open span of the input that holds a credential. */
-export type CredentialSpan = { start: number; end: number; form: CredentialForm };
+/**
+ * A half-open span of the input that holds something worth acting on, and HOW
+ * confident we are.
+ *
+ * The classification is the part that was missing. A span used to mean "this is
+ * a credential, refuse the report"; it now means "this is what we found, and
+ * here is what that entitles the pipeline to do".
+ */
+export type CredentialSpan = {
+  start: number;
+  end: number;
+  form: CredentialForm;
+  classification: SecretClassification;
+};
 
 export type CredentialForm =
   | "operator_assignment"
@@ -106,7 +125,10 @@ export type CredentialForm =
   | "xml_element"
   | "netrc_line"
   | "delimited_column"
-  | "block_scalar";
+  | "block_scalar"
+  | "argument_list"
+  | "attached_flag"
+  | "positional_record";
 
 const WORD = /[A-Za-z0-9_$.\-]/;
 const QUOTES = new Set(['"', "'", "`"]);
@@ -176,16 +198,31 @@ function valueSpan(text: string, from: number): { start: number; end: number } |
   return index > begin ? { start: begin, end: index } : null;
 }
 
+/**
+ * Records a hit with its classification, or drops it when it is plain prose.
+ *
+ * `sensitive_prose` is not recorded at all: the report is ABOUT security, and a
+ * finding that says "the password rotation policy is weak" must reach the
+ * customer exactly as written. Only the two classifications that carry authority
+ * become spans.
+ */
 function pushSpan(
   spans: CredentialSpan[],
   text: string,
   span: { start: number; end: number } | null,
   form: CredentialForm,
+  options: { assumeStructured?: boolean } = {},
 ): void {
   if (!span) return;
   const value = text.slice(span.start, span.end);
-  if (isNonSecretValue(value)) return;
-  spans.push({ start: span.start, end: span.end, form });
+
+  // A structured format (a `.pgpass` line, a CSV column, an argument list) is
+  // its own evidence of an assignment, so the sentence heuristic does not apply.
+  const tailIsSentence = options.assumeStructured === true ? false : tailReadsAsSentence(text, span.end);
+  const classification = classifyAssignment(valueShape(value, isNonSecretValue), tailIsSentence);
+  if (classification === "sensitive_prose") return;
+
+  spans.push({ start: span.start, end: span.end, form, classification });
 }
 
 /**
@@ -222,6 +259,18 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
     // and `curl -u user:pass` both survived the first version of this scanner.
     if (word.text.startsWith("-")) {
       const flag = word.text.replace(/^-+/, "");
+
+      // F3b. An ATTACHED value: `mysql -pSECRET`, `-uroot`. The tokenizer keeps
+      // `-pMyS3cretPass` as one word, so the credential is inside the flag token
+      // itself rather than after it. Only single-letter flags attach this way.
+      const attached = /^([a-zA-Z])(.{4,})$/.exec(flag);
+      if (attached && CREDENTIAL_FLAGS.has(attached[1].toLowerCase()) && !word.text.startsWith("--")) {
+        const valueStart = word.start + word.text.length - attached[2].length;
+        pushSpan(spans, scanned, { start: valueStart, end: word.end }, "attached_flag", {
+          assumeStructured: true,
+        });
+        continue;
+      }
       // Lowercased ONLY for the fixed-flag lookup. `keyLooksSecret` splits on
       // camel-case boundaries, so lowercasing first destroys them and
       // `--dbPasswordProd` reads as one meaningless segment. Found by the
@@ -301,6 +350,19 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
       continue;
     }
 
+    // F10. An argument list: `define('DB_PASSWORD', 'secret')`, the canonical
+    //      wp-config.php shape. The key arrives QUOTED and the value is the next
+    //      quoted argument, separated by a comma rather than by an operator — so
+    //      neither the operator form nor the quoted-after-key form applies, and
+    //      F5 does not either because there is no `value=` attribute.
+    if (isQuotedKey && next !== -1 && scanned[next] === ",") {
+      const argument = valueSpan(scanned, next + 1);
+      if (argument) {
+        pushSpan(spans, scanned, argument, "argument_list", { assumeStructured: true });
+        continue;
+      }
+    }
+
     // F5. An XML attribute pair: `name="jdbc.password" value="x"`.
     //     The key arrives as the CONTENTS of one attribute and the secret as the
     //     contents of a later one in the same tag.
@@ -334,12 +396,25 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
   for (const line of text.split("\n")) {
     const lower = line.toLowerCase();
 
+    // F11. A positional credential record: `.pgpass` is
+    //      `host:port:database:user:password` with the secret in the last field
+    //      and no key name anywhere on the line. No key-driven form can see it,
+    //      so the FORMAT is the evidence: five colon-separated fields whose
+    //      second is a port number.
+    const pgpass = /^([^:\s]+):(\d{1,5}):([^:]*):([^:]*):(.+)$/.exec(line.trim());
+    if (pgpass && pgpass[5].length >= 4) {
+      const valueStart = offset + line.length - pgpass[5].length;
+      pushSpan(spans, text, { start: valueStart, end: offset + line.length }, "positional_record", {
+        assumeStructured: true,
+      });
+    }
+
     // F7. `.netrc`: `machine host login user password secret`.
     if (/\bmachine\b/.test(lower) || /\blogin\b/.test(lower)) {
       const marker = /\b(password|passwd|account)\b[ \t]+/i.exec(line);
       if (marker) {
         const from = offset + marker.index + marker[0].length;
-        pushSpan(spans, text, valueSpan(text, from), "netrc_line");
+        pushSpan(spans, text, valueSpan(text, from), "netrc_line", { assumeStructured: true });
       }
     }
 
@@ -352,7 +427,7 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
       for (const [column, field] of line.split(delimiter).entries()) {
         if (secretColumns.includes(column)) {
           const begin = cursor + (field.length - field.trimStart().length);
-          pushSpan(spans, text, { start: begin, end: cursor + field.length }, "delimited_column");
+          pushSpan(spans, text, { start: begin, end: cursor + field.length }, "delimited_column", { assumeStructured: true });
         }
         cursor += field.length + delimiter.length;
       }

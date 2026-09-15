@@ -19,6 +19,11 @@ import {
 } from "@/lib/release-rescue-intake";
 import { checkReportFieldCoverage } from "@/lib/release-rescue-field-policy";
 import {
+  blocksDelivery,
+  requiresHumanClearance,
+  type SecretClassification,
+} from "@/lib/release-rescue-secret-classification";
+import {
   FINDING_SEVERITIES,
   computeFindingBlocking,
   computeFindingSeverity,
@@ -160,6 +165,23 @@ export const reviewedBySchema = z
   })
   .strict();
 
+/**
+ * A named human's record that they looked at a held span and decided.
+ *
+ * The clearance lives IN the artifact, so it is hashed with everything else and
+ * a delivered report carries the evidence of who released it. Clearing a hold is
+ * an accountable act, not a flag someone flips on the way past.
+ */
+export const clearedSecretHoldSchema = z
+  .object({
+    path: identifierString.max(300),
+    clearedBy: identifierString.max(100),
+    clearedAt: isoDateTimeSchema,
+    /** Why it was safe. Free text, and itself subject to the field policy. */
+    rationale: nonEmptyString.max(1000),
+  })
+  .strict();
+
 export const releaseRescueReportV1Schema = z
   .object({
     schemaVersion: z.literal(RELEASE_RESCUE_REPORT_SCHEMA_VERSION),
@@ -195,6 +217,12 @@ export const releaseRescueReportV1Schema = z
     /** The auditor's own account of external actions taken. Any non-zero entry fails the gate. */
     authorityReport: authorityReportSchema,
     preparedBy: preparedBySchema,
+    /**
+     * Holds a human has cleared. Empty by default: an ambiguous candidate is
+     * held until somebody records a decision, so the safe state is the one that
+     * requires an action rather than the one that requires remembering.
+     */
+    clearedSecretHolds: z.array(clearedSecretHoldSchema).max(50),
     reviewedBy: reviewedBySchema.nullable(),
     generatedAt: isoDateTimeSchema,
   })
@@ -365,6 +393,7 @@ export type AssembleReportInput = {
   limitations: string[];
   authorityReport: z.infer<typeof authorityReportSchema>;
   preparedBy: z.infer<typeof preparedBySchema>;
+  clearedSecretHolds?: z.infer<typeof clearedSecretHoldSchema>[];
   reviewedBy: z.infer<typeof reviewedBySchema> | null;
   generatedAt: string;
 };
@@ -410,6 +439,7 @@ export function assembleReleaseRescueReport(input: AssembleReportInput): Release
     },
     authorityReport: input.authorityReport,
     preparedBy: input.preparedBy,
+    clearedSecretHolds: input.clearedSecretHolds ?? [],
     reviewedBy: input.reviewedBy,
     generatedAt: input.generatedAt,
   };
@@ -601,9 +631,26 @@ export function validateReleaseRescueReport(candidate: unknown): ValidationResul
   }
 
   // --- content safety ---
+  //
+  // Three outcomes, not two. A boolean "contains something secret-shaped" was
+  // wrong in both directions at once: `DB_PASS=pr0d-Xk92mQvn7Lz` was not
+  // detected and shipped, while "Password: rotation policy is weak" — the
+  // ordinary wording of a real finding — hard-failed the deliverable.
+  //
+  //   credential_evidence         refuses the report outright, as before.
+  //   ambiguous_secret_candidate  is redacted for safety and HELD: not a
+  //                               validation failure, but the delivery gate
+  //                               refuses until a named human clears it.
+  //   sensitive_prose             never reaches here; it is not a hit at all.
   const secretHits = scanForSecrets(report);
   for (const hit of secretHits) {
-    hardFailures.push(`Unredacted secret material at ${hit.path} (${hit.detectors.join(", ")}).`);
+    if (blocksDelivery(hit.classification)) {
+      hardFailures.push(`Unredacted secret material at ${hit.path} (${hit.detectors.join(", ")}).`);
+    } else {
+      warnings.push(
+        `Possible secret material at ${hit.path} (${hit.detectors.join(", ")}). Held for human review before delivery.`,
+      );
+    }
   }
 
   // Field coverage, not a hand-written list of fields.
@@ -655,6 +702,31 @@ export type DeliveryGate = {
  * AI-drafted report going to a paying customer with no named reviewer is exactly
  * the completion theater the product is supposed to refuse.
  */
+/**
+ * Every ambiguous secret candidate in the report that no human has cleared.
+ *
+ * Exported so the customer-facing view can say WHY a report is held, and so a
+ * reviewer's console can list exactly what to look at.
+ */
+export function pendingSecretHolds(report: ReleaseRescueReportV1): SecretHold[] {
+  const cleared = new Set(report.clearedSecretHolds.map((hold) => hold.path));
+  return scanForSecrets(report)
+    .filter((hit) => requiresHumanClearance(hit.classification))
+    .filter((hit) => !cleared.has(hit.path))
+    .map((hit) => ({
+      path: hit.path,
+      classification: hit.classification,
+      reason:
+        "The scanner could not tell this apart from ordinary security prose. It has been redacted and needs a human decision.",
+    }));
+}
+
+export type SecretHold = {
+  path: string;
+  classification: SecretClassification;
+  reason: string;
+};
+
 export function releaseRescueDeliveryGate(
   report: ReleaseRescueReportV1,
   validation: ValidationResult<ReleaseRescueReportMetrics>,
@@ -669,6 +741,20 @@ export function releaseRescueDeliveryGate(
   }
   if (report.limitations.length === 0) {
     blockers.push("The report states no limitations.");
+  }
+
+  // Ambiguous secret candidates are held, not waved through.
+  //
+  // This is what stops the three-way classification becoming a way to ship the
+  // uncertain cases: an item we could not confidently call prose is redacted AND
+  // refused at the gate until a named reviewer records that they looked at it.
+  // The customer-visible reason is carried on the report itself, so a held
+  // report explains its own hold rather than simply failing to arrive.
+  const holds = pendingSecretHolds(report);
+  for (const hold of holds) {
+    blockers.push(
+      `Possible secret material at ${hold.path} is held for human review. A named reviewer must clear it before delivery.`,
+    );
   }
   if (report.preparedBy.executorKind === "agent" && report.reviewedBy === null) {
     blockers.push("An agent-prepared report may never be delivered without human review.");

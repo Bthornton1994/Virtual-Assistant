@@ -26,8 +26,15 @@ import {
   isNonSecretValue,
   MAX_SCAN_LENGTH,
 } from "@/lib/release-rescue-credential-scanner";
+import {
+  blocksDelivery,
+  requiresHumanClearance,
+  strongerClassification,
+  type SecretClassification,
+} from "@/lib/release-rescue-secret-classification";
 
 export { keyLooksSecret, keyNameSegments, MAX_SCAN_LENGTH };
+export { blocksDelivery, requiresHumanClearance, type SecretClassification };
 
 /** Excerpts are proof of a finding, not a copy of the file. */
 export const MAX_EXCERPT_LENGTH = 480;
@@ -142,6 +149,14 @@ export type SecretDetection = {
 
 export type RedactionResult = {
   redacted: string;
+  /**
+   * The strongest classification found, or null when nothing was found.
+   *
+   * `credential_evidence` refuses a delivery. `ambiguous_secret_candidate`
+   * redacts and holds for human clearance. Ordinary security prose produces no
+   * finding at all and is returned untouched.
+   */
+  classification: SecretClassification | null;
   detections: SecretDetection[];
   /** True when anything was replaced. */
   hadSecrets: boolean;
@@ -167,6 +182,10 @@ function placeholderFor(name: SecretDetectorName): string {
 export function redactSecrets(input: string): RedactionResult {
   let working = input;
   const detections: SecretDetection[] = [];
+  let classification: SecretClassification | null = null;
+  const record = (found: SecretClassification) => {
+    classification = classification === null ? found : strongerClassification(classification, found);
+  };
 
   for (const detector of DETECTORS) {
     let count = 0;
@@ -193,7 +212,13 @@ export function redactSecrets(input: string): RedactionResult {
       count += 1;
       return placeholderFor(detector.name);
     });
-    if (count > 0) detections.push({ detector: detector.name, count });
+    if (count > 0) {
+      detections.push({ detector: detector.name, count });
+      // A vendor pattern recognises the VALUE, not just its surroundings. That
+      // is the strongest evidence there is: `ghp_…` is a GitHub token wherever
+      // it appears, including inside a sentence.
+      record("credential_evidence");
+    }
   }
 
   // The assignment scanner runs AFTER the vendor detectors, deliberately.
@@ -220,6 +245,7 @@ export function redactSecrets(input: string): RedactionResult {
       pieces.push(working.slice(cursor, span.start), placeholderFor("assigned_secret"));
       cursor = span.end;
       assigned += 1;
+      record(span.classification);
     }
     pieces.push(working.slice(cursor));
 
@@ -228,7 +254,12 @@ export function redactSecrets(input: string): RedactionResult {
   }
 
 
-  return { redacted: working, detections, hadSecrets: detections.length > 0 };
+  return {
+    redacted: working,
+    detections,
+    classification,
+    hadSecrets: detections.length > 0,
+  };
 }
 
 /** True when `text` still holds something credential-shaped. */
@@ -263,7 +294,12 @@ export function prepareExcerpt(raw: string, maxLength: number = MAX_EXCERPT_LENG
   };
 }
 
-export type ExcerptRejection = { path: string; detectors: SecretDetectorName[] };
+export type ExcerptRejection = {
+  path: string;
+  detectors: SecretDetectorName[];
+  /** What this entitles the pipeline to do. See release-rescue-secret-classification. */
+  classification: SecretClassification;
+};
 
 /**
  * Walks a JSON-shaped value and reports every string still holding a secret.
@@ -277,8 +313,14 @@ export type ExcerptRejection = { path: string; detectors: SecretDetectorName[] }
 export function scanForSecrets(value: unknown, path = "$"): ExcerptRejection[] {
   if (typeof value === "string") {
     const result = redactSecrets(value);
-    if (!result.hadSecrets) return [];
-    return [{ path, detectors: result.detections.map((detection) => detection.detector) }];
+    if (!result.hadSecrets || result.classification === null) return [];
+    return [
+      {
+        path,
+        detectors: result.detections.map((detection) => detection.detector),
+        classification: result.classification,
+      },
+    ];
   }
   if (Array.isArray(value)) {
     return value.flatMap((entry, index) => scanForSecrets(entry, `${path}[${index}]`));

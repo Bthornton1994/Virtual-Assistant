@@ -7,8 +7,19 @@
 // style are all irrelevant, which is why none of them appears here.
 //
 // Segments, never substrings. A substring match would make "bypass" a password
-// and "tokenizer" a token, and over-redaction is not free here: a detected
-// credential hard-fails a report, so a false positive blocks a delivery.
+// and "tokenizer" a token.
+//
+// A fourth audit showed that reasoning had been applied inconsistently. `pass`
+// and `pw` were confined to a "whole key only" set, and the stated reason was
+// the very false positive that SEGMENT matching already prevents:
+// `keyNameSegments("bypass")` is `["bypass"]`, which never equals `"pass"`. So
+// the restriction bought nothing and cost `DB_PASS`, `SMTP_PASS` and `ADMIN_PW`
+// — some of the most common credential variable names there are.
+//
+// The lesson generalises past those three names: this list must be closed under
+// the ABBREVIATIONS people actually type, not just the full words, and every
+// entry must be reachable in every affix position. `release-rescue-scanner`
+// tests generate the cross product rather than listing examples.
 
 /**
  * Key-name segments that name a credential on their own.
@@ -18,6 +29,7 @@
  * over ordinary prose, and this scanner blocks delivery when it fires.
  */
 const SECRET_KEY_WORDS: ReadonlySet<string> = new Set([
+  // Full words.
   "password",
   "passwords",
   "passwd",
@@ -38,30 +50,77 @@ const SECRET_KEY_WORDS: ReadonlySet<string> = new Set([
   "privatekey",
   "dsn",
   "salt",
+  // Abbreviations. Each one is a segment, so `bypass` and `compass` are still
+  // untouched; only a name that has `pass` as its OWN part matches.
+  "pass",
+  "passes",
+  "pw",
+  "pwds",
+  "psw",
+  "pword",
+  "secrets",
+  "sec",
+  "tok",
+  "apikeys",
+  "apisecret",
+  "accesskey",
+  "secretkey",
+  "privkey",
+  "authtoken",
+  "sessionkey",
+  "signingkey",
+  "clientsecret",
+  "connectionstring",
+  "cert",
+  "certs",
+  "keystore",
+  "keyfile",
+  "pem",
+  "pgpass",
 ]);
 
-/** Key names that are credential-shaped only when they are the WHOLE name. */
-const SECRET_WHOLE_KEYS: ReadonlySet<string> = new Set(["key", "keys", "pass", "auth", "pat"]);
+/**
+ * Key names that are credential-shaped only when they are the WHOLE name.
+ *
+ * `key` and `auth` stay here: `cacheKey`, `sortKey` and `authProvider` are
+ * ordinary and common. `pass` and `pw` moved OUT of this set into the segment
+ * list above, because a segment match already distinguishes them from `bypass`.
+ */
+const SECRET_WHOLE_KEYS: ReadonlySet<string> = new Set(["key", "keys", "auth", "pat", "pk"]);
 
-/** Adjacent segment pairs that name a credential together but not apart. */
+/**
+ * Adjacent segment pairs that name a credential together but not apart.
+ *
+ * GENERATED from a qualifier set and a carrier set rather than listed, because
+ * listing them is how `AUTH_HEADER` was missed: `auth` alone is too broad
+ * (`authProvider`), `header` alone is meaningless, and the pair is obvious — it
+ * was simply not one of the pairs somebody had typed out.
+ *
+ * The cross product is the property: any qualifier that narrows WHOSE credential
+ * it is, next to any carrier that names WHAT the credential is, is a credential.
+ * Adding a qualifier covers it against every carrier at once, and the generated
+ * tests exercise the whole product.
+ */
+const CREDENTIAL_QUALIFIERS = [
+  "auth", "authorization", "api", "access", "private", "client", "session", "signing",
+  "encryption", "master", "shared", "account", "security", "refresh", "bearer", "oauth",
+  "service", "app", "admin", "root", "db", "database", "smtp", "mail", "ftp", "ssh", "registry",
+] as const;
+
+const CREDENTIAL_CARRIERS = [
+  "key", "keys", "token", "tokens", "secret", "secrets", "header", "credential", "credentials",
+  "password", "passwords", "passphrase", "pass", "pw", "signature",
+] as const;
+
 const SECRET_KEY_PHRASES: ReadonlySet<string> = new Set([
-  "api key",
-  "api keys",
-  "access key",
-  "access keys",
-  "secret key",
-  "private key",
-  "signing key",
-  "encryption key",
-  "session key",
-  "master key",
-  "shared key",
-  "account key",
-  "security key",
-  "auth key",
+  ...CREDENTIAL_QUALIFIERS.flatMap((qualifier) =>
+    CREDENTIAL_CARRIERS.map((carrier) => `${qualifier} ${carrier}`),
+  ),
+  // Pairs that are credentials without fitting the qualifier/carrier shape.
   "service role",
   "connection string",
   "service account",
+  "identified by",
 ]);
 
 /**

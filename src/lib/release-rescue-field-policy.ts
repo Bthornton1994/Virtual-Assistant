@@ -150,21 +150,35 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
     because:
       "Lifted from the customer's own source. Checked for credentials; NOT checked for claims, because their source may legitimately contain the word 'secure'.",
   },
-  "$.findings[].evidenceExcerpts[].path": {
-    disposition: "guarded",
-    because: "A repository path an executor writes; rendered beside the excerpt.",
+  // --- secret holds a human cleared ---
+  "$.clearedSecretHolds[].path": {
+    disposition: "generated",
+    because: "A JSON path this codebase produced when it recorded the hold.",
   },
-  "$.findings[].evidenceExcerpts[].excerpt": {
-    disposition: "redacted",
-    because: "Lifted from the customer's own source; must already have been through prepareExcerpt.",
+  "$.clearedSecretHolds[].clearedBy": {
+    disposition: "generated",
+    because: "An operator identifier from our own records, not free text.",
+  },
+  "$.clearedSecretHolds[].clearedAt": {
+    disposition: "generated",
+    because: "A timestamp this codebase writes when the hold is cleared.",
+  },
+  "$.clearedSecretHolds[].rationale": {
+    disposition: "guarded",
+    because:
+      "A reviewer's written reason for releasing held material, shown to the customer alongside the hold. Free text, so it is checked like any other.",
   },
 
-  // --- the rest ---
   "$.limitations[]": { disposition: "guarded", because: "Rendered as the report's own limitations." },
   "$.preparedBy.executorKey": { disposition: "generated", because: "A control-plane identifier, not product truth." },
   "$.preparedBy.executorKind": { disposition: "generated", because: "Enum; execution provenance, not product truth." },
   "$.preparedBy.provider": { disposition: "generated", because: "Enum; execution provenance, not product truth." },
   "$.preparedBy.protocolVersion": { disposition: "generated", because: "A control-plane identifier, not product truth." },
+  "$.preparedBy.modelId": {
+    disposition: "generated",
+    because:
+      "Execution provenance: which model produced the draft, recorded because AGENTS.md requires it. A control-plane identifier bounded to 200 characters by the schema, chosen by our own routing rather than by an executor or a customer, and never product truth.",
+  },
   "$.reviewedBy.operatorUserId": { disposition: "generated", because: "An operator identifier from our own records." },
   "$.reviewedBy.displayName": {
     disposition: "guarded",
@@ -261,4 +275,96 @@ export function checkReportFieldCoverage(report: unknown): CoverageFailure[] {
 export function unusedPolicyPaths(reports: readonly unknown[]): string[] {
   const seen = new Set(reports.flatMap((report) => enumerateStringFields(report).map((leaf) => leaf.normalized)));
   return Object.keys(REPORT_FIELD_POLICY).filter((path) => !seen.has(path));
+}
+
+// --- Schema-driven enumeration ---------------------------------------------------
+
+/**
+ * Every string-typed path the report SCHEMA permits, whether or not a given
+ * report populates it.
+ *
+ * This exists because the artifact walk was not enough. `preparedBy.modelId` is
+ * `z.string().nullable()`, both fixtures set it to `null`, so no string leaf was
+ * ever emitted, no test noticed it had no classification — and populating it, as
+ * the Software Factory provenance rules require, refused the report. The
+ * coverage contract failed closed, which is right, but it failed closed on a
+ * field the documentation tells operators to fill in.
+ *
+ * Walking the artifact answers "is everything in THIS report classified?".
+ * Walking the schema answers "is everything the schema ALLOWS classified?", and
+ * only the second one catches a field that is nullable, optional, or simply not
+ * exercised by the fixtures to hand.
+ */
+export function enumerateSchemaStringPaths(schema: unknown, path = "$", onPath: readonly unknown[] = []): string[] {
+  // Zod wraps types in a chain of internal defs. This unwraps the wrappers that
+  // do not change the shape of the value, then reads the container kinds.
+  const node = schema as {
+    _def?: {
+      typeName?: string;
+      innerType?: unknown;
+      type?: unknown;
+      shape?: () => Record<string, unknown>;
+      schema?: unknown;
+      options?: unknown[];
+      valueType?: unknown;
+    };
+    def?: {
+      type?: string;
+      innerType?: unknown;
+      element?: unknown;
+      shape?: Record<string, unknown>;
+      options?: unknown[];
+      valueType?: unknown;
+      values?: unknown;
+      value?: unknown;
+    };
+  };
+  // The cycle guard tracks the CURRENT BRANCH, not everything ever visited.
+  //
+  // A global `seen` set looks equivalent and is not: shared schema instances are
+  // ordinary here (`isoDateTimeSchema` is used by `generatedAt` and by
+  // `reviewedBy.reviewedAt`, `identifierString` by a dozen fields), and a global
+  // set makes the second and later uses return nothing. The walk then
+  // under-reports, which is precisely the failure that let `modelId` go
+  // unclassified in the first place — a mechanism that looks right and quietly
+  // covers less than it claims.
+  if (!node || typeof node !== "object" || onPath.includes(node)) return [];
+  if (onPath.length > 24) return [];
+  const branch = [...onPath, node];
+
+  const def = (node.def ?? node._def ?? {}) as Record<string, unknown>;
+  const kind = (def.type ?? def.typeName ?? "") as string;
+
+  // Wrappers: nullable, optional, default, readonly, catch, branded, pipe.
+  const inner = def.innerType ?? def.in ?? def.schema;
+  if (inner && /nullable|optional|default|readonly|catch|branded|pipe|effects|transform/i.test(kind)) {
+    return enumerateSchemaStringPaths(inner, path, branch);
+  }
+
+  if (/string|enum/i.test(kind)) return [path];
+  if (/literal/i.test(kind)) {
+    // `z.literal(true)` is a boolean, not a string. Reading the literal's own
+    // value keeps the four disclaimer flags out of the string inventory instead
+    // of demanding a text classification for a boolean.
+    const values = (def.values ?? (def.value === undefined ? [] : [def.value])) as unknown[];
+    return (Array.isArray(values) ? values : [values]).some((value) => typeof value === "string") ? [path] : [];
+  }
+  if (/array/i.test(kind)) {
+    const element = def.element ?? def.type ?? def.valueType;
+    return enumerateSchemaStringPaths(element, `${path}[]`, branch);
+  }
+  if (/object/i.test(kind)) {
+    const rawShape = typeof def.shape === "function" ? (def.shape as () => Record<string, unknown>)() : def.shape;
+    const shape = (rawShape ?? {}) as Record<string, unknown>;
+    return Object.entries(shape).flatMap(([key, child]) =>
+      enumerateSchemaStringPaths(child, `${path}.${key}`, branch),
+    );
+  }
+  if (/union/i.test(kind) && Array.isArray(def.options)) {
+    return [...new Set(def.options.flatMap((option) => enumerateSchemaStringPaths(option, path, branch)))];
+  }
+  if (/record/i.test(kind)) {
+    return enumerateSchemaStringPaths(def.valueType, `${path}.*`, branch);
+  }
+  return [];
 }
