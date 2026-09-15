@@ -59,6 +59,10 @@ Eight application modules, all pure and deterministic, and the migration chain t
 | `supabase/migrations/20260915193000_release_rescue_hardening_v2.sql` | Frozen scope, access-mode evidence, report invariants, privileged purge |
 | `supabase/migrations/20260915213000_release_rescue_hardening_v3.sql` | Unconditional ownership gate, single purge-flag reader, live-grant requirement |
 | `supabase/migrations/20260915223000_release_rescue_reviewed_commit_v4.sql` | The reviewed commit as a write-once field, pinned after the snapshot |
+| `supabase/migrations/20260915234500_release_rescue_trust_boundary_v5.sql` | Composite org/run binding, caller-based ownership authorization, server-derived retention |
+| `src/lib/release-rescue-field-policy.ts` | The report field coverage contract |
+| `src/lib/release-rescue-credential-scanner.ts` | The bounded assignment scanner |
+| `src/lib/release-rescue-redaction-keys.ts` | Whether a key name claims to hold a credential |
 
 ## Release-readiness audit rubric
 
@@ -136,7 +140,9 @@ Enforced at the database boundary:
 
 ## Data isolation and retention rules
 
-**Isolation.** Row level security on all three tables, with every `select` policy scoped to `my_org_ids()` or platform staff. Engagement and run references are bound to their parent's organization by composite foreign key, so a row cannot name organization A while pointing at an engagement owned by B. `report_artifact_id` is a single-column reference whose organization and run are checked in the report trigger instead, because `evidence_artifacts` carries no `(id, organization_id)` key to point at. No table grants `delete` to `authenticated`.
+**Isolation.** Row level security on all three tables, with every `select` policy scoped to `my_org_ids()` or platform staff. Engagement, run and report references are bound to their parent's organization by composite foreign key, so a row cannot name organization A while pointing at a run or engagement owned by B.
+
+That sentence used to be false of the engagement's own `run_id`, which was a single-column reference with no immutability rule, and a third audit turned that into a working cross-tenant deletion. It is true now, and `release_rescue_trust_boundary_v5_proof.sql` executes the attack that proved it false. `report_artifact_id` is a single-column reference whose organization and run are checked in the report trigger instead, because `evidence_artifacts` carries no `(id, organization_id)` key to point at. No table grants `delete` to `authenticated`.
 
 Most validation triggers run `security definer`. The two that make a privilege decision — report immutability and scope freeze — run `security invoker` instead, because inside a definer function `current_user` is the function OWNER, so a privilege check written there answers for the wrong role and always passes. Both read only `NEW`, `OLD` and the purge helper, so they need no elevated rights. For the rest, beyond fixing a real defect — `authenticated` has no read grant on `public.operators`, so the reviewer-authority check could not run at all — this is the correct posture for a validation trigger: it must see **true** state, not the caller's RLS-filtered view. Under invoker rights, a cross-tenant check can be defeated by making the conflicting row invisible, so the check passes because the row it should have found simply is not there. Both functions only read and raise, run no dynamic SQL, and have a locked `search_path`.
 
@@ -477,6 +483,106 @@ and the denied form.
 Writing the v3 gate also surfaced a defect nothing else had: rewriting the
 ownership trigger dropped the v1 rule that a recorded confirmation cannot be
 changed. The v1 proof caught it on the first run.
+
+## Third independent audit: the structural round
+
+A third fresh-context audit reproduced five blocking findings against the
+combined tree. Two of them were not textual, and its diagnosis was the one that
+mattered:
+
+> The recurring defect is not any one regex or trigger. It is that each guard is
+> written as a **validity check on a value in `NEW` or on a string**, when the
+> property needs a **privilege check on the caller**, a **referential-integrity
+> constraint**, or a **coverage decision about which fields it applies to**.
+> Sharpening the guards again will produce a sixth audit with the same sentence
+> in it.
+
+That is correct, and it applies to work in this document. So this round moves the
+decisions to where they can be decided, rather than making the existing checks
+stricter.
+
+### The trust boundary
+
+| Caller | May confirm ownership? |
+| --- | --- |
+| unauthenticated (`anon`) | No. RLS refuses the write entirely. |
+| authenticated customer | No. |
+| organization admin | **No.** Naming an operations manager does not make them one — and the org-scoped `select` policy shows them a real manager's UUID on their first legitimate engagement, which is exactly how the audit did it. |
+| operations manager / platform admin | Yes, **as themselves only**. `ownership_confirmed_by` is forced to `auth.uid()`; naming anyone else is refused rather than corrected. |
+| service role | Yes, naming an operator, because it *is* the server. The named person must hold manager authority, and the channel is recorded in `ownership_confirmed_via` so an audit can tell the two apart. |
+
+The gate is `SECURITY INVOKER`, because `current_user` must be the real caller for
+the server branch to mean anything. `auth.uid()` is unaffected by definer rights
+(it reads a transaction GUC), and `is_ops_manager()` is an existing helper that
+answers about the **caller** — which is the question the old gate never asked.
+
+**A fail-open found while proving it.** `is_ops_manager()` returned NULL, not
+false, for a non-operator, because `NULL in (...)` is NULL. RLS denies on NULL so
+policies were safe, but `if not NULL` in plpgsql does not fire and execution falls
+*through* the guard. The first version of the new check let an organization admin
+past the "are you a manager" test and stopped them only at the next one — it
+stopped them for the wrong reason. Fixed at the source, so every plpgsql caller
+inherits a real boolean. That also tightened `enforce_step3d_artifact_authority`
+in another workstream, which had the same shape and the same hole; it is restated
+as "an operations manager **or the server**" so closing the hole does not block
+the legitimate service-role writer.
+
+### Tenancy and retention
+
+- `(run_id, organization_id)` references `workstream_runs (id, organization_id)`.
+  The unique key it needs has existed since `20260822182149`; reports already used
+  it and the engagement did not, which is precisely where it mattered.
+- `run_id` goes NULL → value once and is then pinned. The key stops another
+  tenant's run; immutability stops repointing *within* a tenant, which the key
+  alone permits.
+- `purge_after` is derived from `created_at`, `delivered_at` and `retention_days`.
+  Caller input is **discarded, not validated** — a validation rule is something an
+  attacker probes; an ignored field is not. Shortening still works through the
+  retention policy, which is the supported route.
+- The sweep scopes every statement by the engagement's own organization and takes
+  no caller-chosen target.
+
+### Report field coverage
+
+`REPORT_FIELD_POLICY` classifies every customer-reachable string as `generated`,
+`guarded`, `redacted`, `rejected` or `verbatim_approved`, each with a written
+reason, and the validator walks the artifact rather than a list of field names. A
+string whose path carries no decision is a **hard failure**. Adding a
+customer-visible field without classifying it breaks the build, which is the only
+mechanism that survives the next person in a hurry.
+
+### Credential detection
+
+The regex is gone. A bounded scanner reads the text once, decides at each token
+whether the **key name** is credential-shaped, and only then consults a table of
+assignment forms: operator, keyword (`ENV`/`ARG`/`export`), command flag,
+quoted-after-key, XML attribute, XML element, `.netrc`, delimited column, YAML
+block scalar.
+
+Three consequences, and they are the reasons for the rewrite rather than side
+effects of it:
+
+1. A non-secret key can no longer swallow a secret one. The old pattern matched
+   the whole assignment, so `Config: DB_PASSWORD_PROD=hunter2` matched on
+   `Config`, was judged not-secret, and `String.replace` resumed *past* the real
+   assignment. Ordinary prose in front of a `.env` line was enough — that one was
+   never even an evasion.
+2. Adding a syntax is adding a form, not widening an expression.
+3. Every loop is bounded by the input length with no nesting. There is no
+   expression left here that can backtrack.
+
+There is deliberately **no bare `KEY VALUE` rule**. "The password rotation policy
+is weak" would redact "rotation", and over-redaction is not free: a detected
+credential hard-fails a delivery, so a false positive blocks a customer's report.
+
+Measured on this branch: **25 of 25 credential families** redacted, **16 of 16**
+safe strings left readable, and eight adversarial shapes near-linear at 20, 40 and
+80KB. The shape the audit used went from **4693ms to 7ms** at 80KB, and the
+unauthenticated intake path from **17,382ms at 160KB to 1ms**.
+
+Three shapes were quadratic in the *first* version of this scanner — an unbounded
+`[A-Z]+` in the key splitter, a value run that `:` could not terminate, and
+per-span string rebuilding. Each is fixed at its cause.
 
 ## What this slice deliberately does not do
 
