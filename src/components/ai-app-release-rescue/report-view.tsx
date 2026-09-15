@@ -39,7 +39,7 @@ export function ReportView({
   const readableHref = `${RESCUE_PATH}/demo/report`;
 
   return (
-    <article className="space-y-10">
+    <article className="min-w-0 max-w-full space-y-10">
       {synthetic ? (
         <p className="rounded-md border border-gold/40 bg-warn-bg px-3 py-2 text-sm text-warn" role="status">
           Synthetic sample. Harbor Ledger is a fictional app. This is not a customer report and not a live review.
@@ -53,7 +53,7 @@ export function ReportView({
           Engagement {report.engagement_id}. Reviewed commit {report.scope.repository_ref}. Status {report.status}.
         </p>
         <p className="text-xs text-muted">
-          Content hash <span className="font-mono tabular-nums">{contentHash.slice(0, 12)}…</span>
+          Content hash <span className="break-all font-mono tabular-nums">{contentHash.slice(0, 12)}…</span>
         </p>
         <div className="flex flex-wrap gap-3 text-sm">
           <Link className="underline" href={view === "json" ? readableHref : jsonHref}>
@@ -68,7 +68,7 @@ export function ReportView({
       <NonClaimsCallout id="report-limitations" />
 
       {view === "json" ? (
-        <pre className="overflow-x-auto rounded-xl border border-line bg-surface p-4 text-xs leading-relaxed">
+        <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-xl border border-line bg-surface p-4 text-xs leading-relaxed">
           <code>{JSON.stringify(report, null, 2)}</code>
         </pre>
       ) : (
@@ -94,7 +94,7 @@ export function ReportView({
               <p className="text-sm text-ink-soft">{READINESS_COPY[report.summary.overall_readiness]}</p>
             </div>
             <p className="mt-4 max-w-2xl text-pretty text-sm leading-relaxed">{report.summary.recommendation}</p>
-            <ul className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
+            <ul className="mt-4 grid min-w-0 grid-cols-2 gap-3 text-sm sm:grid-cols-5">
               <Count label="Critical" value={report.summary.critical_findings} />
               <Count label="High" value={report.summary.high_findings} />
               <Count label="Medium" value={report.summary.medium_findings} />
@@ -141,11 +141,11 @@ export function ReportView({
                   <h3 className="mt-2 text-base font-semibold tracking-tight">{finding.title}</h3>
                   <p className="mt-2 text-sm leading-relaxed text-ink-soft">{finding.description}</p>
                   <p className="mt-3 text-xs uppercase tracking-[0.14em] text-muted">Evidence</p>
-                  <p className="mt-1 text-sm">
+                  <p className="mt-1 break-all text-sm">
                     {finding.evidence.type.replaceAll("_", " ")} · {finding.evidence.location}
                   </p>
                   {finding.evidence.snippet ? (
-                    <pre className="mt-2 overflow-x-auto rounded-md bg-bg px-3 py-2 text-xs">
+                    <pre className="mt-2 max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-bg px-3 py-2 text-xs">
                       <code>{finding.evidence.snippet}</code>
                     </pre>
                   ) : null}
@@ -203,14 +203,14 @@ function Item({ term, detail }: { term: string; detail: string }) {
   return (
     <div>
       <dt className="text-xs uppercase tracking-[0.14em] text-muted">{term}</dt>
-      <dd className="mt-1 break-words">{detail}</dd>
+      <dd className="mt-1 break-all">{detail}</dd>
     </div>
   );
 }
 
 function Count({ label, value }: { label: string; value: number }) {
   return (
-    <li className="rounded-md border border-line bg-surface px-3 py-3">
+    <li className="min-w-0 rounded-md border border-line bg-surface px-3 py-3">
       <p className="text-xs text-muted">{label}</p>
       <p className="mt-1 text-xl font-semibold tabular-nums">{value}</p>
     </li>

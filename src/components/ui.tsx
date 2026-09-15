@@ -9,31 +9,41 @@ import type {
   TextareaHTMLAttributes,
 } from "react";
 
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+export type ButtonSize = "sm" | "md" | "lg";
+
+export function buttonClassName({
+  className,
+  variant = "primary",
+  size = "md",
+}: {
+  className?: string;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+} = {}) {
+  return cn(
+    "inline-flex min-h-11 items-center justify-center gap-2 rounded-md font-medium transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-50",
+    size === "sm" && "min-h-11 px-2.5 text-xs",
+    size === "md" && "min-h-11 px-3.5 text-sm",
+    size === "lg" && "h-12 px-5 text-[15px]",
+    variant === "primary" && "bg-accent text-accent-fg hover:bg-accent-hover",
+    variant === "secondary" && "border border-line-strong bg-surface text-ink hover:bg-bg-elevated",
+    variant === "ghost" && "text-ink-soft hover:bg-black/5",
+    variant === "danger" && "bg-bad text-white hover:bg-[#7a2424]",
+    className,
+  );
+}
+
 export function Button({
   className,
   variant = "primary",
   size = "md",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-  size?: "sm" | "md" | "lg";
+  variant?: ButtonVariant;
+  size?: ButtonSize;
 }) {
-  return (
-    <button
-      className={cn(
-        "inline-flex min-h-11 items-center justify-center gap-2 rounded-md font-medium transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-50",
-        size === "sm" && "min-h-11 px-2.5 text-xs",
-        size === "md" && "min-h-11 px-3.5 text-sm",
-        size === "lg" && "h-12 px-5 text-[15px]",
-        variant === "primary" && "bg-accent text-accent-fg hover:bg-accent-hover",
-        variant === "secondary" && "border border-line-strong bg-surface text-ink hover:bg-bg-elevated",
-        variant === "ghost" && "text-ink-soft hover:bg-black/5",
-        variant === "danger" && "bg-bad text-white hover:bg-[#7a2424]",
-        className,
-      )}
-      {...props}
-    />
-  );
+  return <button className={buttonClassName({ className, variant, size })} {...props} />;
 }
 
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {

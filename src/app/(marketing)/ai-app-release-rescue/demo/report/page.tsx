@@ -13,7 +13,7 @@ export default async function SampleRescueReportPage({
 }) {
   const { view } = await searchParams;
   return (
-    <div className="mx-auto max-w-3xl px-5 py-16">
+    <div className="mx-auto w-full min-w-0 max-w-3xl px-5 py-16">
       <ReportView
         report={SAMPLE_CUSTOMER_REPORT}
         contentHash={SAMPLE_REPORT_HASH}

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui";
+import { buttonClassName } from "@/components/ui";
 import { RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
 
 export const metadata = { title: "Release Rescue demo" };
@@ -14,13 +14,17 @@ export default function RescueDemoHubPage() {
         are process memory only.
       </p>
       <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-        <Link href={`${RESCUE_PATH}/intake`} className="w-full sm:w-auto">
-          <Button size="lg" className="w-full sm:w-auto">Open intake</Button>
+        <Link
+          href={`${RESCUE_PATH}/intake`}
+          className={buttonClassName({ size: "lg", className: "w-full sm:w-auto" })}
+        >
+          Open intake
         </Link>
-        <Link href={`${RESCUE_PATH}/demo/report`} className="w-full sm:w-auto">
-          <Button size="lg" variant="secondary" className="w-full sm:w-auto">
-            Sample report
-          </Button>
+        <Link
+          href={`${RESCUE_PATH}/demo/report`}
+          className={buttonClassName({ size: "lg", variant: "secondary", className: "w-full sm:w-auto" })}
+        >
+          Sample report
         </Link>
       </div>
     </div>

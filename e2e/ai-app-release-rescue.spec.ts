@@ -9,6 +9,10 @@ test.describe("AI App Release Rescue offer", () => {
     await expect(page.getByText(/not a penetration test/i).first()).toBeVisible();
     await expect(page.getByText(/Payment is not collected on this page/i).first()).toBeVisible();
     await expect(page.getByRole("link", { name: /Request the \$299 review/i }).first()).toBeVisible();
+    await expect(page.locator("main a:has(button)")).toHaveCount(0);
+    await expect(page.locator("main").getByRole("button", { name: /Request the \$299 review/i })).toHaveCount(0);
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
   });
 
   test("intake rejects a pasted token and never echoes it", async ({ page }) => {
@@ -76,5 +80,19 @@ test.describe("AI App Release Rescue offer", () => {
     const json = page.locator("pre code").filter({ hasText: "schema_version" });
     await expect(json).toBeVisible();
     await expect(json).not.toContainText("executor_id");
+  });
+
+  test("sample report stays in viewport at 390px", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/ai-app-release-rescue/demo/report");
+    await expect(page.getByText(/Synthetic sample/i)).toBeVisible();
+    const overflow = await page.evaluate(() => {
+      const root = document.documentElement;
+      return {
+        scrollWidth: root.scrollWidth,
+        clientWidth: root.clientWidth,
+      };
+    });
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
   });
 });

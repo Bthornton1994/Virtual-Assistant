@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui";
+import { buttonClassName } from "@/components/ui";
 import {
   RESCUE_PATH,
   RESCUE_REMEDIATION_PRICE_USD,
@@ -11,7 +11,7 @@ export function OfferPricing() {
   return (
     <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
       <article className="bg-accent px-6 py-8 text-accent-fg sm:px-8">
-        <p className="text-[11px] uppercase tracking-[0.16em] text-gold">Review</p>
+        <p className="text-[11px] uppercase tracking-[0.16em] text-[#c5a46e]">Review</p>
         <p className="mt-3 font-semibold text-5xl tracking-tight tabular-nums">${RESCUE_REVIEW_PRICE_USD}</p>
         <p className="mt-2 text-sm text-accent-fg/70">Fixed price. One repository, one web app, one workflow.</p>
         <ul className="mt-8 space-y-3 text-sm">
@@ -21,10 +21,14 @@ export function OfferPricing() {
           <li>Prepare-only. No writes to your repository.</li>
         </ul>
         <p className="mt-8 text-xs text-accent-fg/60">{RESCUE_PAYMENT.customerCopy}</p>
-        <Link href={`${RESCUE_PATH}/intake`} className="mt-8 inline-block w-full sm:w-auto">
-          <Button size="lg" className="w-full bg-gold text-ink hover:bg-[#c49a55] sm:w-auto">
-            Request the ${RESCUE_REVIEW_PRICE_USD} review
-          </Button>
+        <Link
+          href={`${RESCUE_PATH}/intake`}
+          className={buttonClassName({
+            size: "lg",
+            className: "mt-8 w-full bg-gold text-ink hover:bg-[#c49a55] sm:w-auto",
+          })}
+        >
+          Request the ${RESCUE_REVIEW_PRICE_USD} review
         </Link>
       </article>
       <article className="flex flex-col justify-between rounded-xl border border-line bg-surface px-6 py-8 sm:px-8">

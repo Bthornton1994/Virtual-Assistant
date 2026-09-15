@@ -2,7 +2,7 @@ import Link from "next/link";
 import { NonClaimsCallout } from "@/components/ai-app-release-rescue/non-claims";
 import { OfferPricing } from "@/components/ai-app-release-rescue/offer-pricing";
 import { RubricChecklist } from "@/components/ai-app-release-rescue/rubric-checklist";
-import { Button } from "@/components/ui";
+import { buttonClassName } from "@/components/ui";
 import { RESCUE_PATH, RESCUE_REVIEW_PRICE_USD } from "@/lib/ai-app-release-rescue/constants";
 
 export const metadata = {
@@ -57,13 +57,17 @@ export default function RescueLandingPage() {
           findings, and evidence. This is not a penetration test, and it is not a compliance certificate.
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-          <Link href={`${RESCUE_PATH}/intake`} className="w-full sm:w-auto">
-            <Button size="lg" className="w-full sm:w-auto">Request the ${RESCUE_REVIEW_PRICE_USD} review</Button>
+          <Link
+            href={`${RESCUE_PATH}/intake`}
+            className={buttonClassName({ size: "lg", className: "w-full sm:w-auto" })}
+          >
+            Request the ${RESCUE_REVIEW_PRICE_USD} review
           </Link>
-          <Link href={`${RESCUE_PATH}/demo/report`} className="w-full sm:w-auto">
-            <Button size="lg" variant="secondary" className="w-full sm:w-auto">
-              See a sample report
-            </Button>
+          <Link
+            href={`${RESCUE_PATH}/demo/report`}
+            className={buttonClassName({ size: "lg", variant: "secondary", className: "w-full sm:w-auto" })}
+          >
+            See a sample report
           </Link>
         </div>
         <p className="mt-4 text-sm text-muted">Checkout is prepared. Payment is not collected on this page.</p>
@@ -122,7 +126,7 @@ export default function RescueLandingPage() {
           {stages.map((stage, index) => (
             <li key={stage.id} className={index % 2 === 0 ? "bg-accent text-accent-fg" : "bg-bg-elevated"}>
               <div className="mx-auto grid max-w-6xl gap-6 px-5 py-12 md:grid-cols-[120px_1fr]">
-                <p className={`font-mono text-sm ${index % 2 === 0 ? "text-gold" : "text-muted"}`}>{stage.id}</p>
+                <p className={`font-mono text-sm ${index % 2 === 0 ? "text-[#c5a46e]" : "text-muted"}`}>{stage.id}</p>
                 <div>
                   <h3 className="text-2xl font-semibold tracking-tight">{stage.name}</h3>
                   <p className={`mt-3 max-w-2xl text-lg ${index % 2 === 0 ? "text-accent-fg/80" : "text-ink-soft"}`}>
@@ -188,15 +192,20 @@ export default function RescueLandingPage() {
             token.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-            <Link href={`${RESCUE_PATH}/intake`} className="w-full sm:w-auto">
-              <Button size="lg" className="w-full bg-gold text-ink hover:bg-[#c49a55] sm:w-auto">
-                Open the intake
-              </Button>
+            <Link
+              href={`${RESCUE_PATH}/intake`}
+              className={buttonClassName({
+                size: "lg",
+                className: "w-full bg-gold text-ink hover:bg-[#c49a55] sm:w-auto",
+              })}
+            >
+              Open the intake
             </Link>
-            <Link href={`${RESCUE_PATH}/demo`} className="w-full sm:w-auto">
-              <Button size="lg" variant="secondary" className="w-full sm:w-auto">
-                Demo hub
-              </Button>
+            <Link
+              href={`${RESCUE_PATH}/demo`}
+              className={buttonClassName({ size: "lg", variant: "secondary", className: "w-full sm:w-auto" })}
+            >
+              Demo hub
             </Link>
           </div>
         </div>
