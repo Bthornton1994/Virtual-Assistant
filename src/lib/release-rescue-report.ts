@@ -19,10 +19,12 @@ import {
 } from "@/lib/release-rescue-intake";
 import { checkReportFieldCoverage } from "@/lib/release-rescue-field-policy";
 import {
-  blocksDelivery,
-  requiresHumanClearance,
-  type SecretClassification,
-} from "@/lib/release-rescue-secret-classification";
+  assertNoCredentialMaterial,
+  sanitizeReportInput,
+  withSanitizedHolds,
+  type Sanitized,
+} from "@/lib/release-rescue-pipeline";
+import { blocksDelivery, type SecretClassification } from "@/lib/release-rescue-secret-classification";
 import {
   FINDING_SEVERITIES,
   computeFindingBlocking,
@@ -172,9 +174,33 @@ export const reviewedBySchema = z
  * a delivered report carries the evidence of who released it. Clearing a hold is
  * an accountable act, not a flag someone flips on the way past.
  */
+/**
+ * Something sanitisation removed, recorded so the report can explain itself.
+ *
+ * Holds are written at BUILD time, not recomputed at validation time, because
+ * after redaction there is nothing left to re-detect: the artifact holds
+ * `[REDACTED:…]`, which classifies as nothing. A hold is therefore the only
+ * memory the report has of what was taken out of it.
+ *
+ * It carries a hash of the original, never the original. A hold is shown to a
+ * reviewer and stored in the database, so it must not become a second copy of the
+ * thing it exists to keep out.
+ */
+export const unresolvedHoldSchema = z
+  .object({
+    path: identifierString.max(300),
+    classification: z.enum(["credential_evidence", "ambiguous_secret_candidate"]),
+    originalHash: z.string().regex(/^[0-9a-f]{64}$/),
+    reason: nonEmptyString.max(500),
+  })
+  .strict();
+
 export const clearedSecretHoldSchema = z
   .object({
     path: identifierString.max(300),
+    /** sha256 of the text that was held. A clearance names WHAT it released. */
+    clearedContentHash: z.string().regex(/^[0-9a-f]{64}$/),
+    /** An operator user id. The database checks it holds manager authority. */
     clearedBy: identifierString.max(100),
     clearedAt: isoDateTimeSchema,
     /** Why it was safe. Free text, and itself subject to the field policy. */
@@ -222,6 +248,8 @@ export const releaseRescueReportV1Schema = z
      * held until somebody records a decision, so the safe state is the one that
      * requires an action rather than the one that requires remembering.
      */
+    /** What sanitisation removed. Written by `buildReleaseRescueReport`. */
+    unresolvedHolds: z.array(unresolvedHoldSchema).max(200),
     clearedSecretHolds: z.array(clearedSecretHoldSchema).max(50),
     reviewedBy: reviewedBySchema.nullable(),
     generatedAt: isoDateTimeSchema,
@@ -393,6 +421,7 @@ export type AssembleReportInput = {
   limitations: string[];
   authorityReport: z.infer<typeof authorityReportSchema>;
   preparedBy: z.infer<typeof preparedBySchema>;
+  unresolvedHolds?: z.infer<typeof unresolvedHoldSchema>[];
   clearedSecretHolds?: z.infer<typeof clearedSecretHoldSchema>[];
   reviewedBy: z.infer<typeof reviewedBySchema> | null;
   generatedAt: string;
@@ -409,7 +438,45 @@ export const STANDING_LIMITATIONS: readonly string[] = [
   "Part of this review is performed by an AI system reading your source. Text inside a repository can attempt to influence such a system. Our controls prevent that text from changing this report's findings, severity, counts, or verdict, which are computed by deterministic code from recorded observations. They cannot rule out that it caused a real problem to go unreported. This residual risk is not solved, and a human reviewer signing this report is the mitigation, not a guarantee.",
 ];
 
-export function assembleReleaseRescueReport(input: AssembleReportInput): ReleaseRescueReportV1 {
+/**
+ * The production entry point: raw observations in, a safe report out.
+ *
+ * Everything a reviewer or an executor produces goes through here. It redacts,
+ * records what it removed as holds the customer can read, and only then
+ * assembles — so there is no ordering for a caller to get wrong, and no second
+ * path for somebody to forget to update.
+ *
+ * An audit found that `prepareExcerpt` and `redactSecrets` had no production call
+ * site at all. This function is that call site, and the branded parameter on
+ * `assembleReleaseRescueReport` is what stops a future caller from going around
+ * it.
+ */
+export function buildReleaseRescueReport(raw: AssembleReportInput): ReleaseRescueReportV1 {
+  const { value, holds } = sanitizeReportInput(raw);
+  // The holds go INTO the artifact. They cannot be recomputed later: by then the
+  // text is a placeholder, which is the whole point of having redacted it.
+  return assembleReleaseRescueReport(
+    withSanitizedHolds(value, holds),
+  );
+}
+
+/**
+ * Assembles a report from input that has already been sanitised.
+ *
+ * The parameter type is the enforcement. `Sanitized<AssembleReportInput>` has one
+ * producer — `sanitizeReportInput` — so a caller cannot hand raw customer source
+ * to the assembler without going through redaction first. An audit found that
+ * `prepareExcerpt` and `redactSecrets` had NO production call site at all: two
+ * hundred tests exercised code the product never ran, and the artifact carried
+ * whatever the caller put in it.
+ *
+ * The runtime assertion is here because a brand only constrains code that does
+ * not cast. This one refuses regardless, and it names paths rather than values,
+ * so a failure does not put the credential into an exception message.
+ */
+export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput>): ReleaseRescueReportV1 {
+  assertNoCredentialMaterial(input, "Release Rescue report assembly");
+
   const metrics = deriveReportMetrics(input.assessments, input.findings, input.authorityReport);
   const limitations = [...STANDING_LIMITATIONS, ...input.limitations];
 
@@ -439,6 +506,7 @@ export function assembleReleaseRescueReport(input: AssembleReportInput): Release
     },
     authorityReport: input.authorityReport,
     preparedBy: input.preparedBy,
+    unresolvedHolds: input.unresolvedHolds ?? [],
     clearedSecretHolds: input.clearedSecretHolds ?? [],
     reviewedBy: input.reviewedBy,
     generatedAt: input.generatedAt,
@@ -709,15 +777,23 @@ export type DeliveryGate = {
  * reviewer's console can list exactly what to look at.
  */
 export function pendingSecretHolds(report: ReleaseRescueReportV1): SecretHold[] {
-  const cleared = new Set(report.clearedSecretHolds.map((hold) => hold.path));
-  return scanForSecrets(report)
-    .filter((hit) => requiresHumanClearance(hit.classification))
-    .filter((hit) => !cleared.has(hit.path))
-    .map((hit) => ({
-      path: hit.path,
-      classification: hit.classification,
-      reason:
-        "The scanner could not tell this apart from ordinary security prose. It has been redacted and needs a human decision.",
+  const cleared = new Set(
+    report.clearedSecretHolds
+      // A clearance is bound to the CONTENT that was held, not just to a path.
+      // Binding to the path alone let a blanket pre-clearance of speculative
+      // paths switch the mechanism off before the content existed.
+      .map((entry) => `${entry.path}:${entry.clearedContentHash}`),
+  );
+
+  return report.unresolvedHolds
+    // Confident credential evidence is not clearable. Clearing is for
+    // uncertainty; it is not an override for a detection we are sure about.
+    .filter((hold) => hold.classification === "credential_evidence"
+      || !cleared.has(`${hold.path}:${hold.originalHash}`))
+    .map((hold) => ({
+      path: hold.path,
+      classification: hold.classification,
+      reason: hold.reason,
     }));
 }
 

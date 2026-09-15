@@ -7,7 +7,7 @@ import {
   type ReleaseRescueFindingV1,
 } from "@/lib/release-rescue-findings";
 import {
-  assembleReleaseRescueReport,
+  buildReleaseRescueReport,
   hashReleaseRescueReport,
   type ReleaseRescueReportV1,
   type RubricAssessment,
@@ -220,7 +220,7 @@ const FINDINGS: ReleaseRescueFindingV1[] = [
   }),
 ];
 
-export const SAMPLE_REPORT: ReleaseRescueReportV1 = assembleReleaseRescueReport({
+export const SAMPLE_REPORT: ReleaseRescueReportV1 = buildReleaseRescueReport({
   reportId: DEMO_SAMPLE_REPORT_ID,
   engagementId: "demo-engagement",
   runId: "demo-run",

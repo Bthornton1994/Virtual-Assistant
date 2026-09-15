@@ -6,7 +6,7 @@ import {
   type ReleaseRescueIntakeV1,
   type RetentionPolicy,
 } from "@/lib/release-rescue-intake";
-import { containsLikelySecret, isForbiddenEvidenceFilename } from "@/lib/release-rescue-redaction";
+import { holdsCredentialEvidence, isForbiddenEvidenceFilename } from "@/lib/release-rescue-redaction";
 import {
   ACCESS_GRANT_METHODS,
   APP_TYPES,
@@ -206,7 +206,7 @@ export function parseRepositoryReference(
   if (url.username.length > 0 || url.password.length > 0) {
     return { ok: false, reason: "Remove the credentials from that URL. Access is granted separately." };
   }
-  if (containsLikelySecret(trimmed)) {
+  if (holdsCredentialEvidence(trimmed)) {
     return { ok: false, reason: "That URL carries a token. Remove it. Access is granted separately." };
   }
   if (url.protocol !== "https:") {
@@ -234,7 +234,7 @@ export function parseRepositoryReference(
  *
  * Applied at the BOUNDARY, before anything expensive runs, and to every field
  * rather than to the one that was noticed. An audit found `evidenceNotes` reached
- * `containsLikelySecret` before its own 2000-character check, and that the server
+ * the credential scan before its own 2000-character check, and that the server
  * action echoed ~20 raw form fields through the same scanner with no cap at all —
  * so an anonymous POST could hold the event loop for as long as the body allowed.
  *
@@ -337,7 +337,7 @@ export function parseRescueIntake(source: Record<string, unknown>, now: Date = n
   // input that has already passed the cheap check.
   if (evidenceNotes.length > 2000) {
     errors.evidenceNotes = "Keep this under 2000 characters.";
-  } else if (containsLikelySecret(evidenceNotes)) {
+  } else if (holdsCredentialEvidence(evidenceNotes)) {
     errors.evidenceNotes = "That looks like a credential. Remove it. Access is granted separately.";
   }
 

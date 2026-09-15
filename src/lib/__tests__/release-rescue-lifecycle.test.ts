@@ -8,7 +8,7 @@ import {
   repositoryScopeSchema,
 } from "@/lib/release-rescue-intake";
 import {
-  assembleReleaseRescueReport,
+  buildReleaseRescueReport,
   hashReleaseRescueReport,
   releaseRescueReportV1Schema,
   validateReleaseRescueReport,
@@ -80,7 +80,7 @@ describe("the reviewed commit is pinned once, later, and separately", () => {
   });
 
   it("reaches the report as its own field, not as part of the scope", () => {
-    const report = assembleReleaseRescueReport(makeReportInput({ reviewedCommitSha: COMMIT_SHA }));
+    const report = buildReleaseRescueReport(makeReportInput({ reviewedCommitSha: COMMIT_SHA }));
 
     expect(report.reviewedCommitSha).toBe(COMMIT_SHA);
     expect(report.scope.repository).not.toHaveProperty("commitSha");
@@ -88,7 +88,7 @@ describe("the reviewed commit is pinned once, later, and separately", () => {
   });
 
   it("is required: a report that cannot name what it read does not parse", () => {
-    const report = assembleReleaseRescueReport(makeReportInput({ reviewedCommitSha: COMMIT_SHA }));
+    const report = buildReleaseRescueReport(makeReportInput({ reviewedCommitSha: COMMIT_SHA }));
     const without: Record<string, unknown> = { ...report };
     delete without.reviewedCommitSha;
 
@@ -97,14 +97,14 @@ describe("the reviewed commit is pinned once, later, and separately", () => {
   });
 
   it("is what the customer sees as the reviewed commit", () => {
-    const report = assembleReleaseRescueReport(makeReportInput({ reviewedCommitSha: COMMIT_SHA }));
+    const report = buildReleaseRescueReport(makeReportInput({ reviewedCommitSha: COMMIT_SHA }));
 
     expect(toCustomerReportView(report).scope.commitSha).toBe(COMMIT_SHA);
   });
 
   it("changes the report hash, so two commits are two reports", () => {
-    const a = assembleReleaseRescueReport(makeReportInput({ reviewedCommitSha: "a".repeat(40) }));
-    const b = assembleReleaseRescueReport(makeReportInput({ reviewedCommitSha: "b".repeat(40) }));
+    const a = buildReleaseRescueReport(makeReportInput({ reviewedCommitSha: "a".repeat(40) }));
+    const b = buildReleaseRescueReport(makeReportInput({ reviewedCommitSha: "b".repeat(40) }));
 
     expect(hashReleaseRescueReport(a)).not.toBe(hashReleaseRescueReport(b));
     // ...while their engagements remain the same agreement.
@@ -130,7 +130,7 @@ describe("the sequence intake -> freeze -> snapshot -> pin -> report runs end to
     expect(target.scopeHash).toBe(scopeHash);
 
     // 4. Report: names both, and validates.
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({ scope, reviewedCommitSha: target.reviewedCommitSha }),
     );
 

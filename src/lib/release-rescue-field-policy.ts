@@ -151,10 +151,32 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
     because:
       "Lifted from the customer's own source. Checked for credentials; NOT checked for claims, because their source may legitimately contain the word 'secure'.",
   },
+  // --- what sanitisation removed ---
+  "$.unresolvedHolds[].path": {
+    disposition: "generated",
+    because: "A JSON path this codebase produced when it recorded the hold.",
+  },
+  "$.unresolvedHolds[].classification": {
+    disposition: "generated",
+    because: "A closed enum from the secret-classification module.",
+  },
+  "$.unresolvedHolds[].originalHash": {
+    disposition: "generated",
+    because: "A hash of the removed text. It is a hash precisely so the hold is not a second copy of the secret.",
+  },
+  "$.unresolvedHolds[].reason": {
+    disposition: "generated",
+    because: "One of two fixed sentences this module owns, shown to the customer to explain the hold.",
+  },
+
   // --- secret holds a human cleared ---
   "$.clearedSecretHolds[].path": {
     disposition: "generated",
     because: "A JSON path this codebase produced when it recorded the hold.",
+  },
+  "$.clearedSecretHolds[].clearedContentHash": {
+    disposition: "generated",
+    because: "A hash binding the clearance to the exact content it released.",
   },
   "$.clearedSecretHolds[].clearedBy": {
     disposition: "generated",

@@ -370,6 +370,14 @@ would be free to promise a shape the pipeline cannot produce.
 - Landing-page sentences were written for accuracy against the report contract. Voice polish can still improve them, but the verdict copy must stay aligned with `VERDICT_COPY` and must not call an application ready or secure.
 - The snapshot limits are a decision function. **The extractor that enforces them at read time is not built**, because this pass performs no checkout. The limits are proven in unit tests, not against a real archive.
 - The retention sweep is scheduled in configuration and in the migration. **It has not run in a deployed environment**, because nothing is deployed.
+- The landing page's "No executor identifiers" claim **checks out**, and this
+  pass confirmed it rather than assuming it. The customer receives
+  `CustomerReportView`, not the internal artifact: `toCustomerReportView` omits
+  `preparedBy` apart from `executorKind`, and `findInternalIdentityLeaks` asserts
+  it. One gap was real and is closed — that leak check only tested `modelId` when
+  it was non-null, and every fixture set it to null, so the arm had never run. A
+  test now populates it and proves it reaches neither the rendered view nor the
+  JSON.
 
 ### The commit was in the wrong place, and now is not
 
@@ -555,9 +563,9 @@ mechanism that survives the next person in a hurry.
 
 ### Credential detection
 
-The regex is gone. A bounded scanner reads the text once, decides at each token
-whether the **key name** is credential-shaped, and only then consults a table of
-assignment forms: operator, keyword (`ENV`/`ARG`/`export`), command flag,
+The single omnibus regex is gone. A bounded scanner reads the text once, decides
+at each token whether the **key name** is credential-shaped, and only then
+consults a table of assignment forms: operator, keyword (`ENV`/`ARG`/`export`), command flag,
 quoted-after-key, XML attribute, XML element, `.netrc`, delimited column, YAML
 block scalar.
 
@@ -573,14 +581,23 @@ effects of it:
 3. Every loop is bounded by the input length with no nesting. There is no
    expression left here that can backtrack.
 
-There is deliberately **no bare `KEY VALUE` rule**. "The password rotation policy
-is weak" would redact "rotation", and over-redaction is not free: a detected
-credential hard-fails a delivery, so a false positive blocks a customer's report.
+There is deliberately **no general bare `KEY VALUE` rule**. "The password rotation
+policy is weak" would redact "rotation", and over-redaction is not free: a
+confident detection hard-fails a delivery, so a false positive blocks a report the
+customer paid for. Two narrow exceptions exist, and each is narrow on purpose:
+positional records (`.pgpass`, where the FORMAT is the evidence because no key
+name appears on the line) and `opaque_token_near_noun`, which requires a
+credential noun on the same line **and** a token of at least 12 characters
+carrying both a digit and a letter.
 
-Measured on this branch: **25 of 25 credential families** redacted, **16 of 16**
-safe strings left readable, and eight adversarial shapes near-linear at 20, 40 and
-80KB. The shape the audit used went from **4693ms to 7ms** at 80KB, and the
-unauthenticated intake path from **17,382ms at 160KB to 1ms**.
+Measured on this branch: **twelve adversarial shapes** near-linear at 20, 40 and
+80KB across the two scanner test files, and **eleven safe strings** returned
+unchanged. Timings, best of five on this machine: the repeated-colon shape
+**332ms** at 80KB, the identifier-run shape **4ms** at 80KB, and the
+unauthenticated intake path **under 1ms** at 160KB. The colon shape is the
+expensive one because `:` is legitimately part of a value and so cannot terminate
+the run; it is bounded by a 512-character per-value cap rather than by the input
+size.
 
 Three shapes were quadratic in the *first* version of this scanner — an unbounded
 `[A-Z]+` in the key splitter, a value run that `:` could not terminate, and
@@ -620,10 +637,27 @@ artifact so it is hashed with everything else, and the delivery gate refuses
 until it is there. Clearing is for uncertainty, not for overriding a confident
 detection — a `credential_evidence` hit cannot be cleared this way.
 
-The discriminator is value shape plus context, not the key name: character
-classes as an entropy proxy (word joiners excluded, so `object-level` is not two
-classes), a proper-noun rule, and whether the text after the value reads as a
-sentence.
+**The discriminator is the assignment SYNTAX, not the value.** This reverses what
+the previous pass wrote here, and the reversal is the point of this one.
+
+Letting value shape decide produced the worst possible failure. `DB_PASS=swordfish`
+scored as ordinary prose, `sensitive_prose` drops the span entirely, and the
+password was neither redacted nor held nor reported — it shipped. The commit
+before that change had redacted it correctly. Ten forms regressed the same way.
+
+So on a credential-named key in machine syntax — `=`, `:=`, `=>`, a quoted value,
+`ENV K V`, a command flag, an XML attribute or element, `.netrc`, `.pgpass`, a
+URL's userinfo — the classification is `credential_evidence` and nothing
+downstream gets a vote. Not the value's shape, not a trailing comment, not the
+sentence around it. On a `password=` line the uncertainty is about how bad the
+leak is, never about whether to act.
+
+Value shape survives in exactly one branch: the **bare colon**, because `:` is
+both YAML and English punctuation and nothing else separates `db_password: hunter2`
+from `Password: rotation policy is weak`. There it decides in this order — an
+opaque value is evidence; sentence punctuation attached to the value, or a tail
+that reads as a sentence, is prose; anything else is held as ambiguous. A quoted
+value after a colon is machine syntax and leaves the branch entirely.
 
 Detection itself is closed under the variations an audit varies. `pass` and `pw`
 are segments now, with the abbreviations people actually type, and the phrase set
@@ -634,8 +668,23 @@ added: PHP-style argument lists (`define('DB_PASSWORD', '…')`), attached
 single-letter flag values (`mysql -pSECRET`), and positional records (`.pgpass`,
 where no key name appears on the line at all, so the FORMAT is the evidence).
 
-Measured on this branch: **22 of 22** credential forms classified as evidence,
-**13 of 13** ordinary audit prose left untouched and delivered.
+Measured on this branch, along the axis each audit varied:
+
+- **22 assignment forms × 14 key shapes**, value held fixed
+  (`release-rescue-credential-scanner.test.ts`).
+- **27 carriers × 21 values = 550 combinations**, key held fixed at `DB_PASSWORD`
+  (`release-rescue-scanner-value-properties.test.ts`). 14 of the values must be
+  redacted and 7 are placeholders that must survive, so a detector that redacts
+  everything fails as surely as one that redacts nothing.
+- **11 URL and auth-header carriers** crossed with the same values.
+- **7 lines of ordinary audit prose** returned byte-for-byte unchanged.
+
+The value axis is the one audit 5 attacked, and writing it found four defects that
+the form × key matrix could not see: `export K=V` spans included the `=`, so the
+correct Dockerfile idiom `ENV DB_PASSWORD=${DB_PASSWORD}` was redacted as a leak;
+a quoted YAML value fell back to `ambiguous`; `.netrc` was only ever tested with a
+key name that format does not use; and `Auth: Clerk. Payments: Stripe.` — the
+customer's own words — was still being redacted out of report bodies.
 
 ### The retention authority model
 
@@ -664,9 +713,118 @@ require, refused the report. Writing the schema walk reproduced the same bug one
 level up: a global `seen` set silently skipped SHARED schema instances, so it
 under-reported. The cycle guard tracks the current branch instead.
 
-**57 schema paths, zero unclassified, zero stale** — the policy and the schema
+**62 schema paths, 62 policy entries, zero unclassified, zero stale** — the policy and the schema
 agree in both directions, and a new customer-visible field fails the build until
 somebody classifies it.
+
+## Fifth independent audit: a guard nobody called, and a column anybody could write
+
+The fifth audit returned four blocking findings. Two were regressions this
+document had described as fixes, which is the part worth recording.
+
+1. **Credential values leaked in multiple forms.** The value-shape gate described
+   above. Corrected in *The detector classification model*.
+2. **Ordinary security prose was still treated as a credential.**
+3. **`redactSecrets` and `prepareExcerpt` had no production call site.** Grepping
+   for callers returned one hit, and it was a comment. The functions were correct,
+   tested, and wired to nothing: every report was assembled from raw input.
+4. **`purged_at` was caller-writable.** Reproduced live — a forged stamp survived
+   two retention sweeps, because the sweep skips anything already marked purged.
+   A customer could keep their data past its retention date by claiming it was
+   already destroyed.
+
+### One redaction path, enforced by the type system
+
+A comment saying "call this first" is what produced finding 3. So the path is
+enforced where it cannot be forgotten:
+
+```ts
+declare const sanitized: unique symbol;
+export type Sanitized<T> = T & { readonly [sanitized]: true };
+
+export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput>): ...
+```
+
+`assembleReleaseRescueReport` accepts only a `Sanitized<T>`, and
+`sanitizeReportInput` is the only function that produces one. Assembling a report
+from raw input does not fail a test — it **fails to typecheck**. A test asserts
+there is exactly one `as Sanitized<` in the codebase, so the escape hatch cannot
+quietly become two.
+
+`buildReleaseRescueReport` is the production front door: it sanitizes, records
+what it held, and assembles. A runtime `assertNoCredentialMaterial` backs the type
+up for callers arriving through `any`. That assertion names the **path and the
+classification only, never the text**, because exception messages reach logs.
+
+A test walks the whole `src` tree and fails if the brand is minted outside
+`release-rescue-pipeline.ts`, or if that module gains a third producer. Writing
+it found that the earlier version of this test read one file and passed while a
+second producer sat in `release-rescue-report.ts` — it proved the brand had one
+producer in the only file where that was true. That second cast is now a named
+helper, `withSanitizedHolds`, which takes the sanitiser's own two outputs, so
+nothing unsanitised can reach the brand through it.
+
+The end-to-end test plants five distinct secrets in real `docker-compose.yml`,
+`.pgpass` and `.env` content and asserts none of them reaches the artifact, the
+stored excerpts, the customer view, the holds, or console output — and that the
+delivery gate refuses while a `credential_evidence` hold is unresolved.
+
+### Destructive authority: `purged_at`
+
+`20260916030000_release_rescue_destructive_authority_v7.sql` makes the column
+server-owned on both `release_rescue_engagements` and `release_rescue_reports`:
+
+- a change to `purged_at` outside the retention sweep is **refused**, not silently
+  reverted;
+- a row cannot be **created** already purged, on either table — the report
+  immutability trigger guards UPDATE and DELETE only, so a born-purged report
+  would have been accepted and then skipped by every sweep;
+- a purged row cannot be **un-purged**, even inside the sweep;
+- `clearedBy` on a secret-hold clearance must cast to a UUID and must hold manager
+  authority, checked against `operators` in the database rather than in
+  application code, because the report body is an `evidence_artifacts` row other
+  writers can reach.
+
+The purge-stamp triggers are `SECURITY INVOKER` — inside a definer function
+`current_user` is the owner, so a privilege check written there answers for the
+wrong role. The clearance trigger is `SECURITY DEFINER` with `set search_path =
+public`, because it must read `operators` regardless of the caller's own reach.
+
+The migration ends with a `do $$` block listing every destructive or
+approval-sensitive column in these tables; an unlisted one **fails the migration**.
+That assertion caught two columns this pass (`updated_at` and
+`ownership_confirmation_note`) that had no stated control.
+
+`supabase/qa/release_rescue_destructive_authority_v7_proof.sql` runs **32 cases**
+on live PostgreSQL, attempting the stamp as every caller class that exists —
+anonymous, customer admin, other tenant, plain operator, ops manager, service
+role, direct SQL with RLS out of the picture, a forged retention GUC — plus the
+positive control that the sweep still purges a due report and leaves one that is
+not due alone.
+
+**Why the proof asserts row counts, not exceptions.** RLS denies by making rows
+invisible, so an UPDATE that matches nothing raises nothing. A case written as
+"expect a refusal" passes for the wrong reason on every role RLS covers, and says
+nothing about the trigger. Each case therefore asserts the stored state and
+records which of the two controls answered.
+
+### Two pre-existing defects found while building the proof base
+
+Neither is Release Rescue's, and neither is repaired here. Both are on
+`origin/main` at `c3cf4a0` and both block replaying the migration chain onto an
+empty database:
+
+- `20260828080000_cs4_persisted_ledger_observations.sql` carries an orphaned
+  duplicate of its own function body (lines 199-347) with no `create function`
+  header, so `psql` cannot parse the file. Lines 1-197 are the complete, current
+  definition.
+- `20260903090000_execution_runtime_v1.sql` runs `create table
+  public.execution_plans`, which collides with the differently-shaped table
+  `0004_production_auth.sql` creates earlier in the chain.
+
+The proof base applies 49 of 53 migrations (the two above, plus two that need the
+`http` extension this sandbox does not have). None of the four touch Release
+Rescue tables, and all eight Release Rescue proofs run against the result.
 
 ## What this slice deliberately does not do
 

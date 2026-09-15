@@ -77,6 +77,21 @@ const SECRET_KEY_WORDS: ReadonlySet<string> = new Set([
   "keyfile",
   "pem",
   "pgpass",
+  // Credential nouns that are not password-shaped words. `PIN=4821` was missed
+  // because the classification was right and the LEXICON did not contain "pin".
+  // Each is a whole segment, so `pinned`, `spin` and `seeded` are untouched.
+  "pin",
+  "pins",
+  "passcode",
+  "passcodes",
+  "otp",
+  "totp",
+  "mnemonic",
+  "seedphrase",
+  "recoverycode",
+  "accesscode",
+  "authcode",
+  "securitycode",
 ]);
 
 /**
@@ -140,8 +155,16 @@ const SECRET_KEY_PHRASES: ReadonlySet<string> = new Set([
 export const MAX_KEY_NAME_LENGTH = 200;
 
 export function keyNameSegments(key: string): string[] {
-  if (key.length > MAX_KEY_NAME_LENGTH) return [];
-  return key
+  // Bounded by TRUNCATION, not by refusal.
+  //
+  // Returning nothing for a long key was an evasion: 470 characters of padding
+  // in front of `DB_PASSWORD` produced one enormous token, which exceeded the cap
+  // and therefore looked like no credential at all. An end-to-end test on a
+  // truncated excerpt found it. The cap exists to bound the camel-case regexes,
+  // so taking the TAIL keeps that bound while leaving the meaningful part of the
+  // name — which is at the end — intact.
+  const bounded = key.length > MAX_KEY_NAME_LENGTH ? key.slice(-MAX_KEY_NAME_LENGTH) : key;
+  return bounded
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/([A-Z]{1,64})([A-Z][a-z])/g, "$1 $2")
     .split(/[^A-Za-z0-9]+/)

@@ -28,9 +28,32 @@
 //
 // Precedence is total and deterministic: credential_evidence beats
 // ambiguous_secret_candidate beats sensitive_prose. Where two signals disagree
-// about the same span the stronger one wins, so nothing is downgraded by finding
-// a second, weaker reason to look at it. An ambiguous item never passes silently:
-// the delivery gate refuses until it is cleared.
+// about the same span the stronger one wins.
+//
+// THE RULE THE PREVIOUS VERSION GOT WRONG, and the one everything below is
+// arranged around:
+//
+//   A credential-named key in a structured assignment is credential_evidence.
+//   Always. The VALUE cannot lower that, and neither can a trailing comment or a
+//   sentence around it.
+//
+// The previous version let the value's shape decide, so `DB_PASS=swordfish`
+// produced `sensitive_prose` — and `sensitive_prose` drops the span entirely, so
+// the password was neither redacted nor held nor reported. It shipped. Audit 5
+// reproduced that in ten forms, and showed it was a REGRESSION: the commit before
+// it redacted `DB_PASSWORD=swordfish` correctly.
+//
+// The mistake was treating "I am not sure this value is a secret" as a reason to
+// do nothing, on a line that says `password=`. On a credential-named key the
+// uncertainty is about how bad the leak is, never about whether to act.
+//
+// So value shape and sentence context are no longer permitted to downgrade
+// anything. They survive in exactly one place: deciding what a BARE COLON means,
+// because `:` is both YAML and English punctuation and nothing else can tell
+// `db_password: hunter2` from `Password: rotation policy is weak`. Every other
+// assignment syntax — `=`, `:=`, `=>`, a quoted value, a keyword form, a flag, an
+// XML attribute, `.netrc`, `.pgpass`, a URL — is machine syntax that no sentence
+// can be mistaken for, and on those the key alone decides.
 
 export const SECRET_CLASSIFICATIONS = [
   "credential_evidence",
@@ -67,12 +90,11 @@ export function requiresHumanClearance(classification: SecretClassification): bo
 // --- Value shape ------------------------------------------------------------------
 
 /**
- * Words common enough that seeing one as an assignment's "value" is far better
+ * Words common enough that seeing one as a bare-colon "value" is far better
  * explained by a sentence than by a credential.
  *
- * Deliberately small and ordinary. It is not a dictionary and is not trying to
- * be: it exists to catch the shape of `Password: rotation policy is weak`, where
- * the tokens after the colon are English rather than entropy.
+ * Used ONLY to read the bare-colon form. It can no longer downgrade a structured
+ * assignment, which is what let a password through.
  */
 const COMMON_PROSE_WORDS: ReadonlySet<string> = new Set([
   "a", "an", "and", "are", "as", "at", "be", "been", "before", "but", "by", "can", "cannot",
@@ -86,92 +108,47 @@ const COMMON_PROSE_WORDS: ReadonlySet<string> = new Set([
   "with", "would", "your",
 ]);
 
-export type ValueShape = "placeholder" | "prose" | "ambiguous" | "credential";
+export type ValueShape = "placeholder" | "opaque" | "wordlike";
 
 /**
- * How many character classes a value draws on, as a proxy for entropy.
+ * How credential-like a value looks.
  *
- * Hyphens, underscores, dots and apostrophes do NOT count. They are how English
- * joins words, so counting them made `object-level` a two-class value and
- * therefore a credential — which turned "Authorization: object-level checks are
- * missing" into a delivery-blocking finding. Entropy comes from mixing letters,
- * cases and digits, not from punctuation a writer would use anyway.
- */
-function characterClasses(value: string): number {
-  let classes = 0;
-  if (/[a-z]/.test(value)) classes += 1;
-  if (/[A-Z]/.test(value)) classes += 1;
-  if (/[0-9]/.test(value)) classes += 1;
-  if (/[^A-Za-z0-9\-_.']/.test(value)) classes += 1;
-  return classes;
-}
-
-/**
- * How credential-like a value looks, on its own.
- *
- * This is the signal the old boolean did not have. `rotation` and
- * `pr0d-Xk92mQvn7Lz` are both "the thing after `password:`"; only one of them is
- * plausibly a secret, and the difference is visible without knowing anything
- * about where it came from.
+ * Deliberately weak now. It answers one narrow question — is this value opaque
+ * enough to settle a bare colon on its own? — and it has no authority to say a
+ * value is harmless. A value cannot make `password=` safe.
  */
 export function valueShape(value: string, isNonSecretValue: (candidate: string) => boolean): ValueShape {
   const trimmed = value
     .trim()
     .replace(/^["'`]|["'`]$/g, "")
-    // Sentence punctuation is not part of a value. `Auth: Clerk.` captures
-    // "Clerk." because a full stop cannot terminate a value in general — a host
-    // name is full of them — so it is removed here, where only the SHAPE is being
-    // judged and the redaction span is already decided.
     .replace(/[.,!?;:]+$/, "");
   if (trimmed.length === 0 || isNonSecretValue(trimmed)) return "placeholder";
 
-  // A single capitalised alphabetic word, before the entropy rules see it as
-  // two character classes.
-  //
-  // Short ones are proper nouns: `Auth: Clerk. Payments: Stripe.` is a customer
-  // answering "what is your stack?", and the intake form used to call it a
-  // credential. Longer ones are genuinely undecidable — `Zephyrbolt` could be a
-  // product or a weak password — which is what the ambiguous class exists for.
-  if (/^[A-Z][a-z]+$/.test(trimmed)) return trimmed.length >= 8 ? "ambiguous" : "prose";
+  const hasDigit = /[0-9]/.test(trimmed);
+  const hasLower = /[a-z]/.test(trimmed);
+  const hasUpper = /[A-Z]/.test(trimmed);
+  // Word joiners are how English joins words, so they are not entropy.
+  const hasSymbol = /[^A-Za-z0-9\-_.']/.test(trimmed);
 
-  const classes = characterClasses(trimmed);
+  // A digit mixed with letters, or any punctuation beyond a joiner, is the
+  // signature of a generated secret and is vanishingly rare in a word.
+  if (hasDigit && (hasLower || hasUpper) && trimmed.length >= 6) return "opaque";
+  if (hasSymbol && trimmed.length >= 6) return "opaque";
+  // A long run with no word structure: base64, hex, a random string.
+  if (trimmed.length >= 16 && /^[A-Za-z0-9._\-\/+=]+$/.test(trimmed)) return "opaque";
 
-  // Three or more character classes is the signature of a generated secret and
-  // is vanishingly rare in an English word. Catches short ones like `Tr0ub4d`.
-  if (classes >= 3 && trimmed.length >= 6) return "credential";
-  // Two classes over a reasonable length: `s3cr3tvalue`, `hunter2hunter2`.
-  if (classes >= 2 && trimmed.length >= 8) return "credential";
-  // A long opaque run with no word structure: `abcdefghijklmnop`, base64, hex.
-  if (trimmed.length >= 16 && /^[A-Za-z0-9._\-\/+=]+$/.test(trimmed) && !COMMON_PROSE_WORDS.has(trimmed.toLowerCase())) {
-    return "credential";
-  }
-
-  // Lowercase words joined by hyphens, and short enough to be a word: prose.
-  if (/^[a-z]+(?:[-'][a-z]+)*$/.test(trimmed)) {
-    if (COMMON_PROSE_WORDS.has(trimmed.toLowerCase())) return "prose";
-    if (trimmed.length < 12) return "prose";
-  }
-
-  return "ambiguous";
+  return "wordlike";
 }
 
 /**
  * Whether the text after a candidate value continues as a sentence.
  *
- * The decisive context signal, and the one that separates a finding's prose from
- * a config line. In `Authorization: object-level checks are missing on three
- * routes.` the tokens after the "value" are English; in `DB_PASS=s3cr3tvalue`
- * there are none, and in `psql --password S3cret -h db` the ones there are are
- * not words.
+ * Reads at most a bounded window: scanning to end-of-line costs O(line) per span,
+ * and one span per token on a long line is quadratic.
  */
-/** How far past a value to look for a sentence. A clause is far shorter. */
 const TAIL_LOOKAHEAD = 200;
 
 export function tailReadsAsSentence(text: string, from: number): boolean {
-  // Bounded. Reading to end-of-line costs O(line length) per span, and one span
-  // per token on a single long line is quadratic — which is exactly what it was
-  // when this function was first written: three adversarial shapes went from
-  // milliseconds to seconds. Two hundred characters is far more than a sentence.
   const window = text.slice(from, Math.min(text.length, from + TAIL_LOOKAHEAD));
   const lineEnd = window.indexOf("\n");
   const tail = lineEnd === -1 ? window : window.slice(0, lineEnd);
@@ -179,25 +156,64 @@ export function tailReadsAsSentence(text: string, from: number): boolean {
   if (words.length < 3) return false;
 
   const common = words.filter((word) => COMMON_PROSE_WORDS.has(word)).length;
-  // A majority of ordinary words, and at least three of them. A config line's
-  // trailing comment does not reach this; a sentence does.
-  return common >= 3 && common * 2 >= words.length;
+  // At least three ordinary words, and at least two in five. A majority was too
+  // strict for real sentences carrying domain nouns — "managed via environment
+  // variables in the deploy pipeline" is plainly prose and only three of its
+  // seven words are common ones.
+  return common >= 3 && common * 5 >= words.length * 2;
 }
 
 /**
- * The classification of one assignment-shaped hit.
+ * How the assignment was written, which is what decides its authority.
  *
- * Pure and total: every combination of shape and context lands somewhere, and
- * the result never depends on evaluation order.
+ * `structured` covers every syntax that only a machine writes: `=`, `:=`, `=>`, a
+ * quoted value, `ENV K V`, a command flag, an XML attribute or element, a
+ * `.netrc` or `.pgpass` line, a delimited column, a URL's userinfo. No English
+ * sentence is mistakable for any of them.
+ *
+ * `bare_colon` is the single ambiguous case, because `:` is both YAML and
+ * punctuation.
  */
-export function classifyAssignment(shape: ValueShape, tailIsSentence: boolean): SecretClassification {
+export type AssignmentSyntax = "structured" | "bare_colon";
+
+/**
+ * The classification of one credential-named assignment.
+ *
+ * Total, deterministic, and — the part that matters — monotone in the key: a
+ * credential-named key never produces `sensitive_prose` under `structured`
+ * syntax, whatever the value is and whatever follows it.
+ */
+export function classifyAssignment(
+  syntax: AssignmentSyntax,
+  shape: ValueShape,
+  tailIsSentence: boolean,
+  valueEndsSentence = false,
+): SecretClassification {
   if (shape === "placeholder") return "sensitive_prose";
-  if (shape === "credential") {
-    // Even inside a sentence, a value that looks generated is worth holding. It
-    // is not downgraded to prose, but the sentence context drops it from
-    // certainty to a hold, because a finding may legitimately quote one.
-    return tailIsSentence ? "ambiguous_secret_candidate" : "credential_evidence";
+
+  if (syntax === "structured") {
+    // The key said `password`. The syntax said `=`. Nothing downstream gets a
+    // vote, because this is exactly where the last version gave the value one
+    // and shipped the password. `valueEndsSentence` is not consulted here
+    // either: `DB_PASS=swordfish.` is still a password.
+    return "credential_evidence";
   }
-  if (shape === "prose") return "sensitive_prose";
-  return tailIsSentence ? "sensitive_prose" : "ambiguous_secret_candidate";
+
+  // Bare colon. An opaque value settles it on its own.
+  if (shape === "opaque") return "credential_evidence";
+
+  // `Auth: Clerk. Payments: Stripe.` — the customer's own description of their
+  // stack, which this rejected at intake and redacted out of report bodies. The
+  // tail test could not see it: "Payments: Stripe." is two words, below the
+  // three it needs, so the line read as a config file.
+  //
+  // What separates it from `password: swordfish` is not the key and not the
+  // value, but the punctuation ATTACHED to the value. A config value does not
+  // end in a full stop; a sentence clause does. Checked only here, and only
+  // once the value has already failed to look opaque, so it can never reach a
+  // real credential.
+  if (valueEndsSentence) return "sensitive_prose";
+
+  if (tailIsSentence) return "sensitive_prose";
+  return "ambiguous_secret_candidate";
 }

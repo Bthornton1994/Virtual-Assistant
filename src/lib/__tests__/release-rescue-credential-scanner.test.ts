@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { containsLikelySecret, redactSecrets, scanForSecrets } from "@/lib/release-rescue-redaction";
 import { findCredentialSpans, MAX_SCAN_LENGTH } from "@/lib/release-rescue-credential-scanner";
-import { assembleReleaseRescueReport, releaseRescueDeliveryGate, validateReleaseRescueReport } from "@/lib/release-rescue-report";
-import { makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
+import { buildReleaseRescueReport, releaseRescueDeliveryGate, validateReleaseRescueReport } from "@/lib/release-rescue-report";
+import { makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 
 // The credential scanner, tested as a scanner rather than as a list of examples.
@@ -213,14 +213,18 @@ describe("the storage and delivery paths, not just the detector's return value",
   ];
 
   for (const planted of PLANTED) {
-    it(`refuses a report carrying: ${planted.slice(0, 44)}`, () => {
-      const report = assembleReleaseRescueReport(
+    it(`removes and holds, rather than shipping: ${planted.slice(0, 40)}`, () => {
+      // The pipeline now REDACTS at build rather than detecting at validation, so
+      // the property is stronger than "the report is refused": the credential is
+      // not in the artifact at all, and the report is held rather than delivered.
+      const report = buildReleaseRescueReport(
         makeReportInput({ limitations: [`The customer excluded the admin console. ${planted}`] }),
       );
       const validation = validateReleaseRescueReport(report);
 
-      expect(validation.hardGatePass, planted).toBe(false);
-      expect(validation.hardFailures.join(" ")).toMatch(/credential|secret/i);
+      expect(JSON.stringify(report), planted).not.toContain("S3cretP4ssw0rdHere");
+      expect(JSON.stringify(report)).not.toContain("8f3a9c2b7e1d4f6a0b5c8d9e");
+      expect(report.unresolvedHolds.length, "the removal is recorded").toBeGreaterThan(0);
       expect(releaseRescueDeliveryGate(report, validation).deliverable).toBe(false);
     });
   }
@@ -232,6 +236,23 @@ describe("the storage and delivery paths, not just the detector's return value",
 
     expect(hits).toHaveLength(1);
     expect(hits[0].path).toBe("$.findings[0].locations[0].excerpt");
+    expect(hits[0].classification).toBe("credential_evidence");
+  });
+
+  it("removes it from a nested structure when the pipeline handles it", () => {
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        findings: [
+          makeFinding({
+            locations: [
+              { path: "docker-compose.yml", startLine: 4, endLine: 4, excerpt: "ENV DB_PASSWORD S3cretP4ssw0rdHere" },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    expect(JSON.stringify(report)).not.toContain("S3cretP4ssw0rdHere");
   });
 
   it("is still idempotent, so a stored excerpt's hash is reproducible", () => {

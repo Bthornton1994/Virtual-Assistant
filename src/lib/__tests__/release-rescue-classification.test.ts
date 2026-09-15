@@ -9,7 +9,7 @@ import {
   strongerClassification,
 } from "@/lib/release-rescue-secret-classification";
 import {
-  assembleReleaseRescueReport,
+  buildReleaseRescueReport,
   pendingSecretHolds,
   releaseRescueDeliveryGate,
   validateReleaseRescueReport,
@@ -140,7 +140,7 @@ describe("ordinary audit prose stays readable and does not hold anything", () =>
   }
 
   it("does not hard-fail a report whose finding is worded that way", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({ limitations: ["Authorization: object-level checks are missing on three routes."] }),
     );
     const validation = validateReleaseRescueReport(report);
@@ -170,50 +170,79 @@ describe("ordinary audit prose stays readable and does not hold anything", () =>
   });
 });
 
-describe("an ambiguous candidate is held, never silently delivered", () => {
-  // A value that is neither obviously generated nor obviously a word: no
-  // sentence around it, no entropy signature.
+describe("nothing credential-named is ever silent", () => {
+  // The property the previous round broke. `sensitive_prose` drops the span
+  // entirely, so anything classified that way is neither redacted nor held nor
+  // reported. On a credential-named key that must never happen, whatever the
+  // value looks like and whatever follows it.
+  const VALUES = [
+    "swordfish", "letmein", "postgres", "butterfly", "Falcon", "Zephyrbolt",
+    "4821", "Tr0ub4d", "pr0d-Xk92mQvn7Lz", "a-Kx92mQvn7LzPr0dQQ", "correcthorse",
+  ];
+  const KEYS = ["DB_PASS", "DB_PASSWORD", "SMTP_PASSWORD", "ADMIN_PW", "PIN", "SECRET"];
+
+  it("classifies every key x value as evidence under a structured assignment", () => {
+    const silent: string[] = [];
+    for (const key of KEYS) {
+      for (const value of VALUES) {
+        const result = redactSecrets(`${key}=${value}`);
+        if (result.classification !== "credential_evidence" || result.redacted.includes(value)) {
+          silent.push(`${key}=${value} -> ${result.classification ?? "SILENT"}`);
+        }
+      }
+    }
+    expect(silent, `${silent.length} credential assignments were not treated as evidence`).toEqual([]);
+  });
+
+  it("cannot be downgraded by a trailing comment", () => {
+    for (const text of [
+      "SECRET=Quicksilver # this is the value that we use for the service",
+      "DB_PASSWORD=Zephyrbolt and it is the same as the one in the other config",
+      "AWS_SECRET_ACCESS_KEY=correcthorse so it is not rotated and we should do that",
+    ]) {
+      expect(redactSecrets(text).classification, text).toBe("credential_evidence");
+    }
+  });
+
+  it("cannot be downgraded by a sentence around it", () => {
+    const text = "The deploy config sets DB_PASSWORD=swordfish and it is the same as the one in the config";
+
+    expect(redactSecrets(text).classification).toBe("credential_evidence");
+    expect(redactSecrets(text).redacted).not.toContain("swordfish");
+  });
+});
+
+describe("a hold is recorded on the report and cleared by content, not by path", () => {
   const AMBIGUOUS = "password: Zephyrbolt";
 
-  it("classifies it as ambiguous rather than either extreme", () => {
-    expect(redactSecrets(AMBIGUOUS).classification).toBe("ambiguous_secret_candidate");
+  it("records what it removed, as a hash rather than a copy", () => {
+    const report = buildReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
+    const hold = report.unresolvedHolds.find((entry) => entry.path.startsWith("$.limitations"));
+
+    expect(hold).toBeDefined();
+    expect(hold?.originalHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(report)).not.toContain("Zephyrbolt");
   });
 
-  it("redacts it for safety even though it does not hard-fail", () => {
-    const result = redactSecrets(AMBIGUOUS);
+  it("refuses delivery while the hold stands", () => {
+    const report = buildReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
+    const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
 
-    expect(result.redacted).not.toContain("Zephyrbolt");
-  });
-
-  it("does not hard-fail validation, but refuses delivery until cleared", () => {
-    const report = assembleReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
-    const validation = validateReleaseRescueReport(report);
-    const gate = releaseRescueDeliveryGate(report, validation);
-
-    expect(validation.hardGatePass, "an ambiguous candidate is not a validation failure").toBe(true);
-    expect(gate.deliverable, "but it is not deliverable either").toBe(false);
+    expect(pendingSecretHolds(report).length).toBeGreaterThan(0);
+    expect(gate.deliverable).toBe(false);
     expect(gate.blockers.join(" ")).toContain("held for human review");
   });
 
-  it("records the reason in a form the customer can be shown", () => {
-    const report = assembleReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
-    const holds = pendingSecretHolds(report);
-
-    expect(holds).toHaveLength(1);
-    expect(holds[0].classification).toBe("ambiguous_secret_candidate");
-    expect(holds[0].reason).toContain("needs a human decision");
-    expect(holds[0].path).toMatch(/^\$\.limitations\[\d+\]$/);
-  });
-
-  it("delivers once a named human clears that exact path", () => {
-    const base = assembleReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
-    const [hold] = pendingSecretHolds(base);
-    const cleared = assembleReleaseRescueReport(
+  it("delivers once the exact content is cleared", () => {
+    const base = buildReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
+    const hold = base.unresolvedHolds[0];
+    const cleared = buildReleaseRescueReport(
       makeReportInput({
         limitations: [AMBIGUOUS],
         clearedSecretHolds: [
           {
             path: hold.path,
+            clearedContentHash: hold.originalHash,
             clearedBy: "ops-manager-1",
             clearedAt: "2026-09-16T09:00:00.000Z",
             rationale: "Reviewed the source line; it is a product name, not a credential.",
@@ -221,39 +250,44 @@ describe("an ambiguous candidate is held, never silently delivered", () => {
         ],
       }),
     );
-    const gate = releaseRescueDeliveryGate(cleared, validateReleaseRescueReport(cleared));
 
     expect(pendingSecretHolds(cleared)).toEqual([]);
-    expect(gate.deliverable).toBe(true);
+    expect(releaseRescueDeliveryGate(cleared, validateReleaseRescueReport(cleared)).deliverable).toBe(true);
   });
 
-  it("does not let a clearance for one path release another", () => {
-    const report = assembleReleaseRescueReport(
+  it("does not let a clearance for other content release this hold", () => {
+    // Binding to the path alone let a blanket pre-clearance of speculative paths
+    // switch the mechanism off before the content existed.
+    const base = buildReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
+    const hold = base.unresolvedHolds[0];
+    const report = buildReleaseRescueReport(
       makeReportInput({
         limitations: [AMBIGUOUS],
         clearedSecretHolds: [
           {
-            path: "$.some.other.path",
+            path: hold.path,
+            clearedContentHash: "b".repeat(64),
             clearedBy: "ops-manager-1",
             clearedAt: "2026-09-16T09:00:00.000Z",
-            rationale: "Unrelated.",
+            rationale: "Cleared something else entirely.",
           },
         ],
       }),
     );
 
-    expect(pendingSecretHolds(report)).toHaveLength(1);
-    expect(releaseRescueDeliveryGate(report, validateReleaseRescueReport(report)).deliverable).toBe(false);
+    expect(pendingSecretHolds(report).length).toBeGreaterThan(0);
   });
 
-  it("a credential is NOT clearable this way", () => {
-    // Clearing is for uncertainty, not for overriding a confident detection.
-    const report = assembleReleaseRescueReport(
+  it("never lets a clearance release confident credential evidence", () => {
+    const base = buildReleaseRescueReport(makeReportInput({ limitations: ["DB_PASS=swordfish"] }));
+    const hold = base.unresolvedHolds[0];
+    const report = buildReleaseRescueReport(
       makeReportInput({
-        limitations: [`DB_PASS=${SECRET_VALUE}`],
+        limitations: ["DB_PASS=swordfish"],
         clearedSecretHolds: [
           {
-            path: "$.limitations[3]",
+            path: hold.path,
+            clearedContentHash: hold.originalHash,
             clearedBy: "ops-manager-1",
             clearedAt: "2026-09-16T09:00:00.000Z",
             rationale: "Looks fine to me.",
@@ -262,7 +296,9 @@ describe("an ambiguous candidate is held, never silently delivered", () => {
       }),
     );
 
-    expect(validateReleaseRescueReport(report).hardGatePass).toBe(false);
+    expect(hold.classification).toBe("credential_evidence");
+    expect(pendingSecretHolds(report).length).toBeGreaterThan(0);
+    expect(releaseRescueDeliveryGate(report, validateReleaseRescueReport(report)).deliverable).toBe(false);
   });
 });
 
@@ -283,9 +319,20 @@ describe("the classification model itself", () => {
   });
 
   it("is total over every shape and context combination", () => {
-    for (const shape of ["placeholder", "prose", "ambiguous", "credential"] as const) {
+    for (const shape of ["placeholder", "opaque", "wordlike"] as const) {
       for (const tail of [true, false]) {
-        expect(SECRET_CLASSIFICATIONS).toContain(classifyAssignment(shape, tail));
+        for (const syntax of ["structured", "bare_colon"] as const) {
+          expect(SECRET_CLASSIFICATIONS).toContain(classifyAssignment(syntax, shape, tail));
+        }
+      }
+    }
+  });
+
+  it("never returns sensitive_prose for a structured credential assignment", () => {
+    // The monotonicity property, checked directly on the decision function.
+    for (const shape of ["opaque", "wordlike"] as const) {
+      for (const tail of [true, false]) {
+        expect(classifyAssignment("structured", shape, tail)).toBe("credential_evidence");
       }
     }
   });

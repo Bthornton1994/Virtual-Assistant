@@ -1,0 +1,503 @@
+-- AI App Release Rescue v7: destructive authority, proven per caller class.
+--
+-- Three rounds closed one column each and left the next: `purge_after`, then
+-- `created_at`, then `purged_at`. This proof is written against the CLASS, and it
+-- runs each attack as every caller that exists — anonymous, customer, org admin,
+-- plain operator, ops manager, service role, the scheduled sweep, and direct SQL
+-- with RLS out of the picture — because a control that only holds for one of them
+-- is not a control.
+--
+-- NEVER apply this file to a real Supabase project.
+
+\set ON_ERROR_STOP on
+\pset pager off
+set client_min_messages = notice;
+
+select 'release_rescue_destructive_authority_v7_proof_not_applied_to_supabase' as proof_marker;
+
+create schema if not exists rrv7;
+grant usage on schema rrv7 to public;
+
+create or replace function rrv7.assert(p_label text, p_condition boolean)
+returns void language plpgsql as $$
+begin
+  if not p_condition then
+    raise exception using errcode = 'RR004', message = 'ASSERTION FAILED: ' || p_label;
+  end if;
+  raise notice 'PASS state    | %', p_label;
+end $$;
+
+create or replace function rrv7.expect_refusal(p_label text, p_expect text, p_sql text)
+returns void language plpgsql as $$
+begin
+  execute p_sql;
+  raise exception using errcode = 'RR001', message = 'EXPECTED-REFUSAL-NOT-RAISED: ' || p_label;
+exception
+  when others then
+    if sqlstate = 'RR001' then raise; end if;
+    if sqlstate in ('42883', '42P01', '42703', '42601', '42P02', '3F000') then
+      raise exception using errcode = 'RR002',
+        message = 'BROKEN-TEST (' || sqlstate || ') in "' || p_label || '": ' || sqlerrm;
+    end if;
+    if position(lower(p_expect) in lower(sqlerrm)) = 0 then
+      raise exception using errcode = 'RR003',
+        message = 'WRONG-REFUSAL in "' || p_label || '": expected ~"' || p_expect || '", got "' || sqlerrm || '"';
+    end if;
+    raise notice 'PASS refused  | %', p_label;
+end $$;
+
+-- Two organizations, every role ---------------------------------------------------
+
+insert into auth.users (id, email) values
+  ('7a000000-0000-0000-0000-00000000aa01', 'attacker.admin@example.test'),
+  ('7a000000-0000-0000-0000-00000000bb01', 'victim.admin@example.test'),
+  ('7a000000-0000-0000-0000-00000000cc01', 'ops.manager@example.test'),
+  ('7a000000-0000-0000-0000-00000000dd01', 'plain.operator@example.test');
+
+insert into public.organizations (id, name, slug) values
+  ('7b000000-0000-0000-0000-00000000aa01', 'Attacker Co', 'attacker-v7'),
+  ('7b000000-0000-0000-0000-00000000bb01', 'Victim Co', 'victim-v7');
+
+insert into public.organization_members (organization_id, user_id, role, status) values
+  ('7b000000-0000-0000-0000-00000000aa01', '7a000000-0000-0000-0000-00000000aa01', 'client_admin', 'active'),
+  ('7b000000-0000-0000-0000-00000000bb01', '7a000000-0000-0000-0000-00000000bb01', 'client_admin', 'active');
+
+insert into public.operators (user_id, name, platform_role) values
+  ('7a000000-0000-0000-0000-00000000cc01', 'Ops Manager', 'ops_manager'),
+  ('7a000000-0000-0000-0000-00000000dd01', 'Plain Operator', 'operator');
+
+-- Victim evidence, so a redirected sweep would show.
+insert into public.workstreams (id, organization_id, name, objective, sla) values
+  ('7c000000-0000-0000-0000-00000000bb01', '7b000000-0000-0000-0000-00000000bb01', 'W', 'O', '5d');
+insert into public.delegation_specs (id, organization_id, workstream_id, status, objective, action_class) values
+  ('7d000000-0000-0000-0000-00000000bb01', '7b000000-0000-0000-0000-00000000bb01',
+   '7c000000-0000-0000-0000-00000000bb01', 'active', 'O', 'prepare_only');
+insert into public.workstream_runs (id, organization_id, workstream_id, delegation_spec_id, status) values
+  ('7e000000-0000-0000-0000-00000000bb01', '7b000000-0000-0000-0000-00000000bb01',
+   '7c000000-0000-0000-0000-00000000bb01', '7d000000-0000-0000-0000-00000000bb01', 'planned');
+update public.workstream_runs set status = 'running' where id = '7e000000-0000-0000-0000-00000000bb01';
+insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload) values
+  ('7f000000-0000-0000-0000-00000000bb01', '7b000000-0000-0000-0000-00000000bb01',
+   '7e000000-0000-0000-0000-00000000bb01', 'observation', 'VICTIM confidential excerpt',
+   repeat('9', 64), '{"schemaVersion":"release-rescue-report/v1"}'::jsonb);
+
+-- Two engagements of the attacker's, both due for purge.
+insert into public.release_rescue_engagements
+  (id, organization_id, scope, scope_hash, retention_policy, retention_days, access_mode, delivered_at)
+values
+  ('7aa00000-0000-0000-0000-000000000011', '7b000000-0000-0000-0000-00000000aa01',
+   '{"repository":{"repositoryRef":"a/control"}}'::jsonb, repeat('1', 64),
+   'purge_on_delivery', 0, 'customer_installed_readonly_app', now()),
+  ('7aa00000-0000-0000-0000-000000000022', '7b000000-0000-0000-0000-00000000aa01',
+   '{"repository":{"repositoryRef":"a/forged"}}'::jsonb, repeat('2', 64),
+   'purge_on_delivery', 0, 'customer_installed_readonly_app', now());
+
+\echo ''
+\echo '=== 1. purged_at, attempted by every caller class ==='
+
+do $$
+declare
+  v_case record;
+  v_refused boolean;
+  v_rows integer;
+  v_checked integer := 0;
+  v_stamp timestamptz;
+begin
+  for v_case in
+    select * from (values
+      ('anonymous',       'anon',          null::text),
+      ('customer admin',  'authenticated', '7a000000-0000-0000-0000-00000000aa01'),
+      ('other tenant',    'authenticated', '7a000000-0000-0000-0000-00000000bb01'),
+      ('plain operator',  'authenticated', '7a000000-0000-0000-0000-00000000dd01'),
+      ('ops manager',     'authenticated', '7a000000-0000-0000-0000-00000000cc01'),
+      ('service role',    'service_role',  null::text)
+    ) as t(label, role_name, subject)
+  loop
+    v_refused := false;
+    v_rows := 0;
+    begin
+      execute format('set local role %I', v_case.role_name);
+      if v_case.subject is not null then
+        perform set_config('request.jwt.claim.sub', v_case.subject, true);
+      else
+        perform set_config('request.jwt.claim.sub', '', true);
+      end if;
+
+      update public.release_rescue_engagements set purged_at = now()
+       where id = '7aa00000-0000-0000-0000-000000000022';
+      get diagnostics v_rows = row_count;
+    exception when others then
+      v_refused := true;
+    end;
+    reset role;
+    perform set_config('request.jwt.claim.sub', '', true);
+
+    select purged_at into v_stamp from public.release_rescue_engagements
+     where id = '7aa00000-0000-0000-0000-000000000022';
+
+    perform rrv7.assert(
+      format('%s cannot stamp purged_at (refused=%s, rows=%s)', v_case.label, v_refused, v_rows),
+      (v_refused or v_rows = 0) and v_stamp is null);
+    v_checked := v_checked + 1;
+  end loop;
+
+  if v_checked <> 6 then raise exception 'ONLY % CALLER CLASSES CHECKED', v_checked; end if;
+end $$;
+
+select rrv7.expect_refusal(
+  'direct SQL, no RLS, cannot stamp it either',
+  'recorded by the retention sweep',
+  $q$
+  update public.release_rescue_engagements set purged_at = now()
+   where id = '7aa00000-0000-0000-0000-000000000022';
+$q$);
+
+select rrv7.expect_refusal(
+  'nor can an engagement be created already purged',
+  'cannot be created already purged',
+  $q$
+  insert into public.release_rescue_engagements
+    (organization_id, scope, scope_hash, retention_policy, retention_days, access_mode, purged_at)
+  values ('7b000000-0000-0000-0000-00000000aa01', '{"repository":{"repositoryRef":"a/born-purged"}}'::jsonb,
+          repeat('3', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app', now());
+$q$);
+
+select rrv7.expect_refusal(
+  'a forged purge GUC does not help, because the privilege is the check',
+  'recorded by the retention sweep',
+  $q$
+  set local role authenticated;
+  set local request.jwt.claim.sub = '7a000000-0000-0000-0000-00000000aa01';
+  select set_config('delegation.retention_purge', 'on', true);
+  update public.release_rescue_engagements set purged_at = now()
+   where id = '7aa00000-0000-0000-0000-000000000022';
+$q$);
+
+\echo ''
+\echo '=== 2. The sweep still works, and reaches only its own tenant ==='
+
+do $$
+declare v_purged integer; v_control text; v_forged text; v_victim integer;
+begin
+  select public.purge_expired_release_rescue_data('pg_cron') into v_purged;
+
+  select status into v_control from public.release_rescue_engagements
+   where id = '7aa00000-0000-0000-0000-000000000011';
+  select status into v_forged from public.release_rescue_engagements
+   where id = '7aa00000-0000-0000-0000-000000000022';
+  select count(*) into v_victim from public.evidence_artifacts
+   where id = '7f000000-0000-0000-0000-00000000bb01';
+
+  perform rrv7.assert('the sweep purged both due engagements', v_purged = 2);
+  perform rrv7.assert('the control engagement is purged', v_control = 'purged');
+  perform rrv7.assert('the one the customer tried to protect is purged too', v_forged = 'purged');
+  perform rrv7.assert('and the other tenant''s evidence is untouched', v_victim = 1);
+end $$;
+
+do $$
+declare v_hash text; v_verdict integer;
+begin
+  select scope_hash into v_hash from public.release_rescue_engagements
+   where id = '7aa00000-0000-0000-0000-000000000022';
+  select count(*) into v_verdict from public.release_rescue_engagements
+   where id = '7aa00000-0000-0000-0000-000000000022' and scope = jsonb_build_object('purged', true);
+
+  perform rrv7.assert('retention accounting survives the content purge', v_hash = repeat('2', 64));
+  perform rrv7.assert('and the content is gone', v_verdict = 1);
+end $$;
+
+select rrv7.expect_refusal(
+  'a purged engagement cannot be un-purged, even inside the sweep',
+  'cannot be un-purged',
+  $q$
+  update public.release_rescue_engagements set purged_at = null
+   where id = '7aa00000-0000-0000-0000-000000000022';
+$q$);
+
+\echo ''
+\echo '=== 3. A secret-hold clearance names an accountable operator ==='
+
+insert into public.workstreams (id, organization_id, name, objective, sla) values
+  ('7c000000-0000-0000-0000-00000000aa01', '7b000000-0000-0000-0000-00000000aa01', 'W', 'O', '5d');
+insert into public.delegation_specs (id, organization_id, workstream_id, status, objective, action_class) values
+  ('7d000000-0000-0000-0000-00000000aa01', '7b000000-0000-0000-0000-00000000aa01',
+   '7c000000-0000-0000-0000-00000000aa01', 'active', 'O', 'prepare_only');
+insert into public.workstream_runs (id, organization_id, workstream_id, delegation_spec_id, status) values
+  ('7e000000-0000-0000-0000-00000000aa01', '7b000000-0000-0000-0000-00000000aa01',
+   '7c000000-0000-0000-0000-00000000aa01', '7d000000-0000-0000-0000-00000000aa01', 'planned');
+update public.workstream_runs set status = 'running' where id = '7e000000-0000-0000-0000-00000000aa01';
+
+insert into public.release_rescue_engagements
+  (id, organization_id, run_id, scope, scope_hash, retention_policy, retention_days, access_mode)
+values ('7aa00000-0000-0000-0000-000000000033', '7b000000-0000-0000-0000-00000000aa01',
+        '7e000000-0000-0000-0000-00000000aa01',
+        '{"repository":{"repositoryRef":"a/report","accessMode":"customer_installed_readonly_app"}}'::jsonb,
+        repeat('4', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app');
+update public.release_rescue_engagements
+   set snapshot_limits_version = 'release-rescue-snapshot-limits/v1' where id = '7aa00000-0000-0000-0000-000000000033';
+insert into public.release_rescue_repository_grants
+  (organization_id, engagement_id, provider, repository_ref, grant_method, expires_at)
+values ('7b000000-0000-0000-0000-00000000aa01', '7aa00000-0000-0000-0000-000000000033',
+        'github', 'a/report', 'customer_installed_readonly_app', now() + interval '7 days');
+update public.release_rescue_engagements set reviewed_commit_sha = repeat('a', 40)
+ where id = '7aa00000-0000-0000-0000-000000000033';
+
+-- A report body whose clearance names a non-operator.
+insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
+values ('7f000000-0000-0000-0000-00000000aa01', '7b000000-0000-0000-0000-00000000aa01',
+        '7e000000-0000-0000-0000-00000000aa01', 'observation', 'forged clearance', repeat('a', 64),
+        jsonb_build_object(
+          'schemaVersion', 'release-rescue-report/v1',
+          'reviewedCommitSha', repeat('a', 40),
+          'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
+            'path', '$.limitations[0]', 'clearedContentHash', repeat('b', 64),
+            'clearedBy', 'x', 'clearedAt', '2026-09-16T00:00:00Z', 'rationale', 'Looks fine.'))));
+
+select rrv7.expect_refusal(
+  'a clearance naming an arbitrary string is refused',
+  'name an operator by id',
+  $q$
+  insert into public.release_rescue_reports
+    (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+     rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+  values ('7b000000-0000-0000-0000-00000000aa01', '7aa00000-0000-0000-0000-000000000033',
+          '7e000000-0000-0000-0000-00000000aa01', '7f000000-0000-0000-0000-00000000aa01',
+          'release-rescue-report/v1', repeat('1', 64), 'release-rescue-rubric/v1', repeat('2', 64),
+          repeat('4', 64), 'conditional_release', 0, 32, 32, 'auditor',
+          '7a000000-0000-0000-0000-00000000cc01');
+$q$);
+
+insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
+values ('7f000000-0000-0000-0000-00000000aa02', '7b000000-0000-0000-0000-00000000aa01',
+        '7e000000-0000-0000-0000-00000000aa01', 'observation', 'operator clearance', repeat('c', 64),
+        jsonb_build_object(
+          'schemaVersion', 'release-rescue-report/v1',
+          'reviewedCommitSha', repeat('a', 40),
+          'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
+            'path', '$.limitations[0]', 'clearedContentHash', repeat('b', 64),
+            'clearedBy', '7a000000-0000-0000-0000-00000000dd01',
+            'clearedAt', '2026-09-16T00:00:00Z', 'rationale', 'Looks fine.'))));
+
+select rrv7.expect_refusal(
+  'a clearance by a plain operator is refused',
+  'ops manager or platform admin',
+  $q$
+  insert into public.release_rescue_reports
+    (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+     rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+  values ('7b000000-0000-0000-0000-00000000aa01', '7aa00000-0000-0000-0000-000000000033',
+          '7e000000-0000-0000-0000-00000000aa01', '7f000000-0000-0000-0000-00000000aa02',
+          'release-rescue-report/v1', repeat('3', 64), 'release-rescue-rubric/v1', repeat('2', 64),
+          repeat('4', 64), 'conditional_release', 0, 32, 32, 'auditor',
+          '7a000000-0000-0000-0000-00000000cc01');
+$q$);
+
+insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
+values ('7f000000-0000-0000-0000-00000000aa03', '7b000000-0000-0000-0000-00000000aa01',
+        '7e000000-0000-0000-0000-00000000aa01', 'observation', 'manager clearance', repeat('d', 64),
+        jsonb_build_object(
+          'schemaVersion', 'release-rescue-report/v1',
+          'reviewedCommitSha', repeat('a', 40),
+          'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
+            'path', '$.limitations[0]', 'clearedContentHash', repeat('b', 64),
+            'clearedBy', '7a000000-0000-0000-0000-00000000cc01',
+            'clearedAt', '2026-09-16T00:00:00Z', 'rationale', 'Reviewed the line.'))));
+
+do $$
+begin
+  insert into public.release_rescue_reports
+    (id, organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+     rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+  values ('7cc00000-0000-0000-0000-000000000001', '7b000000-0000-0000-0000-00000000aa01',
+          '7aa00000-0000-0000-0000-000000000033', '7e000000-0000-0000-0000-00000000aa01',
+          '7f000000-0000-0000-0000-00000000aa03', 'release-rescue-report/v1', repeat('5', 64),
+          'release-rescue-rubric/v1', repeat('2', 64), repeat('4', 64), 'conditional_release', 0,
+          32, 32, 'auditor', '7a000000-0000-0000-0000-00000000cc01');
+  perform rrv7.assert('a clearance by an ops manager is accepted', true);
+end $$;
+
+-- The report stamp, attempted by every caller class.
+--
+-- RLS denies by invisibility, not by raising: a caller with no UPDATE reach
+-- matches zero rows and no exception is thrown. Expecting a refusal here would
+-- pass for the wrong reason on the roles RLS covers and would say nothing about
+-- the trigger. So this asserts the outcome that actually matters -- the stamp is
+-- still null -- and records which of the two controls did the work, then proves
+-- the trigger on its own below with RLS out of the picture.
+do $$
+declare
+  v_case record;
+  v_refused boolean;
+  v_rows integer;
+  v_checked integer := 0;
+  v_stamp timestamptz;
+begin
+  for v_case in
+    select * from (values
+      ('anonymous',       'anon',          null::text),
+      ('customer admin',  'authenticated', '7a000000-0000-0000-0000-00000000aa01'),
+      ('other tenant',    'authenticated', '7a000000-0000-0000-0000-00000000bb01'),
+      ('plain operator',  'authenticated', '7a000000-0000-0000-0000-00000000dd01'),
+      ('ops manager',     'authenticated', '7a000000-0000-0000-0000-00000000cc01'),
+      ('service role',    'service_role',  null::text)
+    ) as t(label, role_name, subject)
+  loop
+    v_refused := false;
+    v_rows := 0;
+    begin
+      execute format('set local role %I', v_case.role_name);
+      if v_case.subject is not null then
+        perform set_config('request.jwt.claim.sub', v_case.subject, true);
+      else
+        perform set_config('request.jwt.claim.sub', '', true);
+      end if;
+
+      update public.release_rescue_reports set purged_at = now()
+       where id = '7cc00000-0000-0000-0000-000000000001';
+      get diagnostics v_rows = row_count;
+    exception when others then
+      v_refused := true;
+    end;
+    reset role;
+    perform set_config('request.jwt.claim.sub', '', true);
+
+    select purged_at into v_stamp from public.release_rescue_reports
+     where id = '7cc00000-0000-0000-0000-000000000001';
+
+    perform rrv7.assert(
+      format('%s cannot stamp a report purged (refused=%s, rows=%s)', v_case.label, v_refused, v_rows),
+      (v_refused or v_rows = 0) and v_stamp is null);
+    v_checked := v_checked + 1;
+  end loop;
+
+  if v_checked <> 6 then raise exception 'ONLY % REPORT CALLER CLASSES CHECKED', v_checked; end if;
+end $$;
+
+-- RLS out of the picture: a trigger alone has to refuse this.
+--
+-- The refusal here comes from the v2 report immutability trigger, which sorts
+-- ahead of the v7 purge-stamp trigger and already rejects every report update
+-- except stamping `delivered_at`. That is the answer we want; the wording just
+-- belongs to the guard that got there first. The v7 trigger is the layer behind
+-- it, and the two cases below reach it where v2 does not look.
+select rrv7.expect_refusal(
+  'direct SQL, no RLS, cannot stamp a report purged',
+  'permitted report update',
+  $q$
+  update public.release_rescue_reports set purged_at = now()
+   where id = '7cc00000-0000-0000-0000-000000000001';
+$q$);
+
+-- The forged flag, by the one ordinary caller that has UPDATE reach here. An ops
+-- manager can stamp `delivered_at` under RLS, so unlike a customer they do reach
+-- the triggers -- and the flag is a transaction-local GUC anyone may set. It buys
+-- them nothing: `release_rescue_in_retention_purge()` also demands EXECUTE on the
+-- sweep function, which they do not hold, so the purge carve-out stays shut and
+-- the ordinary immutability rule answers.
+select rrv7.expect_refusal(
+  'a forged retention flag cannot stamp a report purged',
+  'permitted report update',
+  $q$
+  set local role authenticated;
+  set local request.jwt.claim.sub = '7a000000-0000-0000-0000-00000000cc01';
+  select set_config('delegation.retention_purge', 'on', true);
+  update public.release_rescue_reports set purged_at = now()
+   where id = '7cc00000-0000-0000-0000-000000000001';
+$q$);
+
+-- `service_role` does hold the sweep's EXECUTE privilege, so the flag is true for it.
+-- That is the sweep's own identity, and the control that still has to hold is
+-- shape: it may clear the body, not stamp a row purged while the artifact stays.
+select rrv7.expect_refusal(
+  'the sweep identity cannot stamp a report purged while keeping its body',
+  'must clear report_artifact_id',
+  $q$
+  set local role service_role;
+  select set_config('delegation.retention_purge', 'on', true);
+  update public.release_rescue_reports set purged_at = now()
+   where id = '7cc00000-0000-0000-0000-000000000001';
+$q$);
+
+-- v2 guards UPDATE and DELETE only. A report born already purged is the v7
+-- trigger's own case, and the sweep would skip such a row forever.
+select rrv7.expect_refusal(
+  'a report cannot be created already purged',
+  'created already purged',
+  $q$
+  insert into public.release_rescue_reports
+    (id, organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+     rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by, purged_at)
+  values ('7cc00000-0000-0000-0000-0000000000f1', '7b000000-0000-0000-0000-00000000aa01',
+          '7aa00000-0000-0000-0000-000000000033', '7e000000-0000-0000-0000-00000000aa01',
+          '7f000000-0000-0000-0000-00000000aa03', 'release-rescue-report/v1', repeat('6', 64),
+          'release-rescue-rubric/v1', repeat('2', 64), repeat('4', 64), 'conditional_release', 0,
+          32, 32, 'auditor', '7a000000-0000-0000-0000-00000000cc01', now());
+$q$);
+
+-- The positive control. Everything above proves the column is refused; this proves
+-- the refusals did not simply break retention, which is the failure mode that would
+-- look identical from the outside. Engagement `...0033` is not due (7-day policy,
+-- undelivered), so the sweep needs a due engagement that actually carries a report.
+-- Its own run, as a real engagement has: the sweep scopes artifact deletion by
+-- run, so sharing one would purge the other engagement's report body too.
+insert into public.workstream_runs (id, organization_id, workstream_id, delegation_spec_id, status)
+values ('7e000000-0000-0000-0000-00000000aa44', '7b000000-0000-0000-0000-00000000aa01',
+        '7c000000-0000-0000-0000-00000000aa01', '7d000000-0000-0000-0000-00000000aa01', 'planned');
+update public.workstream_runs set status = 'running' where id = '7e000000-0000-0000-0000-00000000aa44';
+
+insert into public.release_rescue_engagements
+  (id, organization_id, run_id, scope, scope_hash, retention_policy, retention_days,
+   access_mode, delivered_at)
+values ('7aa00000-0000-0000-0000-000000000044', '7b000000-0000-0000-0000-00000000aa01',
+        '7e000000-0000-0000-0000-00000000aa44',
+        '{"repository":{"repositoryRef":"a/due","accessMode":"customer_installed_readonly_app"}}'::jsonb,
+        repeat('7', 64), 'purge_on_delivery', 0, 'customer_installed_readonly_app', now());
+update public.release_rescue_engagements
+   set snapshot_limits_version = 'release-rescue-snapshot-limits/v1'
+ where id = '7aa00000-0000-0000-0000-000000000044';
+insert into public.release_rescue_repository_grants
+  (organization_id, engagement_id, provider, repository_ref, grant_method, expires_at)
+values ('7b000000-0000-0000-0000-00000000aa01', '7aa00000-0000-0000-0000-000000000044',
+        'github', 'a/due', 'customer_installed_readonly_app', now() + interval '7 days');
+update public.release_rescue_engagements set reviewed_commit_sha = repeat('a', 40)
+ where id = '7aa00000-0000-0000-0000-000000000044';
+
+insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
+values ('7f000000-0000-0000-0000-00000000aa04', '7b000000-0000-0000-0000-00000000aa01',
+        '7e000000-0000-0000-0000-00000000aa44', 'observation', 'due report body', repeat('e', 64),
+        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'reviewedCommitSha', repeat('a', 40)));
+
+insert into public.release_rescue_reports
+  (id, organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+   rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+   coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+values ('7cc00000-0000-0000-0000-000000000044', '7b000000-0000-0000-0000-00000000aa01',
+        '7aa00000-0000-0000-0000-000000000044', '7e000000-0000-0000-0000-00000000aa44',
+        '7f000000-0000-0000-0000-00000000aa04', 'release-rescue-report/v1', repeat('8', 64),
+        'release-rescue-rubric/v1', repeat('2', 64), repeat('7', 64), 'conditional_release', 0,
+        32, 32, 'auditor', '7a000000-0000-0000-0000-00000000cc01');
+
+do $$
+declare v_stamp timestamptz; v_body uuid; v_untouched timestamptz;
+begin
+  perform public.purge_expired_release_rescue_data('manual');
+
+  select purged_at, report_artifact_id into v_stamp, v_body
+    from public.release_rescue_reports where id = '7cc00000-0000-0000-0000-000000000044';
+  perform rrv7.assert('the retention sweep itself can stamp a due report', v_stamp is not null);
+  perform rrv7.assert('and the sweep cleared the report body', v_body is null);
+
+  -- The report that is not yet due keeps its content. A guard that purged
+  -- everything would have passed the assertion above too.
+  select purged_at into v_untouched
+    from public.release_rescue_reports where id = '7cc00000-0000-0000-0000-000000000001';
+  perform rrv7.assert('a report that is not due is left alone', v_untouched is null);
+end $$;
+
+\echo ''
+\echo '=== v7 destructive authority proof complete: every case above printed PASS ==='

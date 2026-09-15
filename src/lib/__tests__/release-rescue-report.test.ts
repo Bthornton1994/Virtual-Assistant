@@ -3,7 +3,7 @@ import { RELEASE_RESCUE_RUBRIC_V1_HASH } from "@/lib/release-rescue-rubric";
 import { hashScope } from "@/lib/release-rescue-intake";
 import {
   STANDING_LIMITATIONS,
-  assembleReleaseRescueReport,
+  buildReleaseRescueReport,
   deriveReportMetrics,
   hashReleaseRescueReport,
   releaseRescueDeliveryGate,
@@ -24,7 +24,7 @@ function failures(report: unknown): string {
 
 describe("report assembly", () => {
   it("produces a valid, fully covered report with no findings", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
     const validation = validateReleaseRescueReport(report);
 
     expect(validation.hardFailures).toEqual([]);
@@ -36,7 +36,7 @@ describe("report assembly", () => {
   });
 
   it("always carries the standing limitations and the required disclaimers", () => {
-    const report = assembleReleaseRescueReport(makeReportInput({ limitations: [] }));
+    const report = buildReleaseRescueReport(makeReportInput({ limitations: [] }));
 
     for (const limitation of STANDING_LIMITATIONS) {
       expect(report.limitations).toContain(limitation);
@@ -50,20 +50,20 @@ describe("report assembly", () => {
   });
 
   it("hashes deterministically and changes when content changes", () => {
-    const first = assembleReleaseRescueReport(makeReportInput());
-    const second = assembleReleaseRescueReport(makeReportInput());
+    const first = buildReleaseRescueReport(makeReportInput());
+    const second = buildReleaseRescueReport(makeReportInput());
 
     expect(hashReleaseRescueReport(first)).toBe(hashReleaseRescueReport(second));
     expect(hashReleaseRescueReport(first)).toMatch(/^[0-9a-f]{64}$/);
 
-    const changed = assembleReleaseRescueReport(makeReportInput({ reportId: "rep-002" }));
+    const changed = buildReleaseRescueReport(makeReportInput({ reportId: "rep-002" }));
     expect(hashReleaseRescueReport(changed)).not.toBe(hashReleaseRescueReport(first));
   });
 });
 
 describe("verdict ladder", () => {
   it("blocks a release on a confirmed blocking finding", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
@@ -79,7 +79,7 @@ describe("verdict ladder", () => {
   });
 
   it("holds an unconfirmed critical at conditional rather than blocking the release", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "ai.untrusted_input_is_not_authority", {
           outcome: "concern",
@@ -106,7 +106,7 @@ describe("verdict ladder", () => {
   });
 
   it("caps the verdict at conditional whenever a check was not assessed", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "deps.known_vulnerable_dependencies", {
           outcome: "not_assessed",
@@ -122,7 +122,7 @@ describe("verdict ladder", () => {
   });
 
   it("reports tracked findings when nothing reaches high", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "observe.error_reporting_without_leakage", {
           outcome: "concern",
@@ -146,7 +146,7 @@ describe("verdict ladder", () => {
   });
 
   it("does not let a confirmed high on an ungated check read as clean", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "deps.known_vulnerable_dependencies", {
           outcome: "fail",
@@ -172,14 +172,14 @@ describe("verdict ladder", () => {
 
 describe("report integrity", () => {
   it("rejects edited severity counts", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
     const tampered = { ...report, severityCounts: { ...report.severityCounts, critical: 5 } };
 
     expect(failures(tampered)).toContain("recomputation from the findings gives 0");
   });
 
   it("rejects an edited verdict", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
@@ -194,41 +194,41 @@ describe("report integrity", () => {
   });
 
   it("rejects edited coverage", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
     const tampered = { ...report, coverage: { ...report.coverage, notAssessedChecks: 0, assessedChecks: 99 } };
 
     expect(failures(tampered)).toContain("coverage.assessedChecks");
   });
 
   it("rejects a report bound to a different rubric", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
     const tampered = { ...report, rubricHash: "b".repeat(64) };
 
     expect(failures(tampered)).toContain("does not match the release-rescue-rubric/v1 rubric");
   });
 
   it("rejects a scope hash that does not match the scope", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
     const tampered = { ...report, scopeHash: "c".repeat(64) };
 
     expect(failures(tampered)).toContain("does not match the hash recomputed from its scope");
   });
 
   it("rejects a missing assessment for any rubric check", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
     const tampered = { ...report, assessments: report.assessments.slice(1) };
 
     expect(failures(tampered)).toContain("has no assessment");
   });
 
   it("rejects a duplicated assessment or finding", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
 
     expect(failures({ ...report, assessments: [...report.assessments, report.assessments[0]] })).toContain(
       "is assessed more than once",
     );
 
-    const withFindings = assembleReleaseRescueReport(
+    const withFindings = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
@@ -241,7 +241,7 @@ describe("report integrity", () => {
   });
 
   it("rejects a blocking check passed on argument alone", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.tenant_isolation_at_data_layer", {
           outcome: "pass",
@@ -255,7 +255,7 @@ describe("report integrity", () => {
   });
 
   it("allows a non-blocking check to pass on a reasoned argument", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "data.customer_data_inventory", {
           outcome: "pass",
@@ -270,7 +270,7 @@ describe("report integrity", () => {
 
   it("rejects a finding on a check marked pass, not_applicable, or not_assessed", () => {
     for (const outcome of ["pass", "not_applicable", "not_assessed"] as const) {
-      const report = assembleReleaseRescueReport(
+      const report = buildReleaseRescueReport(
         makeReportInput({
           assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
             outcome,
@@ -284,7 +284,7 @@ describe("report integrity", () => {
   });
 
   it("rejects a failed check with no finding to explain it", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "input.boundary_validation", {
           outcome: "fail",
@@ -296,18 +296,30 @@ describe("report integrity", () => {
     expect(failures(report)).toContain("but no finding explains it");
   });
 
-  it("rejects a report carrying an unredacted secret anywhere", () => {
-    const report = assembleReleaseRescueReport(
-      makeReportInput({
-        limitations: ["We could not rotate the key AKIAIOSFODNN7EXAMPLE found in the deploy script."],
-      }),
+  it("removes an unredacted secret anywhere in the report, and records the removal", () => {
+    // Validation used to be the only defence, and its only move was to refuse the
+    // whole report. The pipeline now removes the material at build, so the
+    // artifact is clean and the report is held for a reviewer instead.
+    const report = buildReleaseRescueReport(
+      makeReportInput({ limitations: ["Reviewer note: the key is AKIAIOSFODNN7EXAMPLE."] }),
     );
 
-    expect(failures(report)).toContain("Unredacted secret material");
+    expect(JSON.stringify(report)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(report.unresolvedHolds.some((hold) => hold.classification === "credential_evidence")).toBe(true);
+    expect(releaseRescueDeliveryGate(report, validateReleaseRescueReport(report)).deliverable).toBe(false);
+  });
+
+  it("still refuses an artifact that reaches validation with a secret in it", () => {
+    // The backstop, for an artifact assembled somewhere this pipeline did not
+    // touch — a database row read back, say. Validation keeps its refusal.
+    const clean = buildReleaseRescueReport(makeReportInput());
+    const tampered = { ...clean, limitations: [...clean.limitations, "AKIAIOSFODNN7EXAMPLE"] };
+
+    expect(validateReleaseRescueReport(tampered).hardFailures.join(" ")).toContain("Unredacted secret material");
   });
 
   it("rejects a report whose auditor took an external action", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({ authorityReport: { ...ZERO_AUTHORITY, externalMessagesSent: 1 } }),
     );
 
@@ -315,7 +327,7 @@ describe("report integrity", () => {
   });
 
   it("rejects report text that makes a prohibited claim", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({ limitations: ["This penetration test covered only the checkout flow."] }),
     );
 
@@ -323,7 +335,7 @@ describe("report integrity", () => {
   });
 
   it("warns, without failing, when a report contains no findings at all", () => {
-    const validation = validateReleaseRescueReport(assembleReleaseRescueReport(makeReportInput()));
+    const validation = validateReleaseRescueReport(buildReleaseRescueReport(makeReportInput()));
 
     expect(validation.hardGatePass).toBe(true);
     expect(validation.warnings.join(" ")).toContain("no findings");
@@ -375,13 +387,13 @@ describe("the customer's review-mode choice is enforced", () => {
   it("rejects an agent-prepared report for an engagement that declined AI review", () => {
     // The choice is offered at intake. A pipeline that records it and proceeds
     // anyway is worse than one that never offered it.
-    const report = assembleReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
+    const report = buildReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
 
     expect(failures(report)).toContain("declined AI-assisted review");
   });
 
   it("refuses to deliver it as well", () => {
-    const report = assembleReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
+    const report = buildReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
     const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
 
     expect(gate.deliverable).toBe(false);
@@ -389,7 +401,7 @@ describe("the customer's review-mode choice is enforced", () => {
   });
 
   it("accepts a human-prepared report for the same engagement", () => {
-    const report = assembleReleaseRescueReport(
+    const report = buildReleaseRescueReport(
       makeReportInput({
         scope: humanOnlyScope(),
         preparedBy: {
@@ -408,7 +420,7 @@ describe("the customer's review-mode choice is enforced", () => {
   });
 
   it("leaves an engagement that accepted AI review unaffected", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
 
     expect(report.scope.aiAssistedReviewAccepted).toBe(true);
     expect(validateReleaseRescueReport(report).hardFailures).toEqual([]);
@@ -417,8 +429,8 @@ describe("the customer's review-mode choice is enforced", () => {
   it("binds the choice into the scope hash", () => {
     // Otherwise the choice could be edited after the fact without invalidating
     // the report it governs.
-    const accepted = assembleReleaseRescueReport(makeReportInput());
-    const declined = assembleReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
+    const accepted = buildReleaseRescueReport(makeReportInput());
+    const declined = buildReleaseRescueReport(makeReportInput({ scope: humanOnlyScope() }));
 
     expect(declined.scopeHash).not.toBe(accepted.scopeHash);
   });
@@ -426,14 +438,14 @@ describe("the customer's review-mode choice is enforced", () => {
 
 describe("delivery gate", () => {
   it("clears a validated, human-reviewed report", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
     const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
 
     expect(gate).toEqual({ deliverable: true, blockers: [] });
   });
 
   it("refuses to deliver an unsigned report", () => {
-    const report = assembleReleaseRescueReport(makeReportInput({ reviewedBy: null }));
+    const report = buildReleaseRescueReport(makeReportInput({ reviewedBy: null }));
     const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
 
     expect(gate.deliverable).toBe(false);
@@ -442,7 +454,7 @@ describe("delivery gate", () => {
   });
 
   it("refuses to deliver a report that failed validation", () => {
-    const report = assembleReleaseRescueReport(makeReportInput());
+    const report = buildReleaseRescueReport(makeReportInput());
     const tampered = { ...report, severityCounts: { ...report.severityCounts, high: 9 } };
     const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(tampered));
 

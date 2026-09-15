@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   REPORT_FIELD_POLICY,
   checkReportFieldCoverage,
+  enumerateSchemaStringPaths,
   enumerateStringFields,
   normalizeFieldPath,
 } from "@/lib/release-rescue-field-policy";
-import { assembleReleaseRescueReport, validateReleaseRescueReport } from "@/lib/release-rescue-report";
+import {
+  buildReleaseRescueReport,
+  releaseRescueReportV1Schema,
+  validateReleaseRescueReport,
+} from "@/lib/release-rescue-report";
 import { SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
+import { findInternalIdentityLeaks, toCustomerReportView } from "@/lib/release-rescue-presentation";
 import { makeFinding, makeReportInput, setAssessment, passingAssessments } from "@/lib/__tests__/release-rescue-fixtures";
 
 // The report field coverage contract.
@@ -25,8 +31,8 @@ import { makeFinding, makeReportInput, setAssessment, passingAssessments } from 
 
 const REAL_REPORTS = [
   SAMPLE_REPORT,
-  assembleReleaseRescueReport(makeReportInput()),
-  assembleReleaseRescueReport(
+  buildReleaseRescueReport(makeReportInput()),
+  buildReleaseRescueReport(
     makeReportInput({
       findings: [makeFinding()],
       assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
@@ -178,19 +184,143 @@ describe("the dispositions mean what they say", () => {
         },
       ],
     });
-    const report = assembleReleaseRescueReport(makeReportInput({ findings: [finding] }));
+    const report = buildReleaseRescueReport(makeReportInput({ findings: [finding] }));
 
     expect(checkReportFieldCoverage(report)).toEqual([]);
   });
 
-  it("still redacts a credential in that excerpt", () => {
+  it("still removes a credential from that excerpt", () => {
     const finding = makeFinding({
       locations: [
         { path: "src/auth.ts", startLine: 1, endLine: 1, excerpt: "AKIAIOSFODNN7EXAMPLE" },
       ],
     });
-    const report = assembleReleaseRescueReport(makeReportInput({ findings: [finding] }));
+    const report = buildReleaseRescueReport(makeReportInput({ findings: [finding] }));
 
-    expect(checkReportFieldCoverage(report).map((f) => f.reason).join(" ")).toContain("unredacted credential");
+    // Redacted at build, so coverage has nothing left to complain about — and
+    // that is the stronger outcome than a coverage failure would have been.
+    expect(JSON.stringify(report)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(report.unresolvedHolds.length).toBeGreaterThan(0);
+    expect(checkReportFieldCoverage(report)).toEqual([]);
+  });
+});
+
+describe("the contract is driven by the schema, not by the fixtures to hand", () => {
+  // Walking a report instance can only see fields that instance populates. That
+  // is how `preparedBy.modelId` went unclassified: it is nullable, both fixtures
+  // set it to null, and every coverage test passed while the one value the
+  // Software Factory provenance rules tell operators to record would have
+  // refused the report.
+  //
+  // These tests walk the SCHEMA, so a field counts the moment it is declared.
+
+  const schemaPaths = enumerateSchemaStringPaths(releaseRescueReportV1Schema);
+
+  it("finds the whole report, not a corner of it", () => {
+    // A walk that silently returned [] would make every assertion below vacuous.
+    expect(schemaPaths.length).toBeGreaterThan(40);
+    expect(new Set(schemaPaths).size).toBe(schemaPaths.length);
+  });
+
+  it("classifies every string the schema permits", () => {
+    const undecided = schemaPaths.filter((path) => !REPORT_FIELD_POLICY[normalizeFieldPath(path)]);
+    expect(undecided, "classify these in REPORT_FIELD_POLICY").toEqual([]);
+  });
+
+  it("classifies the nullable field that the instance walk could not see", () => {
+    // Named explicitly, because this is the one the audit found and a
+    // regression here would otherwise only show up as a count.
+    expect(schemaPaths).toContain("$.preparedBy.modelId");
+    expect(REPORT_FIELD_POLICY["$.preparedBy.modelId"]).toBeDefined();
+  });
+
+  it("carries no policy entry for a path the schema no longer has", () => {
+    // The other direction. A stale entry is a decision about nothing, and it
+    // makes the policy look like it covers more than it does.
+    const permitted = new Set(schemaPaths.map(normalizeFieldPath));
+    const stale = Object.keys(REPORT_FIELD_POLICY).filter((path) => !permitted.has(path));
+    expect(stale, "remove these from REPORT_FIELD_POLICY").toEqual([]);
+  });
+});
+
+describe("the policy governs the assembler, not only the validator", () => {
+  it("accepts a populated modelId end to end", () => {
+    // The regression this closes: with `modelId` unclassified, recording the
+    // executor that prepared the report — which the provenance rules require —
+    // turned a clean report into a coverage failure at the delivery gate.
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        preparedBy: {
+          executorKey: "release-rescue-auditor",
+          executorKind: "agent",
+          provider: "internal",
+          modelId: "claude-opus-5",
+          protocolVersion: "v1",
+        },
+      }),
+    );
+
+    expect(report.preparedBy.modelId).toBe("claude-opus-5");
+    expect(checkReportFieldCoverage(report)).toEqual([]);
+    expect(validateReleaseRescueReport(report).hardGatePass).toBe(true);
+  });
+
+  it("records WHY modelId is exempt from the claim guard, not just that it is", () => {
+    // `generated` means the claim guard does not run on it, so the exemption is
+    // only sound while the value stays ours. It is chosen by our own model
+    // routing; no customer field and no executor's self-report reaches it. A
+    // change that lets either write it has to change this test too.
+    const rule = REPORT_FIELD_POLICY["$.preparedBy.modelId"];
+
+    expect(rule.disposition).toBe("generated");
+    expect(rule.because).toContain("routing");
+    expect(rule.because).toContain("never product truth");
+
+    // Every `preparedBy` field is exempt on the same grounds, so none of them
+    // may be reachable from customer input.
+    for (const [path, entry] of Object.entries(REPORT_FIELD_POLICY)) {
+      if (!path.startsWith("$.preparedBy.")) continue;
+      expect(entry.disposition, path).toBe("generated");
+    }
+  });
+
+  it("puts every assembled report through the same walk the validator uses", () => {
+    // The assembler is the only way a report is built (`assembleReleaseRescueReport`
+    // takes a `Sanitized<T>`, and `buildReleaseRescueReport` is the sole producer
+    // of one). So if its output is covered, every report is.
+    for (const report of REAL_REPORTS) {
+      const instancePaths = new Set(enumerateStringFields(report).map((leaf) => leaf.normalized));
+      for (const path of instancePaths) {
+        expect(REPORT_FIELD_POLICY[path], `${path} is assembled but unclassified`).toBeDefined();
+      }
+    }
+  });
+});
+
+describe("a populated modelId does not reach the customer's copy", () => {
+  // `findInternalIdentityLeaks` checks `modelId`, but only when it is non-null —
+  // and every fixture sets it to null, so that arm had never executed. Same
+  // shape as the coverage bug this pass fixed: a mechanism that looks right and
+  // has never run.
+  it("keeps it out of the rendered view and out of the JSON", () => {
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        preparedBy: {
+          executorKey: "release-rescue-auditor",
+          executorKind: "agent",
+          provider: "internal",
+          modelId: "claude-opus-5",
+          protocolVersion: "v1",
+        },
+      }),
+    );
+    const view = toCustomerReportView(report);
+
+    expect(report.preparedBy.modelId).toBe("claude-opus-5");
+    expect(findInternalIdentityLeaks(view, report)).toEqual([]);
+    expect(JSON.stringify(view)).not.toContain("claude-opus-5");
+    // The customer is still told HOW it was prepared, which is the disclosure
+    // the AI-assisted opt-in requires — just not by which model.
+    expect(view.preparedByKind).toBe("agent");
   });
 });

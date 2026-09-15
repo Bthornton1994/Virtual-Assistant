@@ -3,6 +3,7 @@ import {
   classifyAssignment,
   tailReadsAsSentence,
   valueShape,
+  type AssignmentSyntax,
   type SecretClassification,
 } from "@/lib/release-rescue-secret-classification";
 
@@ -73,10 +74,15 @@ const NON_SECRET_VALUE_PATTERNS: readonly RegExp[] = [
   /^\[REDACTED/i,
   /^(?:null|undefined|none|nil|true|false)$/i,
   /^[*x•.\-_]+$/i,
-  /^(?:your|my|the|a|an)[-_ ]/i,
+  // A placeholder is lowercase words all the way through. Requiring only the
+  // PREFIX made `AWS_SECRET_ACCESS_KEY="a-Kx92mQvn7LzPr0dQQ"` a placeholder,
+  // which is a real key that happens to start with "a-".
+  /^(?:your|my|the|a|an)[-_][a-z][a-z-]*$/i,
   /^(?:changeme|change_me|placeholder|example|sample|dummy|fake|test|todo|tbd|none|empty|unset|xxx+)$/i,
   /^(?:secret|password|passwd|token|apikey|api_key|key|value|string|text)$/i,
-  /^[0-9]{1,4}$/,
+  // No numeric allowlist. `PIN=4821` is a credential, and a genuinely
+  // uninteresting number like `saltRounds = 10` is already below the minimum
+  // value length below.
   // A flag is the next argument, not this one's value: `--password --verbose`.
   /^-/,
 ];
@@ -89,10 +95,12 @@ const MIN_VALUE_LENGTH = 4;
  *
  * `:` is legitimately part of a value (`admin:pass`, a URL), so it cannot
  * terminate the run — which means on `password:password:password:...` the run
- * would consume every remaining byte, once per token, and that is quadratic. A
- * credential is not four kilobytes long.
+ * consumes bytes until this cap, once per token. The cap is therefore the
+ * per-token cost, and 512 keeps a pathological 80KB input inside the repo's own
+ * budget while still covering every real credential: a longer one is a PEM block
+ * or a JWT, and both have their own prefix detectors that do not depend on this.
  */
-const MAX_VALUE_LENGTH = 4_096;
+const MAX_VALUE_LENGTH = 512;
 
 export function isNonSecretValue(value: string): boolean {
   const trimmed = value.trim().replace(/^["'`]|["'`]$/g, "");
@@ -127,7 +135,8 @@ export type CredentialForm =
   | "block_scalar"
   | "argument_list"
   | "attached_flag"
-  | "positional_record";
+  | "positional_record"
+  | "opaque_token_near_noun";
 
 const WORD = /[A-Za-z0-9_$.\-]/;
 const QUOTES = new Set(['"', "'", "`"]);
@@ -179,8 +188,25 @@ function skipSpaces(text: string, from: number, stopAtNewline = true): number {
  * of characters up to the next separator.
  */
 function valueSpan(text: string, from: number): { start: number; end: number } | null {
-  const begin = skipSpaces(text, from);
+  let begin = skipSpaces(text, from);
   if (begin === -1) return null;
+
+  // Step over an assignment operator sitting at the start of the run.
+  //
+  // The keyword and flag forms hand this function the position just after the
+  // KEY, which for `export DB_PASSWORD=x`, `ENV DB_PASSWORD=x` and
+  // `mytool --password=x` is the `=` itself. The run then began at `=`, so the
+  // span covered `=x` rather than `x` — and, worse, `=${DB_PASSWORD}` no longer
+  // matched the placeholder allowlist, so the correct Dockerfile idiom of
+  // passing a build arg through was redacted as though it were a leaked
+  // password. Found by crossing carriers with placeholder values.
+  if (text[begin] === "=" || text[begin] === ":") {
+    begin += 1;
+    if (text[begin] === "=" || text[begin] === ">") begin += 1;
+    const afterOperator = skipSpaces(text, begin);
+    if (afterOperator === -1) return null;
+    begin = afterOperator;
+  }
 
   if (QUOTES.has(text[begin])) {
     const quote = text[begin];
@@ -210,15 +236,24 @@ function pushSpan(
   text: string,
   span: { start: number; end: number } | null,
   form: CredentialForm,
-  options: { assumeStructured?: boolean } = {},
+  options: { syntax?: AssignmentSyntax } = {},
 ): void {
   if (!span) return;
   const value = text.slice(span.start, span.end);
 
-  // A structured format (a `.pgpass` line, a CSV column, an argument list) is
-  // its own evidence of an assignment, so the sentence heuristic does not apply.
-  const tailIsSentence = options.assumeStructured === true ? false : tailReadsAsSentence(text, span.end);
-  const classification = classifyAssignment(valueShape(value, isNonSecretValue), tailIsSentence);
+  // Structured unless the caller says otherwise. Every form in this scanner is
+  // machine syntax except the bare colon, which is the one shape an English
+  // sentence can also produce.
+  const syntax: AssignmentSyntax = options.syntax ?? "structured";
+  const tailIsSentence = syntax === "bare_colon" ? tailReadsAsSentence(text, span.end) : false;
+  // Sentence punctuation carried by the value itself, which only a clause does.
+  const valueEndsSentence = syntax === "bare_colon" && /[.,;!?]$/.test(value.trimEnd());
+  const classification = classifyAssignment(
+    syntax,
+    valueShape(value, isNonSecretValue),
+    tailIsSentence,
+    valueEndsSentence,
+  );
   if (classification === "sensitive_prose") return;
 
   spans.push({ start: span.start, end: span.end, form, classification });
@@ -265,9 +300,7 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
       const attached = /^([a-zA-Z])(.{4,})$/.exec(flag);
       if (attached && CREDENTIAL_FLAGS.has(attached[1].toLowerCase()) && !word.text.startsWith("--")) {
         const valueStart = word.start + word.text.length - attached[2].length;
-        pushSpan(spans, scanned, { start: valueStart, end: word.end }, "attached_flag", {
-          assumeStructured: true,
-        });
+        pushSpan(spans, scanned, { start: valueStart, end: word.end }, "attached_flag");
         continue;
       }
       // Lowercased ONLY for the fixed-flag lookup. `keyLooksSecret` splits on
@@ -301,10 +334,30 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
 
     if (next === -1) continue;
 
-    // F1. An operator assignment: `=`, `:`, `:=`, `=>`.
+    // F1. An operator assignment: `=`, `:=`, `=>`, or a bare `:`.
     if (scanned[next] === "=" || scanned[next] === ":") {
       let after = next + 1;
-      if (scanned[after] === "=" || scanned[after] === ">") after += 1;
+      const compound = scanned[after] === "=" || scanned[after] === ">";
+      if (compound) after += 1;
+
+      // A bare colon is the ONE ambiguous operator: YAML writes it and so does
+      // English. `:=` and `:>` are compound and unambiguous, and a quoted key
+      // (`"password":`) is JSON, which no sentence produces. Everything else in
+      // this scanner is machine syntax and defaults to `structured`.
+      // A QUOTED value settles the colon too. `DB_PASSWORD: "swordfish"` in a
+      // compose file is machine syntax however ordinary the word inside is, and
+      // English does not quote the object of a clause. Without this, the one
+      // carrier in the whole matrix that quotes a YAML value fell back to
+      // `ambiguous_secret_candidate` — still redacted, but held for a human
+      // instead of refused outright, which is the wrong answer for a password
+      // sitting in a compose file.
+      const valueBegin = skipSpaces(scanned, compound ? next + 2 : next + 1);
+      const isQuotedValue = valueBegin !== -1 && QUOTES.has(scanned[valueBegin]);
+
+      const syntax: AssignmentSyntax =
+        scanned[next] === ":" && !compound && !isQuotedKey && !isQuotedValue
+          ? "bare_colon"
+          : "structured";
 
       // F9. A YAML block scalar: `db_password: |` then indented lines.
       const indicator = skipSpaces(scanned, after);
@@ -330,10 +383,10 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
       // than useless, because it looks like something was protected.
       const assigned = valueSpan(scanned, after);
       if (assigned && AUTH_SCHEMES.has(scanned.slice(assigned.start, assigned.end).toLowerCase())) {
-        pushSpan(spans, scanned, valueSpan(scanned, assigned.end), "operator_assignment");
+        pushSpan(spans, scanned, valueSpan(scanned, assigned.end), "operator_assignment", { syntax });
         continue;
       }
-      pushSpan(spans, scanned, assigned, "operator_assignment");
+      pushSpan(spans, scanned, assigned, "operator_assignment", { syntax });
       continue;
     }
 
@@ -357,7 +410,7 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
     if (isQuotedKey && next !== -1 && scanned[next] === ",") {
       const argument = valueSpan(scanned, next + 1);
       if (argument) {
-        pushSpan(spans, scanned, argument, "argument_list", { assumeStructured: true });
+        pushSpan(spans, scanned, argument, "argument_list", { syntax: "structured" });
         continue;
       }
     }
@@ -380,7 +433,65 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
   }
 
   collectLineOrientedSpans(scanned, spans);
+  collectOpaqueTokensNearCredentialNouns(scanned, words, spans);
   return { spans, truncated };
+}
+
+/** Nouns whose presence on a line makes a nearby opaque token a credential. */
+const CREDENTIAL_NOUNS = new Set([
+  "password", "passwords", "passphrase", "secret", "secrets", "credential", "credentials",
+  "token", "tokens", "apikey", "key", "keys", "pin", "passcode", "otp",
+]);
+
+/**
+ * A high-entropy token sitting next to the word "password".
+ *
+ * The form every key-driven rule misses, because there is no key: a reviewer
+ * writing "Rotate pr0d-Xk92mQvn7Lz and move it to a secret store" has quoted the
+ * credential in a sentence. An end-to-end test caught this — the unit tests could
+ * not, because they all fed the scanner an assignment.
+ *
+ * Deliberately requires BOTH signals. Opaque tokens alone are everywhere in a
+ * report (commit shas, content hashes, identifiers we mint ourselves), and
+ * redacting those would corrupt the artifact. Pure hex of hash length is excluded
+ * for the same reason; a secret in that shape is still caught wherever it appears
+ * as an assigned value, which is how secrets normally appear.
+ */
+function collectOpaqueTokensNearCredentialNouns(
+  text: string,
+  words: readonly Word[],
+  spans: CredentialSpan[],
+): void {
+  const lineHasNoun = new Map<number, boolean>();
+  const lineStartOf = (offset: number) => text.lastIndexOf("\n", offset) + 1;
+
+  for (const word of words) {
+    if (!CREDENTIAL_NOUNS.has(word.text.toLowerCase())) continue;
+    lineHasNoun.set(lineStartOf(word.start), true);
+  }
+  if (lineHasNoun.size === 0) return;
+
+  for (const word of words) {
+    if (!lineHasNoun.get(lineStartOf(word.start))) continue;
+
+    const token = word.text;
+    if (token.length < 12) continue;
+    // Our own identifiers: a commit sha, a content hash, a uuid.
+    if (/^[0-9a-f]{32,}$/.test(token)) continue;
+    if (/^[0-9a-f-]{36}$/.test(token)) continue;
+    if (!/[0-9]/.test(token) || !/[A-Za-z]/.test(token)) continue;
+    if (isNonSecretValue(token)) continue;
+    if (CREDENTIAL_NOUNS.has(token.toLowerCase()) || keyLooksSecret(token)) continue;
+    // Already covered by a stronger, more specific form.
+    if (spans.some((span) => word.start >= span.start && word.end <= span.end)) continue;
+
+    spans.push({
+      start: word.start,
+      end: word.end,
+      form: "opaque_token_near_noun",
+      classification: "credential_evidence",
+    });
+  }
 }
 
 /**
@@ -403,9 +514,7 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
     const pgpass = /^([^:\s]+):(\d{1,5}):([^:]*):([^:]*):(.+)$/.exec(line.trim());
     if (pgpass && pgpass[5].length >= 4) {
       const valueStart = offset + line.length - pgpass[5].length;
-      pushSpan(spans, text, { start: valueStart, end: offset + line.length }, "positional_record", {
-        assumeStructured: true,
-      });
+      pushSpan(spans, text, { start: valueStart, end: offset + line.length }, "positional_record");
     }
 
     // F7. `.netrc`: `machine host login user password secret`.
@@ -413,7 +522,7 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
       const marker = /\b(password|passwd|account)\b[ \t]+/i.exec(line);
       if (marker) {
         const from = offset + marker.index + marker[0].length;
-        pushSpan(spans, text, valueSpan(text, from), "netrc_line", { assumeStructured: true });
+        pushSpan(spans, text, valueSpan(text, from), "netrc_line", { syntax: "structured" });
       }
     }
 
@@ -426,7 +535,7 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
       for (const [column, field] of line.split(delimiter).entries()) {
         if (secretColumns.includes(column)) {
           const begin = cursor + (field.length - field.trimStart().length);
-          pushSpan(spans, text, { start: begin, end: cursor + field.length }, "delimited_column", { assumeStructured: true });
+              pushSpan(spans, text, { start: begin, end: cursor + field.length }, "delimited_column");
         }
         cursor += field.length + delimiter.length;
       }

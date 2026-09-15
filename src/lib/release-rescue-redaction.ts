@@ -262,9 +262,29 @@ export function redactSecrets(input: string): RedactionResult {
   };
 }
 
-/** True when `text` still holds something credential-shaped. */
+/**
+ * True when `text` still holds something credential-shaped, at ANY confidence.
+ *
+ * Kept for the storage paths, where a hold is as good a reason to act as a
+ * certainty. NOT for refusing a customer's input — see `holdsCredentialEvidence`.
+ */
 export function containsLikelySecret(text: string): boolean {
   return redactSecrets(text).hadSecrets;
+}
+
+/**
+ * True only when we are CONFIDENT this is a credential.
+ *
+ * The distinction matters where the consequence is refusing a person rather than
+ * redacting a string. An audit found the public intake form telling a customer
+ * who wrote "Auth: Clerk. Payments: Stripe." to remove the credential, because
+ * uncertainty and certainty shared one boolean. A form should refuse what it is
+ * sure about and accept the rest; the report pipeline, which can redact and hold,
+ * is where uncertainty is handled properly.
+ */
+export function holdsCredentialEvidence(text: string): boolean {
+  const { classification } = redactSecrets(text);
+  return classification !== null && blocksDelivery(classification);
 }
 
 export type PreparedExcerpt = {
