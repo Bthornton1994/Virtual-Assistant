@@ -6,6 +6,8 @@ export const metadata = {
   description: `Demo intake for the $${RESCUE_REVIEW_PRICE_USD} AI App Release Rescue review. No payment and no access tokens.`,
 };
 
+export const dynamic = "force-dynamic";
+
 export default function RescueIntakePage() {
   return (
     <div className="mx-auto max-w-xl px-5 py-16">

@@ -17,18 +17,20 @@ const selectClassName =
 export function RescueIntakeForm() {
   const [state, action, pending] = useActionState(submitRescueIntakeAction, initialRescueIntakeState);
   const errorSummaryId = useId();
-  const values = state.values;
+  const errors = state?.errors ?? {};
+  const formError = state?.formError ?? null;
+  const values = state?.values ?? {};
 
   return (
-    <form action={action} className="space-y-10" key={state.formError ? JSON.stringify(values) : "fresh"}>
-      {state.formError || Object.keys(state.errors).length > 0 ? (
+    <form action={action} className="space-y-10" key={formError ? JSON.stringify(values) : "fresh"}>
+      {formError || Object.keys(errors).length > 0 ? (
         <div
           id={errorSummaryId}
           tabIndex={-1}
           role="alert"
           className="rounded-md border border-bad/30 bg-bad-bg px-3 py-2 text-sm text-bad"
         >
-          {state.formError ?? "Check the highlighted fields. Nothing was stored."}
+          {formError ?? "Check the highlighted fields. Nothing was stored."}
         </div>
       ) : null}
 
@@ -38,10 +40,10 @@ export function RescueIntakeForm() {
           Name and work email only. Demo submissions stay in this server’s memory. They are not written to the customer
           database and are not a billing record.
         </p>
-        <Field label="Name" error={state.errors.contactName}>
+        <Field label="Name" error={errors.contactName}>
           <Input name="contactName" autoComplete="name" required defaultValue={values.contactName} />
         </Field>
-        <Field label="Work email" error={state.errors.workEmail}>
+        <Field label="Work email" error={errors.workEmail}>
           <Input name="workEmail" type="email" autoComplete="email" required defaultValue={values.workEmail} />
         </Field>
       </section>
@@ -52,7 +54,7 @@ export function RescueIntakeForm() {
         <Field
           label="Repository URL"
           hint="Public https URL. No tokens in the URL. No second repository."
-          error={state.errors.repositoryUrl}
+          error={errors.repositoryUrl}
         >
           <Input
             name="repositoryUrl"
@@ -63,7 +65,7 @@ export function RescueIntakeForm() {
             defaultValue={values.repositoryUrl}
           />
         </Field>
-        <Field label="Web application type" error={state.errors.appType}>
+        <Field label="Web application type" error={errors.appType}>
           <select name="appType" required className={selectClassName} defaultValue={values.appType ?? ""}>
             <option value="" disabled>
               Choose one
@@ -78,7 +80,7 @@ export function RescueIntakeForm() {
         <Field
           label="Critical workflow"
           hint="The path you care about most, from start to a done state."
-          error={state.errors.criticalWorkflow}
+          error={errors.criticalWorkflow}
         >
           <Textarea
             name="criticalWorkflow"
@@ -90,7 +92,7 @@ export function RescueIntakeForm() {
         <Field
           label="Public deployment URL (optional)"
           hint="Used only for observable browser behavior. No login bypass."
-          error={state.errors.deploymentUrl}
+          error={errors.deploymentUrl}
         >
           <Input
             name="deploymentUrl"
@@ -108,7 +110,7 @@ export function RescueIntakeForm() {
           Grant read-only access separately — a collaborator invite or a deploy key. This form has no token field
           and will reject pasted secrets.
         </p>
-        <Field label="How you will grant read-only access" error={state.errors.accessGrantMethod}>
+        <Field label="How you will grant read-only access" error={errors.accessGrantMethod}>
           <select
             name="accessGrantMethod"
             required
@@ -133,7 +135,7 @@ export function RescueIntakeForm() {
           File contents are not uploaded here. You may name repository-relative files. Do not list .env, keys, or
           credential files, and do not paste values.
         </p>
-        <Field label="Notes (optional)" error={state.errors.evidenceNotes}>
+        <Field label="Notes (optional)" error={errors.evidenceNotes}>
           <Textarea
             name="evidenceNotes"
             placeholder="The receipt form is the path we need to ship this week."
@@ -143,7 +145,7 @@ export function RescueIntakeForm() {
         <Field
           label="File names, comma separated (optional)"
           hint="Metadata only. Example: src/app/receipts/new/page.tsx, README.md"
-          error={state.errors.evidenceFileNames}
+          error={errors.evidenceFileNames}
         >
           <Input
             name="evidenceFileNames"
@@ -214,9 +216,9 @@ export function RescueIntakeForm() {
             checked={values.acknowledgedNoSecretsSubmitted === "on"}
           />
         </fieldset>
-        {state.errors.acknowledgements ? (
+        {errors.acknowledgements ? (
           <p className="text-xs text-bad" role="alert">
-            {state.errors.acknowledgements}
+            {errors.acknowledgements}
           </p>
         ) : null}
       </section>

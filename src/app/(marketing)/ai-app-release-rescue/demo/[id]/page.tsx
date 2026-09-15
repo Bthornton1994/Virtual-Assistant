@@ -6,6 +6,8 @@ import { getDemoEngagement } from "@/lib/ai-app-release-rescue/engagement";
 
 export const metadata = { title: "Demo request received" };
 
+export const dynamic = "force-dynamic";
+
 export default async function RescueDemoEngagementPage({
   params,
 }: {
