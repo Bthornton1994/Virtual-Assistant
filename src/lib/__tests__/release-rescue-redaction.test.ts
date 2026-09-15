@@ -1,0 +1,148 @@
+import { describe, expect, it } from "vitest";
+import {
+  MAX_EXCERPT_LENGTH,
+  containsLikelySecret,
+  prepareExcerpt,
+  redactSecrets,
+  scanForSecrets,
+} from "@/lib/release-rescue-redaction";
+
+// Every literal in this file is a syntactically valid but fabricated credential.
+// None of them is real, and none came from a repository.
+const SAMPLES: Array<{ label: string; text: string; detector: string }> = [
+  { label: "AWS access key id", text: "const id = 'AKIAIOSFODNN7EXAMPLE';", detector: "aws_access_key_id" },
+  {
+    label: "GitHub classic token",
+    text: "GITHUB_TOKEN=ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+    detector: "github_token",
+  },
+  {
+    label: "GitHub fine-grained token",
+    text: "token: github_pat_11ABCDEFG0123456789_abcdefghijklmnop",
+    detector: "github_fine_grained_token",
+  },
+  { label: "Slack token", text: "xoxb-123456789012-abcdefghijkl", detector: "slack_token" },
+  { label: "Stripe live key", text: "sk_live_abcdefghijklmnopqrstuvwx", detector: "stripe_key" },
+  { label: "Anthropic key", text: "sk-ant-api03-abcdefghijklmnopqrstuvwxyz", detector: "anthropic_key" },
+  { label: "OpenAI project key", text: "sk-proj-abcdefghijklmnopqrstuvwxyz012345", detector: "openai_key" },
+  { label: "Google API key", text: `AIza${"b".repeat(35)}`, detector: "google_api_key" },
+  { label: "npm token", text: `npm_${"c".repeat(36)}`, detector: "npm_token" },
+  {
+    label: "JWT",
+    text: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+    detector: "json_web_token",
+  },
+  {
+    label: "PEM private key",
+    text: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
+    detector: "pem_private_key",
+  },
+  {
+    label: "credentials in a connection string",
+    text: "DATABASE_URL=postgres://appuser:hunter2hunter2@db.internal:5432/app",
+    detector: "credential_in_url",
+  },
+  {
+    label: "assigned password",
+    text: 'const password = "correct-horse-battery";',
+    detector: "assigned_secret",
+  },
+];
+
+describe("release rescue secret redaction", () => {
+  for (const sample of SAMPLES) {
+    it(`redacts a ${sample.label}`, () => {
+      const result = redactSecrets(sample.text);
+
+      expect(result.hadSecrets).toBe(true);
+      expect(result.detections.map((detection) => detection.detector)).toContain(sample.detector);
+      expect(result.redacted).toContain("[REDACTED:");
+      expect(containsLikelySecret(result.redacted)).toBe(false);
+    });
+  }
+
+  it("keeps the setting name while removing its value", () => {
+    const result = redactSecrets('client_secret = "s3cr3t-value-here"');
+
+    expect(result.redacted).toContain("client_secret");
+    expect(result.redacted).not.toContain("s3cr3t-value-here");
+  });
+
+  it("keeps the host while removing an inline credential", () => {
+    const result = redactSecrets("postgres://appuser:hunter2hunter2@db.internal:5432/app");
+
+    expect(result.redacted).toContain("db.internal");
+    expect(result.redacted).toContain("appuser");
+    expect(result.redacted).not.toContain("hunter2hunter2");
+  });
+
+  it("leaves correct environment-variable usage readable", () => {
+    // A finding that recommends this pattern has to be able to show it.
+    const safe = [
+      "const apiKey = process.env.API_KEY;",
+      "password: import.meta.env.DB_PASSWORD",
+      'const token = "";',
+      "api_key: ${API_KEY}",
+      "client_secret: <your-client-secret>",
+      "password = changeme",
+    ];
+
+    for (const line of safe) {
+      expect(redactSecrets(line).hadSecrets, line).toBe(false);
+    }
+  });
+
+  it("is idempotent", () => {
+    const once = redactSecrets("ghp_0123456789abcdefghijklmnopqrstuvwxyz").redacted;
+    const twice = redactSecrets(once).redacted;
+
+    expect(twice).toBe(once);
+  });
+
+  it("does not depend on call order", () => {
+    // The detector list holds /g literals, whose lastIndex would otherwise leak
+    // between calls and make a later redaction miss a match.
+    const text = "AKIAIOSFODNN7EXAMPLE and AKIAIOSFODNN7EXAMPLE";
+    const first = redactSecrets(text);
+    const second = redactSecrets(text);
+
+    expect(second).toEqual(first);
+    expect(first.detections.find((d) => d.detector === "aws_access_key_id")?.count).toBe(2);
+  });
+
+  it("redacts before truncating so no credential fragment survives", () => {
+    const secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+    const raw = `${"x".repeat(MAX_EXCERPT_LENGTH - 10)}${secret}`;
+    const prepared = prepareExcerpt(raw);
+
+    expect(prepared.truncated).toBe(true);
+    expect(prepared.excerpt.length).toBeLessThanOrEqual(MAX_EXCERPT_LENGTH);
+    // Neither the whole token nor a leading fragment of it may appear.
+    expect(prepared.excerpt).not.toContain(secret);
+    expect(prepared.excerpt).not.toContain(secret.slice(0, 20));
+  });
+
+  it("caps excerpt length", () => {
+    const prepared = prepareExcerpt("y".repeat(MAX_EXCERPT_LENGTH * 3));
+
+    expect(prepared.excerpt.length).toBeLessThanOrEqual(MAX_EXCERPT_LENGTH);
+    expect(prepared.truncated).toBe(true);
+  });
+
+  it("finds secrets nested anywhere in a JSON structure", () => {
+    const hits = scanForSecrets({
+      findings: [
+        { title: "fine", locations: [{ excerpt: "const ok = 1;" }] },
+        { title: "leaky", locations: [{ excerpt: "AKIAIOSFODNN7EXAMPLE" }] },
+      ],
+    });
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0].path).toBe("$.findings[1].locations[0].excerpt");
+    expect(hits[0].detectors).toContain("aws_access_key_id");
+  });
+
+  it("reports nothing for a clean structure", () => {
+    expect(scanForSecrets({ a: ["ok", 1, null, true], b: { c: "also ok" } })).toEqual([]);
+  });
+});

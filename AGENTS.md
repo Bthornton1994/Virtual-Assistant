@@ -58,6 +58,16 @@ Treat explicit authority, required approvals, least-privilege access, organizati
 
 Only edit `VISION.md` when the task explicitly authorizes a governing decision change. Small fixes need no formal vision analysis, but they must preserve these boundaries. Report validation and any remaining vision tension before handoff.
 
+## AI App Release Rescue
+
+For work on the release-readiness review workstream — intake, repository access, the audit rubric, findings, report integrity, or retention — read `docs/AI-APP-RELEASE-RESCUE-V1.md` first.
+
+The offer is a fixed-price review of one repository, one application, and one critical workflow, with a separate remediation sprint. Never describe it as a penetration test, a compliance certification, or a security guarantee; `findProhibitedClaims` in `src/lib/release-rescue-intake.ts` is the single list governing both report text and the marketing surface.
+
+The review is prepare-only. Severity is derived from recorded observations, never chosen by an executor. Coverage, counts, and the verdict are computed in deterministic code and rejected when a stored value disagrees. Delivery requires a named human reviewer holding manager authority. Repository access is read-only, time-boxed, customer-revocable, and never stored as a credential.
+
+`VISION.md` is silent on whether Delegation Cloud sells engineering-adjacent assurance work. That is an open owner decision recorded in the document; do not launch or widen this workstream before it is resolved.
+
 ## Software Factory model economy
 
 Canonical pins live in `docs/SOFTWARE-FACTORY-MODEL-ECONOMY-V1.md` and the three project agents under `.cursor/agents/`. Do not add more Software Factory agents unless an owner decision changes that policy.
