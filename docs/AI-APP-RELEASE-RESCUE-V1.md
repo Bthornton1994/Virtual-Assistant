@@ -358,7 +358,7 @@ would be free to promise a shape the pipeline cannot produce.
 
 ### Carried over, and still open
 
-- The corrected landing-page sentences were written for accuracy, not for voice. **Cursor should restyle them**, and owns the customer-facing copy for the three added rubric dimensions.
+- Landing-page sentences were written for accuracy against the report contract. Voice polish can still improve them, but the verdict copy must stay aligned with `VERDICT_COPY` and must not call an application ready or secure.
 - The snapshot limits are a decision function. **The extractor that enforces them at read time is not built**, because this pass performs no checkout. The limits are proven in unit tests, not against a real archive.
 - The retention sweep is scheduled in configuration and in the migration. **It has not run in a deployed environment**, because nothing is deployed.
 

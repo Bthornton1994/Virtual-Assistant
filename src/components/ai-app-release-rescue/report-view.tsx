@@ -219,7 +219,7 @@ function FindingCard({ finding }: { finding: CustomerFindingView }) {
               {location.path}
               {location.lines ? ` · ${location.lines}` : ""}
               {location.excerpt ? (
-                <pre className="mt-1 overflow-x-auto rounded-md border border-line bg-canvas p-2">
+                <pre className="mt-1 overflow-x-auto rounded-md border border-line bg-bg-elevated p-2">
                   <code>{location.excerpt}</code>
                 </pre>
               ) : null}

@@ -2,12 +2,13 @@ import { NonClaimsCallout } from "@/components/ai-app-release-rescue/non-claims"
 import { OfferPricing } from "@/components/ai-app-release-rescue/offer-pricing";
 import { RubricChecklist } from "@/components/ai-app-release-rescue/rubric-checklist";
 import { ButtonLink } from "@/components/ui";
-import { RESCUE_PATH, RESCUE_REVIEW_PRICE_USD } from "@/lib/ai-app-release-rescue/constants";
+import { RESCUE_PATH, RESCUE_REVIEW_PRICE_USD, formatUsd } from "@/lib/ai-app-release-rescue/constants";
+import { VERDICT_COPY } from "@/lib/release-rescue-presentation";
 
 export const metadata = {
   title: "AI App Release Rescue",
   description:
-    "A $299 release-readiness review of one repository, one web app, and one critical workflow. Optional $1,250 remediation sprint. Not a penetration test.",
+    "A $299 review of one repository, one web app, and one critical workflow. Optional $1,250 remediation sprint. Not a penetration test.",
 };
 
 const stages = [
@@ -24,7 +25,7 @@ const stages = [
   {
     id: "03",
     name: "Read-only access",
-    body: "You grant access separately. Do not paste tokens here. Reviewers never receive write access for the $299 review.",
+    body: `You grant access separately. Do not paste tokens here. Reviewers never receive write access for the ${formatUsd(RESCUE_REVIEW_PRICE_USD)} review.`,
   },
   {
     id: "04",
@@ -49,7 +50,7 @@ export default function RescueLandingPage() {
       <section className="mx-auto max-w-6xl px-5 pb-16 pt-14 lg:pt-20">
         <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">AI App Release Rescue</p>
         <h1 className="mt-4 max-w-3xl text-balance text-4xl font-semibold leading-[1.02] tracking-[-0.04em] sm:text-6xl">
-          A ${RESCUE_REVIEW_PRICE_USD} read of whether this web app is ready to ship.
+          A {formatUsd(RESCUE_REVIEW_PRICE_USD)} review of what would block a release.
         </h1>
         <p className="mt-6 max-w-2xl text-pretty text-lg leading-relaxed text-ink-soft">
           One repository. One application. One critical workflow. You get a structured report with
@@ -57,7 +58,7 @@ export default function RescueLandingPage() {
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
           <ButtonLink href={`${RESCUE_PATH}/intake`} size="lg" className="w-full sm:w-auto">
-            Request the ${RESCUE_REVIEW_PRICE_USD} review
+            Request the {formatUsd(RESCUE_REVIEW_PRICE_USD)} review
           </ButtonLink>
           <ButtonLink href={`${RESCUE_PATH}/demo/report`} size="lg" variant="secondary" className="w-full sm:w-auto">
             See a sample report
@@ -92,8 +93,8 @@ export default function RescueLandingPage() {
               body: "Every finding points at a file, config, runtime observation, or dependency report. Counts are computed, not self-reported.",
             },
             {
-              title: "A readiness call",
-              body: "Ready, ready with caveats, or not ready — derived from critical and high findings, not from marketing language.",
+              title: "A release verdict",
+              body: `${VERDICT_COPY.release_blocked.headline}, ${VERDICT_COPY.conditional_release.headline.toLowerCase()}, ${VERDICT_COPY.release_with_tracked_findings.headline.toLowerCase()}, or ${VERDICT_COPY.no_blocking_findings_identified.headline.toLowerCase()}. Derived from confirmed findings. The report does not say the application is ready to ship.`,
             },
             {
               title: "A customer-safe artifact",
@@ -119,7 +120,7 @@ export default function RescueLandingPage() {
           {stages.map((stage, index) => (
             <li key={stage.id} className={index % 2 === 0 ? "bg-accent text-accent-fg" : "bg-bg-elevated"}>
               <div className="mx-auto grid max-w-6xl gap-6 px-5 py-12 md:grid-cols-[120px_1fr]">
-                <p className={`font-mono text-sm ${index % 2 === 0 ? "text-gold" : "text-muted"}`}>{stage.id}</p>
+                <p className={`font-mono text-sm ${index % 2 === 0 ? "text-gold-on-accent" : "text-muted"}`}>{stage.id}</p>
                 <div>
                   <h3 className="text-2xl font-semibold tracking-tight">{stage.name}</h3>
                   <p className={`mt-3 max-w-2xl text-lg ${index % 2 === 0 ? "text-accent-fg/80" : "text-ink-soft"}`}>
