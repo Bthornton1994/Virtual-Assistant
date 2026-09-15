@@ -20,6 +20,15 @@
 // Pure, deterministic, no I/O, no clock — the same text always redacts the same
 // way, so a stored excerpt's hash is reproducible.
 
+import { keyLooksSecret, keyNameSegments } from "@/lib/release-rescue-redaction-keys";
+import {
+  findCredentialSpans,
+  isNonSecretValue,
+  MAX_SCAN_LENGTH,
+} from "@/lib/release-rescue-credential-scanner";
+
+export { keyLooksSecret, keyNameSegments, MAX_SCAN_LENGTH };
+
 /** Excerpts are proof of a finding, not a copy of the file. */
 export const MAX_EXCERPT_LENGTH = 480;
 
@@ -64,118 +73,6 @@ type SecretDetector = {
   readonly keyGuard?: { readonly group: number; readonly test: (key: string) => boolean };
 };
 
-/**
- * Values that match an assignment shape but are not secrets. Keeping these
- * readable matters: `apiKey: process.env.API_KEY` is the CORRECT pattern, and a
- * finding that recommends it should be able to show it.
- */
-const NON_SECRET_VALUE_PATTERNS: readonly RegExp[] = [
-  /^process\.env\./i,
-  /^import\.meta\.env\./i,
-  /^Deno\.env\./i,
-  /^os\.environ/i,
-  /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/,
-  /^<[^>]*>$/,
-  /^\[REDACTED/i,
-  /^(?:null|undefined|none|nil|true|false)$/i,
-  /^[*x•]+$/i,
-  /^(?:your|my|the)[-_]/i,
-  /^(?:changeme|placeholder|example|sample|dummy|fake|test|todo|tbd|xxx+)$/i,
-  /^(?:secret|password|token|apikey|api_key|key|value)$/i,
-];
-
-function isNonSecretValue(value: string): boolean {
-  const trimmed = value.trim().replace(/^["'`]|["'`]$/g, "");
-  if (trimmed.length === 0) return true;
-  return NON_SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(trimmed));
-}
-
-/**
- * Key-name segments that name a credential on their own.
- *
- * Matched as whole segments, never as substrings: "tokenizer" is not "token",
- * and "bypass" is not "pass". A substring match here would hard-fail reports
- * over ordinary prose, and this scanner blocks delivery when it fires.
- */
-const SECRET_KEY_WORDS: ReadonlySet<string> = new Set([
-  "password",
-  "passwords",
-  "passwd",
-  "pwd",
-  "passphrase",
-  "passphrases",
-  "secret",
-  "secrets",
-  "token",
-  "tokens",
-  "apikey",
-  "apikeys",
-  "credential",
-  "credentials",
-  "creds",
-  "authorization",
-  "bearer",
-  "privatekey",
-  "dsn",
-  "salt",
-]);
-
-/** Key names that are credential-shaped only when they are the WHOLE name. */
-const SECRET_WHOLE_KEYS: ReadonlySet<string> = new Set(["key", "keys", "pass", "auth", "pat"]);
-
-/** Adjacent segment pairs that name a credential together but not apart. */
-const SECRET_KEY_PHRASES: ReadonlySet<string> = new Set([
-  "api key",
-  "api keys",
-  "access key",
-  "access keys",
-  "secret key",
-  "private key",
-  "signing key",
-  "encryption key",
-  "session key",
-  "master key",
-  "shared key",
-  "account key",
-  "security key",
-  "auth key",
-  "service role",
-  "connection string",
-  "service account",
-]);
-
-/**
- * Splits a key name into lowercase segments on separators AND camel-case
- * boundaries, so `DB_PASSWORD_PROD`, `dbPasswordProd` and `db.password.prod`
- * all reduce to the same three words.
- */
-export function keyNameSegments(key: string): string[] {
-  return key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
-    .split(/[^A-Za-z0-9]+/)
-    .filter((segment) => segment.length > 0)
-    .map((segment) => segment.toLowerCase());
-}
-
-/**
- * True when a key name claims to hold a credential, wherever the claim sits.
- *
- * This is the property the detector is really about: a name is secret-shaped if
- * any of its parts names a secret. Prefixes, suffixes, infixes, casing and
- * separator style are all irrelevant, which is why none of them appears here.
- */
-export function keyLooksSecret(key: string): boolean {
-  const segments = keyNameSegments(key);
-  if (segments.length === 0) return false;
-  if (segments.length === 1 && SECRET_WHOLE_KEYS.has(segments[0])) return true;
-  if (segments.some((segment) => SECRET_KEY_WORDS.has(segment))) return true;
-  for (let index = 0; index + 1 < segments.length; index += 1) {
-    if (SECRET_KEY_PHRASES.has(`${segments[index]} ${segments[index + 1]}`)) return true;
-  }
-  return false;
-}
-
 // Ordered most-specific first. A vendor-shaped token should be named by its
 // vendor, not swallowed by the generic assignment detector, because "a GitHub
 // token is committed here" is a materially different finding from "something
@@ -201,8 +98,21 @@ const DETECTORS: readonly SecretDetector[] = [
   },
   {
     // Preserves scheme://user@host so the reader keeps the host, loses the password.
+    //
+    // Two defects, both found by the third audit, both fixed by the same rewrite:
+    //
+    //   * `[^\s:@/]+` REQUIRED a username, so `redis://:password@host` — the
+    //     normal form for Redis and Sentinel, and common for Mongo and Postgres —
+    //     did not match at all. The username is optional now.
+    //   * `[a-z0-9+.-]*` was unbounded, and a long run of scheme-shaped
+    //     characters that never reaches `://` backtracks quadratically: 80KB took
+    //     4.7 seconds, reachable from the public intake form. Every quantifier
+    //     here is bounded, and the bounds are far above any real URL.
+    //
+    // The v3 pass bounded the OTHER detector's quantifier and then wrote in the
+    // documentation that all of them were bounded, without checking this one.
     name: "credential_in_url",
-    pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:([^\s@/]+)@/gi,
+    pattern: /\b[a-z][a-z0-9+.-]{0,30}:\/\/[^\s:@/]{0,256}:([^\s@/]{1,256})@/gi,
     captureGroup: 1,
   },
   {
@@ -222,28 +132,6 @@ const DETECTORS: readonly SecretDetector[] = [
     name: "bearer_credential",
     pattern: /\b(?:bearer|basic)\s+([A-Za-z0-9._~+/=-]{16,})/gi,
     captureGroup: 1,
-  },
-  {
-    // Decided from the WHOLE key name, not from a keyword glued to the pattern.
-    //
-    // Two earlier versions failed the same way in opposite directions. The
-    // first required a word boundary before the keyword, so every prefixed
-    // variable (NEXTAUTH_SECRET, AWS_SECRET_ACCESS_KEY) escaped. The second
-    // added an optional prefix, so every SUFFIXED one still escaped
-    // (DB_PASSWORD_PROD, SESSION_PASSPHRASE) — and the unbounded prefix
-    // backtracked quadratically on long identifier runs.
-    //
-    // Both were the same mistake: the pattern tried to describe where in a name
-    // a secret word may sit. It can sit anywhere. So the pattern now matches an
-    // assignment to ANY identifier-shaped key, and `keyLooksSecret` decides by
-    // splitting that key into segments and asking whether any segment — or any
-    // adjacent pair — names a credential. Position stops mattering, and every
-    // quantifier is bounded.
-    name: "assigned_secret",
-    pattern:
-      /(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_.-]{0,80})["'`]?\s*[:=]>?\s*(?:(["'`])([^"'`\n]{6,})\2|([^\s"'`,;)}\]]{8,}))/g,
-    captureGroups: [3, 4],
-    keyGuard: { group: 1, test: keyLooksSecret },
   },
 ];
 
@@ -266,8 +154,13 @@ function placeholderFor(name: SecretDetectorName): string {
 /**
  * Replaces credential-shaped substrings with a named placeholder.
  *
- * Detectors run in sequence over the progressively redacted text. Placeholders
- * are inert to every detector (the `[REDACTED` prefix is on the non-secret
+ * Two layers, and they answer different questions. The vendor DETECTORS know
+ * what a particular provider's key looks like, so a finding can say "a GitHub
+ * token is committed here" rather than "something secret-looking is". The
+ * assignment SCANNER knows what an assignment looks like in the syntaxes a
+ * repository actually contains, and does not need to recognise the value at all.
+ *
+ * Placeholders are inert to both (the `[REDACTED` prefix is on the non-secret
  * allowlist, and no vendor pattern matches a bracketed word), so redaction is
  * idempotent: redacting twice equals redacting once.
  */
@@ -302,6 +195,38 @@ export function redactSecrets(input: string): RedactionResult {
     });
     if (count > 0) detections.push({ detector: detector.name, count });
   }
+
+  // The assignment scanner runs AFTER the vendor detectors, deliberately.
+  //
+  // A vendor detector names what it found: "a GitHub token is committed at
+  // src/pay.ts:14" is a materially different finding from "something
+  // secret-looking is assigned there". Running the scanner first would redact
+  // `GITHUB_TOKEN=ghp_...` as a generic assignment and throw that away.
+  //
+  // Running it second is safe because placeholders are inert to it: the value it
+  // would see is `[REDACTED:github_token]`, which is on the non-secret list.
+  const scanned = findCredentialSpans(working);
+  if (scanned.spans.length > 0) {
+    // Assembled in ONE left-to-right pass. Replacing spans individually rebuilds
+    // the whole string each time, which is quadratic in the number of spans, and
+    // a file of flags produces one span per flag.
+    const ordered = [...scanned.spans].sort((a, b) => a.start - b.start || b.end - a.end);
+    const pieces: string[] = [];
+    let cursor = 0;
+    let assigned = 0;
+
+    for (const span of ordered) {
+      if (span.start < cursor) continue; // overlapping or nested: the first wins
+      pieces.push(working.slice(cursor, span.start), placeholderFor("assigned_secret"));
+      cursor = span.end;
+      assigned += 1;
+    }
+    pieces.push(working.slice(cursor));
+
+    working = pieces.join("");
+    if (assigned > 0) detections.push({ detector: "assigned_secret", count: assigned });
+  }
+
 
   return { redacted: working, detections, hadSecrets: detections.length > 0 };
 }

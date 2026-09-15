@@ -12,6 +12,7 @@ import {
   parseRescueIntake,
   type RescueIntakeState,
 } from "@/lib/ai-app-release-rescue/intake";
+import { MAX_INTAKE_FIELD_LENGTH } from "@/lib/ai-app-release-rescue/intake";
 import { containsLikelySecret } from "@/lib/release-rescue-redaction";
 
 // Fields replayed into the form after a rejection, so the customer does not
@@ -43,6 +44,11 @@ function echoSafeFields(formData: FormData): Record<string, string> {
   for (const key of ECHO_FIELDS as readonly string[]) {
     const value = formData.get(key);
     if (typeof value !== "string") continue;
+    // Length before content. This path runs on a FAILED parse, so the values are
+    // whatever an anonymous caller posted: unbounded, and previously handed
+    // straight to the credential scanner. An oversized field is not echoed at
+    // all, which is both cheaper and the right answer for a form re-render.
+    if (value.length > MAX_INTAKE_FIELD_LENGTH) continue;
     // A value that looks like a credential is dropped rather than replayed, so
     // the token never returns to the page it arrived from.
     if (containsLikelySecret(value)) continue;

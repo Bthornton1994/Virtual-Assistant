@@ -11,13 +11,13 @@ import {
 import {
   applicationScopeSchema,
   criticalWorkflowScopeSchema,
-  findProhibitedClaims,
   hashScope,
   commitShaSchema,
   repositoryScopeSchema,
   RELEASE_RESCUE_OFFER_VERSION,
   type ReleaseRescueScope,
 } from "@/lib/release-rescue-intake";
+import { checkReportFieldCoverage } from "@/lib/release-rescue-field-policy";
 import {
   FINDING_SEVERITIES,
   computeFindingBlocking,
@@ -444,19 +444,7 @@ const ZERO_METRICS: ReleaseRescueReportMetrics = {
 };
 
 /** Text fields a customer reads. Scanned for prohibited claims and for secrets. */
-function customerFacingStrings(report: ReleaseRescueReportV1): string[] {
-  return [
-    ...report.limitations,
-    ...report.assessments.map((assessment) => assessment.rationale),
-    ...report.findings.flatMap((finding) => [
-      finding.title,
-      finding.whatWeObserved,
-      finding.whyItMatters,
-      finding.recommendation,
-      finding.residualUncertainty,
-    ]),
-  ];
-}
+
 
 /**
  * Deterministic validation of an assembled report.
@@ -618,11 +606,19 @@ export function validateReleaseRescueReport(candidate: unknown): ValidationResul
     hardFailures.push(`Unredacted secret material at ${hit.path} (${hit.detectors.join(", ")}).`);
   }
 
-  for (const text of customerFacingStrings(report)) {
-    const prohibited = findProhibitedClaims(text);
-    for (const claim of prohibited) {
-      hardFailures.push(`Report text makes a prohibited claim ("${claim}"): "${text.slice(0, 120)}".`);
-    }
+  // Field coverage, not a hand-written list of fields.
+  //
+  // The previous version walked six named fields. It missed
+  // `scope.application.description`, which the schema itself describes as used
+  // verbatim in the report header, so a customer could put a prohibited claim
+  // into their own application description at intake and have it delivered.
+  //
+  // `checkReportFieldCoverage` walks the artifact instead, and a string whose
+  // path has no recorded decision is a hard failure rather than a pass. That is
+  // the part that holds: a new customer-visible field cannot be added without
+  // someone classifying it.
+  for (const failure of checkReportFieldCoverage(report)) {
+    hardFailures.push(`Report field ${failure.path}: ${failure.reason}`);
   }
 
   // --- warnings (do not block, but a reviewer should see them) ---

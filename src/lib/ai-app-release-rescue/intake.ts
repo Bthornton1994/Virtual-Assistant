@@ -229,9 +229,27 @@ export function parseRepositoryReference(
   return { ok: true, value: { provider, repositoryRef: `${owner}/${name}` } };
 }
 
+/**
+ * The longest field value this parser will look at.
+ *
+ * Applied at the BOUNDARY, before anything expensive runs, and to every field
+ * rather than to the one that was noticed. An audit found `evidenceNotes` reached
+ * `containsLikelySecret` before its own 2000-character check, and that the server
+ * action echoed ~20 raw form fields through the same scanner with no cap at all —
+ * so an anonymous POST could hold the event loop for as long as the body allowed.
+ *
+ * The scanner is near-linear now, which makes this a bound rather than a rescue.
+ * It stays because a length limit at the edge is cheaper than trusting every
+ * future caller to have read the performance notes.
+ */
+export const MAX_INTAKE_FIELD_LENGTH = 8_000;
+
 function readString(source: Record<string, unknown>, key: string): string {
   const value = source[key];
-  return typeof value === "string" ? value : "";
+  if (typeof value !== "string") return "";
+  // Truncated, not rejected: a too-long field is a validation error below, and
+  // the truncation is only here so the validation itself is cheap.
+  return value.length > MAX_INTAKE_FIELD_LENGTH ? value.slice(0, MAX_INTAKE_FIELD_LENGTH) : value;
 }
 
 function readChecked(source: Record<string, unknown>, key: string): boolean {
@@ -315,8 +333,11 @@ export function parseRescueIntake(source: Record<string, unknown>, now: Date = n
   if (!retentionPolicy) errors.retentionPolicy = "Choose how long we keep your source material.";
 
   const evidenceNotes = readString(source, "evidenceNotes").trim();
-  if (evidenceNotes.length > 2000) errors.evidenceNotes = "Keep this under 2000 characters.";
-  if (containsLikelySecret(evidenceNotes)) {
+  // Length first. The credential scan is the expensive step, so it runs only on
+  // input that has already passed the cheap check.
+  if (evidenceNotes.length > 2000) {
+    errors.evidenceNotes = "Keep this under 2000 characters.";
+  } else if (containsLikelySecret(evidenceNotes)) {
     errors.evidenceNotes = "That looks like a credential. Remove it. Access is granted separately.";
   }
 
