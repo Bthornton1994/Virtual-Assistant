@@ -1,14 +1,32 @@
 import { z } from "zod";
 import {
+  RETENTION_POLICIES,
+  evaluateIntake,
+  type IntakeAttestations,
+  type ReleaseRescueIntakeV1,
+  type RetentionPolicy,
+} from "@/lib/release-rescue-intake";
+import { containsLikelySecret, isForbiddenEvidenceFilename } from "@/lib/release-rescue-redaction";
+import {
   ACCESS_GRANT_METHODS,
   APP_TYPES,
-  FORBIDDEN_INTAKE_FIELD_NAMES,
   type AccessGrantMethod,
   type AppType,
 } from "@/lib/ai-app-release-rescue/constants";
-import { isForbiddenEvidenceFilename, scanTextForSecrets, urlContainsCredentials } from "@/lib/ai-app-release-rescue/secrets";
 
-export type IntakeFieldErrors = Partial<Record<IntakeFieldName, string>>;
+// The intake FORM layer.
+//
+// This file owns form ergonomics: field names, per-field error messages, what a
+// customer is allowed to paste into a text box. It owns no rules. Every decision
+// about whether an engagement may proceed is made by `evaluateIntake` in the
+// contract module, and this layer's job is to hand it a well-formed submission
+// and translate its refusals back into something a form can render.
+//
+// The split matters because the form is the attack surface and the contract is
+// the authority. Keeping validation here would mean a second, weaker copy of the
+// offer's rules living next to the HTML.
+
+export const RESCUE_DEMO_ORGANIZATION_ID = "demo-organization";
 
 export type IntakeFieldName =
   | "contactName"
@@ -16,26 +34,73 @@ export type IntakeFieldName =
   | "repositoryUrl"
   | "appType"
   | "criticalWorkflow"
-  | "deploymentUrl"
+  | "criticalWorkflowEntryPoint"
   | "accessGrantMethod"
-  | "aiAssistedOptIn"
+  | "accessWindowDays"
+  | "retentionPolicy"
   | "evidenceNotes"
   | "evidenceFileNames"
   | "remediationInterest"
   | "acknowledgements";
 
-export type RescueIntake = {
+export type IntakeFieldErrors = Partial<Record<IntakeFieldName, string>>;
+
+/** One checkbox per attestation, so the form and the contract cannot drift apart. */
+export const ATTESTATION_FIELDS = [
+  "authorizedToGrantRepositoryAccess",
+  "accessGrantedIsReadOnly",
+  "noProductionCredentialsProvided",
+  "noEndUserPersonalDataProvided",
+  "understandsNotPenetrationTest",
+  "understandsNotComplianceCertification",
+  "understandsNoSecurityGuarantee",
+  "understandsFindingsRequireCustomerAction",
+] as const satisfies readonly (keyof IntakeAttestations)[];
+
+export type AttestationField = (typeof ATTESTATION_FIELDS)[number];
+
+export const ATTESTATION_COPY: Record<AttestationField, string> = {
+  authorizedToGrantRepositoryAccess:
+    "I am authorised to grant access to this repository on behalf of whoever owns it.",
+  accessGrantedIsReadOnly: "I will grant read-only access, and I can revoke it at any time.",
+  noProductionCredentialsProvided: "I will not send production credentials, keys, or database access.",
+  noEndUserPersonalDataProvided: "I will not send my end users' personal data.",
+  understandsNotPenetrationTest: "I understand this is not a penetration test.",
+  understandsNotComplianceCertification: "I understand this is not a compliance certification.",
+  understandsNoSecurityGuarantee:
+    "I understand this does not guarantee the absence of security vulnerabilities.",
+  understandsFindingsRequireCustomerAction:
+    "I understand the report identifies problems and my team fixes them.",
+};
+
+export const ACCESS_WINDOW_DAY_OPTIONS = [7, 14, 30] as const;
+export type AccessWindowDays = (typeof ACCESS_WINDOW_DAY_OPTIONS)[number];
+
+export const RETENTION_POLICY_COPY: Record<RetentionPolicy, string> = {
+  purge_on_delivery: "Delete my source material as soon as the report is delivered",
+  minimum_7_day: "Keep it for 7 days after delivery, then delete it",
+  standard_30_day: "Keep it for 30 days after delivery, then delete it",
+};
+
+/** What the demo engagement keeps beyond the contract's scope: who to talk to. */
+export type RescueIntakeContact = {
   contactName: string;
   workEmail: string;
-  repositoryUrl: string;
-  appType: AppType;
-  criticalWorkflow: string;
-  deploymentUrl: string | null;
-  accessGrantMethod: AccessGrantMethod;
+  /**
+   * Whether the customer accepts an AI-assisted review. Recorded as a customer
+   * preference; the contract does not yet carry it, and the execution pipeline
+   * does not yet honour it. Do not present it as enforced until it does.
+   */
   aiAssistedOptIn: boolean;
+  remediationInterest: boolean;
   evidenceNotes: string;
   evidenceFileNames: string[];
-  remediationInterest: boolean;
+};
+
+export type RescueIntake = {
+  contact: RescueIntakeContact;
+  intake: ReleaseRescueIntakeV1;
+  appType: AppType;
 };
 
 export type IntakeActionEcho = Record<string, string>;
@@ -46,11 +111,7 @@ export type RescueIntakeState = {
   values: IntakeActionEcho;
 };
 
-export const initialRescueIntakeState: RescueIntakeState = {
-  errors: {},
-  formError: null,
-  values: {},
-};
+export const initialRescueIntakeState: RescueIntakeState = { errors: {}, formError: null, values: {} };
 
 export type IntakeParseResult =
   | { ok: true; intake: RescueIntake }
@@ -59,176 +120,227 @@ export type IntakeParseResult =
 const nameSchema = z.string().trim().min(1).max(80);
 const emailSchema = z.email().max(120);
 const workflowSchema = z.string().trim().min(12).max(500);
-const notesSchema = z.string().trim().max(2000);
 
-function parsePublicHttpsUrl(raw: string, label: string): { ok: true; url: string } | { ok: false; reason: string } {
-  if (raw !== raw.trim()) return { ok: false, reason: `${label} must not have leading or trailing spaces.` };
-  if (!raw) return { ok: false, reason: `${label} is required.` };
-  if (/\s/.test(raw)) return { ok: false, reason: `${label} must be a single URL with no spaces.` };
-  if ((raw.match(/https?:\/\//g) ?? []).length > 1) {
-    return { ok: false, reason: "Scope is one repository. Submit a single URL." };
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return { ok: false, reason: `${label} must be a valid https URL.` };
-  }
-  if (parsed.protocol !== "https:") return { ok: false, reason: `${label} must use https.` };
-  if (urlContainsCredentials(raw)) {
-    return { ok: false, reason: `${label} must not include credentials, tokens, or secrets.` };
-  }
-  const host = parsed.hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".local") || host === "127.0.0.1" || host === "::1") {
-    return { ok: false, reason: `${label} must be a public host, not localhost.` };
-  }
-  return { ok: true, url: parsed.toString() };
-}
+export type RepositoryReference = {
+  provider: "github" | "gitlab" | "bitbucket";
+  repositoryRef: string;
+};
 
-function parseEvidenceFileNames(raw: string): { ok: true; names: string[] } | { ok: false; reason: string } {
-  const names = raw
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  for (const name of names) {
-    if (isForbiddenEvidenceFilename(name)) {
-      return {
-        ok: false,
-        reason: "Do not list secret files (.env, keys, credentials). Describe paths in notes instead, without values.",
-      };
+const PROVIDER_HOSTS: Record<string, RepositoryReference["provider"]> = {
+  "github.com": "github",
+  "www.github.com": "github",
+  "gitlab.com": "gitlab",
+  "www.gitlab.com": "gitlab",
+  "bitbucket.org": "bitbucket",
+  "www.bitbucket.org": "bitbucket",
+};
+
+/**
+ * Accepts what a customer will actually paste, and yields what the contract stores.
+ *
+ * The contract refuses URL-shaped repository references, because a URL field is
+ * an invitation to paste `https://user:token@github.com/acme/app` and hand us a
+ * credential through a signup form. But refusing to accept a pasted GitHub URL
+ * would be hostile, so this parses one and keeps only `owner/name` — after
+ * rejecting outright anything carrying userinfo or a credential-shaped query.
+ */
+export function parseRepositoryReference(raw: string): { ok: true; value: RepositoryReference } | { ok: false; reason: string } {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { ok: false, reason: "Add the repository you want reviewed." };
+
+  if (!trimmed.includes("://")) {
+    if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed)) {
+      return { ok: false, reason: "Use owner/name, or paste the repository's https URL." };
     }
-    const secret = scanTextForSecrets(name);
-    if (!secret.ok) return { ok: false, reason: secret.reason };
+    return { ok: true, value: { provider: "github", repositoryRef: trimmed } };
   }
-  return { ok: true, names };
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return { ok: false, reason: "That does not look like a repository URL." };
+  }
+
+  if (url.username.length > 0 || url.password.length > 0) {
+    return { ok: false, reason: "Remove the credentials from that URL. Access is granted separately." };
+  }
+  if (containsLikelySecret(trimmed)) {
+    return { ok: false, reason: "That URL carries a token. Remove it. Access is granted separately." };
+  }
+  if (url.protocol !== "https:") {
+    return { ok: false, reason: "Use an https URL." };
+  }
+
+  const provider = PROVIDER_HOSTS[url.hostname.toLowerCase()];
+  if (!provider) {
+    return { ok: false, reason: "We review repositories hosted on GitHub, GitLab, or Bitbucket." };
+  }
+
+  const segments = url.pathname.split("/").filter((segment) => segment.length > 0);
+  if (segments.length < 2) return { ok: false, reason: "Point at one repository, for example github.com/acme/app." };
+  const owner = segments[0];
+  const name = segments[1].replace(/\.git$/i, "");
+  if (!/^[A-Za-z0-9._-]+$/.test(owner) || !/^[A-Za-z0-9._-]+$/.test(name)) {
+    return { ok: false, reason: "That repository name has characters we do not recognise." };
+  }
+
+  return { ok: true, value: { provider, repositoryRef: `${owner}/${name}` } };
 }
 
-function readString(source: Record<string, unknown>, key: string) {
+function readString(source: Record<string, unknown>, key: string): string {
   const value = source[key];
   return typeof value === "string" ? value : "";
 }
 
-function readChecked(source: Record<string, unknown>, key: string) {
+function readChecked(source: Record<string, unknown>, key: string): boolean {
   const value = source[key];
-  return value === true || value === "on" || value === "true" || value === "yes";
+  return value === "on" || value === "true" || value === true;
 }
 
+/** Field names that would invite a customer to paste a credential. */
 export function forbiddenIntakeFieldsPresent(source: Record<string, unknown>): string[] {
-  return FORBIDDEN_INTAKE_FIELD_NAMES.filter((name) => Object.prototype.hasOwnProperty.call(source, name));
+  return Object.keys(source).filter((key) =>
+    /(^|_)(token|pat|password|secret|api[_-]?key|apikey|private[_-]?key|service_role|client_secret|ssh_key)($|_)/i.test(key),
+  );
 }
 
-export function parseRescueIntake(source: Record<string, unknown>): IntakeParseResult {
+export function parseRescueIntake(source: Record<string, unknown>, now: Date = new Date()): IntakeParseResult {
+  const errors: IntakeFieldErrors = {};
+
   const forbidden = forbiddenIntakeFieldsPresent(source);
   if (forbidden.length > 0) {
     return {
       ok: false,
       errors: {},
-      formError: "This form does not accept access tokens or secrets. Grant read-only access separately.",
+      formError: `This form does not accept credentials (${forbidden.join(", ")}). Nothing was stored.`,
     };
   }
 
-  const errors: IntakeFieldErrors = {};
-  const contactName = readString(source, "contactName");
-  const workEmail = readString(source, "workEmail");
-  const repositoryUrl = readString(source, "repositoryUrl");
+  const contactName = nameSchema.safeParse(readString(source, "contactName"));
+  if (!contactName.success) errors.contactName = "Add your name.";
+
+  const workEmail = emailSchema.safeParse(readString(source, "workEmail").trim());
+  if (!workEmail.success) errors.workEmail = "Add a work email we can send the report to.";
+
+  const repository = parseRepositoryReference(readString(source, "repositoryUrl"));
+  if (!repository.ok) errors.repositoryUrl = repository.reason;
+
   const appTypeRaw = readString(source, "appType");
-  const criticalWorkflow = readString(source, "criticalWorkflow");
-  const deploymentUrlRaw = readString(source, "deploymentUrl");
-  const accessGrantMethodRaw = readString(source, "accessGrantMethod");
-  const evidenceNotes = readString(source, "evidenceNotes");
-  const evidenceFileNamesRaw = readString(source, "evidenceFileNames");
+  const appType = (APP_TYPES as readonly string[]).includes(appTypeRaw) ? (appTypeRaw as AppType) : null;
+  if (!appType) errors.appType = "Choose the kind of application.";
 
-  const nameParsed = nameSchema.safeParse(contactName);
-  if (!nameParsed.success) errors.contactName = "Enter a name.";
-  else {
-    const secret = scanTextForSecrets(nameParsed.data);
-    if (!secret.ok) errors.contactName = secret.reason;
+  const workflow = workflowSchema.safeParse(readString(source, "criticalWorkflow"));
+  if (!workflow.success) {
+    errors.criticalWorkflow = "Describe the one workflow that must not break, in a sentence or two.";
   }
 
-  const emailParsed = emailSchema.safeParse(workEmail.trim().toLowerCase());
-  if (!emailParsed.success) errors.workEmail = "Enter a work email.";
-  else {
-    const secret = scanTextForSecrets(emailParsed.data);
-    if (!secret.ok) errors.workEmail = secret.reason;
+  const entryPoint = readString(source, "criticalWorkflowEntryPoint").trim();
+  if (entryPoint.length === 0) errors.criticalWorkflowEntryPoint = "Where does that workflow start?";
+
+  const accessRaw = readString(source, "accessGrantMethod");
+  const accessGrantMethod = (ACCESS_GRANT_METHODS as readonly string[]).includes(accessRaw)
+    ? (accessRaw as AccessGrantMethod)
+    : null;
+  if (!accessGrantMethod) errors.accessGrantMethod = "Choose how you will grant read-only access.";
+
+  const windowRaw = Number.parseInt(readString(source, "accessWindowDays"), 10);
+  const accessWindowDays = (ACCESS_WINDOW_DAY_OPTIONS as readonly number[]).includes(windowRaw)
+    ? (windowRaw as AccessWindowDays)
+    : null;
+  if (!accessWindowDays) errors.accessWindowDays = "Choose how long that access stays open.";
+
+  const retentionRaw = readString(source, "retentionPolicy");
+  const retentionPolicy = (RETENTION_POLICIES as readonly string[]).includes(retentionRaw)
+    ? (retentionRaw as RetentionPolicy)
+    : null;
+  if (!retentionPolicy) errors.retentionPolicy = "Choose how long we keep your source material.";
+
+  const evidenceNotes = readString(source, "evidenceNotes").trim();
+  if (evidenceNotes.length > 2000) errors.evidenceNotes = "Keep this under 2000 characters.";
+  if (containsLikelySecret(evidenceNotes)) {
+    errors.evidenceNotes = "That looks like a credential. Remove it. Access is granted separately.";
   }
 
-  const repoParsed = parsePublicHttpsUrl(repositoryUrl, "Repository URL");
-  if (!repoParsed.ok) errors.repositoryUrl = repoParsed.reason;
-  else {
-    const secret = scanTextForSecrets(repoParsed.url);
-    if (!secret.ok) errors.repositoryUrl = secret.reason;
+  const evidenceFileNames = readString(source, "evidenceFileNames")
+    .split(/[\n,]/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const refusedFile = evidenceFileNames.find(isForbiddenEvidenceFilename);
+  if (refusedFile) {
+    errors.evidenceFileNames = `Do not send ${refusedFile}. That file is a credential, not evidence.`;
+  } else if (evidenceFileNames.length > 20) {
+    errors.evidenceFileNames = "List at most 20 files.";
   }
 
-  const appParsed = z.enum(APP_TYPES).safeParse(appTypeRaw);
-  if (!appParsed.success) errors.appType = "Choose the web application type.";
-
-  const workflowParsed = workflowSchema.safeParse(criticalWorkflow);
-  if (!workflowParsed.success) errors.criticalWorkflow = "Describe one critical workflow in at least a sentence.";
-  else {
-    const secret = scanTextForSecrets(workflowParsed.data);
-    if (!secret.ok) errors.criticalWorkflow = secret.reason;
+  const attestations = Object.fromEntries(
+    ATTESTATION_FIELDS.map((field) => [field, readChecked(source, field)]),
+  ) as Record<AttestationField, boolean>;
+  const missingAttestation = ATTESTATION_FIELDS.find((field) => !attestations[field]);
+  if (missingAttestation) {
+    errors.acknowledgements = "Every statement has to be true before we can start.";
   }
 
-  let deploymentUrl: string | null = null;
-  if (deploymentUrlRaw.trim()) {
-    const deployParsed = parsePublicHttpsUrl(deploymentUrlRaw, "Deployment URL");
-    if (!deployParsed.ok) errors.deploymentUrl = deployParsed.reason;
-    else deploymentUrl = deployParsed.url;
-  }
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
 
-  const accessParsed = z.enum(ACCESS_GRANT_METHODS).safeParse(accessGrantMethodRaw);
-  if (!accessParsed.success) errors.accessGrantMethod = "Choose how you will grant read-only access.";
+  const submittedAt = now.toISOString();
+  const grantExpiresAt = new Date(now.getTime() + accessWindowDays! * 86_400_000).toISOString();
 
-  const notesParsed = notesSchema.safeParse(evidenceNotes);
-  if (!notesParsed.success) errors.evidenceNotes = "Evidence notes must be under 2,000 characters.";
-  else {
-    const secret = scanTextForSecrets(notesParsed.data);
-    if (!secret.ok) errors.evidenceNotes = secret.reason;
-  }
+  const decision = evaluateIntake(
+    {
+      schemaVersion: "release-rescue-intake/v1",
+      offerVersion: "release-rescue-offer/v1",
+      organizationId: RESCUE_DEMO_ORGANIZATION_ID,
+      repository: {
+        provider: repository.ok ? repository.value.provider : "github",
+        repositoryRef: repository.ok ? repository.value.repositoryRef : "",
+        defaultBranch: "main",
+        accessMode: accessGrantMethod!,
+      },
+      application: {
+        name: repository.ok ? repository.value.repositoryRef : "",
+        description: workflow.success ? workflow.data : "",
+        primaryStack: appType!,
+        usesAiFeatures: true,
+      },
+      criticalWorkflow: {
+        name: entryPoint,
+        description: workflow.success ? workflow.data : "",
+        entryPoint,
+        handlesCustomerData: true,
+        triggersExternalActions: true,
+      },
+      requestedServices: ["release_readiness_review", "ai_boundary_review"],
+      customerExclusions: [],
+      retentionPolicy: retentionPolicy!,
+      grantExpiresAt,
+      attestations,
+      submittedAt,
+    },
+    now,
+  );
 
-  const filesParsed = parseEvidenceFileNames(evidenceFileNamesRaw);
-  if (!filesParsed.ok) errors.evidenceFileNames = filesParsed.reason;
-
-  const acknowledgements = [
-    "acknowledgedNotPenTest",
-    "acknowledgedNotCompliance",
-    "acknowledgedNoGuarantee",
-    "acknowledgedSingleScope",
-    "acknowledgedPointInTime",
-    "acknowledgedNoSecretsSubmitted",
-  ];
-  if (!acknowledgements.every((key) => readChecked(source, key))) {
-    errors.acknowledgements = "Confirm each limitation before submitting.";
-  }
-
-  if (
-    Object.keys(errors).length > 0 ||
-    !nameParsed.success ||
-    !emailParsed.success ||
-    !repoParsed.ok ||
-    !appParsed.success ||
-    !workflowParsed.success ||
-    !accessParsed.success ||
-    !notesParsed.success ||
-    !filesParsed.ok
-  ) {
-    return { ok: false, errors };
+  if (!decision.accepted) {
+    return {
+      ok: false,
+      errors: {},
+      formError: decision.refusals.map((refusal) => refusal.message).join(" "),
+    };
   }
 
   return {
     ok: true,
     intake: {
-      contactName: nameParsed.data,
-      workEmail: emailParsed.data,
-      repositoryUrl: repoParsed.url,
-      appType: appParsed.data,
-      criticalWorkflow: workflowParsed.data,
-      deploymentUrl,
-      accessGrantMethod: accessParsed.data,
-      aiAssistedOptIn: readChecked(source, "aiAssistedOptIn"),
-      evidenceNotes: notesParsed.data,
-      evidenceFileNames: filesParsed.names,
-      remediationInterest: readChecked(source, "remediationInterest"),
+      contact: {
+        contactName: contactName.success ? contactName.data : "",
+        workEmail: workEmail.success ? workEmail.data : "",
+        aiAssistedOptIn: readChecked(source, "aiAssistedOptIn"),
+        remediationInterest: readChecked(source, "remediationInterest"),
+        evidenceNotes,
+        evidenceFileNames,
+      },
+      intake: decision.intake,
+      appType: appType!,
     },
   };
 }

@@ -9,7 +9,7 @@ import {
   hashScope,
   releaseRescueIntakeV1Schema,
 } from "@/lib/release-rescue-intake";
-import { makeIntake, makeScope } from "@/lib/__tests__/release-rescue-fixtures";
+import { COMMIT_SHA, makeIntake, makeScope } from "@/lib/__tests__/release-rescue-fixtures";
 
 const NOW = new Date("2026-09-15T12:00:00.000Z");
 
@@ -27,7 +27,8 @@ describe("release rescue intake boundary", () => {
     expect(decision.acceptedServices).toEqual(["release_readiness_review"]);
     expect(decision.declinedServices).toEqual([]);
     expect(decision.retentionDays).toBe(RETENTION_DAYS.minimum_7_day);
-    expect(decision.scopeHash).toMatch(/^[0-9a-f]{64}$/);
+    // No scope hash yet: the commit is not known until the snapshot is taken.
+    expect(decision.intake.repository).not.toHaveProperty("commitSha");
   });
 
   it("declines out-of-scope services without rejecting the engagement", () => {
@@ -90,15 +91,20 @@ describe("release rescue intake boundary", () => {
     }
   });
 
-  it("requires a full commit sha so the review is reproducible", () => {
-    const repository = makeScope().repository;
+  it("refuses a commit sha at intake, where it cannot yet be known", () => {
+    const repository = makeIntake().repository as Record<string, unknown>;
 
-    expect(refusalCodes(makeIntake({ repository: { ...repository, commitSha: "abc1234" } }))).toContain(
+    expect(refusalCodes(makeIntake({ repository: { ...repository, commitSha: "a".repeat(40) } }))).toContain(
       "schema_violation",
     );
-    expect(
-      refusalCodes(makeIntake({ repository: { ...repository, commitSha: "A".repeat(40) } })),
-    ).toContain("schema_violation");
+  });
+
+  it("requires a full commit sha when the scope is frozen", () => {
+    const intake = releaseRescueIntakeV1Schema.parse(makeIntake());
+
+    expect(() => freezeScope(intake, "abc1234")).toThrow();
+    expect(() => freezeScope(intake, "A".repeat(40))).toThrow();
+    expect(freezeScope(intake, "a".repeat(40)).repository.commitSha).toBe("a".repeat(40));
   });
 
   it("refuses an access grant that has already expired", () => {
@@ -130,7 +136,7 @@ describe("release rescue intake boundary", () => {
 
   it("freezes and hashes scope deterministically and independently of key order", () => {
     const intake = releaseRescueIntakeV1Schema.parse(makeIntake());
-    const scope = freezeScope(intake);
+    const scope = freezeScope(intake, COMMIT_SHA);
     const reordered = {
       customerExclusions: scope.customerExclusions,
       criticalWorkflow: scope.criticalWorkflow,
@@ -159,5 +165,28 @@ describe("release rescue intake boundary", () => {
     expect(findProhibitedClaims("A full penetration test of your app")).toContain("penetration test");
     expect(findProhibitedClaims("We provide a SECURITY GUARANTEE")).toContain("security guarantee");
     expect(findProhibitedClaims("A structured release-readiness review")).toEqual([]);
+  });
+
+  it("permits the required denials, which necessarily contain the phrases", () => {
+    // These four sentences are the disclaimers the customer must receive. A
+    // checker that flagged them would make the correct copy unshippable.
+    for (const denial of [
+      "This review is not a penetration test.",
+      "This review is not a compliance certification.",
+      "This review does not guarantee the absence of vulnerabilities.",
+      "It is not a compliance certification (SOC 2, ISO 27001, or any other standard).",
+      "We do not offer a security guarantee.",
+      "Unlike a penetration test, this review reads source rather than attacking a running system.",
+      "Customers who need penetration testing should engage qualified specialists.",
+    ]) {
+      expect(findProhibitedClaims(denial), denial).toEqual([]);
+    }
+  });
+
+  it("still catches an affirmative claim in a sentence that also denies something else", () => {
+    const text = "This is not a compliance certification. We do provide a penetration test.";
+
+    expect(findProhibitedClaims(text)).toContain("penetration test");
+    expect(findProhibitedClaims(text)).not.toContain("compliance certification");
   });
 });

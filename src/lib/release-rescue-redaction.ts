@@ -37,6 +37,7 @@ export type SecretDetectorName =
   | "npm_token"
   | "json_web_token"
   | "credential_in_url"
+  | "credential_in_query"
   | "assigned_secret";
 
 type SecretDetector = {
@@ -104,6 +105,15 @@ const DETECTORS: readonly SecretDetector[] = [
     name: "credential_in_url",
     pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:([^\s@/]+)@/gi,
     captureGroup: 1,
+  },
+  {
+    // A credential carried in a query string or fragment, e.g.
+    // https://api.example.com/v1/items?access_token=abc123. Keeps the parameter
+    // name so the reader still sees which one carried it.
+    name: "credential_in_query",
+    pattern:
+      /([?&#](?:access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|client[_-]?secret|api[_-]?key|apikey|token|secret|password|passwd|pat|authorization|session)=)([^&\s#"'<>]+)/gi,
+    captureGroup: 2,
   },
   {
     name: "assigned_secret",
@@ -220,4 +230,36 @@ export function scanForSecrets(value: unknown, path = "$"): ExcerptRejection[] {
     );
   }
   return [];
+}
+
+// --- Evidence file names -------------------------------------------------------------
+
+/**
+ * File names a customer must never attach as evidence.
+ *
+ * Redaction protects us from credential-shaped TEXT. This protects us from a
+ * customer helpfully attaching the file that holds their credentials: a `.env`,
+ * an SSH private key, a service-account JSON, a certificate bundle. There is no
+ * redaction to apply there — the whole file is the secret — so the intake
+ * boundary refuses it by name rather than reading it.
+ *
+ * Matched against the base name only, so `config/prod/.env` is caught the same
+ * as `.env`.
+ */
+const FORBIDDEN_EVIDENCE_NAME =
+  /(?:^\.env(?:\..+)?$|^id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|^credentials\.json$|^service[-_]account.*\.json$|^\.npmrc$|^\.pypirc$|^\.netrc$|^known_hosts$|\.(?:pem|p12|pfx|key|keystore|jks|ppk)$)/i;
+
+/**
+ * Template files that share a forbidden name but carry placeholders rather than
+ * values. `.env.example` is the file a customer is supposed to commit, and a
+ * finding about committed secrets often needs to cite it, so it stays allowed.
+ */
+const EVIDENCE_TEMPLATE_SUFFIX = /\.(?:example|sample|template|dist|tpl)$/i;
+
+export function isForbiddenEvidenceFilename(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return false;
+  const base = trimmed.split(/[/\\]/).pop() ?? trimmed;
+  if (EVIDENCE_TEMPLATE_SUFFIX.test(base)) return false;
+  return FORBIDDEN_EVIDENCE_NAME.test(base);
 }

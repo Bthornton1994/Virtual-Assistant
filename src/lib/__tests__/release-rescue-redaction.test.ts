@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_EXCERPT_LENGTH,
   containsLikelySecret,
+  isForbiddenEvidenceFilename,
   prepareExcerpt,
   redactSecrets,
   scanForSecrets,
@@ -46,6 +47,11 @@ const SAMPLES: Array<{ label: string; text: string; detector: string }> = [
     label: "assigned password",
     text: 'const password = "correct-horse-battery";',
     detector: "assigned_secret",
+  },
+  {
+    label: "token in a query string",
+    text: "fetch('https://api.example.com/v1/items?access_token=abc123def456ghi789')",
+    detector: "credential_in_query",
   },
 ];
 
@@ -144,5 +150,63 @@ describe("release rescue secret redaction", () => {
 
   it("reports nothing for a clean structure", () => {
     expect(scanForSecrets({ a: ["ok", 1, null, true], b: { c: "also ok" } })).toEqual([]);
+  });
+
+  it("keeps the parameter name while removing a credential from a query string", () => {
+    const result = redactSecrets("https://api.example.com/items?page=2&api_key=live_abc123def456&sort=name");
+
+    expect(result.redacted).toContain("api_key=");
+    expect(result.redacted).not.toContain("live_abc123def456");
+    // Ordinary parameters stay readable.
+    expect(result.redacted).toContain("page=2");
+    expect(result.redacted).toContain("sort=name");
+  });
+
+  it("catches a credential in a URL fragment as well as a query", () => {
+    expect(containsLikelySecret("https://app.example.com/cb#id_token=eyJhbGciOiJIUzI1NiJ9xyz")).toBe(true);
+  });
+});
+
+describe("forbidden evidence file names", () => {
+  it("refuses files whose whole content is a credential", () => {
+    // There is nothing to redact in these \u2014 the file IS the secret \u2014 so intake
+    // refuses them by name rather than reading them.
+    for (const name of [
+      ".env",
+      ".env.production",
+      "config/prod/.env",
+      "id_rsa",
+      "id_ed25519",
+      "id_rsa.pub",
+      "credentials.json",
+      "service-account-prod.json",
+      ".npmrc",
+      ".netrc",
+      "known_hosts",
+      "server.pem",
+      "cert.p12",
+      "signing.key",
+      "release.jks",
+    ]) {
+      expect(isForbiddenEvidenceFilename(name), name).toBe(true);
+    }
+  });
+
+  it("allows ordinary source and configuration files", () => {
+    for (const name of [
+      "src/app/page.tsx",
+      "package.json",
+      "README.md",
+      ".env.example",
+      "environment.ts",
+      "keyboard.ts",
+      "monkey.ts",
+    ]) {
+      expect(isForbiddenEvidenceFilename(name), name).toBe(false);
+    }
+  });
+
+  it("ignores blank input", () => {
+    expect(isForbiddenEvidenceFilename("   ")).toBe(false);
   });
 });

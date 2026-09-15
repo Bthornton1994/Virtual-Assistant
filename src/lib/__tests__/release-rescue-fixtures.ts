@@ -63,7 +63,12 @@ export function makeIntake(overrides: Record<string, unknown> = {}) {
     schemaVersion: RELEASE_RESCUE_INTAKE_SCHEMA_VERSION,
     offerVersion: RELEASE_RESCUE_OFFER_VERSION,
     organizationId: "org-acme",
-    repository: makeScope().repository,
+    repository: {
+      provider: "github",
+      repositoryRef: "acme/checkout-app",
+      defaultBranch: "main",
+      accessMode: "customer_installed_readonly_app",
+    },
     application: makeScope().application,
     criticalWorkflow: makeScope().criticalWorkflow,
     requestedServices: ["release_readiness_review"],

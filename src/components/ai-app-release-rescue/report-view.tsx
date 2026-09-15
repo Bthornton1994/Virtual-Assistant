@@ -1,14 +1,10 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui";
 import { NonClaimsCallout } from "@/components/ai-app-release-rescue/non-claims";
-import {
-  READINESS_COPY,
-  RESCUE_PATH,
-  RUBRIC_CATEGORY_COPY,
-  type FindingSeverity,
-  type ReadinessLevel,
-} from "@/lib/ai-app-release-rescue/constants";
-import type { CustomerRescueReport } from "@/lib/ai-app-release-rescue/report";
+import { RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
+import type { FindingSeverity } from "@/lib/release-rescue-findings";
+import type { ReleaseVerdict } from "@/lib/release-rescue-report";
+import type { CustomerFindingView, CustomerReportView } from "@/lib/release-rescue-presentation";
 
 const SEVERITY_TONE: Record<FindingSeverity, "bad" | "warn" | "info" | "neutral"> = {
   critical: "bad",
@@ -18,10 +14,11 @@ const SEVERITY_TONE: Record<FindingSeverity, "bad" | "warn" | "info" | "neutral"
   informational: "neutral",
 };
 
-const READINESS_TONE: Record<ReadinessLevel, "good" | "warn" | "bad"> = {
-  ready: "good",
-  ready_with_caveats: "warn",
-  not_ready: "bad",
+const VERDICT_TONE: Record<ReleaseVerdict, "good" | "warn" | "bad"> = {
+  release_blocked: "bad",
+  conditional_release: "warn",
+  release_with_tracked_findings: "warn",
+  no_blocking_findings_identified: "good",
 };
 
 export function ReportView({
@@ -30,7 +27,7 @@ export function ReportView({
   view,
   synthetic,
 }: {
-  report: CustomerRescueReport;
+  report: CustomerReportView;
   contentHash: string;
   view: "readable" | "json";
   synthetic: boolean;
@@ -48,24 +45,22 @@ export function ReportView({
 
       <header className="space-y-3">
         <p className="text-[11px] uppercase tracking-[0.2em] text-muted">Customer-safe report</p>
-        <h1 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">Release-readiness report</h1>
-        <p className="max-w-2xl text-pretty text-ink-soft">
-          Engagement {report.engagement_id}. Reviewed commit {report.scope.repository_ref}. Status {report.status}.
+        <h1 className="text-balance text-3xl font-semibold tracking-tight">{report.scope.applicationName}</h1>
+        <p className="text-sm text-ink-soft">
+          Engagement {report.engagementId}. Reviewed commit {report.scope.commitSha.slice(0, 12)}. Rubric{" "}
+          {report.rubricVersion}.
         </p>
-        <p className="text-xs text-muted">
-          Content hash <span className="font-mono tabular-nums">{contentHash.slice(0, 12)}…</span>
-        </p>
-        <div className="flex flex-wrap gap-3 text-sm">
-          <Link className="underline" href={view === "json" ? readableHref : jsonHref}>
-            {view === "json" ? "Readable view" : "Structured JSON"}
+        <p className="font-mono text-xs text-muted break-all">Report hash {contentHash}</p>
+        <p className="text-sm">
+          <Link className="underline underline-offset-4" href={view === "json" ? readableHref : jsonHref}>
+            {view === "json" ? "Read the report" : "View the JSON"}
           </Link>
-          <Link className="underline" href={`${RESCUE_PATH}/demo/report/download`}>
+          {" · "}
+          <Link className="underline underline-offset-4" href={`${RESCUE_PATH}/demo/report/download`}>
             Download JSON
           </Link>
-        </div>
+        </p>
       </header>
-
-      <NonClaimsCallout id="report-limitations" />
 
       {view === "json" ? (
         <pre className="overflow-x-auto rounded-xl border border-line bg-surface p-4 text-xs leading-relaxed">
@@ -73,129 +68,164 @@ export function ReportView({
         </pre>
       ) : (
         <>
-          <section>
-            <h2 className="text-xl font-semibold tracking-tight">Scope</h2>
+          <section aria-labelledby="scope-heading">
+            <h2 id="scope-heading" className="text-xl font-semibold tracking-tight">
+              What was reviewed
+            </h2>
             <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-              <Item term="Repository" detail={report.scope.repository_url} />
-              <Item term="Commit" detail={report.scope.repository_ref} />
-              <Item term="Application" detail={report.scope.app_type} />
-              <Item term="Critical workflow" detail={report.scope.critical_workflow} />
-              <Item term="Deployment" detail={report.scope.deployment_url ?? "Not provided"} />
-              <Item term="Reviewer" detail={report.reviewer.executor_type.replaceAll("_", " ")} />
+              <Item term="Repository" detail={report.scope.repositoryRef} />
+              <Item term="Commit" detail={report.scope.commitSha} />
+              <Item term="Stack" detail={report.scope.primaryStack.replaceAll("_", " ")} />
+              <Item term="Critical workflow" detail={report.scope.criticalWorkflowName} />
+              <Item term="Workflow entry point" detail={report.scope.criticalWorkflowDescription} />
+              <Item term="Reviewed by" detail={report.reviewedByName ?? "Pending human review"} />
             </dl>
-          </section>
-
-          <section>
-            <h2 className="text-xl font-semibold tracking-tight">Summary</h2>
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <Badge tone={READINESS_TONE[report.summary.overall_readiness]}>
-                {report.summary.overall_readiness.replaceAll("_", " ")}
-              </Badge>
-              <p className="text-sm text-ink-soft">{READINESS_COPY[report.summary.overall_readiness]}</p>
-            </div>
-            <p className="mt-4 max-w-2xl text-pretty text-sm leading-relaxed">{report.summary.recommendation}</p>
-            <ul className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
-              <Count label="Critical" value={report.summary.critical_findings} />
-              <Count label="High" value={report.summary.high_findings} />
-              <Count label="Medium" value={report.summary.medium_findings} />
-              <Count label="Low" value={report.summary.low_findings} />
-              <Count label="Info" value={report.summary.informational_findings} />
-            </ul>
-            {report.summary.remediation_estimate ? (
-              <p className="mt-4 text-sm text-ink-soft">{report.summary.remediation_estimate}</p>
+            {report.scope.exclusions.length > 0 ? (
+              <p className="mt-4 text-sm text-ink-soft">
+                Excluded at your request: {report.scope.exclusions.join(" ")}
+              </p>
             ) : null}
           </section>
 
-          <section>
-            <h2 className="text-xl font-semibold tracking-tight">Rubric scores</h2>
-            <ul className="mt-4 space-y-3">
-              {report.rubric_scores.map((row) => (
-                <li key={row.category} className="rounded-xl border border-line bg-surface px-4 py-4">
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <h3 className="font-semibold">{RUBRIC_CATEGORY_COPY[row.category].title}</h3>
-                    <p className="text-sm tabular-nums">
-                      {row.score}/5 · {row.label}
+          <section aria-labelledby="verdict-heading">
+            <h2 id="verdict-heading" className="text-xl font-semibold tracking-tight">
+              Where this release stands
+            </h2>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Badge tone={VERDICT_TONE[report.verdict]}>{report.verdictHeadline}</Badge>
+              <p className="text-sm text-ink-soft">
+                {report.coverage.assessedChecks} of {report.coverage.totalChecks} checks assessed
+              </p>
+            </div>
+            <p className="mt-4 max-w-2xl text-pretty text-sm leading-relaxed">{report.verdictExplanation}</p>
+            <ul className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+              <Count label="Critical" value={report.severityCounts.critical} />
+              <Count label="High" value={report.severityCounts.high} />
+              <Count label="Medium" value={report.severityCounts.medium} />
+              <Count label="Low" value={report.severityCounts.low} />
+              <Count label="Info" value={report.severityCounts.informational} />
+            </ul>
+            <p className="mt-4 text-sm text-ink-soft">
+              {report.blockingFindingCount === 0
+                ? "No finding was confirmed as release-blocking."
+                : `${report.blockingFindingCount} finding${report.blockingFindingCount === 1 ? "" : "s"} confirmed as release-blocking.`}
+            </p>
+          </section>
+
+          <section aria-labelledby="coverage-heading">
+            <h2 id="coverage-heading" className="text-xl font-semibold tracking-tight">
+              Coverage by area
+            </h2>
+            <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+              {report.dimensions.map((row) => (
+                <li key={row.dimension} className="rounded-xl border border-line bg-surface px-4 py-4">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <h3 className="text-sm font-semibold">{row.title}</h3>
+                    <p className="text-xs text-muted tabular-nums">
+                      {row.assessedChecks}/{row.totalChecks} assessed
                     </p>
                   </div>
-                  <p className="mt-2 text-sm text-ink-soft">{row.summary}</p>
-                  <p className="mt-2 text-xs text-muted tabular-nums">{row.findings_count} findings</p>
+                  <p className="mt-2 text-sm text-ink-soft">
+                    {row.passedChecks} pass · {row.concernChecks} concern · {row.failedChecks} fail
+                    {row.notApplicableChecks > 0 ? ` · ${row.notApplicableChecks} n/a` : ""}
+                    {row.notAssessedChecks > 0 ? ` · ${row.notAssessedChecks} not assessed` : ""}
+                  </p>
+                  <p className="mt-2 text-xs text-muted tabular-nums">
+                    {row.findingCount} finding{row.findingCount === 1 ? "" : "s"}
+                  </p>
                 </li>
               ))}
             </ul>
           </section>
 
-          <section>
-            <h2 className="text-xl font-semibold tracking-tight">Findings</h2>
+          <section aria-labelledby="findings-heading">
+            <h2 id="findings-heading" className="text-xl font-semibold tracking-tight">
+              Findings
+            </h2>
             <ul className="mt-4 space-y-4">
               {report.findings.map((finding) => (
-                <li key={finding.id} className="rounded-xl border border-line bg-surface px-4 py-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-mono text-xs text-muted">{finding.id}</p>
-                    <Badge tone={SEVERITY_TONE[finding.severity]}>{finding.severity}</Badge>
-                    {finding.remediation_sprint_eligible ? (
-                      <Badge tone="accent">Sprint eligible</Badge>
-                    ) : (
-                      <Badge>Not in sprint</Badge>
-                    )}
-                  </div>
-                  <h3 className="mt-2 text-base font-semibold tracking-tight">{finding.title}</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-ink-soft">{finding.description}</p>
-                  <p className="mt-3 text-xs uppercase tracking-[0.14em] text-muted">Evidence</p>
-                  <p className="mt-1 text-sm">
-                    {finding.evidence.type.replaceAll("_", " ")} · {finding.evidence.location}
-                  </p>
-                  {finding.evidence.snippet ? (
-                    <pre className="mt-2 overflow-x-auto rounded-md bg-bg px-3 py-2 text-xs">
-                      <code>{finding.evidence.snippet}</code>
-                    </pre>
-                  ) : null}
-                  {finding.evidence.observation ? (
-                    <p className="mt-2 text-sm text-ink-soft">{finding.evidence.observation}</p>
-                  ) : null}
-                  <p className="mt-3 text-sm">
-                    <span className="font-medium">Impact.</span> {finding.impact}
-                  </p>
-                  <p className="mt-2 text-sm">
-                    <span className="font-medium">Recommendation.</span> {finding.recommendation}
-                  </p>
-                  <p className="mt-2 text-xs text-muted">Effort {finding.effort}</p>
-                </li>
+                <FindingCard key={finding.id} finding={finding} />
+              ))}
+            </ul>
+            {report.findings.length === 0 ? (
+              <p className="mt-4 text-sm text-ink-soft">This review identified nothing above informational.</p>
+            ) : null}
+          </section>
+
+          {report.remediationSprint.eligibleCount > 0 ? (
+            <section aria-labelledby="sprint-heading">
+              <h2 id="sprint-heading" className="text-xl font-semibold tracking-tight">
+                What a remediation sprint would cover
+              </h2>
+              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-ink-soft">
+                {report.remediationSprint.eligibleCount} of these findings are in scope for the remediation sprint:{" "}
+                {report.remediationSprint.eligibleFindingIds.join(", ")}. The rest are yours to schedule, and you are
+                free to fix all of them yourself.
+              </p>
+            </section>
+          ) : null}
+
+          <section aria-labelledby="limits-heading">
+            <h2 id="limits-heading" className="text-xl font-semibold tracking-tight">
+              What this review did not establish
+            </h2>
+            <ul className="mt-4 space-y-2 text-sm text-ink-soft">
+              {report.limitations.map((limitation) => (
+                <li key={limitation}>{limitation}</li>
               ))}
             </ul>
           </section>
 
-          <section>
-            <h2 className="text-xl font-semibold tracking-tight">Recommendations</h2>
-            <RecommendationGroup title="Before release" items={report.recommendations.immediate} />
-            <RecommendationGroup title="Short term" items={report.recommendations.short_term} />
-            <RecommendationGroup title="Longer term" items={report.recommendations.long_term} />
-            <p className="mt-4 text-sm text-ink-soft">{report.recommendations.remediation_sprint.estimated_scope}</p>
-          </section>
-
-          <section>
-            <h2 className="text-xl font-semibold tracking-tight">Appendices</h2>
-            <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-              <Item
-                term="Dependencies"
-                detail={`${report.appendices.dependency_summary.total_dependencies} total, ${report.appendices.dependency_summary.outdated} outdated (${report.appendices.dependency_summary.tool_used})`}
-              />
-              <Item
-                term="CI"
-                detail={`Pipeline ${report.appendices.ci_cd_summary.pipeline_present ? "present" : "absent"}. Lint ${report.appendices.ci_cd_summary.lint_configured ? "yes" : "no"}.`}
-              />
-              <Item
-                term="Accessibility sample"
-                detail={`${report.appendices.accessibility_summary.pages_tested} pages via ${report.appendices.accessibility_summary.tool_used}`}
-              />
-              <Item
-                term="AI assistance"
-                detail={report.appendices.review_metadata.ai_assisted ? "Yes" : "Human-only"}
-              />
-            </dl>
-          </section>
+          <NonClaimsCallout />
         </>
       )}
     </article>
+  );
+}
+
+function FindingCard({ finding }: { finding: CustomerFindingView }) {
+  return (
+    <li className="rounded-xl border border-line bg-surface px-4 py-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="font-mono text-xs text-muted">{finding.id}</p>
+        <Badge tone={SEVERITY_TONE[finding.severity]}>{finding.severity}</Badge>
+        {finding.blocking ? <Badge tone="bad">blocks release</Badge> : null}
+        {finding.confidence !== "confirmed" ? <Badge tone="warn">{finding.confidence}</Badge> : null}
+        {finding.inRemediationSprintScope ? <Badge tone="neutral">sprint scope</Badge> : null}
+      </div>
+      <h3 className="mt-2 text-base font-semibold tracking-tight">{finding.title}</h3>
+      <p className="mt-1 text-xs text-muted">
+        {finding.dimensionTitle} · {finding.checkTitle}
+      </p>
+      <p className="mt-2 text-sm leading-relaxed text-ink-soft">{finding.whatWeObserved}</p>
+      <p className="mt-2 text-sm leading-relaxed">
+        <span className="font-medium">Why it matters.</span> {finding.whyItMatters}
+      </p>
+      <p className="mt-2 text-sm leading-relaxed">
+        <span className="font-medium">What to do.</span> {finding.recommendation}
+      </p>
+      {finding.locations.length > 0 ? (
+        <ul className="mt-3 space-y-1">
+          {finding.locations.map((location) => (
+            <li key={`${location.path}-${location.lines ?? "all"}`} className="font-mono text-xs text-muted">
+              {location.path}
+              {location.lines ? ` · ${location.lines}` : ""}
+              {location.excerpt ? (
+                <pre className="mt-1 overflow-x-auto rounded-md border border-line bg-canvas p-2">
+                  <code>{location.excerpt}</code>
+                </pre>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {finding.residualUncertainty ? (
+        <p className="mt-3 text-sm text-warn">
+          <span className="font-medium">Not confirmed.</span> {finding.residualUncertainty}
+        </p>
+      ) : null}
+      <p className="mt-2 text-xs text-muted">Effort {finding.effort}</p>
+    </li>
   );
 }
 
@@ -214,27 +244,5 @@ function Count({ label, value }: { label: string; value: number }) {
       <p className="text-xs text-muted">{label}</p>
       <p className="mt-1 text-xl font-semibold tabular-nums">{value}</p>
     </li>
-  );
-}
-
-function RecommendationGroup({
-  title,
-  items,
-}: {
-  title: string;
-  items: Array<{ finding_id: string; action: string }>;
-}) {
-  if (items.length === 0) return null;
-  return (
-    <div className="mt-4">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      <ul className="mt-2 space-y-2 text-sm">
-        {items.map((item) => (
-          <li key={`${item.finding_id}-${item.action}`}>
-            <span className="font-mono text-xs text-muted">{item.finding_id}</span> {item.action}
-          </li>
-        ))}
-      </ul>
-    </div>
   );
 }

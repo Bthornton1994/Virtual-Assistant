@@ -5,38 +5,41 @@ import { redirect } from "next/navigation";
 import { DEMO_ENGAGEMENT_COOKIE, RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
 import { createDemoEngagement } from "@/lib/ai-app-release-rescue/engagement";
 import {
+  ATTESTATION_FIELDS,
   formDataToRecord,
   parseRescueIntake,
   type RescueIntakeState,
 } from "@/lib/ai-app-release-rescue/intake";
-import { scanTextForSecrets } from "@/lib/ai-app-release-rescue/secrets";
+import { containsLikelySecret } from "@/lib/release-rescue-redaction";
 
+// Fields replayed into the form after a rejection, so the customer does not
+// have to retype everything. Each value is re-scanned before it goes back: if a
+// customer pasted a token into a text box, the error must not hand it back to
+// the page, where it would sit in the DOM and in the browser's history.
 const ECHO_FIELDS = [
   "contactName",
   "workEmail",
   "repositoryUrl",
   "appType",
   "criticalWorkflow",
-  "deploymentUrl",
+  "criticalWorkflowEntryPoint",
   "accessGrantMethod",
+  "accessWindowDays",
+  "retentionPolicy",
   "evidenceNotes",
   "evidenceFileNames",
-  "aiAssistedOptIn",
   "remediationInterest",
-  "acknowledgedNotPenTest",
-  "acknowledgedNotCompliance",
-  "acknowledgedNoGuarantee",
-  "acknowledgedSingleScope",
-  "acknowledgedPointInTime",
-  "acknowledgedNoSecretsSubmitted",
+  ...ATTESTATION_FIELDS,
 ] as const;
 
 function echoSafeFields(formData: FormData): Record<string, string> {
   const values: Record<string, string> = {};
-  for (const key of ECHO_FIELDS) {
+  for (const key of ECHO_FIELDS as readonly string[]) {
     const value = formData.get(key);
     if (typeof value !== "string") continue;
-    if (!scanTextForSecrets(value).ok) continue;
+    // A value that looks like a credential is dropped rather than replayed, so
+    // the token never returns to the page it arrived from.
+    if (containsLikelySecret(value)) continue;
     values[key] = value;
   }
   return values;

@@ -30,7 +30,7 @@ const stages = [
   {
     id: "04",
     name: "Review",
-    body: "An assigned operator scores every rubric category and attaches evidence. Authority is prepare-only.",
+    body: "An assigned operator records an outcome and evidence for every rubric check. Authority is prepare-only.",
   },
   {
     id: "05",
@@ -53,7 +53,7 @@ export default function RescueLandingPage() {
           A ${RESCUE_REVIEW_PRICE_USD} read of whether this web app is ready to ship.
         </h1>
         <p className="mt-6 max-w-2xl text-pretty text-lg leading-relaxed text-ink-soft">
-          One repository. One web application. One critical workflow. You get a structured report with scores,
+          One repository. One application. One critical workflow. You get a structured report with findings,
           findings, and evidence. This is not a penetration test, and it is not a compliance certificate.
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
@@ -87,8 +87,8 @@ export default function RescueLandingPage() {
         <ul className="mt-10 grid gap-5 md:grid-cols-2">
           {[
             {
-              title: "A scored rubric",
-              body: "Nine categories, each with a 1–5 score, a label, and a short summary. Missing categories are not allowed.",
+              title: "A fixed rubric",
+              body: "Twenty-four checks across nine areas. Every check gets a recorded outcome and evidence, and a check we could not assess is reported as exactly that.",
             },
             {
               title: "Findings you can check",
@@ -161,7 +161,7 @@ export default function RescueLandingPage() {
       <section className="border-y border-line bg-bg-elevated">
         <div className="mx-auto max-w-6xl px-5 py-16">
           <h2 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">Audit checklist</h2>
-          <p className="mt-4 max-w-xl text-ink-soft">Every category is scored. Absence is a finding, not a skipped row.</p>
+          <p className="mt-4 max-w-xl text-ink-soft">Every check gets an outcome. A check we could not assess is reported, not quietly dropped.</p>
           <div className="mt-10">
             <RubricChecklist />
           </div>

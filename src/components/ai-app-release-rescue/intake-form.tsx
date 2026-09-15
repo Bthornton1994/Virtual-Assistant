@@ -10,7 +10,13 @@ import {
   APP_TYPE_COPY,
   APP_TYPES,
 } from "@/lib/ai-app-release-rescue/constants";
-import { initialRescueIntakeState } from "@/lib/ai-app-release-rescue/intake";
+import {
+  ACCESS_WINDOW_DAY_OPTIONS,
+  ATTESTATION_COPY,
+  ATTESTATION_FIELDS,
+  RETENTION_POLICY_COPY,
+  initialRescueIntakeState,
+} from "@/lib/ai-app-release-rescue/intake";
 
 const selectClassName =
   "min-h-11 w-full rounded-md border border-line bg-surface px-3 text-base text-ink outline-none ring-accent/30 transition-[border-color,box-shadow] duration-150 ease-[var(--ease-ui-out)] focus:border-accent focus:ring-2 sm:text-sm";
@@ -91,16 +97,15 @@ export function RescueIntakeForm() {
           />
         </Field>
         <Field
-          label="Public deployment URL (optional)"
-          hint="Used only for observable browser behavior. No login bypass."
-          error={errors.deploymentUrl}
+          label="Where that workflow starts"
+          hint="A route, a screen, or an entry point. Example: /expenses/new"
+          error={errors.criticalWorkflowEntryPoint}
         >
           <Input
-            name="deploymentUrl"
-            type="url"
-            inputMode="url"
-            placeholder="https://app.example.com"
-            defaultValue={values.deploymentUrl}
+            name="criticalWorkflowEntryPoint"
+            required
+            placeholder="/expenses/new"
+            defaultValue={values.criticalWorkflowEntryPoint}
           />
         </Field>
       </section>
@@ -124,6 +129,36 @@ export function RescueIntakeForm() {
             {ACCESS_GRANT_METHODS.map((method) => (
               <option key={method} value={method}>
                 {ACCESS_GRANT_METHOD_COPY[method]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field
+          label="How long that access stays open"
+          hint="It expires automatically. You can revoke it sooner at any time."
+          error={errors.accessWindowDays}
+        >
+          <select name="accessWindowDays" required className={selectClassName} defaultValue={values.accessWindowDays ?? "14"}>
+            {ACCESS_WINDOW_DAY_OPTIONS.map((days) => (
+              <option key={days} value={String(days)}>
+                {days} days
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field
+          label="How long we keep your source material after delivery"
+          error={errors.retentionPolicy}
+        >
+          <select
+            name="retentionPolicy"
+            required
+            className={selectClassName}
+            defaultValue={values.retentionPolicy ?? "minimum_7_day"}
+          >
+            {(Object.keys(RETENTION_POLICY_COPY) as Array<keyof typeof RETENTION_POLICY_COPY>).map((policy) => (
+              <option key={policy} value={policy}>
+                {RETENTION_POLICY_COPY[policy]}
               </option>
             ))}
           </select>
@@ -186,36 +221,9 @@ export function RescueIntakeForm() {
         <NonClaimsCallout id="intake-limitations" />
         <fieldset className="space-y-3">
           <legend className="text-sm font-medium">Confirm each statement</legend>
-          <Ack
-            name="acknowledgedNotPenTest"
-            label="This review is not a penetration test."
-            checked={values.acknowledgedNotPenTest === "on"}
-          />
-          <Ack
-            name="acknowledgedNotCompliance"
-            label="This review is not a compliance certification."
-            checked={values.acknowledgedNotCompliance === "on"}
-          />
-          <Ack
-            name="acknowledgedNoGuarantee"
-            label="This review does not guarantee the absence of security vulnerabilities."
-            checked={values.acknowledgedNoGuarantee === "on"}
-          />
-          <Ack
-            name="acknowledgedSingleScope"
-            label="Scope is one repository, one web application, and one critical workflow."
-            checked={values.acknowledgedSingleScope === "on"}
-          />
-          <Ack
-            name="acknowledgedPointInTime"
-            label="Findings apply to the reviewed commit and observed behavior at that time."
-            checked={values.acknowledgedPointInTime === "on"}
-          />
-          <Ack
-            name="acknowledgedNoSecretsSubmitted"
-            label="I am not submitting tokens, API keys, or environment values on this form."
-            checked={values.acknowledgedNoSecretsSubmitted === "on"}
-          />
+          {ATTESTATION_FIELDS.map((field) => (
+            <Ack key={field} name={field} label={ATTESTATION_COPY[field]} checked={values[field] === "on"} />
+          ))}
         </fieldset>
         {errors.acknowledgements ? (
           <p className="text-xs text-bad" role="alert">

@@ -148,18 +148,36 @@ export const repositoryRefSchema = identifierString
   .refine((value) => !value.includes("@"), "must not contain credentials or an @ host reference")
   .refine((value) => /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value), "must look like owner/name");
 
-export const repositoryScopeSchema = z
+/**
+ * What the customer can state at intake.
+ *
+ * Deliberately no commit sha. At intake the customer has not granted access yet,
+ * so they cannot know which commit we will review \u2014 asking them to paste a
+ * 40-character hash into a signup form would be unanswerable as well as rude.
+ * The commit is resolved when the snapshot is taken and enters the frozen scope
+ * then, via `freezeScope`.
+ */
+export const repositoryIntakeSchema = z
   .object({
     provider: z.enum(["github", "gitlab", "bitbucket", "uploaded_archive"]),
     repositoryRef: repositoryRefSchema,
-    /** The commit the review is frozen against. A review without a commit is unreproducible. */
-    commitSha: z
-      .string()
-      .regex(/^[0-9a-f]{40}$/, "must be a full 40-character lowercase commit sha"),
     defaultBranch: identifierString.max(200),
     accessMode: z.enum(REPOSITORY_ACCESS_MODES),
   })
   .strict();
+
+export const commitShaSchema = z
+  .string()
+  .regex(/^[0-9a-f]{40}$/, "must be a full 40-character lowercase commit sha");
+
+/**
+ * The repository as the REPORT records it: everything from intake plus the exact
+ * commit reviewed. A review that cannot name what it reviewed is not
+ * reproducible and cannot be defended later.
+ */
+export const repositoryScopeSchema = repositoryIntakeSchema.extend({
+  commitSha: commitShaSchema,
+});
 
 export const applicationScopeSchema = z
   .object({
@@ -210,7 +228,7 @@ export const releaseRescueIntakeV1Schema = z
     schemaVersion: z.literal(RELEASE_RESCUE_INTAKE_SCHEMA_VERSION),
     offerVersion: z.literal(RELEASE_RESCUE_OFFER_VERSION),
     organizationId: identifierString,
-    repository: repositoryScopeSchema,
+    repository: repositoryIntakeSchema,
     application: applicationScopeSchema,
     criticalWorkflow: criticalWorkflowScopeSchema,
     requestedServices: z.array(z.enum(REQUESTABLE_SERVICES)).min(1),
@@ -240,10 +258,18 @@ export type ReleaseRescueScope = {
   customerExclusions: string[];
 };
 
-export function freezeScope(intake: ReleaseRescueIntakeV1): ReleaseRescueScope {
+/**
+ * Freezes an accepted intake against the commit actually snapshotted.
+ *
+ * This is the moment the review target stops moving. Everything downstream \u2014 the
+ * scope hash, the report binding, what we can defend having reviewed \u2014 is fixed
+ * here, which is why the commit is a required argument rather than an optional
+ * field someone could forget to set.
+ */
+export function freezeScope(intake: ReleaseRescueIntakeV1, commitSha: string): ReleaseRescueScope {
   return {
     offerVersion: intake.offerVersion,
-    repository: intake.repository,
+    repository: { ...intake.repository, commitSha: commitShaSchema.parse(commitSha) },
     application: intake.application,
     criticalWorkflow: intake.criticalWorkflow,
     customerExclusions: [...intake.customerExclusions],
@@ -276,8 +302,6 @@ export type IntakeDecision =
   | {
       accepted: true;
       intake: ReleaseRescueIntakeV1;
-      scope: ReleaseRescueScope;
-      scopeHash: string;
       retentionDays: number;
       /** In-scope services, in rubric-facing order. */
       acceptedServices: RequestableService[];
@@ -355,12 +379,9 @@ export function evaluateIntake(input: unknown, now: Date): IntakeDecision {
 
   if (refusals.length > 0) return { accepted: false, refusals };
 
-  const scope = freezeScope(intake);
   return {
     accepted: true,
     intake,
-    scope,
-    scopeHash: hashScope(scope),
     retentionDays,
     acceptedServices,
     declinedServices,
@@ -368,11 +389,104 @@ export function evaluateIntake(input: unknown, now: Date): IntakeDecision {
 }
 
 /**
+ * Words that turn a prohibited phrase into a permitted denial of it.
+ *
+ * "This review is not a penetration test" is exactly what the customer must be
+ * told, and it necessarily contains the phrase "penetration test". A plain
+ * substring match cannot tell a claim from its denial, so the clause around each
+ * occurrence is checked for a negation first.
+ */
+const NEGATION_MARKERS = [
+  "not",
+  "n't",
+  "never",
+  "no ",
+  "without",
+  "unlike",
+  "excludes",
+  "excluding",
+  "rather than",
+  "instead of",
+  "neither",
+  "nor ",
+  "cannot",
+  "refuse",
+];
+
+/**
+ * Phrases that mark a sentence as pointing the customer ELSEWHERE for the thing
+ * named, rather than offering it. "Customers who need penetration testing should
+ * engage qualified specialists" is a referral, and refusing to let us write it
+ * would be perverse: it is the sentence that tells someone we are not their
+ * answer.
+ */
+const REFERRAL_MARKERS = [
+  "who need",
+  "who want",
+  "who require",
+  "if you need",
+  "if you want",
+  "if you require",
+  "engage",
+  "elsewhere",
+  "specialist",
+  "separate engagement",
+  "out of scope",
+  "outside this",
+  "outside the scope",
+];
+
+/** The sentence containing `index`. */
+function sentenceAround(text: string, index: number): string {
+  const before = text.slice(0, index);
+  const start = Math.max(before.lastIndexOf("."), before.lastIndexOf("\n"), before.lastIndexOf("!"), before.lastIndexOf("?"));
+  const afterOffset = text.slice(index).search(/[.\n!?]/);
+  const end = afterOffset === -1 ? text.length : index + afterOffset;
+  return text.slice(start + 1, end);
+}
+
+/** The clause containing `index`, bounded by sentence and clause punctuation. */
+function clauseAround(text: string, index: number): string {
+  const before = text.slice(0, index);
+  const start = Math.max(
+    before.lastIndexOf("."),
+    before.lastIndexOf(";"),
+    before.lastIndexOf(","),
+    before.lastIndexOf(":"),
+    before.lastIndexOf("\n"),
+    before.lastIndexOf("\u2014"),
+    before.lastIndexOf("("),
+  );
+  return text.slice(start + 1, index);
+}
+
+/**
  * Guards any customer-facing string this offer produces against the claims it
  * must never make. Used by the report contract; also available to the marketing
  * surface so one list governs both.
+ *
+ * Reports an affirmative claim only. A denial ("this is not a penetration test",
+ * "we do not certify compliance") is required copy, not a violation.
  */
 export function findProhibitedClaims(text: string): string[] {
   const haystack = text.toLowerCase();
-  return RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => haystack.includes(claim));
+  const found: string[] = [];
+
+  for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
+    let index = haystack.indexOf(claim);
+    while (index !== -1) {
+      const clause = clauseAround(haystack, index);
+      const sentence = sentenceAround(haystack, index);
+      const denied =
+        NEGATION_MARKERS.some((marker) => clause.includes(marker)) ||
+        REFERRAL_MARKERS.some((marker) => sentence.includes(marker));
+      if (!denied) {
+        found.push(claim);
+        break;
+      }
+      index = haystack.indexOf(claim, index + claim.length);
+    }
+  }
+
+  return found;
 }

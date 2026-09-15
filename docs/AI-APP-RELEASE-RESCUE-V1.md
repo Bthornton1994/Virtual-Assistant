@@ -42,7 +42,7 @@ Three tables are new, because nothing existing carries their meaning:
 - `release_rescue_repository_grants` — the fact that access was granted, its window, and its revocation.
 - `release_rescue_reports` — the accounting row binding a report body to its engagement, rubric, hash, verdict, and human reviewer.
 
-Six application modules, all pure and deterministic:
+Seven application modules, all pure and deterministic:
 
 | Module | Responsibility |
 | --- | --- |
@@ -51,6 +51,7 @@ Six application modules, all pure and deterministic:
 | `src/lib/release-rescue-redaction.ts` | Secret detection and fail-closed redaction of evidence excerpts |
 | `src/lib/release-rescue-findings.ts` | The finding contract and the derived severity model |
 | `src/lib/release-rescue-report.ts` | Report schema, deterministic assembly, validation, delivery gate |
+| `src/lib/release-rescue-presentation.ts` | The customer-facing view, built by construction so internal identity cannot leak into it |
 | `supabase/migrations/20260915120000_release_rescue_v1.sql` | Isolation, credential refusal, immutability, retention |
 
 ## Release-readiness audit rubric
@@ -233,7 +234,7 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 
 ## Test plan
 
-**Implemented and passing** — 124 tests across six suites, plus 42 live database cases.
+**Implemented and passing** — 168 tests across eleven suites, plus 42 live database cases.
 
 | Area | Coverage | Where |
 | --- | --- | --- |
@@ -241,7 +242,7 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 | **Authorization** | A customer admin may open an engagement only for their own organization; an ops manager cannot mint an access grant on a customer's behalf; a plain operator cannot issue a report; only a manager may issue or update one; the customer may revoke their own access | QA fixture §1, §3, §4; migration suite |
 | **Secrets** | 14 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; redact-before-truncate so no fragment survives; nested JSON scanning; schema refusal of unredacted excerpts; whole-report scan | `release-rescue-redaction.test.ts` (22), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
 | **Data access** | Organization B reads none of A's engagements or reports; credential-named keys, credential-shaped values, credentialed URLs, over-long windows, and write access all refused; grants are revoke-only and one-way; retention cannot be extended; the purge clears content, keeps accounting, revokes grants, is idempotent, does not reach past its own workstream, and does not leak its flag | `release_rescue_v1_isolation_proof.sql` (42 cases), migration suite (27) |
-| **Report integrity** | Edited severity counts, verdict, coverage, rubric hash, and scope hash all rejected; missing or duplicated assessments and findings rejected; blocking pass on argument alone rejected; finding/assessment contradictions rejected; prohibited claims rejected; non-zero authority rejected; deterministic hashing; delivery gate refuses unsigned or invalid reports | `release-rescue-report.test.ts` (28), `release-rescue-findings.test.ts` (21) |
+| **Report integrity** | Edited severity counts, verdict, coverage, rubric hash, and scope hash all rejected; missing or duplicated assessments and findings rejected; blocking pass on argument alone rejected; finding/assessment contradictions rejected; prohibited claims rejected; non-zero authority rejected; deterministic hashing; delivery gate refuses unsigned or invalid reports | `release-rescue-report.test.ts`, `release-rescue-findings.test.ts`, `demo-fixtures.test.ts` |
 
 **How the database cases were verified.** `supabase/qa/release_rescue_v1_isolation_proof.sql` runs against the real migration chain on a disposable Postgres and asserts live behaviour — each case either performs an action that must succeed or attempts one that must be refused, and the script aborts if an expected refusal does not occur. This is how the `security definer` defect was found: the reviewer-authority check could not read `operators` as the calling user, so no report could ever have been issued.
 
@@ -252,6 +253,69 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 3. Adversarial injection corpus: a fixture repository of files that attempt to steer the auditor, asserting the verdict is unaffected.
 4. Snapshot ingestion limits (file count, file size, archive expansion, symlink handling) and their tests.
 5. Executor calibration measurement — confirmed-to-unconfirmed ratio and sprint-scope rate per executor, to detect severity inflation over time.
+
+## Reconciliation with the customer surface
+
+This workstream was built twice in parallel: these contracts and the database
+boundary here, and a customer surface in PR #96 that carried its own copies of
+the rubric, the intake rules, the report schema, and a secret scanner. Two
+implementations of one service's security core is worse than either alone, so
+they were reduced to one: the surface stayed, its duplicate contracts were
+deleted, and it now renders these.
+
+What survived from the other implementation, because it was better:
+
+- **Forbidden evidence file names.** Redaction protects us from credential-shaped
+  text. It cannot help with a customer helpfully attaching the file that *is* the
+  credential — a `.env`, an SSH private key, a service-account JSON. Those are now
+  refused by name at intake (`isForbiddenEvidenceFilename`), with `.env.example`
+  and other template suffixes still allowed, since a finding about committed
+  secrets often needs to cite one.
+- **Credentials in a query string.** `?access_token=…` is as much a leak as
+  `user:pass@host`, and the original detector only caught the second. There is now
+  a `credential_in_query` detector that keeps the parameter name and removes the
+  value.
+
+Integrating the two surfaced two real defects in these contracts:
+
+- **`findProhibitedClaims` flagged its own required disclaimer.** A plain
+  substring match cannot tell a claim from its denial, so "This review is not a
+  penetration test" — the sentence the customer must be shown — was reported as a
+  prohibited claim. It now inspects the clause around each occurrence for a
+  negation, and the sentence for a referral ("customers who need penetration
+  testing should engage qualified specialists"), and reports only affirmative
+  claims. The correct copy was unshippable until this was fixed.
+- **The intake schema demanded a commit sha the customer could not know.** At
+  intake nobody has granted access yet, so the reviewed commit does not exist as
+  a fact. `repositoryIntakeSchema` now carries no commit; `freezeScope(intake,
+  commitSha)` pins it when the snapshot is taken, which is the moment the review
+  target actually stops moving.
+
+The intake form accepts a pasted `https://github.com/owner/name` URL and stores
+only `owner/name`, after refusing any URL carrying userinfo or a credential-shaped
+query. Refusing URL-shaped references in the stored contract removes the chance
+of a credential arriving through a form; refusing to *accept* one in the form
+would just be hostile.
+
+The sample report on the demo page is built through the real assembler and is
+asserted to pass the real validator and delivery gate. A hand-written sample
+would be free to promise a shape the pipeline cannot produce.
+
+### Carried over, and still open
+
+- The surface previously advertised "nine categories, each with a 1–5 score".
+  This rubric produces no such number — it records an outcome and evidence per
+  check — so that copy was corrected and a test now guards against a numeric
+  score reappearing. **Cursor should restyle the corrected sentences; they were
+  written for accuracy, not for voice.**
+- The other rubric covered **accessibility, code quality, and documentation**;
+  this one does not, being focused on release safety and the AI boundary. That is
+  a genuine loss of coverage for an offer sold as "release readiness", and it is
+  an owner decision whether to extend the rubric or narrow the promise.
+- The form keeps an **AI-assisted opt-in** so a customer can ask for human-only
+  review. The contract does not yet carry it and the pipeline does not yet honour
+  it. It is recorded as a customer preference and must not be presented as
+  enforced until it is.
 
 ## What this slice deliberately does not do
 

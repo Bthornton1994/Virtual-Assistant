@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui";
 import { APP_TYPE_COPY, ACCESS_GRANT_METHOD_COPY, RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
+import { RETENTION_POLICY_COPY } from "@/lib/ai-app-release-rescue/intake";
 import { getDemoEngagement } from "@/lib/ai-app-release-rescue/engagement";
 
 export const metadata = { title: "Demo request received" };
@@ -29,24 +30,30 @@ export default async function RescueDemoEngagementPage({
       </p>
       <div className="mt-4 flex flex-wrap gap-2">
         <Badge tone="warn">Payment not collected</Badge>
-        <Badge>Access token absent</Badge>
+        <Badge>No credential held</Badge>
         <Badge tone="info">Memory only</Badge>
       </div>
       <dl className="mt-10 space-y-4 text-sm">
         <Row term="Engagement" detail={engagement.id} />
-        <Row term="Name" detail={intake.contactName} />
-        <Row term="Email" detail={intake.workEmail} />
-        <Row term="Repository" detail={intake.repositoryUrl} />
+        <Row term="Name" detail={intake.contact.contactName} />
+        <Row term="Email" detail={intake.contact.workEmail} />
+        <Row term="Repository" detail={intake.intake.repository.repositoryRef} />
+        <Row term="Host" detail={intake.intake.repository.provider} />
         <Row term="App type" detail={APP_TYPE_COPY[intake.appType]} />
-        <Row term="Critical workflow" detail={intake.criticalWorkflow} />
-        <Row term="Deployment" detail={intake.deploymentUrl ?? "Not provided"} />
-        <Row term="Access grant" detail={ACCESS_GRANT_METHOD_COPY[intake.accessGrantMethod]} />
-        <Row term="AI-assisted" detail={intake.aiAssistedOptIn ? "Opted in" : "Human-only"} />
-        <Row term="Sprint interest" detail={intake.remediationInterest ? "Noted, not purchased" : "Not requested"} />
-        <Row term="Evidence notes" detail={intake.evidenceNotes || "None"} />
+        <Row term="Critical workflow" detail={intake.intake.criticalWorkflow.description} />
+        <Row term="Entry point" detail={intake.intake.criticalWorkflow.entryPoint} />
+        <Row term="Access grant" detail={ACCESS_GRANT_METHOD_COPY[intake.intake.repository.accessMode]} />
+        <Row term="Access expires" detail={intake.intake.grantExpiresAt} />
+        <Row term="Retention" detail={RETENTION_POLICY_COPY[intake.intake.retentionPolicy]} />
+        <Row term="AI-assisted" detail={intake.contact.aiAssistedOptIn ? "Opted in" : "Human-only requested"} />
+        <Row
+          term="Sprint interest"
+          detail={intake.contact.remediationInterest ? "Noted, not purchased" : "Not requested"}
+        />
+        <Row term="Evidence notes" detail={intake.contact.evidenceNotes || "None"} />
         <Row
           term="Evidence file names"
-          detail={intake.evidenceFileNames.length ? intake.evidenceFileNames.join(", ") : "None"}
+          detail={intake.contact.evidenceFileNames.length ? intake.contact.evidenceFileNames.join(", ") : "None"}
         />
       </dl>
       <p className="mt-8 text-sm text-ink-soft">
