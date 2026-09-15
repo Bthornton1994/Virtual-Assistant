@@ -52,8 +52,8 @@ export default function RescueLandingPage() {
           A ${RESCUE_REVIEW_PRICE_USD} read of whether this web app is ready to ship.
         </h1>
         <p className="mt-6 max-w-2xl text-pretty text-lg leading-relaxed text-ink-soft">
-          One repository. One application. One critical workflow. You get a structured report with findings,
-          findings, and evidence. This is not a penetration test, and it is not a compliance certificate.
+          One repository. One application. One critical workflow. You get a structured report with
+          findings and evidence. This is not a penetration test, and it is not a compliance certificate.
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
           <ButtonLink href={`${RESCUE_PATH}/intake`} size="lg" className="w-full sm:w-auto">

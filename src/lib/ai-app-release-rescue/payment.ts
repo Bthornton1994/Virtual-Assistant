@@ -11,7 +11,7 @@ export const RESCUE_PAYMENT = {
   checkoutActivated: false,
   processor: "stripe_prepared_not_activated",
   customerCopy:
-    "The $299 review is charged when an engagement is created. Checkout is prepared and is not active on this page. Nothing is billed from this demo.",
+    "Checkout is prepared and is not active on this page. When activated, the $299 review is charged when an engagement is created. Nothing is billed from this demo.",
   remediationCopy:
     "The $1,250 remediation sprint is charged only if you accept it after the report. That checkout is also not active here.",
 } as const;
