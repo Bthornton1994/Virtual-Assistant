@@ -38,6 +38,20 @@ export type RescueIntake = {
   remediationInterest: boolean;
 };
 
+export type IntakeActionEcho = Record<string, string>;
+
+export type RescueIntakeState = {
+  errors: IntakeFieldErrors;
+  formError: string | null;
+  values: IntakeActionEcho;
+};
+
+export const initialRescueIntakeState: RescueIntakeState = {
+  errors: {},
+  formError: null,
+  values: {},
+};
+
 export type IntakeParseResult =
   | { ok: true; intake: RescueIntake }
   | { ok: false; errors: IntakeFieldErrors; formError?: string };

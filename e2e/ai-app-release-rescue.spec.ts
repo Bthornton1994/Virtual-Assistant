@@ -66,7 +66,7 @@ test.describe("AI App Release Rescue offer", () => {
     await page.goto("/ai-app-release-rescue/demo/report");
     await expect(page.getByText(/Synthetic sample/i)).toBeVisible();
     await expect(page.getByRole("heading", { name: /Important limitations/i })).toBeVisible();
-    await expect(page.getByText("AUTH-001")).toBeVisible();
+    await expect(page.getByText("AUTH-001").first()).toBeVisible();
     await expect(page.getByText(/ready with caveats/i).first()).toBeVisible();
     await expect(page.locator("body")).not.toContainText("exec_demo_internal");
     await expect(page.locator("body")).not.toContainText("org_demo_internal");

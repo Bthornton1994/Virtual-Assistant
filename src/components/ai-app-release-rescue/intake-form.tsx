@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useId } from "react";
-import { initialRescueIntakeState, submitRescueIntakeAction } from "@/app/actions/ai-app-release-rescue";
+import { submitRescueIntakeAction } from "@/app/actions/ai-app-release-rescue";
 import { NonClaimsCallout } from "@/components/ai-app-release-rescue/non-claims";
 import { Button, Field, Input, Textarea } from "@/components/ui";
 import {
@@ -10,6 +10,7 @@ import {
   APP_TYPE_COPY,
   APP_TYPES,
 } from "@/lib/ai-app-release-rescue/constants";
+import { initialRescueIntakeState } from "@/lib/ai-app-release-rescue/intake";
 
 const selectClassName =
   "min-h-11 w-full rounded-md border border-line bg-surface px-3 text-base text-ink outline-none ring-accent/30 transition-[border-color,box-shadow] duration-150 ease-[var(--ease-ui-out)] focus:border-accent focus:ring-2 sm:text-sm";

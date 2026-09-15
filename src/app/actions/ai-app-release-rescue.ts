@@ -4,19 +4,11 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { DEMO_ENGAGEMENT_COOKIE, RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
 import { createDemoEngagement } from "@/lib/ai-app-release-rescue/engagement";
-import { formDataToRecord, parseRescueIntake, type IntakeFieldErrors } from "@/lib/ai-app-release-rescue/intake";
-
-export type RescueIntakeState = {
-  errors: IntakeFieldErrors;
-  formError: string | null;
-  values: Record<string, string>;
-};
-
-export const initialRescueIntakeState: RescueIntakeState = {
-  errors: {},
-  formError: null,
-  values: {},
-};
+import {
+  formDataToRecord,
+  parseRescueIntake,
+  type RescueIntakeState,
+} from "@/lib/ai-app-release-rescue/intake";
 
 const ECHO_FIELDS = [
   "contactName",
