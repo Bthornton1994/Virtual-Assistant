@@ -36,7 +36,6 @@ export function makeScope(overrides: Partial<ReleaseRescueScope> = {}): ReleaseR
     repository: {
       provider: "github",
       repositoryRef: "acme/checkout-app",
-      commitSha: COMMIT_SHA,
       defaultBranch: "main",
       accessMode: "customer_installed_readonly_app",
     },
@@ -143,6 +142,7 @@ export function makeReportInput(overrides: Partial<AssembleReportInput> = {}): A
     runId: "run-001",
     organizationId: "org-acme",
     scope: makeScope(),
+    reviewedCommitSha: COMMIT_SHA,
     assessments: passingAssessments(),
     findings: [],
     limitations: ["The customer excluded the admin console from scope."],

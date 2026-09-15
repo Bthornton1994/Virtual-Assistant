@@ -169,7 +169,7 @@ describe("release rescue secret redaction", () => {
 
 describe("forbidden evidence file names", () => {
   it("refuses files whose whole content is a credential", () => {
-    // There is nothing to redact in these \u2014 the file IS the secret \u2014 so intake
+    // There is nothing to redact in these — the file IS the secret — so intake
     // refuses them by name rather than reading them.
     for (const name of [
       ".env",

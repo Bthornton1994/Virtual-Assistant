@@ -58,6 +58,7 @@ Eight application modules, all pure and deterministic, and the migration chain t
 | `supabase/migrations/20260915183000_release_rescue_hardening_v1.sql` | Ownership evidence, snapshot record, scheduled sweep |
 | `supabase/migrations/20260915193000_release_rescue_hardening_v2.sql` | Frozen scope, access-mode evidence, report invariants, privileged purge |
 | `supabase/migrations/20260915213000_release_rescue_hardening_v3.sql` | Unconditional ownership gate, single purge-flag reader, live-grant requirement |
+| `supabase/migrations/20260915223000_release_rescue_reviewed_commit_v4.sql` | The reviewed commit as a write-once field, pinned after the snapshot |
 
 ## Release-readiness audit rubric
 
@@ -362,45 +363,55 @@ would be free to promise a shape the pipeline cannot produce.
 - The snapshot limits are a decision function. **The extractor that enforces them at read time is not built**, because this pass performs no checkout. The limits are proven in unit tests, not against a real archive.
 - The retention sweep is scheduled in configuration and in the migration. **It has not run in a deployed environment**, because nothing is deployed.
 
-### Known design defect: the commit is in the wrong place
+### The commit was in the wrong place, and now is not
 
-`freezeScope(intake, commitSha)` builds the frozen scope from the intake plus the
-reviewed commit — but the commit is only known once a snapshot has been taken,
-which happens after the engagement row exists, and both `scope` and `scope_hash`
-are immutable on `UPDATE`. So the intended lifecycle cannot be executed: the row
-would have to be written with a commit nobody has yet, or amended after it is
-frozen, and the schema refuses the amendment.
+The v3 pass recorded this rather than working around it:
 
-This is latent rather than live, because no production writer to
-`release_rescue_engagements` exists in this branch. It is recorded here rather
-than worked around, because the workaround is the wrong fix: loosening the freeze
-would reopen the guarantee the v2 and v3 rounds were spent closing.
+> `freezeScope(intake, commitSha)` builds the frozen scope from the intake plus
+> the reviewed commit — but the commit is only known once a snapshot has been
+> taken, which happens after the engagement row exists, and both `scope` and
+> `scope_hash` are immutable on `UPDATE`. So the intended lifecycle cannot be
+> executed.
 
-The right resolution is that the commit is a property of the SNAPSHOT, not of the
-intake scope. `reviewed_commit_sha` belongs on the engagement as a
-write-once-before-review column beside the other snapshot fields, with the scope
-holding only what the customer agreed to at intake. That is a schema change with
-its own migration, proof cases and caller updates, and it is deliberately not
-folded into this hardening pass.
+It had a second half nobody had noticed. Because the scope hash was computed over
+a scope *containing* the commit, `hashScope(freezeScope(intake, sha))` could never
+equal the `scope_hash` written at intake. The hash whose job is to bind a report
+to its engagement bound nothing.
 
-## Independent audit, and what it found
+Both halves were the same mistake: two facts were sharing one field because they
+were both called "scope".
 
-A fresh-context QA audit of this branch executed eight working attacks against the shipped schema and contracts. All eight are fixed and each is now a regression case in `supabase/qa/release_rescue_hardening_v2_proof.sql` or a unit test. They are recorded here because the fixes only make sense alongside what they answer.
+| | Known | Frozen | Identity of |
+| --- | --- | --- | --- |
+| `scope` / `scope_hash` | at intake | at intake | the **agreement** — one repository, one application, one critical workflow, the exclusions, the AI-assisted choice |
+| `reviewed_commit_sha` | at the snapshot | at the snapshot | the **tree** we actually read |
 
-| Defeated guarantee | How it was broken | Fix |
-| --- | --- | --- |
-| "We will not review code you do not own" | `access_mode` was a plain column a customer could `UPDATE`; relabelling an archive engagement as an app install opened the ownership gate in one statement | Access mode is immutable after intake, must agree with the frozen scope, and a review cannot start without a recorded repository grant |
-| Same, by another route | A customer could `INSERT` directly at `auditing` declaring any mode, with no grant in existence | The gate now requires the grant row, not the label |
-| "Scope is frozen at intake" | Only `scope_hash` was guarded. The `scope` itself was rewritable, so the reviewed repository, the workflow, and the AI-assisted choice could all be changed while the hash stayed constant | The scope content is immutable; only the retention purge may replace it, and only with its stub |
-| "We will not overclaim" | Negation was matched as a substring, so "**Not**hing is left unchecked in our penetration test" read as a denial; referral markers included "engage", exempting every sentence containing "engagement" | Tokenised matching, narrowed referral phrases, a wider phrase list, and a test that runs the real checker over every marketing file |
-| "We will not leak your secrets" | The assignment detector required `\b` before the key name, and `\b` does not match between `_` and a letter — so `NEXTAUTH_SECRET=`, `AWS_SECRET_ACCESS_KEY=` and every other prefixed environment variable passed through. That is the shape of a `.env` file, the thing a committed-secrets finding most wants to quote | Matched on the end of the key name instead, with quoted values and more key shapes |
-| The retention promise | Vercel Cron issues a **GET**; the route implemented POST only and answered GET with 405, so the scheduled sweep could never fire. The test asserted the file *contained the string* `"export async function POST"` and passed with the wiring broken | The scheduler's method is a shared constant, the handler is bound to it, and the test imports the real module |
-| "A delivered report is immutable" | `delegation.retention_purge` is a custom GUC any role can set. The purge branch was gated on the flag alone, so a caller with UPDATE rights could set it themselves and unbind a delivered report | The flag only counts when the caller holds EXECUTE on the sweep — and the trigger is `SECURITY INVOKER`, because inside a definer function `current_user` is the owner and the check would answer for the wrong role |
-| Prospect privacy | `/demo/[id]` rendered a prospect's name, work email and private repository name to anyone who guessed the id, which came from `Math.random` plus a timestamp | The page authorizes against the cookie, ids are `randomUUID`, and a browser test opens the URL in a second context and asserts nothing is visible |
+Two write-once moments need two fields. `20260915223000_release_rescue_reviewed_commit_v4.sql`
+adds the second one, and the freeze is not loosened anywhere.
 
-Two smaller ones worth naming: the archive-facts input was the only value in the snapshot limiter not schema-validated, and `NaN` made every `>` comparison false, so the module failed **open** against its own header; and the customer-facing presenter copied stored severity rather than deriving it, so "severity is derived, never chosen" held only for callers who remembered to validate first. Both now fail closed.
+The commit can be pinned only when the snapshot that resolved it has been
+recorded *and* a live, unrevoked read-only grant names the repository in the
+frozen scope — so the pin means "we read this", not "someone typed forty
+characters". After that it cannot be changed, cleared, or repointed, and no
+review may start without it: a report that cannot name the tree it read is not
+defensible.
 
-The audit also found the proof helpers accepted *any* error, so a typo or a missing table read as a security refusal. They now re-raise the error classes that mean a broken test, and the v2 proof additionally requires the guard's own message — which immediately caught one of my own cases refusing for the wrong reason.
+It survives the retention purge. A 40-character hash of a tree reveals nothing
+about that tree, exactly as `scope_hash` reveals nothing about the scope, and
+without it a delivered report can no longer say what it reviewed. The migration
+asserts that the sweep does not clear it, so a future edit to the sweep fails the
+migration rather than quietly destroying the evidence.
+
+A report row is filled in from its engagement rather than trusted: the writer does
+not choose the value, a report naming a different commit is refused, and so is one
+whose *body* names a different commit.
+
+`supabase/qa/release_rescue_lifecycle_v4_proof.sql` walks one engagement from
+intake to purge in order — intake, grant, snapshot, pin, review, report, delivery,
+retention — asserting at every step. That shape matters: the other proofs test
+each guard in isolation, which is right for a guard and is exactly why they missed
+this. The contradiction existed only *between* the steps, so only a proof that
+takes all of them in sequence could find it.
 
 ## Second independent audit: fixing examples is not fixing defects
 

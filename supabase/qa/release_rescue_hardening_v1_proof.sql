@@ -94,6 +94,26 @@ values
   ('bbbb0000-0000-0000-0000-000000000001', 'cccc0000-0000-0000-0000-000000000003',
    'github', 'acme/unknown', 'customer_installed_readonly_app', now() + interval '7 days');
 
+-- Snapshots and pinned commits.
+--
+-- Hardening v4 made the reviewed commit a precondition of starting a review, so
+-- every engagement that reaches 'auditing' below has to walk the real lifecycle
+-- first: record the snapshot, then pin the commit it resolved. Doing it here
+-- keeps the ownership cases below testing ownership rather than tripping over a
+-- missing commit.
+update public.release_rescue_engagements
+   set snapshot_limits_version = 'release-rescue-snapshot-limits/v1',
+       snapshot_file_count = 120,
+       snapshot_total_bytes = 900000
+ where organization_id = 'bbbb0000-0000-0000-0000-000000000001';
+
+update public.release_rescue_engagements set reviewed_commit_sha = repeat('1', 40)
+ where id = 'cccc0000-0000-0000-0000-000000000001';
+update public.release_rescue_engagements set reviewed_commit_sha = repeat('2', 40)
+ where id = 'cccc0000-0000-0000-0000-000000000002';
+update public.release_rescue_engagements set reviewed_commit_sha = repeat('3', 40)
+ where id = 'cccc0000-0000-0000-0000-000000000003';
+
 \echo ''
 \echo '=== 1. An uploaded archive is not evidence of ownership ==='
 

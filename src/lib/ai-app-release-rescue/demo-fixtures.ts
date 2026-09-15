@@ -68,7 +68,7 @@ const DEMO_INTAKE = releaseRescueIntakeV1Schema.parse({
   submittedAt: "2026-09-10T09:00:00.000Z",
 });
 
-export const SAMPLE_SCOPE: ReleaseRescueScope = freezeScope(DEMO_INTAKE, DEMO_COMMIT);
+export const SAMPLE_SCOPE: ReleaseRescueScope = freezeScope(DEMO_INTAKE);
 
 /** Builds a finding with severity and blocking derived, never hand-declared. */
 function finding(
@@ -226,6 +226,7 @@ export const SAMPLE_REPORT: ReleaseRescueReportV1 = assembleReleaseRescueReport(
   runId: "demo-run",
   organizationId: "demo-organization",
   scope: SAMPLE_SCOPE,
+  reviewedCommitSha: DEMO_COMMIT,
   assessments: assessments(),
   findings: FINDINGS,
   limitations: [

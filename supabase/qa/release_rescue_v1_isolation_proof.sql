@@ -96,7 +96,8 @@ select rrtest.expect_ok('a customer admin opens an engagement for their own orga
   insert into public.release_rescue_engagements
     (id, organization_id, run_id, scope, scope_hash, retention_policy, retention_days, created_by)
   values ('66666666-0000-0000-0000-00000000aaaa', '22222222-0000-0000-0000-00000000aaaa',
-          '55555555-0000-0000-0000-00000000aaaa', '{"repositoryRef":"acme/app"}'::jsonb,
+          '55555555-0000-0000-0000-00000000aaaa',
+          '{"repository":{"repositoryRef":"acme/app","accessMode":"customer_installed_readonly_app"}}'::jsonb,
           repeat('a', 64), 'minimum_7_day', 7, '11111111-0000-0000-0000-00000000aaaa');
 $q$);
 
@@ -222,6 +223,41 @@ select rrtest.expect_ok('the customer grants time-boxed read-only access', $q$
           '66666666-0000-0000-0000-00000000aaaa', 'github', 'acme/app',
           'customer_installed_readonly_app', now() + interval '7 days',
           '11111111-0000-0000-0000-00000000aaaa', '{"defaultBranch":"main"}'::jsonb);
+$q$);
+
+-- The snapshot, and the commit it pinned.
+--
+-- Deliberately placed HERE, between the grant and its revocation, because that is
+-- the only window in which a commit can honestly be pinned: it names a tree we
+-- read, and we could only read it while the customer's grant was live. The report
+-- below is issued after the revocation, which is the normal case — the customer
+-- takes their access back as soon as the snapshot is taken, and the review
+-- continues against what was already read.
+
+select rrtest.expect_error('the reviewed commit cannot be pinned before a snapshot is recorded', $q$
+  update public.release_rescue_engagements
+     set reviewed_commit_sha = repeat('a', 40)
+   where id = '66666666-0000-0000-0000-00000000aaaa';
+$q$);
+
+select rrtest.expect_ok('the snapshot records which limits were applied', $q$
+  update public.release_rescue_engagements
+     set snapshot_limits_version = 'release-rescue-snapshot-limits/v1',
+         snapshot_file_count = 412,
+         snapshot_total_bytes = 5_120_000
+   where id = '66666666-0000-0000-0000-00000000aaaa';
+$q$);
+
+select rrtest.expect_ok('and the commit that snapshot resolved is pinned once', $q$
+  update public.release_rescue_engagements
+     set reviewed_commit_sha = repeat('a', 40)
+   where id = '66666666-0000-0000-0000-00000000aaaa';
+$q$);
+
+select rrtest.expect_error('the pinned commit cannot be repointed afterwards', $q$
+  update public.release_rescue_engagements
+     set reviewed_commit_sha = repeat('b', 40)
+   where id = '66666666-0000-0000-0000-00000000aaaa';
 $q$);
 
 select rrtest.expect_ok('the customer revokes their own access without asking us', $q$

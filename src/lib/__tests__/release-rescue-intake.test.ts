@@ -6,6 +6,7 @@ import {
   evaluateIntake,
   findProhibitedClaims,
   freezeScope,
+  pinReviewedCommit,
   hashScope,
   releaseRescueIntakeV1Schema,
 } from "@/lib/release-rescue-intake";
@@ -99,12 +100,42 @@ describe("release rescue intake boundary", () => {
     );
   });
 
-  it("requires a full commit sha when the scope is frozen", () => {
-    const intake = releaseRescueIntakeV1Schema.parse(makeIntake());
+  it("requires a full commit sha when the reviewed commit is pinned", () => {
+    const scope = freezeScope(releaseRescueIntakeV1Schema.parse(makeIntake()));
 
-    expect(() => freezeScope(intake, "abc1234")).toThrow();
-    expect(() => freezeScope(intake, "A".repeat(40))).toThrow();
-    expect(freezeScope(intake, "a".repeat(40)).repository.commitSha).toBe("a".repeat(40));
+    expect(() => pinReviewedCommit(scope, "abc1234")).toThrow();
+    expect(() => pinReviewedCommit(scope, "A".repeat(40))).toThrow();
+    expect(pinReviewedCommit(scope, "a".repeat(40)).reviewedCommitSha).toBe("a".repeat(40));
+  });
+
+  it("freezes a scope that carries no commit, because none exists yet", () => {
+    // The whole point of the split: at intake the customer has granted nothing,
+    // so there is no commit to freeze. A scope schema that demanded one made the
+    // engagement row unwritable at the only moment it could legally be written.
+    const scope = freezeScope(releaseRescueIntakeV1Schema.parse(makeIntake()));
+
+    expect(scope.repository).not.toHaveProperty("commitSha");
+  });
+
+  it("pins the commit against the scope hash the engagement already stored", () => {
+    // This is the binding that was broken: hashScope had to be computed over a
+    // scope containing a commit, so it could never equal the hash written at
+    // intake. Now the two are the same value by construction.
+    const scope = freezeScope(releaseRescueIntakeV1Schema.parse(makeIntake()));
+    const pinned = pinReviewedCommit(scope, COMMIT_SHA);
+
+    expect(pinned.scopeHash).toBe(hashScope(scope));
+  });
+
+  it("does not change the scope hash when a different commit is pinned", () => {
+    // Two reviews of the same agreement at different commits share a scope hash.
+    // That is correct — the agreement is the same — and it is why the commit has
+    // to be recorded somewhere other than the scope.
+    const scope = freezeScope(releaseRescueIntakeV1Schema.parse(makeIntake()));
+
+    expect(pinReviewedCommit(scope, "a".repeat(40)).scopeHash).toBe(
+      pinReviewedCommit(scope, "b".repeat(40)).scopeHash,
+    );
   });
 
   it("refuses an access grant that has already expired", () => {
@@ -136,7 +167,7 @@ describe("release rescue intake boundary", () => {
 
   it("freezes and hashes scope deterministically and independently of key order", () => {
     const intake = releaseRescueIntakeV1Schema.parse(makeIntake());
-    const scope = freezeScope(intake, COMMIT_SHA);
+    const scope = freezeScope(intake);
     const reordered = {
       aiAssistedReviewAccepted: scope.aiAssistedReviewAccepted,
       customerExclusions: scope.customerExclusions,
@@ -149,9 +180,9 @@ describe("release rescue intake boundary", () => {
     expect(hashScope(scope)).toBe(hashScope(reordered as typeof scope));
   });
 
-  it("changes the scope hash when the reviewed commit changes", () => {
+  it("changes the scope hash when the agreed repository changes", () => {
     const scope = makeScope();
-    const other = makeScope({ repository: { ...scope.repository, commitSha: "b".repeat(40) } });
+    const other = makeScope({ repository: { ...scope.repository, repositoryRef: "acme/other-app" } });
 
     expect(hashScope(scope)).not.toBe(hashScope(other));
   });

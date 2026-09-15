@@ -252,7 +252,9 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
     rubricVersion: report.rubricVersion,
     scope: {
       repositoryRef: report.scope.repository.repositoryRef,
-      commitSha: report.scope.repository.commitSha,
+      // From the pinned field, not from the scope: the scope no longer carries a
+      // commit, because it is frozen before one exists.
+      commitSha: report.reviewedCommitSha,
       defaultBranch: report.scope.repository.defaultBranch,
       applicationName: report.scope.application.name,
       applicationDescription: report.scope.application.description,
