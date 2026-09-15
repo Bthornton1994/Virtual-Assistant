@@ -1,5 +1,6 @@
 import { findProhibitedClaims } from "@/lib/release-rescue-intake";
-import { containsLikelySecret } from "@/lib/release-rescue-redaction";
+import { redactSecrets } from "@/lib/release-rescue-redaction";
+import { blocksDelivery } from "@/lib/release-rescue-secret-classification";
 
 // Which report fields are protected, decided by enumeration rather than by an
 // allowlist someone has to remember to extend.
@@ -246,13 +247,17 @@ export function checkReportFieldCoverage(report: unknown): CoverageFailure[] {
             reason: `Makes a prohibited claim ("${claim}"): "${leaf.value.slice(0, 120)}".`,
           });
         }
-        if (containsLikelySecret(leaf.value)) {
+        // Only a CONFIDENT detection is a coverage failure. An ambiguous
+        // candidate is redacted and held by the delivery gate instead, because
+        // hard-failing it here is what turned "Password: rotation policy is
+        // weak" into an undeliverable report.
+        if (blocksDelivery(redactSecrets(leaf.value).classification ?? "sensitive_prose")) {
           failures.push({ path: leaf.path, reason: "Holds an unredacted credential." });
         }
         break;
       }
       case "redacted":
-        if (containsLikelySecret(leaf.value)) {
+        if (blocksDelivery(redactSecrets(leaf.value).classification ?? "sensitive_prose")) {
           failures.push({ path: leaf.path, reason: "Holds an unredacted credential." });
         }
         break;

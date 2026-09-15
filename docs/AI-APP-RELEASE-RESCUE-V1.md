@@ -62,6 +62,8 @@ Eight application modules, all pure and deterministic, and the migration chain t
 | `supabase/migrations/20260915234500_release_rescue_trust_boundary_v5.sql` | Composite org/run binding, caller-based ownership authorization, server-derived retention |
 | `src/lib/release-rescue-field-policy.ts` | The report field coverage contract |
 | `src/lib/release-rescue-credential-scanner.ts` | The bounded assignment scanner |
+| `src/lib/release-rescue-secret-classification.ts` | Three-valued classification and its precedence |
+| `supabase/migrations/20260916010000_release_rescue_timestamp_authority_v6.sql` | Server-owned creation time and retention derivation |
 | `src/lib/release-rescue-redaction-keys.ts` | Whether a key name claims to hold a credential |
 
 ## Release-readiness audit rubric
@@ -583,6 +585,88 @@ unauthenticated intake path from **17,382ms at 160KB to 1ms**.
 Three shapes were quadratic in the *first* version of this scanner — an unbounded
 `[A-Z]+` in the key splitter, a value run that `:` could not terminate, and
 per-span string rebuilding. Each is fixed at its cause.
+
+## Fourth independent audit: wrong in both directions at once
+
+The fourth audit found the detector failing in opposite directions in the same
+round, which is what forced the model below rather than another pass of tuning.
+
+- `DB_PASS=pr0d-Xk92mQvn7Lz`, quoted from a `docker-compose.yml`, reached a
+  `deliverable: true` report. `pass` and `pw` had been confined to a
+  "whole key only" set, for a stated reason — `"bypass" is not "pass"` — that
+  SEGMENT matching had already handled. The restriction bought nothing and cost
+  the second most common credential variable name there is.
+- `"Password: rotation policy is weak"` — the ordinary wording of a real finding —
+  hard-failed the $299 deliverable, and the same rule told a customer who
+  described their stack as `"Auth: Clerk. Payments: Stripe."` to remove the
+  credential from the public intake form.
+
+### The detector classification model
+
+A boolean cannot express that difference, because the difference is not in the
+KEY — both say "password" — but in the VALUE and its context.
+
+| Classification | What it means | What it entitles |
+| --- | --- | --- |
+| `credential_evidence` | High-confidence credential syntax or value | Redact, and **refuse delivery** while present unredacted |
+| `ambiguous_secret_candidate` | Could be either | Redact for safety, **do not hard-fail**, and **hold** for a named human. The report carries the reason |
+| `sensitive_prose` | Security vocabulary in ordinary sentences | Preserve exactly. It is what the report is *for* |
+
+Precedence is total and deterministic — evidence beats ambiguous beats prose — so
+two signals on one span always resolve the same way, and nothing is downgraded by
+finding a second, weaker reason to look at it. **An ambiguous item never passes
+silently:** `clearedSecretHolds` records who released it, lives inside the
+artifact so it is hashed with everything else, and the delivery gate refuses
+until it is there. Clearing is for uncertainty, not for overriding a confident
+detection — a `credential_evidence` hit cannot be cleared this way.
+
+The discriminator is value shape plus context, not the key name: character
+classes as an entropy proxy (word joiners excluded, so `object-level` is not two
+classes), a proper-noun rule, and whether the text after the value reads as a
+sentence.
+
+Detection itself is closed under the variations an audit varies. `pass` and `pw`
+are segments now, with the abbreviations people actually type, and the phrase set
+is **generated** from qualifier × carrier rather than listed — because listing is
+exactly how `AUTH_HEADER` was missed: `auth` alone is too broad, `header` alone
+is meaningless, the pair is obvious, and nobody had typed it. Three forms were
+added: PHP-style argument lists (`define('DB_PASSWORD', '…')`), attached
+single-letter flag values (`mysql -pSECRET`), and positional records (`.pgpass`,
+where no key name appears on the line at all, so the FORMAT is the evidence).
+
+Measured on this branch: **22 of 22** credential forms classified as evidence,
+**13 of 13** ordinary audit prose left untouched and delivered.
+
+### The retention authority model
+
+No caller-reachable timestamp decides when customer data is destroyed. Not
+directly, not through another column, and not through a column that defaults to
+something trustworthy.
+
+The previous round stopped deriving `purge_after` from caller input and started
+deriving it from `created_at` — an ordinary column with a `now()` default that
+`authenticated` could write. An ordinary customer insert bought **3713 days** of
+retention. `created_at` is now written by the server on every row, immutable
+afterwards, and the derivation reads `now()` and never a column, with a schema
+assertion that fails the migration if it reads that argument again.
+
+A column-level `REVOKE` was written as defence in depth and **removed**: in
+PostgreSQL a table-level `INSERT` grant is not reduced by revoking one column, so
+it did nothing. The proof asserts the honest situation — a customer may still
+name the column, and it makes no difference.
+
+### Report-field coverage
+
+Coverage is driven from the Zod **schema** as well as the artifact. The artifact
+walk could not see `preparedBy.modelId`, because both fixtures set it to `null`
+so no string leaf was ever emitted — and populating it, as the provenance rules
+require, refused the report. Writing the schema walk reproduced the same bug one
+level up: a global `seen` set silently skipped SHARED schema instances, so it
+under-reported. The cycle guard tracks the current branch instead.
+
+**57 schema paths, zero unclassified, zero stale** — the policy and the schema
+agree in both directions, and a new customer-visible field fails the build until
+somebody classifies it.
 
 ## What this slice deliberately does not do
 

@@ -159,17 +159,26 @@ describe("the scan is near-linear on adversarial input", () => {
 
   for (const [label, make] of SHAPES) {
     it(`stays linear on ${label}`, () => {
+      // Best of three. A single sample under a parallel test runner measures the
+      // machine as much as the code, and the fastest run is the one least
+      // contaminated by other work — which is what makes this assertion about
+      // complexity rather than about load.
       const timings = [20_000, 40_000, 80_000].map((size) => {
         const input = make(size);
-        const started = performance.now();
-        redactSecrets(input);
-        return performance.now() - started;
+        let best = Number.POSITIVE_INFINITY;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const started = performance.now();
+          redactSecrets(input);
+          best = Math.min(best, performance.now() - started);
+        }
+        return best;
       });
 
       // Quadratic growth is ~4x per doubling. 3x is the line: generous enough for
       // a noisy machine, far below what a real n^2 produces.
       for (let index = 1; index < timings.length; index += 1) {
-        if (timings[index - 1] < 5) continue; // too fast to measure a ratio from
+        // Below 20ms the timer's own resolution dominates the ratio.
+        if (timings[index - 1] < 20) continue;
         expect(timings[index] / timings[index - 1], `${label}: ${timings.join(" -> ")}ms`).toBeLessThan(3);
       }
       // And an absolute ceiling, so "linear but enormous" still fails.

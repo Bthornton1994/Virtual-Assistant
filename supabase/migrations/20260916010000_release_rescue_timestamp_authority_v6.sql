@@ -63,10 +63,17 @@ create trigger trg_release_rescue_created_at_authority
   before insert or update on public.release_rescue_engagements
   for each row execute function public.enforce_release_rescue_created_at_authority();
 
--- Belt and braces: `authenticated` has no business naming the column at all.
--- The trigger already overwrites it, so this changes nothing an honest client
--- does; it removes the column from the surface an attacker can even mention.
-revoke insert (created_at) on table public.release_rescue_engagements from authenticated;
+-- A column-level REVOKE was written here and removed, because it does nothing.
+--
+-- In PostgreSQL a table-level INSERT grant is not reduced by revoking the
+-- privilege on one column: `authenticated` holds `INSERT` on the table, so it may
+-- name every column regardless. Making it real means revoking the table grant and
+-- re-granting column by column, which turns every future ALTER TABLE ADD COLUMN
+-- into a silent breakage for ordinary clients.
+--
+-- So the trigger above is the control, and it is the only one. Writing a REVOKE
+-- that the proof then showed had no effect would have been a claimed boundary
+-- with nothing behind it, which is the failure this whole sequence keeps finding.
 
 -- --------------------------------------------------------------------------------
 -- 2. The retention clock reads server time

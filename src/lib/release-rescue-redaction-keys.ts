@@ -146,7 +146,12 @@ export function keyNameSegments(key: string): string[] {
     .replace(/([A-Z]{1,64})([A-Z][a-z])/g, "$1 $2")
     .split(/[^A-Za-z0-9]+/)
     .filter((segment) => segment.length > 0)
-    .map((segment) => segment.toLowerCase());
+    .map((segment) => segment.toLowerCase())
+    // A trailing digit run is an instance marker, not a different word:
+    // PASSWORD1, KEY2, TOKEN_V3 all name the same thing as their undigited form.
+    // Found by the generated prefix x suffix x casing matrix, where `PASSWORD_1`
+    // in camel case becomes `password1` and stopped matching.
+    .map((segment) => (/^[a-z]+[0-9]+$/.test(segment) ? segment.replace(/[0-9]+$/, "") : segment));
 }
 
 /**

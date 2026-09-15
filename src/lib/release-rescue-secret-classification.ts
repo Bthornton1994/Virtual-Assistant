@@ -125,6 +125,15 @@ export function valueShape(value: string, isNonSecretValue: (candidate: string) 
     .replace(/[.,!?;:]+$/, "");
   if (trimmed.length === 0 || isNonSecretValue(trimmed)) return "placeholder";
 
+  // A single capitalised alphabetic word, before the entropy rules see it as
+  // two character classes.
+  //
+  // Short ones are proper nouns: `Auth: Clerk. Payments: Stripe.` is a customer
+  // answering "what is your stack?", and the intake form used to call it a
+  // credential. Longer ones are genuinely undecidable — `Zephyrbolt` could be a
+  // product or a weak password — which is what the ambiguous class exists for.
+  if (/^[A-Z][a-z]+$/.test(trimmed)) return trimmed.length >= 8 ? "ambiguous" : "prose";
+
   const classes = characterClasses(trimmed);
 
   // Three or more character classes is the signature of a generated secret and
@@ -142,11 +151,6 @@ export function valueShape(value: string, isNonSecretValue: (candidate: string) 
     if (COMMON_PROSE_WORDS.has(trimmed.toLowerCase())) return "prose";
     if (trimmed.length < 12) return "prose";
   }
-
-  // A single capitalised word with no digits is a proper noun: a vendor, a
-  // service, a person. `Auth: Clerk. Payments: Stripe.` is a customer answering
-  // "what is your stack?", and the intake form used to reject it as a credential.
-  if (/^[A-Z][a-z]{1,15}$/.test(trimmed)) return "prose";
 
   return "ambiguous";
 }
