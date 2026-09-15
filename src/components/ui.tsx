@@ -104,21 +104,50 @@ export function Field({
   label,
   children,
   hint,
+  error,
 }: {
   label: string;
   children: ReactNode;
   hint?: string;
+  error?: string;
 }) {
   const generatedId = useId();
-  const child = isValidElement<{ id?: string }>(children) ? children : null;
+  const hintId = `${generatedId}-hint`;
+  const errorId = `${generatedId}-error`;
+  const child = isValidElement<{
+    id?: string;
+    "aria-describedby"?: string;
+    "aria-invalid"?: boolean | "true" | "false";
+  }>(children)
+    ? children
+    : null;
   const controlId = child?.props.id ?? generatedId;
-  const control = child ? cloneElement(child, { id: controlId }) : children;
+  const describedBy =
+    [child?.props["aria-describedby"], hint ? hintId : undefined, error ? errorId : undefined]
+      .filter(Boolean)
+      .join(" ") || undefined;
+  const control = child
+    ? cloneElement(child, {
+        id: controlId,
+        "aria-invalid": error ? true : child.props["aria-invalid"],
+        "aria-describedby": describedBy,
+      })
+    : children;
 
   return (
     <div className="space-y-1">
       <Label htmlFor={child ? controlId : undefined}>{label}</Label>
       {control}
-      {hint ? <p className="text-xs text-muted">{hint}</p> : null}
+      {hint ? (
+        <p id={hintId} className="text-xs text-muted">
+          {hint}
+        </p>
+      ) : null}
+      {error ? (
+        <p id={errorId} className="text-xs text-bad" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
