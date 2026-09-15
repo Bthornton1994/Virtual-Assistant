@@ -13,6 +13,7 @@ import {
   criticalWorkflowScopeSchema,
   findProhibitedClaims,
   hashScope,
+  commitShaSchema,
   repositoryScopeSchema,
   RELEASE_RESCUE_OFFER_VERSION,
   type ReleaseRescueScope,
@@ -170,6 +171,18 @@ export const releaseRescueReportV1Schema = z
     rubricHash: z.string().regex(/^[0-9a-f]{64}$/),
     scope: reportScopeSchema,
     scopeHash: z.string().regex(/^[0-9a-f]{64}$/),
+    /**
+     * The commit reviewed, pinned on the engagement when the snapshot was taken.
+     *
+     * A sibling of `scopeHash`, not a member of `scope`: the scope is what the
+     * customer agreed to and is frozen at intake, while this is which version of
+     * it we read and is only knowable later. Keeping it inside `scope` made the
+     * scope unfreezable at the only moment it could be frozen.
+     *
+     * Together the two are what makes a finding defensible months later: the
+     * scope says what we agreed to look at, this says what we actually read.
+     */
+    reviewedCommitSha: commitShaSchema,
     assessments: z.array(rubricAssessmentSchema),
     findings: z.array(releaseRescueFindingV1Schema),
     coverage: coverageSchema,
@@ -345,6 +358,8 @@ export type AssembleReportInput = {
   runId: string;
   organizationId: string;
   scope: ReleaseRescueScope;
+  /** Pinned on the engagement at snapshot; the assembler copies, never chooses. */
+  reviewedCommitSha: string;
   assessments: RubricAssessment[];
   findings: ReleaseRescueFindingV1[];
   limitations: string[];
@@ -379,6 +394,7 @@ export function assembleReleaseRescueReport(input: AssembleReportInput): Release
     rubricHash: RELEASE_RESCUE_RUBRIC_V1_HASH,
     scope: input.scope,
     scopeHash: hashScope(input.scope),
+    reviewedCommitSha: commitShaSchema.parse(input.reviewedCommitSha),
     assessments: input.assessments,
     findings: input.findings,
     coverage: metrics.coverage,

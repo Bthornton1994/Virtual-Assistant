@@ -212,7 +212,7 @@ export const repositoryRefSchema = identifierString
  * What the customer can state at intake.
  *
  * Deliberately no commit sha. At intake the customer has not granted access yet,
- * so they cannot know which commit we will review \u2014 asking them to paste a
+ * so they cannot know which commit we will review — asking them to paste a
  * 40-character hash into a signup form would be unanswerable as well as rude.
  * The commit is resolved when the snapshot is taken and enters the frozen scope
  * then, via `freezeScope`.
@@ -231,13 +231,23 @@ export const commitShaSchema = z
   .regex(/^[0-9a-f]{40}$/, "must be a full 40-character lowercase commit sha");
 
 /**
- * The repository as the REPORT records it: everything from intake plus the exact
- * commit reviewed. A review that cannot name what it reviewed is not
- * reproducible and cannot be defended later.
+ * The repository as the FROZEN SCOPE records it: exactly what the customer
+ * agreed to, and nothing that is not yet a fact at that moment.
+ *
+ * The reviewed commit deliberately does NOT live here. It cannot: the scope is
+ * frozen and hashed when intake is accepted, and the commit is only resolved
+ * when the snapshot is taken, which is later. An earlier version extended this
+ * schema with `commitSha`, which made the intended lifecycle unexecutable — the
+ * engagement row would have had to be written with a commit nobody had yet, or
+ * amended after `scope` and `scope_hash` had both become immutable.
+ *
+ * It also meant `hashScope(freezeScope(intake, sha))` could never equal the
+ * `scope_hash` stored at intake, so the hash bound nothing.
+ *
+ * The commit is pinned separately, once, at the snapshot. See
+ * `pinReviewedCommit` and `release_rescue_engagements.reviewed_commit_sha`.
  */
-export const repositoryScopeSchema = repositoryIntakeSchema.extend({
-  commitSha: commitShaSchema,
-});
+export const repositoryScopeSchema = repositoryIntakeSchema;
 
 export const applicationScopeSchema = z
   .object({
@@ -336,21 +346,58 @@ export type ReleaseRescueScope = {
 };
 
 /**
- * Freezes an accepted intake against the commit actually snapshotted.
+ * Freezes an accepted intake into the scope of the engagement.
  *
- * This is the moment the review target stops moving. Everything downstream \u2014 the
- * scope hash, the report binding, what we can defend having reviewed \u2014 is fixed
- * here, which is why the commit is a required argument rather than an optional
- * field someone could forget to set.
+ * This is the moment the AGREEMENT stops moving: one repository, one
+ * application, one critical workflow, the exclusions, and the AI-assisted
+ * choice. Every one of those is a fact at intake, which is what makes freezing
+ * them at intake coherent.
+ *
+ * WHICH VERSION of that scope gets reviewed — the commit — is pinned later by
+ * `pinReviewedCommit`, because it is not a fact yet.
  */
-export function freezeScope(intake: ReleaseRescueIntakeV1, commitSha: string): ReleaseRescueScope {
+export function freezeScope(intake: ReleaseRescueIntakeV1): ReleaseRescueScope {
   return {
     offerVersion: intake.offerVersion,
-    repository: { ...intake.repository, commitSha: commitShaSchema.parse(commitSha) },
+    repository: { ...intake.repository },
     application: intake.application,
     criticalWorkflow: intake.criticalWorkflow,
     customerExclusions: [...intake.customerExclusions],
     aiAssistedReviewAccepted: intake.aiAssistedReviewAccepted,
+  };
+}
+
+/**
+ * The commit this engagement reviewed, pinned once when the snapshot is taken.
+ *
+ * Separate from the scope because it has a different lifecycle, not because it
+ * matters less. The scope is frozen at intake and never changes; the commit is
+ * unknown at intake, becomes known exactly once, and then never changes either.
+ * Two write-once moments need two fields — collapsing them into one produced a
+ * row that could not legally be written at all.
+ *
+ * It is not customer content: a 40-character hash of a tree reveals nothing
+ * about that tree. So it survives the retention purge as accounting evidence of
+ * what was reviewed, alongside `scope_hash`.
+ */
+export type ReviewedTarget = {
+  /** Identity of the agreement, from `hashScope`. */
+  scopeHash: string;
+  /** Identity of the tree, pinned at snapshot. */
+  reviewedCommitSha: string;
+};
+
+/**
+ * Binds a frozen scope to the commit actually snapshotted.
+ *
+ * The pair is what a report is reproducible against: the scope says what we
+ * agreed to look at, the commit says which version of it we looked at. Neither
+ * alone is enough to defend a finding later.
+ */
+export function pinReviewedCommit(scope: ReleaseRescueScope, commitSha: string): ReviewedTarget {
+  return {
+    scopeHash: hashScope(scope),
+    reviewedCommitSha: commitShaSchema.parse(commitSha),
   };
 }
 

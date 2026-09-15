@@ -77,6 +77,15 @@ insert into public.release_rescue_repository_grants
 values ('eeee0000-0000-0000-0000-000000000001', 'ffff0000-0000-0000-0000-000000000001',
         'uploaded_archive', 'victim/private-repo', 'customer_uploaded_archive', now() + interval '7 days');
 
+-- The snapshot and its commit, so the report cases below exercise report
+-- invariants rather than the v4 precondition that a report names a pinned commit.
+update public.release_rescue_engagements
+   set snapshot_limits_version = 'release-rescue-snapshot-limits/v1'
+ where id = 'ffff0000-0000-0000-0000-000000000001';
+update public.release_rescue_engagements
+   set reviewed_commit_sha = repeat('7', 40)
+ where id = 'ffff0000-0000-0000-0000-000000000001';
+
 \echo ''
 \echo '=== B1. Relabelling the access mode no longer opens the ownership gate ==='
 

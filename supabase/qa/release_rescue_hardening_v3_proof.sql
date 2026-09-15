@@ -118,12 +118,15 @@ begin
       raise exception 'MODE "%" STARTED A REVIEW WITH NO OWNERSHIP EVIDENCE', v_mode;
     end if;
 
-    -- And the same engagement proceeds once an operator records ownership, so the
-    -- gate is a gate and not a wall.
+    -- And the same engagement proceeds once an operator records ownership and the
+    -- snapshot pins its commit, so the gate is a gate and not a wall.
     update public.release_rescue_engagements
        set ownership_confirmation = 'provider_ownership_verified_by_operator',
            ownership_confirmed_by = '11110000-0000-0000-0000-000000000002',
-           ownership_confirmation_note = 'Owner confirmed against the provider organisation record.'
+           ownership_confirmation_note = 'Owner confirmed against the provider organisation record.',
+           snapshot_limits_version = 'release-rescue-snapshot-limits/v1'
+     where id = v_id;
+    update public.release_rescue_engagements set reviewed_commit_sha = substr(md5(v_mode) || md5(v_mode), 1, 40)
      where id = v_id;
     update public.release_rescue_engagements set status = 'auditing' where id = v_id;
 
@@ -304,6 +307,10 @@ begin
   values ('22220000-0000-0000-0000-000000000001', v_id, 'github', 'acme/good',
           'customer_installed_readonly_app', now() + interval '7 days');
 
+  update public.release_rescue_engagements
+     set snapshot_limits_version = 'release-rescue-snapshot-limits/v1' where id = v_id;
+  update public.release_rescue_engagements
+     set reviewed_commit_sha = repeat('c', 40) where id = v_id;
   update public.release_rescue_engagements set status = 'auditing' where id = v_id;
   raise notice 'PASS allowed  | a live grant naming the reviewed repository does start the review';
 
