@@ -47,6 +47,13 @@ export default function PricingPage() {
             <p className="mt-4 text-sm text-muted">
               Application is an account. We review fit before work begins.
             </p>
+            <p className="mt-6 text-sm text-ink-soft">
+              Need a one-time app review instead of membership?{" "}
+              <Link href="/ai-app-release-rescue" className="underline">
+                AI App Release Rescue is $299
+              </Link>
+              , with an optional $1,250 sprint after the report. Checkout for that offer is not active on this site yet.
+            </p>
           </div>
         </div>
       </div>
