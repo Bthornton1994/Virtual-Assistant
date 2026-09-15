@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CANONICAL_NON_CLAIMS, REPORT_LIMITATIONS_VERBATIM } from "@/lib/ai-app-release-rescue/constants";
+import { CANONICAL_NON_CLAIMS, REPORT_LIMITATIONS_VERBATIM, formatUsd } from "@/lib/ai-app-release-rescue/constants";
 import { RELEASE_RESCUE_RUBRIC_V1, RUBRIC_DIMENSIONS } from "@/lib/release-rescue-rubric";
 
 const SURFACE_FILES = [
@@ -49,5 +49,23 @@ describe("rescue customer copy", () => {
     expect(RELEASE_RESCUE_RUBRIC_V1).toHaveLength(32);
     expect(RUBRIC_DIMENSIONS).toHaveLength(12);
     expect(landing).toMatch(/Thirty-two checks across twelve areas/);
+  });
+
+  it("formats the sprint price with a thousands separator", () => {
+    expect(formatUsd(1250)).toBe("$1,250");
+    expect(formatUsd(299)).toBe("$299");
+  });
+
+  it("does not sell a ready/not-ready stamp the report contract cannot produce", () => {
+    const files = [
+      ...SURFACE_FILES,
+      "src/components/ai-app-release-rescue/offer-pricing.tsx",
+    ];
+    for (const file of files) {
+      const source = readFileSync(resolve(process.cwd(), file), "utf8");
+      expect(source, file).not.toMatch(/whether this web app is ready to ship/i);
+      expect(source, file).not.toMatch(/ready, ready with caveats, or not ready/i);
+      expect(source, file).not.toMatch(/A readiness call/);
+    }
   });
 });

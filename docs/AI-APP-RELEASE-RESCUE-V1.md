@@ -46,7 +46,7 @@ Nine application modules, all pure and deterministic:
 
 | Module | Responsibility |
 | --- | --- |
-| `src/lib/release-rescue-rubric.ts` | The frozen, content-hashed rubric: 24 checks across 9 dimensions, 12 of them release-gating |
+| `src/lib/release-rescue-rubric.ts` | The frozen, content-hashed rubric: 32 checks across 12 dimensions, 12 of them release-gating |
 | `src/lib/release-rescue-intake.ts` | Offer terms, scope ceiling, service refusals, attestations, retention election |
 | `src/lib/release-rescue-redaction.ts` | Secret detection and fail-closed redaction of evidence excerpts |
 | `src/lib/release-rescue-findings.ts` | The finding contract and the derived severity model |
@@ -356,7 +356,7 @@ would be free to promise a shape the pipeline cannot produce.
 
 ### Carried over, and still open
 
-- The corrected landing-page sentences were written for accuracy, not for voice. **Cursor should restyle them**, and owns the customer-facing copy for the three added rubric dimensions.
+- Landing-page sentences were written for accuracy against the report contract. Voice polish can still improve them, but the verdict copy must stay aligned with `VERDICT_COPY` and must not call an application ready or secure.
 - The snapshot limits are a decision function. **The extractor that enforces them at read time is not built**, because this pass performs no checkout. The limits are proven in unit tests, not against a real archive.
 - The retention sweep is scheduled in configuration and in the migration. **It has not run in a deployed environment**, because nothing is deployed.
 

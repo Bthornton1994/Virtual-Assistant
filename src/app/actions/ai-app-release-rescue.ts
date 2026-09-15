@@ -1,8 +1,9 @@
 "use server";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { DEMO_ENGAGEMENT_COOKIE, RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
+import { demoEngagementCookieSecure } from "@/lib/ai-app-release-rescue/demo-cookie";
 import { createDemoEngagement } from "@/lib/ai-app-release-rescue/engagement";
 import {
   ATTESTATION_FIELDS,
@@ -65,14 +66,19 @@ export async function submitRescueIntakeAction(
 
   const engagement = createDemoEngagement(parsed.intake);
   const jar = await cookies();
+  const requestHeaders = await headers();
   jar.set(DEMO_ENGAGEMENT_COOKIE, engagement.id, {
     httpOnly: true,
     sameSite: "lax",
     path: RESCUE_PATH,
     maxAge: 60 * 60 * 24,
-    // Secure everywhere except local http development. This cookie is the only
-    // thing authorizing the demo engagement page.
-    secure: process.env.NODE_ENV === "production",
+    // This cookie is the only thing authorizing the demo engagement page.
+    // Secure follows the request protocol; it is never hardcoded false.
+    secure: demoEngagementCookieSecure({
+      forwardedProto: requestHeaders.get("x-forwarded-proto"),
+      vercel: process.env.VERCEL,
+      nodeEnv: process.env.NODE_ENV,
+    }),
   });
   redirect(`${RESCUE_PATH}/demo/${engagement.id}`);
 }

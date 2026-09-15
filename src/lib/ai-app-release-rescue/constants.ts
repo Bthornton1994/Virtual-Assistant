@@ -27,6 +27,15 @@ export const RESCUE_SERVICE_NAME = "AI App Release Rescue";
 export const RESCUE_REVIEW_PRICE_USD = RELEASE_RESCUE_OFFER.reviewPriceCents / 100;
 export const RESCUE_REMEDIATION_PRICE_USD = RELEASE_RESCUE_OFFER.remediationSprintPriceCents / 100;
 
+/** US currency with a thousands separator (`$1,250`, not `$1250`). */
+export function formatUsd(dollars: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(dollars);
+}
+
 export const RESCUE_SCOPE_LIMIT = RELEASE_RESCUE_OFFER.scopeCeiling;
 export const RESCUE_GRANT_WINDOW_DAYS = MAX_GRANT_WINDOW_DAYS;
 export const RESCUE_RETENTION_DAYS = RETENTION_DAYS;
@@ -184,5 +193,10 @@ export const FORBIDDEN_INTAKE_FIELD_NAMES = [
 ] as const;
 
 export const DEMO_SAMPLE_REPORT_ID = "demo-harbor-ledger";
+/**
+ * Authorizes the in-memory demo engagement page. Set with httpOnly, SameSite=Lax,
+ * and Secure on HTTPS. Local HTTP demo cannot set a Secure cookie; that is a
+ * local constraint, not a production default. See demoEngagementCookieSecure.
+ */
 export const DEMO_ENGAGEMENT_COOKIE = "dc_rescue_demo";
 export const RESCUE_PATH = "/ai-app-release-rescue";
