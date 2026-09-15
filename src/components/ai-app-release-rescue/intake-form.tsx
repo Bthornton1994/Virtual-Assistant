@@ -9,6 +9,8 @@ import {
   ACCESS_GRANT_METHODS,
   APP_TYPE_COPY,
   APP_TYPES,
+  RESCUE_REMEDIATION_PRICE_USD,
+  formatUsd,
 } from "@/lib/ai-app-release-rescue/constants";
 import {
   ACCESS_WINDOW_DAY_OPTIONS,
@@ -258,7 +260,10 @@ export function RescueIntakeForm() {
             className="mt-1 size-4"
             defaultChecked={values.remediationInterest === "on"}
           />
-          <span>After the report, I want to hear about the $1,250 sprint. This is not a purchase.</span>
+          <span>
+            After the report, I want to hear about the {formatUsd(RESCUE_REMEDIATION_PRICE_USD)} sprint. This is not a
+            purchase.
+          </span>
         </label>
       </section>
 

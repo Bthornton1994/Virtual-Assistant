@@ -46,6 +46,41 @@ test.describe("AI App Release Rescue offer", () => {
     await expect(page.getByText("$1,250").first()).toBeVisible();
     await expect(page.getByText(/not a penetration test/i).first()).toBeVisible();
     await expect(page.getByText(/Payment is not collected on this page/i).first()).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("ready, ready with caveats");
+    await expect(page.locator("h1")).not.toContainText("ready to ship");
+  });
+
+  test("skip link is first focusable and moves focus to main", async ({ page }) => {
+    await page.goto("/ai-app-release-rescue");
+    await page.keyboard.press("Tab");
+    const skip = page.getByRole("link", { name: "Skip to content" });
+    await expect(skip).toBeFocused();
+    await skip.press("Enter");
+    await expect(page.locator("#main-content")).toBeFocused();
+  });
+
+  test("gold labels on accent meet WCAG AA contrast", async ({ page }) => {
+    await page.goto("/ai-app-release-rescue");
+    const ratio = await page.locator("p", { hasText: /^Review$/ }).evaluate((el) => {
+      const fg = getComputedStyle(el).color;
+      const bg = getComputedStyle(el.parentElement ?? el).backgroundColor;
+      const parse = (value: string) => {
+        const match = value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (!match) throw new Error(value);
+        return [Number(match[1]), Number(match[2]), Number(match[3])].map((channel) => {
+          const c = channel / 255;
+          return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        });
+      };
+      const [r1, g1, b1] = parse(fg);
+      const [r2, g2, b2] = parse(bg);
+      const L1 = 0.2126 * r1 + 0.7152 * g1 + 0.0722 * b1;
+      const L2 = 0.2126 * r2 + 0.7152 * g2 + 0.0722 * b2;
+      const hi = Math.max(L1, L2);
+      const lo = Math.min(L1, L2);
+      return (hi + 0.05) / (lo + 0.05);
+    });
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
   });
 
   test("the intake form offers no field that could carry a credential", async ({ page }) => {

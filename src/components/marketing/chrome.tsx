@@ -138,7 +138,7 @@ export function MarketingFooter() {
         </div>
         <div className="grid grid-cols-2 gap-10 text-sm">
           <div className="space-y-2">
-            <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">Product</p>
+            <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/65">Product</p>
             <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/how-it-works">
               How it works
             </Link>
@@ -156,7 +156,7 @@ export function MarketingFooter() {
             </Link>
           </div>
           <div className="space-y-2">
-            <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">Company</p>
+            <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/65">Company</p>
             <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/security">
               Security
             </Link>
