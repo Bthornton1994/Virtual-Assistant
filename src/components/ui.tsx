@@ -1,5 +1,7 @@
 import { cloneElement, isValidElement, useId } from "react";
+import Link from "next/link";
 import { cn } from "@/lib/cn";
+import type { ComponentProps } from "react";
 import type {
   ButtonHTMLAttributes,
   HTMLAttributes,
@@ -9,30 +11,48 @@ import type {
   TextareaHTMLAttributes,
 } from "react";
 
+type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+type ButtonSize = "sm" | "md" | "lg";
+
+function buttonClasses(variant: ButtonVariant, size: ButtonSize, className?: string) {
+  return cn(
+    "inline-flex min-h-11 items-center justify-center gap-2 rounded-md font-medium transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-50",
+    size === "sm" && "min-h-11 px-2.5 text-xs",
+    size === "md" && "min-h-11 px-3.5 text-sm",
+    size === "lg" && "h-12 px-5 text-[15px]",
+    variant === "primary" && "bg-accent text-accent-fg hover:bg-accent-hover",
+    variant === "secondary" && "border border-line-strong bg-surface text-ink hover:bg-bg-elevated",
+    variant === "ghost" && "text-ink-soft hover:bg-black/5",
+    variant === "danger" && "bg-bad text-white hover:bg-[#7a2424]",
+    className,
+  );
+}
+
 export function Button({
   className,
   variant = "primary",
   size = "md",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-  size?: "sm" | "md" | "lg";
+  variant?: ButtonVariant;
+  size?: ButtonSize;
 }) {
   return (
-    <button
-      className={cn(
-        "inline-flex min-h-11 items-center justify-center gap-2 rounded-md font-medium transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-50",
-        size === "sm" && "min-h-11 px-2.5 text-xs",
-        size === "md" && "min-h-11 px-3.5 text-sm",
-        size === "lg" && "h-12 px-5 text-[15px]",
-        variant === "primary" && "bg-accent text-accent-fg hover:bg-accent-hover",
-        variant === "secondary" && "border border-line-strong bg-surface text-ink hover:bg-bg-elevated",
-        variant === "ghost" && "text-ink-soft hover:bg-black/5",
-        variant === "danger" && "bg-bad text-white hover:bg-[#7a2424]",
-        className,
-      )}
-      {...props}
-    />
+    <button className={buttonClasses(variant, size, className)} {...props} />
+  );
+}
+
+export function ButtonLink({
+  className,
+  variant = "primary",
+  size = "md",
+  ...props
+}: ComponentProps<typeof Link> & {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+}) {
+  return (
+    <Link className={buttonClasses(variant, size, className)} {...props} />
   );
 }
 

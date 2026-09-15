@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 import { ActionClassBadge, EmptyState, PageHeader, PriorityBadge, StatusBadge, formatDate } from "@/components/product";
 import { requireClient } from "@/lib/auth";
 import { getWorkspace } from "@/lib/workspace";
@@ -16,9 +16,7 @@ export default async function RequestsPage() {
         title="Requests"
         description="Outcomes in motion. Not a ticket dump."
         actions={
-          <Link href="/app/requests/new">
-            <Button>New request</Button>
-          </Link>
+          <ButtonLink href="/app/requests/new">New request</ButtonLink>
         }
       />
       {requests.length === 0 ? (
@@ -26,9 +24,7 @@ export default async function RequestsPage() {
           title="No outcomes in motion"
           body="Describe what needs to happen. We will return an execution plan before work starts. This is not a ticket inbox."
           action={
-            <Link href="/app/requests/new">
-              <Button>What should we take off your plate?</Button>
-            </Link>
+            <ButtonLink href="/app/requests/new">What should we take off your plate?</ButtonLink>
           }
         />
       ) : (

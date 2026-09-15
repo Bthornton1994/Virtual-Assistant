@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 import {
   RESCUE_PATH,
   RESCUE_REMEDIATION_PRICE_USD,
@@ -21,11 +20,9 @@ export function OfferPricing() {
           <li>Prepare-only. No writes to your repository.</li>
         </ul>
         <p className="mt-8 text-xs text-accent-fg/60">{RESCUE_PAYMENT.customerCopy}</p>
-        <Link href={`${RESCUE_PATH}/intake`} className="mt-8 inline-block w-full sm:w-auto">
-          <Button size="lg" className="w-full bg-gold text-ink hover:bg-[#c49a55] sm:w-auto">
-            Request the ${RESCUE_REVIEW_PRICE_USD} review
-          </Button>
-        </Link>
+        <ButtonLink href={`${RESCUE_PATH}/intake`} size="lg" className="mt-8 w-full bg-gold text-ink hover:bg-[#c49a55] sm:w-auto">
+          Request the ${RESCUE_REVIEW_PRICE_USD} review
+        </ButtonLink>
       </article>
       <article className="flex flex-col justify-between rounded-xl border border-line bg-surface px-6 py-8 sm:px-8">
         <div>

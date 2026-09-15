@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 
 export const metadata = { title: "How it works" };
 
@@ -46,9 +45,7 @@ export default function HowItWorksPage() {
         ))}
       </ol>
       <div className="mx-auto max-w-6xl px-5 py-16">
-        <Link href="/book">
-          <Button size="lg">Start Delegating</Button>
-        </Link>
+        <ButtonLink href="/book" size="lg">Start Delegating</ButtonLink>
       </div>
     </div>
   );

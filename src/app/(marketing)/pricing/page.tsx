@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 
 export const metadata = { title: "Founding Membership" };
 
@@ -41,9 +41,7 @@ export default function PricingPage() {
             checked result.
           </p>
           <div className="mt-10">
-            <Link href="/book">
-              <Button size="lg">Apply for Founding Membership</Button>
-            </Link>
+            <ButtonLink href="/book" size="lg">Apply for Founding Membership</ButtonLink>
             <p className="mt-4 text-sm text-muted">
               Application is an account. We review fit before work begins.
             </p>
