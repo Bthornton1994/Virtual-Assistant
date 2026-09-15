@@ -50,7 +50,8 @@ export function ReportView({
         <p className="text-[11px] uppercase tracking-[0.2em] text-muted">Customer-safe report</p>
         <h1 className="text-balance text-3xl font-semibold tracking-[-0.03em] sm:text-5xl">Release-readiness report</h1>
         <p className="max-w-2xl text-pretty text-ink-soft">
-          Engagement {report.engagement_id}. Reviewed commit {report.scope.repository_ref}. Status {report.status}.
+          Engagement {report.engagement_id}. Reviewed commit{" "}
+          <span className="break-all font-mono">{report.scope.repository_ref}</span>. Status {report.status}.
         </p>
         <p className="text-xs text-muted">
           Content hash <span className="break-all font-mono tabular-nums">{contentHash.slice(0, 12)}…</span>
