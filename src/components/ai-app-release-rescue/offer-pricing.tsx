@@ -21,8 +21,8 @@ export function OfferPricing() {
           <li>Prepare-only. No writes to your repository.</li>
         </ul>
         <p className="mt-8 text-xs text-accent-fg/60">{RESCUE_PAYMENT.customerCopy}</p>
-        <Link href={`${RESCUE_PATH}/intake`} className="mt-8 inline-block">
-          <Button size="lg" className="bg-gold text-ink hover:bg-[#c49a55]">
+        <Link href={`${RESCUE_PATH}/intake`} className="mt-8 inline-block w-full sm:w-auto">
+          <Button size="lg" className="w-full bg-gold text-ink hover:bg-[#c49a55] sm:w-auto">
             Request the ${RESCUE_REVIEW_PRICE_USD} review
           </Button>
         </Link>

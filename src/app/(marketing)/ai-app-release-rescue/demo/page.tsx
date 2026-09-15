@@ -13,12 +13,12 @@ export default function RescueDemoHubPage() {
         Use these screens to inspect intake boundaries and the report renderer. Harbor Ledger is fictional. Submissions
         are process memory only.
       </p>
-      <div className="mt-10 flex flex-col gap-3 sm:flex-row">
-        <Link href={`${RESCUE_PATH}/intake`}>
-          <Button size="lg">Open intake</Button>
+      <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+        <Link href={`${RESCUE_PATH}/intake`} className="w-full sm:w-auto">
+          <Button size="lg" className="w-full sm:w-auto">Open intake</Button>
         </Link>
-        <Link href={`${RESCUE_PATH}/demo/report`}>
-          <Button size="lg" variant="secondary">
+        <Link href={`${RESCUE_PATH}/demo/report`} className="w-full sm:w-auto">
+          <Button size="lg" variant="secondary" className="w-full sm:w-auto">
             Sample report
           </Button>
         </Link>

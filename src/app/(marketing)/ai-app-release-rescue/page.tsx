@@ -56,12 +56,12 @@ export default function RescueLandingPage() {
           One repository. One web application. One critical workflow. You get a structured report with scores,
           findings, and evidence. This is not a penetration test, and it is not a compliance certificate.
         </p>
-        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-          <Link href={`${RESCUE_PATH}/intake`}>
-            <Button size="lg">Request the ${RESCUE_REVIEW_PRICE_USD} review</Button>
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+          <Link href={`${RESCUE_PATH}/intake`} className="w-full sm:w-auto">
+            <Button size="lg" className="w-full sm:w-auto">Request the ${RESCUE_REVIEW_PRICE_USD} review</Button>
           </Link>
-          <Link href={`${RESCUE_PATH}/demo/report`}>
-            <Button size="lg" variant="secondary">
+          <Link href={`${RESCUE_PATH}/demo/report`} className="w-full sm:w-auto">
+            <Button size="lg" variant="secondary" className="w-full sm:w-auto">
               See a sample report
             </Button>
           </Link>
@@ -187,14 +187,14 @@ export default function RescueLandingPage() {
             The demo uses synthetic data. It does not create a customer record, charge a card, or store a repository
             token.
           </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <Link href={`${RESCUE_PATH}/intake`}>
-              <Button size="lg" className="bg-gold text-ink hover:bg-[#c49a55]">
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            <Link href={`${RESCUE_PATH}/intake`} className="w-full sm:w-auto">
+              <Button size="lg" className="w-full bg-gold text-ink hover:bg-[#c49a55] sm:w-auto">
                 Open the intake
               </Button>
             </Link>
-            <Link href={`${RESCUE_PATH}/demo`}>
-              <Button size="lg" variant="secondary">
+            <Link href={`${RESCUE_PATH}/demo`} className="w-full sm:w-auto">
+              <Button size="lg" variant="secondary" className="w-full sm:w-auto">
                 Demo hub
               </Button>
             </Link>
