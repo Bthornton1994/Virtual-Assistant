@@ -450,8 +450,11 @@ $q$);
 \echo ''
 \echo '=== STEP 8. Retention. Content goes; the accounting evidence stays ==='
 
+-- Hardening v5 made `purge_after` server-derived, so the engagement becomes due
+-- the way a real one does: a zero-day retention election at delivery. It was
+-- already delivered in step 7, so only the election changes.
 update public.release_rescue_engagements
-   set purge_after = now() - interval '1 minute'
+   set retention_policy = 'purge_on_delivery', retention_days = 0
  where id = 'ffff4000-0000-0000-0000-000000000001';
 
 do $$

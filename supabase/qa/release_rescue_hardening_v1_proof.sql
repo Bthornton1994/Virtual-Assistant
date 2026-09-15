@@ -241,9 +241,11 @@ $q$);
 do $$
 declare v_purged integer;
 begin
-  -- Make the archive engagement due, then sweep.
+  -- Hardening v5 made `purge_after` server-derived, so a proof can no longer
+  -- force a sweep by writing that column. It becomes due the way a real
+  -- engagement does: it is delivered under a zero-day retention election.
   update public.release_rescue_engagements
-     set purge_after = now() - interval '1 day'
+     set delivered_at = now(), retention_policy = 'purge_on_delivery', retention_days = 0
    where id = 'cccc0000-0000-0000-0000-000000000001';
 
   select public.purge_expired_release_rescue_data('http_schedule') into v_purged;
