@@ -336,6 +336,28 @@ describe("report integrity", () => {
     expect(validation.metrics.findingCount).toBe(0);
   });
 
+  it("fails closed when a finding names a check the rubric does not have", () => {
+    // deriveReportMetrics is exported. It must not answer "not blocking" for a
+    // confirmed critical merely because it cannot place the finding.
+    const metrics = deriveReportMetrics(
+      passingAssessments(),
+      [
+        makeFinding({
+          rubricCheckId: "made.up_check",
+          impact: "severe",
+          exploitability: "remote_unauthenticated",
+          confidence: "confirmed",
+          severity: "critical",
+          blocking: true,
+        }),
+      ],
+      ZERO_AUTHORITY,
+    );
+
+    expect(metrics.blockingFindingCount).toBe(1);
+    expect(metrics.verdict).toBe("release_blocked");
+  });
+
   it("computes metrics from observations even when stored severity is inflated", () => {
     const metrics = deriveReportMetrics(passingAssessments(), [makeFinding({ severity: "critical" })], ZERO_AUTHORITY);
 

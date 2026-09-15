@@ -46,6 +46,14 @@ describe("snapshot entry limits", () => {
     expect(reasonOf(file("src/../../etc/shadow"))).toBe("path_traversal");
   });
 
+  it("refuses drive-qualified paths and lookalike separators", () => {
+    // Neither is caught by startsWith("/") or by splitting on "/".
+    expect(reasonOf(file("C:/Windows/system32/x.txt"))).toBe("absolute_path");
+    expect(reasonOf(file("d:/secrets/key.txt"))).toBe("absolute_path");
+    expect(reasonOf(file("\uff0fetc/passwd"))).toBe("illegal_path_character");
+    expect(reasonOf(file("src\u2215..\u2215etc/passwd"))).toBe("illegal_path_character");
+  });
+
   it("refuses paths carrying control characters or backslashes", () => {
     // Built rather than written as a literal: a real NUL byte in a source file
     // confuses editors, diffs, and grep.
@@ -159,6 +167,24 @@ describe("whole-snapshot limits", () => {
     expect(decision.accepted).toBe(false);
     if (decision.accepted) return;
     expect(decision.refusals.map((r) => r.reason)).toContain("archive_too_large");
+  });
+
+  it("refuses unusable archive size facts rather than comparing against them", () => {
+    // NaN defeats every ">" comparison, so an unvalidated NaN made the module
+    // fail OPEN against its own stated posture. These must all be refused.
+    for (const archive of [
+      { archiveBytes: Number.NaN, declaredExpandedBytes: Number.NaN },
+      { archiveBytes: Number.NaN, declaredExpandedBytes: 1_000_000_000_000 },
+      { archiveBytes: 1_000, declaredExpandedBytes: Number.NaN },
+      { archiveBytes: Number.POSITIVE_INFINITY, declaredExpandedBytes: 1_000 },
+      { archiveBytes: -1_000, declaredExpandedBytes: 1_000 },
+      { archiveBytes: 1_000, declaredExpandedBytes: -1 },
+    ]) {
+      const decision = evaluateSnapshot([file("src/app.ts", 1_000)], archive);
+      expect(decision.accepted, JSON.stringify(archive)).toBe(false);
+      if (decision.accepted) continue;
+      expect(decision.refusals.map((r) => r.reason)).toContain("archive_too_large");
+    }
   });
 
   it("refuses a zero-byte archive rather than dividing by it", () => {

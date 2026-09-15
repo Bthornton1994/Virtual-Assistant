@@ -35,6 +35,9 @@ export type IntakeFieldName =
   | "appType"
   | "criticalWorkflow"
   | "criticalWorkflowEntryPoint"
+  | "applicationName"
+  | "repositoryHost"
+  | "defaultBranch"
   | "accessGrantMethod"
   | "accessWindowDays"
   | "retentionPolicy"
@@ -74,6 +77,35 @@ export const ATTESTATION_COPY: Record<AttestationField, string> = {
     "I understand this does not guarantee the absence of security vulnerabilities.",
   understandsFindingsRequireCustomerAction:
     "I understand the report identifies problems and my team fixes them.",
+};
+
+export const REPOSITORY_HOSTS = ["github", "gitlab", "bitbucket"] as const;
+export type RepositoryHost = (typeof REPOSITORY_HOSTS)[number];
+
+export const REPOSITORY_HOST_COPY: Record<RepositoryHost, string> = {
+  github: "GitHub",
+  gitlab: "GitLab",
+  bitbucket: "Bitbucket",
+};
+
+/**
+ * Facts about the application that only the customer knows.
+ *
+ * These were previously hardcoded to `true` while being written into the frozen,
+ * hashed scope — so the scope asserted things the customer never said, and the
+ * report bound itself to those assertions. Asking is the only honest option.
+ */
+export const SCOPE_FACT_FIELDS = [
+  "usesAiFeatures",
+  "handlesCustomerData",
+  "triggersExternalActions",
+] as const;
+export type ScopeFactField = (typeof SCOPE_FACT_FIELDS)[number];
+
+export const SCOPE_FACT_COPY: Record<ScopeFactField, string> = {
+  usesAiFeatures: "This application uses AI features (a model, an assistant, or an agent).",
+  handlesCustomerData: "This workflow handles customer data.",
+  triggersExternalActions: "This workflow can send, publish, charge, or otherwise act outside the app.",
 };
 
 export const ACCESS_WINDOW_DAY_OPTIONS = [7, 14, 30] as const;
@@ -147,7 +179,11 @@ const PROVIDER_HOSTS: Record<string, RepositoryReference["provider"]> = {
  * would be hostile, so this parses one and keeps only `owner/name` — after
  * rejecting outright anything carrying userinfo or a credential-shaped query.
  */
-export function parseRepositoryReference(raw: string): { ok: true; value: RepositoryReference } | { ok: false; reason: string } {
+export function parseRepositoryReference(
+  raw: string,
+  /** Used only for a bare owner/name, where the host is not in the text. */
+  hostWhenUnqualified: RepositoryHost = "github",
+): { ok: true; value: RepositoryReference } | { ok: false; reason: string } {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return { ok: false, reason: "Add the repository you want reviewed." };
 
@@ -155,7 +191,9 @@ export function parseRepositoryReference(raw: string): { ok: true; value: Reposi
     if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed)) {
       return { ok: false, reason: "Use owner/name, or paste the repository's https URL." };
     }
-    return { ok: true, value: { provider: "github", repositoryRef: trimmed } };
+    // A bare owner/name carries no host, so the customer's chosen host decides.
+    // Defaulting silently to GitHub recorded a GitLab repository as a GitHub one.
+    return { ok: true, value: { provider: hostWhenUnqualified, repositoryRef: trimmed } };
   }
 
   let url: URL;
@@ -226,8 +264,25 @@ export function parseRescueIntake(source: Record<string, unknown>, now: Date = n
   const workEmail = emailSchema.safeParse(readString(source, "workEmail").trim());
   if (!workEmail.success) errors.workEmail = "Add a work email we can send the report to.";
 
-  const repository = parseRepositoryReference(readString(source, "repositoryUrl"));
+  const hostRaw = readString(source, "repositoryHost");
+  const repositoryHost = (REPOSITORY_HOSTS as readonly string[]).includes(hostRaw)
+    ? (hostRaw as RepositoryHost)
+    : null;
+  if (!repositoryHost) errors.repositoryHost = "Choose where the repository is hosted.";
+
+  const repository = parseRepositoryReference(
+    readString(source, "repositoryUrl"),
+    repositoryHost ?? "github",
+  );
   if (!repository.ok) errors.repositoryUrl = repository.reason;
+
+  const applicationName = readString(source, "applicationName").trim();
+  if (applicationName.length === 0) errors.applicationName = "What is this application called?";
+
+  const defaultBranch = readString(source, "defaultBranch").trim() || "main";
+  if (!/^[A-Za-z0-9._\/-]{1,200}$/.test(defaultBranch)) {
+    errors.defaultBranch = "Use the branch name, for example main.";
+  }
 
   const appTypeRaw = readString(source, "appType");
   const appType = (APP_TYPES as readonly string[]).includes(appTypeRaw) ? (appTypeRaw as AppType) : null;
@@ -297,21 +352,21 @@ export function parseRescueIntake(source: Record<string, unknown>, now: Date = n
       repository: {
         provider: repository.ok ? repository.value.provider : "github",
         repositoryRef: repository.ok ? repository.value.repositoryRef : "",
-        defaultBranch: "main",
+        defaultBranch,
         accessMode: accessGrantMethod!,
       },
       application: {
-        name: repository.ok ? repository.value.repositoryRef : "",
+        name: applicationName,
         description: workflow.success ? workflow.data : "",
         primaryStack: appType!,
-        usesAiFeatures: true,
+        usesAiFeatures: readChecked(source, "usesAiFeatures"),
       },
       criticalWorkflow: {
         name: entryPoint,
         description: workflow.success ? workflow.data : "",
         entryPoint,
-        handlesCustomerData: true,
-        triggersExternalActions: true,
+        handlesCustomerData: readChecked(source, "handlesCustomerData"),
+        triggersExternalActions: readChecked(source, "triggersExternalActions"),
       },
       aiAssistedReviewAccepted: readChecked(source, "aiAssistedOptIn"),
       requestedServices: ["release_readiness_review", "ai_boundary_review"],

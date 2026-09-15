@@ -24,6 +24,12 @@ begin
 exception
   when others then
     if sqlstate = 'RR001' then raise; end if;
+    -- A broken test must not read as a security refusal. These classes mean the
+    -- statement never reached the guard under test.
+    if sqlstate in ('42883', '42P01', '42703', '42601', '42P02', '3F000') then
+      raise exception using errcode = 'RR002',
+        message = 'BROKEN-TEST (' || sqlstate || ') in "' || p_label || '": ' || sqlerrm;
+    end if;
     raise notice 'PASS refused  | %', p_label;
 end $$;
 
@@ -61,6 +67,19 @@ values
    '{"repositoryRef":"acme/theirs"}'::jsonb, repeat('2', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app'),
   ('cccc0000-0000-0000-0000-000000000003', 'bbbb0000-0000-0000-0000-000000000001',
    '{"repositoryRef":"acme/unknown"}'::jsonb, repeat('3', 64), 'minimum_7_day', 7, null);
+
+-- A recorded read-only grant, which hardening v2 now requires before any review
+-- may start. The grant is the evidence that the customer could act on the
+-- repository at all; the access-mode label alone is only a claim.
+insert into public.release_rescue_repository_grants
+  (organization_id, engagement_id, provider, repository_ref, grant_method, expires_at)
+values
+  ('bbbb0000-0000-0000-0000-000000000001', 'cccc0000-0000-0000-0000-000000000001',
+   'uploaded_archive', 'someone/else', 'customer_uploaded_archive', now() + interval '7 days'),
+  ('bbbb0000-0000-0000-0000-000000000001', 'cccc0000-0000-0000-0000-000000000002',
+   'github', 'acme/theirs', 'customer_installed_readonly_app', now() + interval '7 days'),
+  ('bbbb0000-0000-0000-0000-000000000001', 'cccc0000-0000-0000-0000-000000000003',
+   'github', 'acme/unknown', 'customer_installed_readonly_app', now() + interval '7 days');
 
 \echo ''
 \echo '=== 1. An uploaded archive is not evidence of ownership ==='

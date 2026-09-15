@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Wordmark } from "@/components/brand";
-import { Button, ButtonLink } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
 const links = [

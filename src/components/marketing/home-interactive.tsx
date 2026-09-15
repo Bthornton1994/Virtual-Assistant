@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { Button, ButtonLink } from "@/components/ui";
 import { SOLUTIONS, planForPrompt } from "@/lib/solutions";
 import { cn } from "@/lib/cn";

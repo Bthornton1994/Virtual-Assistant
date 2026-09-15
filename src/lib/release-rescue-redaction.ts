@@ -45,10 +45,15 @@ type SecretDetector = {
   readonly pattern: RegExp;
   /**
    * When set, only this capture group is replaced; the rest of the match is
-   * preserved. Used by `assigned_secret` and `credential_in_url` so the reader
-   * still sees WHICH setting held a secret.
+   * preserved. Used by `credential_in_url` and `credential_in_query` so the
+   * reader still sees WHICH setting held a secret.
    */
   readonly captureGroup?: number;
+  /**
+   * Alternative capture groups, where the value may arrive quoted or bare. The
+   * first group that actually matched is the one replaced.
+   */
+  readonly captureGroups?: readonly number[];
 };
 
 /**
@@ -116,10 +121,21 @@ const DETECTORS: readonly SecretDetector[] = [
     captureGroup: 2,
   },
   {
+    // Matched on the END of the key name, not on a word boundary before it.
+    //
+    // The previous pattern required \b before the keyword, and \b does not match
+    // between "_" and a letter. So NEXTAUTH_SECRET, AWS_SECRET_ACCESS_KEY,
+    // DB_PASSWORD_PROD and every other prefixed environment variable defeated it
+    // \u2014 which is exactly the shape of a .env file, the single most likely thing a
+    // "secrets committed to the repository" finding wants to quote.
+    //
+    // An optional [A-Za-z0-9_]* prefix absorbs the namespace, and the value is
+    // captured either from a quoted string (which may contain spaces) or from a
+    // bare token.
     name: "assigned_secret",
     pattern:
-      /\b(?:password|passwd|pwd|secret|api[-_]?key|apikey|access[-_]?key|auth[-_]?token|client[-_]?secret|private[-_]?key|bearer|credential|session[-_]?key)\b\s*[:=]\s*(["'`]?)([^\s"'`,;)}\]]{8,})\1/gi,
-    captureGroup: 2,
+      /[A-Za-z0-9_]*(?:passwords?|passwd|pwd|secrets?|api[-_]?keys?|apikey|access[-_]?keys?|auth[-_]?tokens?|refresh[-_]?tokens?|id[-_]?tokens?|tokens?|client[-_]?secrets?|private[-_]?keys?|service[-_]?role|bearer|credentials?|session[-_]?keys?|signing[-_]?keys?|encryption[-_]?keys?|dsn|connection[-_]?strings?)\s*[:=]\s*(?:(["'`])([^"'`\n]{6,})\1|([^\s"'`,;)}\]]{8,}))/gi,
+    captureGroups: [2, 3],
   },
 ];
 
@@ -157,11 +173,17 @@ export function redactSecrets(input: string): RedactionResult {
     // lastIndex, which would make this function's result depend on call order.
     const pattern = new RegExp(detector.pattern.source, detector.pattern.flags);
     working = working.replace(pattern, (match, ...groups) => {
-      if (detector.captureGroup !== undefined) {
-        const value = groups[detector.captureGroup - 1];
-        if (typeof value !== "string" || isNonSecretValue(value)) return match;
-        count += 1;
-        return match.replace(value, placeholderFor(detector.name));
+      const candidates =
+        detector.captureGroups ?? (detector.captureGroup === undefined ? [] : [detector.captureGroup]);
+      if (candidates.length > 0) {
+        for (const group of candidates) {
+          const value = groups[group - 1];
+          if (typeof value !== "string" || value.length === 0) continue;
+          if (isNonSecretValue(value)) return match;
+          count += 1;
+          return match.replace(value, placeholderFor(detector.name));
+        }
+        return match;
       }
       count += 1;
       return placeholderFor(detector.name);
@@ -247,19 +269,24 @@ export function scanForSecrets(value: unknown, path = "$"): ExcerptRejection[] {
  * as `.env`.
  */
 const FORBIDDEN_EVIDENCE_NAME =
-  /(?:^\.env(?:\..+)?$|^id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|^credentials\.json$|^service[-_]account.*\.json$|^\.npmrc$|^\.pypirc$|^\.netrc$|^known_hosts$|\.(?:pem|p12|pfx|key|keystore|jks|ppk)$)/i;
+  /(?:^\.env\b|^\.env$|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|credentials(?:\.json)?$|service[-_]?account[A-Za-z0-9._-]*\.json$|^\.npmrc$|^\.pypirc$|^\.netrc$|^known_hosts$|\.(?:pem|p12|pfx|key|keystore|jks|ppk|asc|gpg)$)/i;
 
 /**
- * Template files that share a forbidden name but carry placeholders rather than
- * values. `.env.example` is the file a customer is supposed to commit, and a
- * finding about committed secrets often needs to cite it, so it stays allowed.
+ * Env templates, which carry placeholders rather than values.
+ *
+ * `.env.example` is the file a customer is SUPPOSED to commit, and a finding
+ * about committed secrets often needs to cite it. Deliberately narrow: the
+ * allowance applies only to the `.env` family. A template suffix on a key or
+ * certificate (`id_rsa.example`, `server.pem.sample`) is not allowed through,
+ * because the suffix is customer-controlled and nothing needs to read a private
+ * key to report that one exists.
  */
-const EVIDENCE_TEMPLATE_SUFFIX = /\.(?:example|sample|template|dist|tpl)$/i;
+const ENV_TEMPLATE_NAME = /^\.env[A-Za-z0-9._-]*\.(?:example|sample|template|dist|tpl)$/i;
 
 export function isForbiddenEvidenceFilename(name: string): boolean {
   const trimmed = name.trim();
   if (trimmed.length === 0) return false;
   const base = trimmed.split(/[/\\]/).pop() ?? trimmed;
-  if (EVIDENCE_TEMPLATE_SUFFIX.test(base)) return false;
+  if (ENV_TEMPLATE_NAME.test(base)) return false;
   return FORBIDDEN_EVIDENCE_NAME.test(base);
 }

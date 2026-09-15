@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   RETENTION_SWEEP_CRON,
+  RETENTION_SWEEP_METHOD,
   RETENTION_SWEEP_PATH,
   authorizeRetentionSweep,
 } from "@/lib/release-rescue-retention-schedule";
@@ -101,15 +102,41 @@ describe("retention sweep authorization", () => {
     expect(migration).toContain("release-rescue-retention-sweep");
   });
 
-  it("exists as a route the scheduler can reach", () => {
+  it("handles the method the scheduler actually uses", async () => {
+    // The previous test asserted the route file CONTAINED the string
+    // "export async function POST". It passed while the wiring was broken:
+    // Vercel Cron issues a GET, the route answered 405, and the sweep could
+    // never fire. This imports the real module and checks the exported handler
+    // for the declared scheduler method exists.
+    const route: Record<string, unknown> = await import(
+      "@/app/api/internal/release-rescue/retention-sweep/route"
+    );
+
+    expect(RETENTION_SWEEP_METHOD).toBe("GET");
+    expect(typeof route[RETENTION_SWEEP_METHOD], `handler for ${RETENTION_SWEEP_METHOD}`).toBe("function");
+    // A manual operator invocation keeps working too.
+    expect(typeof route.POST).toBe("function");
+  });
+
+  it("refuses the scheduler's own method without the credential", async () => {
+    const route = (await import("@/app/api/internal/release-rescue/retention-sweep/route")) as {
+      GET: (request: Request) => Promise<Response>;
+    };
+    const response = await route.GET(new Request("https://example.test/sweep"));
+
+    // 503 because no CRON_SECRET is configured in this environment; either way
+    // it is not a success, and nothing destructive ran.
+    expect(response.ok).toBe(false);
+    expect([401, 503]).toContain(response.status);
+  });
+
+  it("names the sweep caller so runs are attributable", () => {
     const route = readFileSync(
       resolve(process.cwd(), `src/app${RETENTION_SWEEP_PATH}/route.ts`),
       "utf8",
     );
 
-    expect(route).toContain("export async function POST");
     expect(route).toContain("authorizeRetentionSweep");
-    // The sweep must identify itself so its runs are attributable.
     expect(route).toContain("http_schedule");
   });
 });

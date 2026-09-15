@@ -1,4 +1,5 @@
-import { nowIso, uid } from "@/lib/domain";
+import { randomUUID } from "node:crypto";
+import { nowIso } from "@/lib/domain";
 import {
   DEMO_SAMPLE_REPORT_ID,
   ENGAGEMENT_TRANSITIONS,
@@ -42,7 +43,11 @@ export function canTransitionEngagement(from: EngagementStatus, to: EngagementSt
 
 export function createDemoEngagement(intake: RescueIntake): DemoEngagement {
   const engagement: DemoEngagement = {
-    id: uid("rescue"),
+    // A cryptographically random id. The previous `uid()` was Math.random plus a
+    // timestamp suffix — roughly 41 guessable bits with a predictable component —
+    // and this id appears in a URL that renders a prospect's name, email, and
+    // private repository name.
+    id: `rescue_${randomUUID()}`,
     status: "scoped",
     intake,
     createdAt: nowIso(),
@@ -54,7 +59,27 @@ export function createDemoEngagement(intake: RescueIntake): DemoEngagement {
   return engagement;
 }
 
-export function getDemoEngagement(id: string): DemoEngagement | null {
+/**
+ * Looks up a demo engagement for a viewer who has proven they created it.
+ *
+ * The id alone is not authorization. It appears in a URL, URLs are shared,
+ * logged, and guessed, and this record holds a prospect's name, work email,
+ * repository reference and workflow description. The caller must present the
+ * cookie value set when the engagement was created.
+ */
+export function getDemoEngagementFor(id: string, cookieValue: string | undefined): DemoEngagement | null {
+  if (typeof cookieValue !== "string" || cookieValue.length === 0) return null;
+  if (cookieValue !== id) return null;
+  return store().engagements.get(id) ?? null;
+}
+
+/**
+ * Unauthenticated lookup. Server-internal only.
+ *
+ * Deliberately NOT used by any page. It exists for tests and for a future
+ * operator surface that does its own authorization.
+ */
+export function getDemoEngagementUnchecked(id: string): DemoEngagement | null {
   return store().engagements.get(id) ?? null;
 }
 

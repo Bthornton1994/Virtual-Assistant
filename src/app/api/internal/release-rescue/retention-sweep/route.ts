@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { authorizeRetentionSweep } from "@/lib/release-rescue-retention-schedule";
+import { RETENTION_SWEEP_METHOD, authorizeRetentionSweep } from "@/lib/release-rescue-retention-schedule";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 // The scheduled retention sweep.
@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 /** Never cached. A cached response would report an old sweep as a new one. */
 export const revalidate = 0;
 
-export async function POST(request: Request): Promise<NextResponse> {
+async function runSweep(request: Request): Promise<NextResponse> {
   const decision = authorizeRetentionSweep(
     request.headers.get("authorization"),
     process.env.CRON_SECRET,
@@ -53,14 +53,14 @@ export async function POST(request: Request): Promise<NextResponse> {
 }
 
 /**
- * A destructive endpoint answers GET only to say it is not the way in.
+ * GET is the scheduler's method (Vercel Cron), so it is the primary entry point.
+ * POST is kept for a manual operator invocation with the same credential.
  *
- * Without this, a stray GET would fall through to Next's 405 and give no signal
- * that the route exists and expects a POST from a scheduler.
+ * Both require the bearer secret, so neither is a softer way in: the method is
+ * not the control, the credential is.
  */
-export async function GET(): Promise<NextResponse> {
-  return NextResponse.json(
-    { ok: false, reason: "The retention sweep runs on POST from the scheduler." },
-    { status: 405 },
-  );
-}
+export const GET = runSweep;
+export const POST = runSweep;
+
+/** Declared so a test can assert the handler matches the scheduler's method. */
+export const SCHEDULED_METHOD = RETENTION_SWEEP_METHOD;

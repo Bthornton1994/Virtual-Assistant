@@ -3,7 +3,9 @@ import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui";
 import { APP_TYPE_COPY, ACCESS_GRANT_METHOD_COPY, RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
 import { RETENTION_POLICY_COPY } from "@/lib/ai-app-release-rescue/intake";
-import { getDemoEngagement } from "@/lib/ai-app-release-rescue/engagement";
+import { cookies } from "next/headers";
+import { DEMO_ENGAGEMENT_COOKIE } from "@/lib/ai-app-release-rescue/constants";
+import { getDemoEngagementFor } from "@/lib/ai-app-release-rescue/engagement";
 
 export const metadata = { title: "Demo request received" };
 
@@ -15,7 +17,12 @@ export default async function RescueDemoEngagementPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const engagement = getDemoEngagement(id);
+  // The id in the URL is not authorization. This page renders a prospect's name,
+  // work email and private repository reference, so the viewer must present the
+  // cookie set when they submitted the form. A mismatch is a 404, not a 403:
+  // there is no reason to confirm that an engagement exists.
+  const jar = await cookies();
+  const engagement = getDemoEngagementFor(id, jar.get(DEMO_ENGAGEMENT_COOKIE)?.value);
   if (!engagement) notFound();
 
   const { intake } = engagement;

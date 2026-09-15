@@ -19,7 +19,10 @@ const ATTESTATIONS = [
 async function fillValidIntake(page: import("@playwright/test").Page) {
   await page.locator('input[name="contactName"]').fill("Ada Khoury");
   await page.locator('input[name="workEmail"]').fill("ada@harbor.example");
+  await page.locator('input[name="applicationName"]').fill("Harbor Ledger");
+  await page.locator('select[name="repositoryHost"]').selectOption("github");
   await page.locator('input[name="repositoryUrl"]').fill("https://github.com/example/harbor-ledger");
+  await page.locator('input[name="defaultBranch"]').fill("main");
   await page.locator('select[name="appType"]').selectOption("next_js_web_app");
   await page
     .locator('textarea[name="criticalWorkflow"]')
@@ -28,6 +31,9 @@ async function fillValidIntake(page: import("@playwright/test").Page) {
   await page.locator('select[name="accessGrantMethod"]').selectOption("customer_added_readonly_collaborator");
   await page.locator('select[name="accessWindowDays"]').selectOption("14");
   await page.locator('select[name="retentionPolicy"]').selectOption("minimum_7_day");
+  for (const name of ["usesAiFeatures", "handlesCustomerData", "triggersExternalActions"]) {
+    await page.locator(`input[name="${name}"]`).check();
+  }
   for (const name of ATTESTATIONS) {
     await page.locator(`input[name="${name}"]`).check();
   }
@@ -96,6 +102,36 @@ test.describe("AI App Release Rescue offer", () => {
     await expect(page.getByText("No credential held")).toBeVisible();
     // Stored as owner/name, never as the pasted URL.
     await expect(page.getByText("example/harbor-ledger").first()).toBeVisible();
+  });
+
+  test("a demo engagement page is not readable by anyone who knows the URL", async ({ page, browser }) => {
+    await page.goto("/ai-app-release-rescue/intake");
+    await fillValidIntake(page);
+    await page.getByRole("button", { name: /Submit demo request/i }).click();
+    await expect(page).toHaveURL(/\/ai-app-release-rescue\/demo\/rescue_/);
+
+    const url = page.url();
+    // The submitter sees their own record.
+    await expect(page.getByText("ada@harbor.example")).toBeVisible();
+
+    // A second visitor with the same URL and no cookie must not.
+    const stranger = await browser.newContext();
+    const strangerPage = await stranger.newPage();
+    await strangerPage.goto(url);
+    await expect(strangerPage.locator("body")).not.toContainText("ada@harbor.example");
+    await expect(strangerPage.locator("body")).not.toContainText("example/harbor-ledger");
+    await expect(strangerPage.locator("body")).not.toContainText("Ada Khoury");
+    await stranger.close();
+  });
+
+  test("demo engagement ids are not guessable", async ({ page }) => {
+    await page.goto("/ai-app-release-rescue/intake");
+    await fillValidIntake(page);
+    await page.getByRole("button", { name: /Submit demo request/i }).click();
+    await expect(page).toHaveURL(/\/ai-app-release-rescue\/demo\/rescue_/);
+
+    const id = page.url().split("/").pop() ?? "";
+    expect(id).toMatch(/^rescue_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   test("sample report is customer-safe and carries its limitations", async ({ page }) => {

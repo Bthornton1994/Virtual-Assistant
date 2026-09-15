@@ -137,6 +137,12 @@ export function evaluateSnapshotEntry(candidate: unknown): EntryDecision {
     return reject("illegal_path_character", "Path contains a control character or a backslash.");
   }
   if (entry.path.startsWith("/")) return reject("absolute_path", "Path is absolute.");
+  // A drive-qualified path is absolute too, and a fullwidth solidus is not the
+  // separator we split on, so neither is caught by the checks above.
+  if (/^[A-Za-z]:[/\\]/.test(entry.path)) return reject("absolute_path", "Path is drive-qualified.");
+  if (/[\uff0f\uff3c\u2215\u29f5]/.test(entry.path)) {
+    return reject("illegal_path_character", "Path contains a lookalike separator.");
+  }
 
   const segments = entry.path.split("/");
   if (segments.includes("..")) return reject("path_traversal", "Path escapes the snapshot root.");
@@ -179,12 +185,34 @@ export type SnapshotDecision =
       totals: SnapshotTotals;
     };
 
-export type ArchiveFacts = {
-  /** Bytes as uploaded, before expansion. */
-  archiveBytes: number;
-  /** Total uncompressed size the archive DECLARES, read from its index. */
-  declaredExpandedBytes: number;
-};
+export const archiveFactsSchema = z
+  .object({
+    /** Bytes as uploaded, before expansion. */
+    archiveBytes: z.number(),
+    /** Total uncompressed size the archive DECLARES, read from its index. */
+    declaredExpandedBytes: z.number(),
+  })
+  .strict();
+
+export type ArchiveFacts = z.infer<typeof archiveFactsSchema>;
+
+/**
+ * Archive facts we are willing to reason about.
+ *
+ * NaN is the dangerous case: every `>` comparison against it is false, so a
+ * NaN-carrying archive slid past the size and ratio limits and the module failed
+ * OPEN — against its own header, which promises the opposite. Negative and
+ * non-integer values are refused for the same reason: a number we cannot compare
+ * meaningfully is not a number we should gate on.
+ */
+function archiveFactsAreUsable(archive: ArchiveFacts): boolean {
+  return (
+    Number.isFinite(archive.archiveBytes) &&
+    Number.isFinite(archive.declaredExpandedBytes) &&
+    archive.archiveBytes > 0 &&
+    archive.declaredExpandedBytes >= 0
+  );
+}
 
 /**
  * Applies the whole-snapshot limits.
@@ -226,6 +254,15 @@ export function evaluateSnapshot(candidates: readonly unknown[], archive?: Archi
   const refusals: Array<{ reason: SnapshotRefusalReason; detail: string }> = [];
 
   if (archive) {
+    if (!archiveFactsAreUsable(archive)) {
+      // Refused before any comparison, because the comparisons themselves are
+      // what NaN defeats.
+      refusals.push({
+        reason: "archive_too_large",
+        detail: `Archive reports unusable size facts (archiveBytes=${archive.archiveBytes}, declaredExpandedBytes=${archive.declaredExpandedBytes}).`,
+      });
+      return { accepted: false, limitsVersion: SNAPSHOT_LIMITS_VERSION, refusals, totals };
+    }
     if (archive.archiveBytes > SNAPSHOT_LIMITS.maxArchiveBytes) {
       refusals.push({
         reason: "archive_too_large",
@@ -238,19 +275,13 @@ export function evaluateSnapshot(candidates: readonly unknown[], archive?: Archi
         detail: `Archive declares ${archive.declaredExpandedBytes} expanded bytes, over the ${SNAPSHOT_LIMITS.maxTotalBytes} limit.`,
       });
     }
-    // Guard the divisor. A non-positive archive size is nonsense, and dividing by
-    // it would produce Infinity or NaN — neither of which is greater than the
-    // ratio limit in a way we should rely on.
-    if (archive.archiveBytes <= 0) {
-      refusals.push({ reason: "archive_too_large", detail: "Archive reports a non-positive size." });
-    } else {
-      const ratio = archive.declaredExpandedBytes / archive.archiveBytes;
-      if (ratio > SNAPSHOT_LIMITS.maxExpansionRatio) {
-        refusals.push({
-          reason: "expansion_ratio_exceeded",
-          detail: `Archive expands ${ratio.toFixed(1)}x, over the ${SNAPSHOT_LIMITS.maxExpansionRatio}x limit.`,
-        });
-      }
+    // The divisor is known positive and finite by archiveFactsAreUsable above.
+    const ratio = archive.declaredExpandedBytes / archive.archiveBytes;
+    if (ratio > SNAPSHOT_LIMITS.maxExpansionRatio) {
+      refusals.push({
+        reason: "expansion_ratio_exceeded",
+        detail: `Archive expands ${ratio.toFixed(1)}x, over the ${SNAPSHOT_LIMITS.maxExpansionRatio}x limit.`,
+      });
     }
   }
 

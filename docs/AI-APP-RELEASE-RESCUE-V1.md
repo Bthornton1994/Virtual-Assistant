@@ -133,7 +133,7 @@ Enforced at the database boundary:
 
 ## Data isolation and retention rules
 
-**Isolation.** Row level security on all three tables, with every `select` policy scoped to `my_org_ids()` or platform staff. Child rows are bound to their parent's organization by composite foreign key, so a row cannot name organization A while pointing at an engagement owned by B. No table grants `delete` to `authenticated`.
+**Isolation.** Row level security on all three tables, with every `select` policy scoped to `my_org_ids()` or platform staff. Engagement and run references are bound to their parent's organization by composite foreign key, so a row cannot name organization A while pointing at an engagement owned by B. `report_artifact_id` is a single-column reference whose organization and run are checked in the report trigger instead, because `evidence_artifacts` carries no `(id, organization_id)` key to point at. No table grants `delete` to `authenticated`.
 
 The validation triggers run `security definer`. Beyond fixing a real defect — `authenticated` has no read grant on `public.operators`, so the reviewer-authority check could not run at all — this is the correct posture for a validation trigger: it must see **true** state, not the caller's RLS-filtered view. Under invoker rights, a cross-tenant check can be defeated by making the conflicting row invisible, so the check passes because the row it should have found simply is not there. Both functions only read and raise, run no dynamic SQL, and have a locked `search_path`.
 
@@ -187,7 +187,7 @@ generatedAt
 
 The top rung is named `no_blocking_findings_identified`, not "ready" and not "secure". We can report what a review of one commit found. We cannot report that nothing else exists, and the name refuses to imply otherwise.
 
-**Report integrity.** `hashReleaseRescueReport` is a canonical SHA-256 over the artifact, stored in `release_rescue_reports.report_hash` and re-derivable before delivery. The row is immutable apart from a single `delivered_at` stamp; reports cannot be deleted; the database refuses a `release_blocked` verdict with no blocking finding and a clean verdict alongside blocking findings.
+**Report integrity.** `hashReleaseRescueReport` is a canonical SHA-256 over the artifact, stored in `release_rescue_reports.report_hash`. It is re-derivABLE, but nothing in the pipeline re-derives it yet — there is no production caller, and the delivery path that would check it is not built. What the database does enforce is that the row's verdict, blocking count and coverage match the artifact payload it points at. The row is immutable apart from a single `delivered_at` stamp; reports cannot be deleted; the database refuses a `release_blocked` verdict with no blocking finding and a clean verdict alongside blocking findings.
 
 **Delivery requires a human.** `reviewed_by` is `NOT NULL`, and a trigger checks the named reviewer actually holds `ops_manager` or `platform_admin` — a `NOT NULL` column alone would accept any user id, including the executor's own service account. `releaseRescueDeliveryGate` refuses an agent-prepared report with no human reviewer.
 
@@ -213,7 +213,7 @@ Supporting requirements: an unconfirmed finding must state its residual uncertai
 
 Four things carry the security weight, and all four are enforced rather than documented.
 
-**1. Secret redaction (`release-rescue-redaction.ts`).** The worst outcome of this service is a report that lifts a live credential out of a customer's repository and copies it into our database, a rendered page, and an email attachment. Fourteen detectors cover PEM private keys, AWS, GitHub (classic and fine-grained), Slack, Stripe, Anthropic, OpenAI, Google, SendGrid, npm, JWTs, credentials embedded in URLs, and generic credential assignments.
+**1. Secret redaction (`release-rescue-redaction.ts`).** The worst outcome of this service is a report that lifts a live credential out of a customer's repository and copies it into our database, a rendered page, and an email attachment. Fifteen detectors cover PEM private keys, AWS, GitHub (classic and fine-grained), Slack, Stripe, Anthropic, OpenAI, Google, SendGrid, npm, JWTs, credentials embedded in URLs, and generic credential assignments.
 
 The posture is conservative: over-redacting costs a reader some context, under-redacting copies a production key into three new places. An allowlist keeps correct patterns readable, because a finding that recommends `process.env.API_KEY` has to be able to show it. Redaction is idempotent and order-independent — a fresh `RegExp` per call, since the module-level `/g` literals carry `lastIndex` that would otherwise leak between calls and make a later redaction miss a match.
 
@@ -250,7 +250,7 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 | --- | --- | --- |
 | **Authentication** | The session boundary itself is the existing platform's (`rls.test.ts`, `auth-redirect.test.ts`). This workstream adds identity checks at the authority boundary: the named report reviewer must hold manager authority, verified against `operators` rather than accepted as a user id | QA fixture §4; migration suite |
 | **Authorization** | A customer admin may open an engagement only for their own organization; an ops manager cannot mint an access grant on a customer's behalf; a plain operator cannot issue a report; only a manager may issue or update one; the customer may revoke their own access | QA fixture §1, §3, §4; migration suite |
-| **Secrets** | 14 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; redact-before-truncate so no fragment survives; nested JSON scanning; schema refusal of unredacted excerpts; whole-report scan | `release-rescue-redaction.test.ts` (22), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
+| **Secrets** | 15 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; redact-before-truncate so no fragment survives; nested JSON scanning; schema refusal of unredacted excerpts; whole-report scan | `release-rescue-redaction.test.ts` (22), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
 | **Data access** | Organization B reads none of A's engagements or reports; credential-named keys, credential-shaped values, credentialed URLs, over-long windows, and write access all refused; grants are revoke-only and one-way; retention cannot be extended; the purge clears content, keeps accounting, revokes grants, is idempotent, does not reach past its own workstream, and does not leak its flag | `release_rescue_v1_isolation_proof.sql` (42 cases), migration suite (27) |
 | **Report integrity** | Edited severity counts, verdict, coverage, rubric hash, and scope hash all rejected; missing or duplicated assessments and findings rejected; blocking pass on argument alone rejected; finding/assessment contradictions rejected; prohibited claims rejected; non-zero authority rejected; deterministic hashing; delivery gate refuses unsigned or invalid reports | `release-rescue-report.test.ts`, `release-rescue-findings.test.ts`, `demo-fixtures.test.ts` |
 
@@ -360,6 +360,27 @@ would be free to promise a shape the pipeline cannot produce.
 - The snapshot limits are a decision function. **The extractor that enforces them at read time is not built**, because this pass performs no checkout. The limits are proven in unit tests, not against a real archive.
 - The retention sweep is scheduled in configuration and in the migration. **It has not run in a deployed environment**, because nothing is deployed.
 
+## Independent audit, and what it found
+
+A fresh-context QA audit of this branch executed eight working attacks against the shipped schema and contracts. All eight are fixed and each is now a regression case in `supabase/qa/release_rescue_hardening_v2_proof.sql` or a unit test. They are recorded here because the fixes only make sense alongside what they answer.
+
+| Defeated guarantee | How it was broken | Fix |
+| --- | --- | --- |
+| "We will not review code you do not own" | `access_mode` was a plain column a customer could `UPDATE`; relabelling an archive engagement as an app install opened the ownership gate in one statement | Access mode is immutable after intake, must agree with the frozen scope, and a review cannot start without a recorded repository grant |
+| Same, by another route | A customer could `INSERT` directly at `auditing` declaring any mode, with no grant in existence | The gate now requires the grant row, not the label |
+| "Scope is frozen at intake" | Only `scope_hash` was guarded. The `scope` itself was rewritable, so the reviewed repository, the workflow, and the AI-assisted choice could all be changed while the hash stayed constant | The scope content is immutable; only the retention purge may replace it, and only with its stub |
+| "We will not overclaim" | Negation was matched as a substring, so "**Not**hing is left unchecked in our penetration test" read as a denial; referral markers included "engage", exempting every sentence containing "engagement" | Tokenised matching, narrowed referral phrases, a wider phrase list, and a test that runs the real checker over every marketing file |
+| "We will not leak your secrets" | The assignment detector required `\b` before the key name, and `\b` does not match between `_` and a letter — so `NEXTAUTH_SECRET=`, `AWS_SECRET_ACCESS_KEY=` and every other prefixed environment variable passed through. That is the shape of a `.env` file, the thing a committed-secrets finding most wants to quote | Matched on the end of the key name instead, with quoted values and more key shapes |
+| The retention promise | Vercel Cron issues a **GET**; the route implemented POST only and answered GET with 405, so the scheduled sweep could never fire. The test asserted the file *contained the string* `"export async function POST"` and passed with the wiring broken | The scheduler's method is a shared constant, the handler is bound to it, and the test imports the real module |
+| "A delivered report is immutable" | `delegation.retention_purge` is a custom GUC any role can set. The purge branch was gated on the flag alone, so a caller with UPDATE rights could set it themselves and unbind a delivered report | The flag only counts when the caller holds EXECUTE on the sweep — and the trigger is `SECURITY INVOKER`, because inside a definer function `current_user` is the owner and the check would answer for the wrong role |
+| Prospect privacy | `/demo/[id]` rendered a prospect's name, work email and private repository name to anyone who guessed the id, which came from `Math.random` plus a timestamp | The page authorizes against the cookie, ids are `randomUUID`, and a browser test opens the URL in a second context and asserts nothing is visible |
+
+Two smaller ones worth naming: the archive-facts input was the only value in the snapshot limiter not schema-validated, and `NaN` made every `>` comparison false, so the module failed **open** against its own header; and the customer-facing presenter copied stored severity rather than deriving it, so "severity is derived, never chosen" held only for callers who remembered to validate first. Both now fail closed.
+
+The audit also found the proof helpers accepted *any* error, so a typo or a missing table read as a security refusal. They now re-raise the error classes that mean a broken test, and the v2 proof additionally requires the guard's own message — which immediately caught one of my own cases refusing for the wrong reason.
+
 ## What this slice deliberately does not do
 
-No UI, no marketing surface, no payment activation, no executor adapter, no snapshot ingestion, no scheduled sweep, no `VISION.md` edit, and no change to any existing workstream. The one pre-existing function this migration replaces — `enforce_evidence_artifact_invariants` — is re-declared with the 20260824090000 caller-supplied content-hash fallback preserved verbatim, and a migration test asserts that, because regressing it would hard-fail every work-cell verification.
+No payment activation, no executor adapter, no snapshot extractor, no live checkout, and no deployment. The customer surface, the marketing routes, the scheduled sweep configuration, and the `VISION.md` amendment ARE part of this branch.
+
+The one pre-existing function the first migration replaces — `enforce_evidence_artifact_invariants` — keeps the 20260824090000 caller-supplied content-hash fallback verbatim, and a migration test asserts it, because regressing it would hard-fail every work-cell verification.

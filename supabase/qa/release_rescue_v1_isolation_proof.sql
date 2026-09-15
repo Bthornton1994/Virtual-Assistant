@@ -38,6 +38,12 @@ begin
 exception
   when others then
     if sqlstate = 'RR001' then raise; end if;
+    -- A broken test must not read as a security refusal. These classes mean the
+    -- statement never reached the guard under test.
+    if sqlstate in ('42883', '42P01', '42703', '42601', '42P02', '3F000') then
+      raise exception using errcode = 'RR002',
+        message = 'BROKEN-TEST (' || sqlstate || ') in "' || p_label || '": ' || sqlerrm;
+    end if;
     raise notice 'PASS refused  | %', p_label;
 end $$;
 

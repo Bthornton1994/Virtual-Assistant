@@ -24,6 +24,37 @@ describe("rescue intake form layer", () => {
     expect(result.intake.contact.workEmail).toBe("dana@harbor-labs.test");
   });
 
+  it("records the customer's own answers rather than assuming them", () => {
+    // These were hardcoded to true while being written into the frozen, hashed
+    // scope, so the scope asserted things the customer never said.
+    const declared = parseRescueIntake(
+      validIntakeRecord({ usesAiFeatures: "", handlesCustomerData: "", triggersExternalActions: "" }),
+      NOW,
+    );
+
+    expect(declared.ok).toBe(true);
+    if (!declared.ok) return;
+    expect(declared.intake.intake.application.usesAiFeatures).toBe(false);
+    expect(declared.intake.intake.criticalWorkflow.handlesCustomerData).toBe(false);
+    expect(declared.intake.intake.criticalWorkflow.triggersExternalActions).toBe(false);
+  });
+
+  it("uses the application name the customer gave, not the repository slug", () => {
+    const result = parse();
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.intake.intake.application.name).toBe("Harbor Ledger");
+  });
+
+  it("records a bare owner/name against the host the customer chose", () => {
+    const result = parse({ repositoryUrl: "acme/app", repositoryHost: "gitlab" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.intake.intake.repository.provider).toBe("gitlab");
+  });
+
   it("does not store a commit sha at intake", () => {
     const result = parse();
 

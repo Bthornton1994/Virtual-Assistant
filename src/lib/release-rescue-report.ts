@@ -301,7 +301,17 @@ export function deriveReportMetrics(
     const check = getRubricCheck(finding.rubricCheckId);
     const isHighOrAbove = severityRank(severity) >= severityRank("high");
 
-    if (check && computeFindingBlocking(check, severity, finding.confidence)) {
+    if (!check) {
+      // An unrecognised check id fails CLOSED. The validator rejects such a
+      // finding separately, but deriveReportMetrics is exported and must not
+      // answer "not blocking" for a confirmed critical just because it cannot
+      // place it.
+      if (finding.confidence === "confirmed" && isHighOrAbove) blockingFindingCount += 1;
+      else if (isHighOrAbove) unconfirmedHighOrCriticalCount += 1;
+      continue;
+    }
+
+    if (computeFindingBlocking(check, severity, finding.confidence)) {
       blockingFindingCount += 1;
       continue;
     }

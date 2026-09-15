@@ -40,7 +40,7 @@ export { createRescueCheckout, RESCUE_PAYMENT, rescueCheckoutActivated } from "@
 
 export {
   createDemoEngagement,
-  getDemoEngagement,
+  getDemoEngagementFor,
   getSampleCustomerReport,
   getSampleReport,
 } from "@/lib/ai-app-release-rescue/engagement";

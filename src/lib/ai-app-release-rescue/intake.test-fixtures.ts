@@ -1,12 +1,16 @@
-import { ATTESTATION_FIELDS } from "@/lib/ai-app-release-rescue/intake";
+import { ATTESTATION_FIELDS, SCOPE_FACT_FIELDS } from "@/lib/ai-app-release-rescue/intake";
 
 /** A submission where every field is acceptable. Tests vary one thing at a time. */
 export function validIntakeRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const attestations = Object.fromEntries(ATTESTATION_FIELDS.map((field) => [field, "on"]));
+  const scopeFacts = Object.fromEntries(SCOPE_FACT_FIELDS.map((field) => [field, "on"]));
   return {
     contactName: "Dana Petrov",
     workEmail: "dana@harbor-labs.test",
+    applicationName: "Harbor Ledger",
+    repositoryHost: "github",
     repositoryUrl: "https://github.com/harbor-labs/harbor-ledger",
+    defaultBranch: "main",
     appType: "next_js_web_app",
     criticalWorkflow: "An employee uploads a receipt and a manager approves the resulting expense claim.",
     criticalWorkflowEntryPoint: "/expenses/new",
@@ -16,6 +20,8 @@ export function validIntakeRecord(overrides: Record<string, unknown> = {}): Reco
     evidenceNotes: "The assistant drafts the claim before a manager sees it.",
     evidenceFileNames: "src/lib/assistant/tools.ts",
     remediationInterest: "on",
+    aiAssistedOptIn: "on",
+    ...scopeFacts,
     ...attestations,
     ...overrides,
   };

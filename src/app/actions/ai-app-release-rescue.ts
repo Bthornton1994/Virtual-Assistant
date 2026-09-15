@@ -6,6 +6,7 @@ import { DEMO_ENGAGEMENT_COOKIE, RESCUE_PATH } from "@/lib/ai-app-release-rescue
 import { createDemoEngagement } from "@/lib/ai-app-release-rescue/engagement";
 import {
   ATTESTATION_FIELDS,
+  SCOPE_FACT_FIELDS,
   formDataToRecord,
   parseRescueIntake,
   type RescueIntakeState,
@@ -20,6 +21,9 @@ const ECHO_FIELDS = [
   "contactName",
   "workEmail",
   "repositoryUrl",
+  "repositoryHost",
+  "applicationName",
+  "defaultBranch",
   "appType",
   "criticalWorkflow",
   "criticalWorkflowEntryPoint",
@@ -29,6 +33,7 @@ const ECHO_FIELDS = [
   "evidenceNotes",
   "evidenceFileNames",
   "remediationInterest",
+  ...SCOPE_FACT_FIELDS,
   ...ATTESTATION_FIELDS,
 ] as const;
 
@@ -65,7 +70,9 @@ export async function submitRescueIntakeAction(
     sameSite: "lax",
     path: RESCUE_PATH,
     maxAge: 60 * 60 * 24,
-    secure: false,
+    // Secure everywhere except local http development. This cookie is the only
+    // thing authorizing the demo engagement page.
+    secure: process.env.NODE_ENV === "production",
   });
   redirect(`${RESCUE_PATH}/demo/${engagement.id}`);
 }

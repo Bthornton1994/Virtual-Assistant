@@ -14,7 +14,11 @@ import {
   ACCESS_WINDOW_DAY_OPTIONS,
   ATTESTATION_COPY,
   ATTESTATION_FIELDS,
+  REPOSITORY_HOSTS,
+  REPOSITORY_HOST_COPY,
   RETENTION_POLICY_COPY,
+  SCOPE_FACT_COPY,
+  SCOPE_FACT_FIELDS,
   initialRescueIntakeState,
 } from "@/lib/ai-app-release-rescue/intake";
 
@@ -96,6 +100,26 @@ export function RescueIntakeForm() {
             defaultValue={values.criticalWorkflow}
           />
         </Field>
+        <Field label="Application name" error={errors.applicationName}>
+          <Input name="applicationName" required placeholder="Harbor Ledger" defaultValue={values.applicationName} />
+        </Field>
+        <Field label="Where the repository is hosted" error={errors.repositoryHost}>
+          <select
+            name="repositoryHost"
+            required
+            className={selectClassName}
+            defaultValue={values.repositoryHost ?? "github"}
+          >
+            {REPOSITORY_HOSTS.map((host) => (
+              <option key={host} value={host}>
+                {REPOSITORY_HOST_COPY[host]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Default branch" hint="We review the tip of this branch." error={errors.defaultBranch}>
+          <Input name="defaultBranch" placeholder="main" defaultValue={values.defaultBranch ?? "main"} />
+        </Field>
         <Field
           label="Where that workflow starts"
           hint="A route, a screen, or an entry point. Example: /expenses/new"
@@ -108,6 +132,28 @@ export function RescueIntakeForm() {
             defaultValue={values.criticalWorkflowEntryPoint}
           />
         </Field>
+      </section>
+
+      <section className="space-y-5">
+        <h2 className="text-xl font-semibold tracking-tight">About this workflow</h2>
+        <p className="text-sm text-ink-soft">
+          These answers go into the scope your report is bound to, so they need to come from you rather than from
+          our assumptions.
+        </p>
+        <fieldset className="space-y-3">
+          <legend className="sr-only">Facts about this application and workflow</legend>
+          {SCOPE_FACT_FIELDS.map((field) => (
+            <label key={field} className="flex min-h-11 items-start gap-3 text-sm">
+              <input
+                type="checkbox"
+                name={field}
+                className="mt-1 size-4"
+                defaultChecked={values[field] === "on"}
+              />
+              <span>{SCOPE_FACT_COPY[field]}</span>
+            </label>
+          ))}
+        </fieldset>
       </section>
 
       <section className="space-y-5">

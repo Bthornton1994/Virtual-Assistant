@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   canTransitionEngagement,
   createDemoEngagement,
-  getDemoEngagement,
+  getDemoEngagementFor,
+  getDemoEngagementUnchecked,
   isSampleReportId,
 } from "@/lib/ai-app-release-rescue/engagement";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
@@ -27,11 +28,35 @@ describe("demo engagement store", () => {
     expect(engagement.source).toBe("demo_memory");
   });
 
-  it("round-trips by id and returns null for an unknown one", () => {
+  it("round-trips by id for the viewer who created it", () => {
     const engagement = createDemoEngagement(intake());
 
-    expect(getDemoEngagement(engagement.id)?.id).toBe(engagement.id);
-    expect(getDemoEngagement("rescue_nope")).toBeNull();
+    expect(getDemoEngagementFor(engagement.id, engagement.id)?.id).toBe(engagement.id);
+    expect(getDemoEngagementFor("rescue_nope", "rescue_nope")).toBeNull();
+  });
+
+  it("refuses a viewer who only knows the id", () => {
+    // The id travels in a URL. URLs are shared, logged, and guessed, and this
+    // record holds a prospect's name, work email and private repository name.
+    const engagement = createDemoEngagement(intake());
+
+    expect(getDemoEngagementFor(engagement.id, undefined)).toBeNull();
+    expect(getDemoEngagementFor(engagement.id, "")).toBeNull();
+    expect(getDemoEngagementFor(engagement.id, "some-other-engagement")).toBeNull();
+    // The record is genuinely there; only the authorization is missing.
+    expect(getDemoEngagementUnchecked(engagement.id)?.id).toBe(engagement.id);
+  });
+
+  it("issues ids that cannot be guessed", () => {
+    const ids = Array.from({ length: 50 }, () => createDemoEngagement(intake()).id);
+
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) {
+      // A UUIDv4 body, not Math.random plus a timestamp.
+      expect(id, id).toMatch(
+        /^rescue_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    }
   });
 
   it("keeps the contact details out of the frozen contract scope", () => {

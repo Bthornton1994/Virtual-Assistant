@@ -43,13 +43,39 @@ export const RELEASE_RESCUE_OFFER = {
     applications: 1,
     criticalWorkflows: 1,
   },
-  /** Claims this offer must never make, in any surface. */
+  /**
+   * Claims this offer must never make, in any surface.
+   *
+   * Phrases are matched on word boundaries with whitespace normalised, so
+   * spacing and punctuation cannot smuggle one past. Variants are listed
+   * explicitly rather than relying on a clever pattern, because a list is
+   * auditable and a regex is not.
+   */
   prohibitedClaims: [
     "penetration test",
+    "penetration testing",
+    "pen test",
+    "pen testing",
+    "pentest",
+    "pentesting",
     "compliance certification",
-    "security guarantee",
-    "vulnerability-free",
     "audit certification",
+    "certified secure",
+    "security certification",
+    "soc 2 certified",
+    "iso 27001 certified",
+    "security guarantee",
+    "guarantee your security",
+    "guaranteed secure",
+    "vulnerability-free",
+    "vulnerability free",
+    "free of vulnerabilities",
+    "absence of vulnerabilities",
+    "no vulnerabilities",
+    "is secure",
+    "will be secure",
+    "fully secure",
+    "completely secure",
   ],
 } as const;
 
@@ -450,104 +476,148 @@ export function evaluateIntake(input: unknown, now: Date): IntakeDecision {
 }
 
 /**
- * Words that turn a prohibited phrase into a permitted denial of it.
+ * Tokens that turn a prohibited phrase into a permitted denial of it.
  *
  * "This review is not a penetration test" is exactly what the customer must be
- * told, and it necessarily contains the phrase "penetration test". A plain
- * substring match cannot tell a claim from its denial, so the clause around each
+ * told, and it necessarily contains the phrase. So the clause around each
  * occurrence is checked for a negation first.
+ *
+ * Matched as whole TOKENS, never as substrings. The earlier version tested
+ * `clause.includes("not")`, which meant "Nothing is left unchecked in our
+ * penetration test" and "Note that we provide a compliance certification" both
+ * read as denials, because "nothing" and "note" contain "not".
  */
-const NEGATION_MARKERS = [
+const NEGATION_TOKENS = new Set([
   "not",
-  "n't",
   "never",
-  "no ",
+  "no",
+  "none",
+  "nor",
+  "neither",
   "without",
   "unlike",
   "excludes",
   "excluding",
-  "rather than",
-  "instead of",
-  "neither",
-  "nor ",
   "cannot",
   "refuse",
-];
+  "refuses",
+  "isn't",
+  "isnt",
+  "aren't",
+  "arent",
+  "doesn't",
+  "doesnt",
+  "don't",
+  "dont",
+  "won't",
+  "wont",
+]);
+
+/** Multi-word denials that no single token captures. */
+const NEGATION_PHRASES = ["rather than", "instead of", "other than"];
 
 /**
- * Phrases that mark a sentence as pointing the customer ELSEWHERE for the thing
- * named, rather than offering it. "Customers who need penetration testing should
- * engage qualified specialists" is a referral, and refusing to let us write it
- * would be perverse: it is the sentence that tells someone we are not their
- * answer.
+ * Clause shapes that point the customer ELSEWHERE for the thing named.
+ *
+ * Deliberately narrow, and matched against the CLAUSE rather than the sentence.
+ * The earlier version scanned the whole sentence for "engage" and "specialist",
+ * which exempted every sentence containing the word "engagement" — a word this
+ * product uses constantly. That hole made the entire check optional.
  */
-const REFERRAL_MARKERS = [
+const REFERRAL_PHRASES = [
   "who need",
   "who want",
   "who require",
   "if you need",
   "if you want",
   "if you require",
-  "engage",
-  "elsewhere",
-  "specialist",
-  "separate engagement",
+  "should engage",
+  "engage a qualified",
+  "engage qualified",
   "out of scope",
-  "outside this",
   "outside the scope",
 ];
 
-/** The sentence containing `index`. */
-function sentenceAround(text: string, index: number): string {
-  const before = text.slice(0, index);
-  const start = Math.max(before.lastIndexOf("."), before.lastIndexOf("\n"), before.lastIndexOf("!"), before.lastIndexOf("?"));
-  const afterOffset = text.slice(index).search(/[.\n!?]/);
-  const end = afterOffset === -1 ? text.length : index + afterOffset;
-  return text.slice(start + 1, end);
+/** Lowercased, whitespace-normalised, punctuation-stripped word tokens. */
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9'\s-]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
 }
 
-/** The clause containing `index`, bounded by sentence and clause punctuation. */
-function clauseAround(text: string, index: number): string {
-  const before = text.slice(0, index);
+function containsNegation(clause: string): boolean {
+  const tokens = tokenize(clause);
+  if (tokens.some((token) => NEGATION_TOKENS.has(token))) return true;
+  const normalised = tokens.join(" ");
+  return NEGATION_PHRASES.some((phrase) => normalised.includes(phrase));
+}
+
+/**
+ * Referral is matched against the whole SENTENCE, negation only against the
+ * clause. The scopes differ because the failure modes differ.
+ *
+ * A referral naturally lists several things at once — "customers who need
+ * penetration testing, compliance certification, or ongoing monitoring should
+ * engage a qualified specialist" — and clause splitting on the comma would
+ * isolate "compliance certification" from the "who need" that licenses it.
+ * Sentence scope is safe here only because REFERRAL_PHRASES are narrow; the
+ * earlier version scanned sentences for "engage" and "specialist", which
+ * exempted every sentence containing the word "engagement".
+ *
+ * Negation stays clause-scoped so an earlier denial cannot license a later
+ * claim: "We are not a consultancy; we deliver a penetration test."
+ */
+function containsReferral(sentence: string): boolean {
+  const normalised = tokenize(sentence).join(" ");
+  return REFERRAL_PHRASES.some((phrase) => normalised.includes(phrase));
+}
+
+function sentenceAround(text: string, index: number): string {
   const start = Math.max(
-    before.lastIndexOf("."),
-    before.lastIndexOf(";"),
-    before.lastIndexOf(","),
-    before.lastIndexOf(":"),
-    before.lastIndexOf("\n"),
-    before.lastIndexOf("\u2014"),
-    before.lastIndexOf("("),
+    ...[".", "\n", "!", "?"].map((mark) => text.lastIndexOf(mark, index - 1)),
   );
-  return text.slice(start + 1, index);
+  const rest = text.slice(index).search(/[.\n!?]/);
+  return text.slice(start + 1, rest === -1 ? text.length : index + rest);
 }
 
 /**
  * Guards any customer-facing string this offer produces against the claims it
- * must never make. Used by the report contract; also available to the marketing
- * surface so one list governs both.
+ * must never make. Used by the report contract and by a test that runs it over
+ * every marketing surface, so one list genuinely governs both.
  *
- * Reports an affirmative claim only. A denial ("this is not a penetration test",
- * "we do not certify compliance") is required copy, not a violation.
+ * Reports an affirmative claim only. A denial ("this is not a penetration
+ * test") and a referral ("customers who need penetration testing should engage
+ * a qualified specialist") are required copy, not violations.
  */
 export function findProhibitedClaims(text: string): string[] {
-  const haystack = text.toLowerCase();
+  // Normalise whitespace so "penetration  test" and "penetration\ntest" cannot
+  // slip past a literal match, while keeping clause punctuation for splitting.
+  const normalised = text.replace(/\s+/g, " ");
+  const lower = normalised.toLowerCase();
   const found: string[] = [];
 
   for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
-    let index = haystack.indexOf(claim);
-    while (index !== -1) {
-      const clause = clauseAround(haystack, index);
-      const sentence = sentenceAround(haystack, index);
-      const denied =
-        NEGATION_MARKERS.some((marker) => clause.includes(marker)) ||
-        REFERRAL_MARKERS.some((marker) => sentence.includes(marker));
-      if (!denied) {
+    // Word-bounded search, so "is secure" does not fire inside "this is securely
+    // stored" and "pentest" does not fire inside "pentester".
+    const pattern = new RegExp(`(^|[^a-z0-9])${claim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`, "g");
+    let match = pattern.exec(lower);
+    while (match !== null) {
+      const index = match.index + match[1].length;
+      const clauseStart = Math.max(
+        ...[".", ";", ",", ":", "\u2014", "(", "?", "!"].map((mark) => lower.lastIndexOf(mark, index - 1)),
+      );
+      const clause = lower.slice(clauseStart + 1, index);
+      if (!containsNegation(clause) && !containsReferral(sentenceAround(lower, index))) {
         found.push(claim);
         break;
       }
-      index = haystack.indexOf(claim, index + claim.length);
+      pattern.lastIndex = index + claim.length;
+      match = pattern.exec(lower);
     }
   }
 
   return found;
 }
+

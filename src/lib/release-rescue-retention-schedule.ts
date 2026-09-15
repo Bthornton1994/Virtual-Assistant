@@ -18,6 +18,17 @@ export const RETENTION_SWEEP_PATH = "/api/internal/release-rescue/retention-swee
 /** Daily, at a minute nobody else picks. Mirrors the pg_cron schedule. */
 export const RETENTION_SWEEP_CRON = "17 3 * * *" as const;
 
+/**
+ * The HTTP method the platform scheduler actually uses.
+ *
+ * Vercel Cron Jobs issue a GET carrying `Authorization: Bearer $CRON_SECRET`.
+ * The route previously implemented POST only and answered GET with 405, so every
+ * scheduled invocation was rejected and the sweep never ran. The method is
+ * declared here so the handler and a test can both bind to one value rather than
+ * each assuming.
+ */
+export const RETENTION_SWEEP_METHOD = "GET" as const;
+
 export type SweepAuthorization =
   | { authorized: true }
   | { authorized: false; status: 401 | 503; reason: string };

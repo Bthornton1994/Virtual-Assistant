@@ -4,7 +4,12 @@ import {
   getRubricCheck,
   type RubricDimension,
 } from "@/lib/release-rescue-rubric";
-import { severityRank, type FindingSeverity } from "@/lib/release-rescue-findings";
+import {
+  computeFindingBlocking,
+  computeFindingSeverity,
+  severityRank,
+  type FindingSeverity,
+} from "@/lib/release-rescue-findings";
 import type { ReleaseRescueReportV1, ReleaseVerdict } from "@/lib/release-rescue-report";
 
 // The customer-facing view of a Release Rescue report.
@@ -193,13 +198,24 @@ export function summarizeDimensions(report: ReleaseRescueReportV1): DimensionSum
  */
 export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerReportView {
   const findings: CustomerFindingView[] = report.findings
-    .map((finding) => ({
+    .map((finding) => {
+      // Recomputed, not copied.
+      //
+      // "Severity is derived, never chosen" was true of the validator and only
+      // of the validator: this presenter used to copy the stored fields, so a
+      // render path that forgot to validate first would show whatever the
+      // artifact claimed. Deriving here means the document a customer reads
+      // cannot disagree with the observations behind it, whatever reached it.
+      const check = getRubricCheck(finding.rubricCheckId);
+      const severity = computeFindingSeverity(finding);
+      const blocking = check ? computeFindingBlocking(check, severity, finding.confidence) : true;
+      return {
       id: finding.findingId,
       dimension: finding.dimension,
       dimensionTitle: DIMENSION_TITLES[finding.dimension],
-      checkTitle: getRubricCheck(finding.rubricCheckId)?.title ?? finding.rubricCheckId,
-      severity: finding.severity,
-      blocking: finding.blocking,
+      checkTitle: check?.title ?? finding.rubricCheckId,
+      severity,
+      blocking,
       confidence: finding.confidence,
       title: finding.title,
       whatWeObserved: finding.whatWeObserved,
@@ -213,8 +229,20 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       effort: finding.remediationEffort,
       inRemediationSprintScope: finding.inRemediationSprintScope,
       residualUncertainty: finding.residualUncertainty.trim().length > 0 ? finding.residualUncertainty : null,
-    }))
+      };
+    })
     .sort(compareFindings);
+
+  // Counts recomputed from the recomputed findings, for the same reason.
+  const severityCounts: Record<FindingSeverity, number> = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    informational: 0,
+  };
+  for (const finding of findings) severityCounts[finding.severity] += 1;
+  const blockingFindingCount = findings.filter((finding) => finding.blocking).length;
 
   const verdictCopy = VERDICT_COPY[report.verdict];
 
@@ -237,8 +265,8 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
     verdict: report.verdict,
     verdictHeadline: verdictCopy.headline,
     verdictExplanation: verdictCopy.explanation,
-    severityCounts: { ...report.severityCounts },
-    blockingFindingCount: report.blockingFindingCount,
+    severityCounts,
+    blockingFindingCount,
     coverage: {
       assessedChecks: report.coverage.assessedChecks,
       totalChecks: report.coverage.totalChecks,
