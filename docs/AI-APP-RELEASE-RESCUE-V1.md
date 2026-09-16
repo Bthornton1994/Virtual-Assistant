@@ -2112,11 +2112,30 @@ Two details are load-bearing and were found by the test, not by reasoning:
 
 **What this does not solve, stated because five rounds each claimed more than they
 had.** Three formats are genuinely loose: `preparedBy.executorKey`, `.provider`
-and `.modelId` are vendor strings whose shape this codebase does not own. A
-camelCase claim fits them. The mitigation is that they never reach a customer
-surface — and that opt-out is declared on the format itself
-(`notCustomerVisible`), not kept in a list inside a test, with a dedicated test
-asserting the property holds. It is a bound, not a proof.
+and `.modelId` are vendor strings whose shape this codebase does not own. The
+mitigation is that they never reach a customer surface — and that opt-out is
+declared on the format itself (`notCustomerVisible`), not kept in a list inside a
+test, with a dedicated test asserting the property holds. It is a bound, not a
+proof.
+
+An earlier draft of this paragraph said "a camelCase claim fits them" and left it
+there. A mutation run then showed the sentence was **understated in one direction
+and exactly right in the other**, and both halves are now measured rather than
+asserted:
+
+| Form in a loose field | Caught? | By what |
+| --- | --- | --- |
+| `This-app-is-secure-and-free-of-vulnerabilities` | yes | the claim guard, whose tokenizer is separator-agnostic |
+| `This_app_is_secure_and_free_of_vulnerabilities` | yes | same |
+| `This/app/is/secure/and/free/of/vulnerabilities` | yes | same |
+| `this.app.is.secure.and.free.of.vulnerabilities` | **no** | — |
+| `ThisAppIsSecure` | **no** | — |
+
+So the residual is narrower than "a camelCase claim fits them" implied: it is the
+dotted and camelCase forms specifically, in three fields that do not reach the
+customer. A test asserts both rows — including the two that are NOT caught, so
+that if a later change starts catching them, this table is flagged as understated
+rather than quietly becoming stale in the safe direction.
 
 **The test was rewritten to be capable of failing.** It plants nine payloads per
 path — space, hyphen, underscore, dot, camelCase, slash, two Unicode separators

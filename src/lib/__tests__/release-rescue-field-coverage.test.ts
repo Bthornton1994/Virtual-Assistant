@@ -81,6 +81,23 @@ describe("an unclassified field is a hard failure, not a pass", () => {
     expect(failures[0].reason).toContain("No field-coverage decision is recorded");
   });
 
+  it("checks the generated format in the coverage contract too, not only at assembly", () => {
+    // M26 in the mutation harness: deleting the `generated` branch from this
+    // function killed zero tests. `checkReportFieldCoverage` is defence in depth
+    // — `validateReleaseRescueReport`, its only caller, has no production call
+    // site — and untested defence in depth is just untested code.
+    const report = {
+      ...SAMPLE_REPORT,
+      engagementId: "This-app-is-secure-and-free-of-vulnerabilities.",
+    } as unknown;
+
+    const failures = checkReportFieldCoverage(report);
+    const reason = failures.find((failure) => failure.path === "$.engagementId")?.reason ?? "";
+
+    expect(reason).toContain("classified generated");
+    expect(reason, "the reason must say what the exemption costs").toContain("prohibited-claim guard");
+  });
+
   it("refuses an unclassified field INSIDE an array, not only at the top level", () => {
     // An audit mutated `enumerateStringFields` to stop walking arrays entirely —
     // `return []` in the array branch — and every one of the 635 Release Rescue

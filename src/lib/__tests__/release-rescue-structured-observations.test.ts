@@ -1466,6 +1466,60 @@ describe("9. a code field holds a code, and nothing else, on the production path
     ).toThrow(/\$\.engagementId/);
   });
 
+  it("fails closed for a path with no declared format", () => {
+    // M22 in the mutation harness: `generatedValueIsNotWhatItClaims` returning
+    // null for an undeclared path killed zero tests, because the test above
+    // asserts every generated path HAS a format — so the fail-closed branch is
+    // unreachable through the policy and nothing exercised it directly.
+    //
+    // It is the branch a future `generated` path lands on before anyone declares
+    // its format, which is exactly when it matters.
+    const wrong = generatedValueIsNotWhatItClaims("$.someFieldNobodyHasClassifiedYet", "anything");
+
+    expect(wrong, "an undeclared generated path must not pass silently").not.toBeNull();
+    expect(wrong).toContain("no format is declared");
+  });
+
+  it("runs the claim guard on the loose control-plane fields too", () => {
+    // M24: removing `findProhibitedClaims` from the generated check killed zero
+    // tests, because the format check already refuses everything the main test
+    // plants — and that test SKIPS the `notCustomerVisible` paths.
+    //
+    // Those are the paths where the claim guard is the only thing left, and it
+    // does more than the documentation credited it with: the hyphen, underscore
+    // and slash forms are all caught, because the guard's tokenizer is
+    // separator-agnostic. Only the dotted and camelCase forms get through, and
+    // those are covered by the never-reaches-the-customer property instead.
+    const CAUGHT = [
+      "This-app-is-secure-and-free-of-vulnerabilities",
+      "This_app_is_secure_and_free_of_vulnerabilities",
+      "This/app/is/secure/and/free/of/vulnerabilities",
+    ];
+    const loose = Object.entries(GENERATED_FORMATS)
+      .filter(([, format]) => format.notCustomerVisible)
+      .map(([path]) => path);
+
+    expect(loose.length).toBeGreaterThan(0);
+    for (const path of loose) {
+      for (const claim of CAUGHT) {
+        const wrong = generatedValueIsNotWhatItClaims(path, claim);
+        expect(wrong, `${path} <- ${claim}`).not.toBeNull();
+        expect(wrong, `${path} must be refused BY THE CLAIM GUARD`).toContain("prohibited claim");
+      }
+    }
+
+    // And the honest other half: these two forms are NOT caught here. The
+    // documentation says so, and this is the measurement behind that sentence.
+    for (const path of loose) {
+      for (const uncaught of ["this.app.is.secure.and.free.of.vulnerabilities", "ThisAppIsSecure"]) {
+        expect(
+          generatedValueIsNotWhatItClaims(path, uncaught),
+          `${path} <- ${uncaught}: if this starts being caught, the doc's bound is understated and should be corrected`,
+        ).toBeNull();
+      }
+    }
+  });
+
   it("pins the two value sets that are inlined to avoid an import cycle", () => {
     // `GENERATED_FORMATS` inlines the verdict list and the repository provider
     // list because importing them would create a cycle. A copy drifts, so this
