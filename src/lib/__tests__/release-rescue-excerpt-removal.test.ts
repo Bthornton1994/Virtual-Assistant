@@ -571,11 +571,8 @@ describe("the one field left that comes from the customer's repository", () => {
       "a; b",
       "a?b",
       "a*b",
-      "a$b",
-      "a#b",
-      "a!b",
-      "a,b",
       "a<b>c",
+      "a=b", // `=` stays out: it is the character the prose contract keys on
       "src/a.ts:18",
       "src/a.ts  is where", // a double space is prose, not a file name
       "src//a.ts", // an empty segment
@@ -619,6 +616,16 @@ describe("the one field left that comes from the customer's repository", () => {
       // File names are not ASCII in most of the world.
       "src/r\u00e9sum\u00e9.ts",
       "src/\u65e5\u672c\u8a9e/page.tsx",
+      // Remix and React Router v7 name every dynamic route this way, and an
+      // audit found the first version of this grammar refusing all of them.
+      "app/routes/users.$userId.edit.tsx",
+      "app/routes/concerts.$city.tsx",
+      "src/{shared,server}/index.ts",
+      "test/fixtures/it's-broken.txt",
+      "docs/issue#42.md",
+      "data/2024,q1.csv",
+      "src/r&d/index.ts",
+      "public/assets/logo%20v2.png",
       `src/${"a".repeat(250)}.ts`, // long, but inside the per-segment cap
     ]) {
       if (!repositoryPathSchema.safeParse(candidate).success) refused.push(candidate);

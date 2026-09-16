@@ -1571,10 +1571,23 @@ a config line from a sentence needs the tail read as prose, and the owner ruled
 that out: a credential-named key must never be downgraded because of sentence
 shape. Since it cannot be done safely, it is not done at all.
 
-Removing it cost no safety, and that is measured rather than assumed: every colon
-spelling — `db_password: x`, `"DB_PASSWORD": "x"`, the value indented on the next
-line, a YAML block — is **held** by the scanner and stops at the delivery gate.
-`release-rescue-prose.test.ts` runs each one end to end.
+**That claim was published here as "measured rather than assumed", and it was
+false.** This document, the commit message and the pull request all said every
+colon spelling is held by the scanner, so the arm was buying false refusals and
+no safety. The measurement behind it pinned the value to one alphanumeric string.
+
+An audit re-ran it across value shapes. **12 of 35 colon forms deliver a live
+credential** to a customer-facing report with zero blockers and zero holds, and
+the parent commit refused six of the seven that now deliver. The discriminator is
+the VALUE, not the spelling: a value carrying `#`, `$` or a space walks through
+every colon form, and an alphanumeric one is held by all of them. Thirteen audits
+of corpora used alphanumeric bodies, which is how that survived.
+
+So removing the arm **did** cost safety on the colon carrier, and keeping it cost
+15 of 21 ordinary auditor sentences. Neither state is acceptable, which is the
+finding rather than a detail of it — see *What is actually open* below.
+`release-rescue-prose.test.ts` now measures all 35 combinations and records the
+12 rather than asserting a number that cannot fail.
 
 **The stated cost.** An auditor cannot paste a line of code into an observation
 when that line assigns to a credential-named identifier. `const token =
@@ -1591,9 +1604,10 @@ read rather than a sentence somebody wrote:
 
 | Gap | What stands there instead |
 | --- | --- |
-| a credential written with **no key at all** — "the committed value is `Xk92mQvn7Lz`" | nothing structural. It reaches a deliverable report with the value intact. Catching it means judging whether a token looks like a secret, which is the retired detector. The scanner and the named human reviewer are the only controls. |
+| a credential written with **no key at all** — "the committed value is `Xk92mQvn7Lz`" | nothing structural. It reaches a deliverable report with the value intact. |
 | a key the lexicon does not recognise (`STRIPE_SK`, `NEXTAUTH`) | the same. The lexicon is the boundary of what "credential-named" means. |
-| `key: value` on a bare colon | the scanner, which holds every spelling measured above and stops delivery. |
+| **a credential-named key joined to its value by anything other than `=`** — `DB_PASSWORD is set to <v>`, a markdown table row, a tab, `DB_PASSWORD -> <v>` | nothing. Measured at **12 of 12** carriers delivering. The rule keys on an equals sign; prose does not need one. |
+| `key: value` on a bare colon | the scanner, which holds it for alphanumeric values and **not** for values carrying `#`, `$` or a space — 12 of 35 measured combinations deliver. |
 
 These fields are free text. No rule short of refusing prose can prove a sentence
 is not a quotation of the customer's source, and this one does not try: it closes
@@ -1601,11 +1615,38 @@ the credential constructs, not the general ability to describe code in English. 
 report is still read and signed by a named human before delivery, and for the
 first gap above that signature is the **only** thing standing there.
 
-**That is an open product question, not a solved one.** Closing it means one of
-two owner decisions, neither of which is taken here: make the observation
-composed rather than free text, so an executor has no field to type a credential
-into; or accept that the observation is human-reviewed and say so in the
-engagement terms. Both are recorded for the owner; neither is implemented.
+### What is actually open
+
+Four rounds have now attacked this channel and every one has failed in **both**
+directions at once. The record, measured rather than argued:
+
+| Round | Mechanism | Result |
+| --- | --- | --- |
+| 10 | value-based detector | leaked credentials and bricked correct reports in the same commit |
+| 12 | construct rule, enumerated operators | 346 of 366 delivered via `+=`; refused 8 of 8 ordinary sentences |
+| 13 | construct rule, general bridge | 12 of 35 colon forms and 12 of 12 no-operator carriers delivered; refused 15 of 21 ordinary sentences |
+
+The deepest measurement is the last one: `DB_PASSWORD is set to Zq7#Lm2$Pw9 in
+config/app.env.` is plain English with no construct to refuse, and it publishes
+the credential. **Any rule keyed on a construct is defeated by prose that has no
+construct**, and any rule strict enough to catch prose refuses the sentences an
+auditor has to write. That is not a gap to be narrowed by a fourth attempt; it is
+the shape of the problem.
+
+**This needs an owner decision, and one is not taken here.** The two options:
+
+1. **Compose the observation.** The executor supplies structured facts — check,
+   location, impact, exploitability, confidence — and the customer-facing prose
+   is generated deterministically from them. There is then no field an executor
+   can type a credential into, which is the same move the excerpt decision made.
+   It costs the narrative quality of the report and is a significant redesign.
+2. **Accept that the observation is human-reviewed.** Remove the machine rule
+   entirely, state in the engagement terms that a named human reads every report
+   before delivery and that this is the control on free text, and keep the
+   scanner as defence in depth.
+
+Until one is taken, the prose fields are **not** machine-guaranteed free of
+credentials, and nothing in this document should be read as saying they are.
 
 
 ### Proof

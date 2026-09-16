@@ -5,6 +5,7 @@ import {
   describesWithoutQuoting,
 } from "@/lib/release-rescue-prose";
 import { CREDENTIAL_CARRIERS, CREDENTIAL_QUALIFIERS } from "@/lib/release-rescue-redaction-keys";
+import { toCustomerReportView } from "@/lib/release-rescue-presentation";
 import {
   buildReleaseRescueReport,
   pendingSecretHolds,
@@ -312,7 +313,11 @@ describe("what stands at the gaps the rule does not close", () => {
   // through the real builder and the real delivery gate.
   const V = "Xk92mQvn7Lz";
 
-  function deliver(observed: string) {
+  // The value is a PARAMETER. An earlier version closed over a single module
+  // constant, so a caller passing its own value silently measured the wrong
+  // string — which is the same defect, in a test, that this suite exists to
+  // catch in the product.
+  function deliver(observed: string, value: string = V) {
     try {
       const report = buildReleaseRescueReport(
         makeReportInput({
@@ -331,7 +336,10 @@ describe("what stands at the gaps the rule does not close", () => {
       );
       const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
       const serialized = JSON.stringify(report).replace(/\[REDACTED:[a-z_]+\]/g, "");
-      if (gate.deliverable && serialized.includes(V)) return "delivered-with-credential";
+      const view = JSON.stringify(toCustomerReportView(report)).replace(/\[REDACTED:[a-z_]+\]/g, "");
+      if (gate.deliverable && (serialized.includes(value) || view.includes(value))) {
+        return "delivered-with-credential";
+      }
       if (pendingSecretHolds(report).length > 0) return "held";
       return gate.deliverable ? "delivered-clean" : "not-deliverable";
     } catch {
@@ -339,22 +347,96 @@ describe("what stands at the gaps the rule does not close", () => {
     }
   }
 
-  it("holds every colon form, which is why dropping that arm cost no safety", () => {
-    // The arm was removed because it refused `- token: enforce a 30-day expiry`
-    // and threw away the whole report. This measures what it was buying: for
-    // every colon spelling, the scanner raises a hold and delivery stops. None
-    // of them was ever reaching a customer through that arm alone.
-    const outcomes = [
-      `db_password: ${V}`,
-      `The file has db_password: ${V} committed.`,
-      `DB_PASSWORD: ${V}`,
-      `"DB_PASSWORD": "${V}"`,
-      `DB_PASSWORD:\n  ${V}`,
-      `services:\n  db:\n    DB_PASSWORD: ${V}`,
-    ].map(deliver);
+  // Values chosen to vary the axis thirteen audits never varied: the punctuation
+  // INSIDE the value. Every corpus in this workstream used alphanumeric bodies,
+  // which is why the scanner's stop at `#`, `$` and space survived all of them —
+  // and why the assertion this replaces was worthless.
+  const VALUE_SHAPES: ReadonlyArray<[string, string]> = [
+    ["alphanumeric", "vK3nRt8sQw1xYb5"],
+    ["hash and dollar inside", "Zq7#Lm2$Pw9"],
+    ["spaces inside", "my db pass 2026"],
+    ["ampersand inside", "Tr0ub4dor&3"],
+    ["human password", "correct-horse-battery"],
+  ];
 
-    expect(outcomes, `colon forms: ${outcomes.join(", ")}`).not.toContain("delivered-with-credential");
-    expect(outcomes.every((outcome) => outcome === "held")).toBe(true);
+  const COLON_FORMS: ReadonlyArray<[string, (v: string) => string]> = [
+    ["bare colon", (v) => `db_password: ${v}`],
+    ["shouted colon", (v) => `DB_PASSWORD: ${v}`],
+    ["json", (v) => `"DB_PASSWORD": "${v}"`],
+    ["toml section", (v) => `[db]\npassword: ${v}`],
+    ["yaml block", (v) => `services:\n  db:\n    DB_PASSWORD: ${v}`],
+    ["bullet", (v) => `- db_password: ${v}`],
+    ["value on the next line", (v) => `DB_PASSWORD:\n  ${v}`],
+  ];
+
+  it("does NOT hold every colon form — the claim that said otherwise was false", () => {
+    // WHAT THIS REPLACES, and why it matters more than the assertion itself.
+    //
+    // The bare-colon arm of this rule was removed on a claim published in the
+    // documentation, the commit message and the pull request as "measured rather
+    // than assumed": that every colon spelling is held by the scanner, so the arm
+    // was buying false refusals and no safety.
+    //
+    // The measurement pinned the value to one alphanumeric string. An audit
+    // re-ran it across value shapes and found 12 of 28 colon forms delivering a
+    // live credential to a customer-facing report with zero blockers and zero
+    // holds — the parent commit refused six of the seven that now deliver. The
+    // claim was false and the test that "proved" it could not have failed.
+    //
+    // So this asserts the measured truth instead, at its true size, and varies
+    // the axis that hid it. It is not a statement that the current behaviour is
+    // acceptable; it is a statement of what the behaviour IS.
+    const leaks: string[] = [];
+    let checked = 0;
+
+    for (const [valueLabel, value] of VALUE_SHAPES) {
+      for (const [formLabel, render] of COLON_FORMS) {
+        checked += 1;
+        if (deliver(render(value), value) === "delivered-with-credential") {
+          leaks.push(`${formLabel} × ${valueLabel}`);
+        }
+      }
+    }
+
+    expect(checked).toBe(VALUE_SHAPES.length * COLON_FORMS.length);
+    // Recorded, not tolerated. If a later change moves this number, it has to be
+    // moved deliberately and the documentation has to move with it.
+    console.log(`COLON FORMS DELIVERING A CREDENTIAL: ${leaks.length} of ${checked} — ${leaks.join(", ")}`);
+    expect(leaks.length, `colon forms delivering a credential: ${leaks.join(", ")}`)
+      .toBeGreaterThan(0);
+  });
+
+  it("holds the colon forms only for values the scanner's extractor survives", () => {
+    // The discriminator is the VALUE, not the spelling — which is the whole
+    // lesson. An alphanumeric value is held through every colon spelling; a
+    // value carrying `#`, `$` or a space is not.
+    for (const [formLabel, render] of COLON_FORMS) {
+      expect(deliver(render("vK3nRt8sQw1xYb5"), "vK3nRt8sQw1xYb5"), `${formLabel}, alphanumeric`)
+        .not.toBe("delivered-with-credential");
+    }
+  });
+
+  it("evaluates the prose contract on what the auditor wrote, not on redacted text", () => {
+    // `buildReleaseRescueReport` sanitises before it assembles. An earlier
+    // version ran this guard on the sanitised value, so it was asked about text
+    // the scanner had rewritten: `if (token === expected) return true;` became
+    // `if (token === [REDACTED:assigned_secret]) return true;`, the bridge was no
+    // longer a comparison, and the entire report was thrown away over a routine
+    // timing-leak finding. No test saw it, because every assertion in this file
+    // called the rule on RAW text while production never did.
+    //
+    // These run through the real builder. None of them may destroy a report.
+    for (const sentence of [
+      "if (token === expected) return true;",
+      "the check asserts password == stored, which is a timing leak",
+      "the handler maps token => user before the ownership check",
+      "Move the value into a secret manager, e.g. db_password: ${env.DB_PASSWORD_REF}",
+      "Recommendation:\n- token: enforce a 30-day expiry\n- refresh: rotate on use",
+      "Auth: Clerk. Payments: Stripe.",
+      "The findings are:\n- secrets: committed to the repository\n- logging: absent",
+    ]) {
+      expect(deliver(sentence, "NEVER-MATCHES-ANYTHING"), sentence.slice(0, 48)).not.toBe("refused");
+    }
   });
 
   it("does not close a credential written with no key, and says so here too", () => {

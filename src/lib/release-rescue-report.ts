@@ -476,6 +476,12 @@ export const STANDING_LIMITATIONS: readonly string[] = [
  * it.
  */
 export function buildReleaseRescueReport(raw: AssembleReportInput): ReleaseRescueReportV1 {
+  // BEFORE sanitisation, deliberately. This guard judges what the auditor wrote;
+  // asking it about text the scanner has already rewritten is asking the wrong
+  // question, and an audit measured the answer — it destroyed reports over a
+  // placeholder that had landed between a comparison's two halves.
+  assertProseDescribesWithoutQuoting(raw, "Release Rescue report assembly");
+
   const { value, holds } = sanitizeReportInput(raw);
   // The holds go INTO the artifact. They cannot be recomputed later: by then the
   // text is a placeholder, which is the whole point of having redacted it.
@@ -507,7 +513,15 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
   // `excerpt` intact and `.strict()` never sees it. So the named refusal runs
   // here, on the same scope the database trigger walks.
   assertNoSourceFieldsInFindings(input.findings, "Release Rescue report assembly");
-  assertProseDescribesWithoutQuoting(input, "Release Rescue report assembly");
+  // The prose contract is NOT checked here. It judges what the auditor wrote,
+  // and by this point the scanner has rewritten it: an audit found
+  // `if (token === expected)` becoming `if (token === [REDACTED:assigned_secret])`,
+  // whose bridge is no longer a comparison, and the whole report thrown away
+  // over a routine timing-leak finding. `buildReleaseRescueReport` runs the
+  // check on the raw input instead, which is the only text the question makes
+  // sense about. Duplicating it here on the sanitised value asked a different
+  // question and got a different answer, and no test saw it because every prose
+  // test called the rule on raw text while production never did.
 
   const metrics = deriveReportMetrics(input.assessments, input.findings, input.authorityReport);
   const limitations = [...STANDING_LIMITATIONS, ...input.limitations];
@@ -590,7 +604,9 @@ export function assertProseDescribesWithoutQuoting(input: AssembleReportInput, c
     fields.push({ at: `clearedSecretHolds[${index}].rationale`, value: hold.rationale });
   });
   fields.push(
-    { at: "scope.repository.description", value: input.scope.repository.defaultBranch },
+    // `repositoryScopeSchema` has no `description`; this is the branch name, and
+    // an audit caught the label claiming otherwise.
+    { at: "scope.repository.defaultBranch", value: input.scope.repository.defaultBranch },
     { at: "scope.application.description", value: input.scope.application.description },
     { at: "scope.criticalWorkflow.description", value: input.scope.criticalWorkflow.description },
   );

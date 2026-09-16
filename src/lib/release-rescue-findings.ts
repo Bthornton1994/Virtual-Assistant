@@ -151,6 +151,13 @@ export function severityRank(severity: FindingSeverity): number {
  * `src/<kanji>/page.tsx` — ordinary file names in most of the world. `\p{L}`
  * fixes that without widening anything that matters: a letter is not punctuation.
  *
+ * `$ , & ! \' { } # %` are in the set because real route files use them:
+ * `app/routes/users.$userId.edit.tsx` is every dynamic route in Remix and React
+ * Router v7, and an audit found the first version of this grammar refusing all
+ * of them. `=` is deliberately NOT in the set — it is the character the prose
+ * contract keys on, and SvelteKit\'s `[id=integer]` matcher is the only real
+ * path that needs it.
+ *
  * NO SPACES. The first version allowed single spaces between words so that
  * `docs/Architecture Overview.md` would validate. An audit used that to put
  * `config app.env holds the value Xk92mQvn7Lz on line 14` in the field — a
@@ -158,7 +165,7 @@ export function severityRank(severity: FindingSeverity): number {
  * file name with a space is rarer than that attack, and an auditor whose
  * customer has one cites the directory instead.
  */
-const PATH_SEGMENT = "[\\p{L}\\p{N}._@+~()\\[\\]-]+";
+const PATH_SEGMENT = "[\\p{L}\\p{N}._@+~()\\[\\]$,&!'{}#%-]+";
 export const REPOSITORY_PATH_PATTERN = new RegExp(`^${PATH_SEGMENT}(/${PATH_SEGMENT})*$`, "u");
 
 /** No segment of a real repository path is longer than this. */

@@ -167,7 +167,11 @@ declare
     'package.json',
     'Makefile',
     'node_modules/link',
-    'docs/Architecture Overview.md',      -- a space in a file name is legal
+    -- A space in a path: the ROW guard still accepts it, the application does
+    -- not. The guard is deliberately the weaker of the two (see the migration
+    -- header); this case records that difference rather than implying the
+    -- application would accept it.
+    'docs/Architecture Overview.md',
     'apps/web/src/lib/a-b_c+d@e~f(1).ts', -- and so is the rest of the charset
     repeat('a', 200) || '/' || repeat('b', 199)  -- exactly at the 400 cap, not over it
   ];

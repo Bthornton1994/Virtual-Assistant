@@ -127,6 +127,28 @@ function withoutMarkup(text: string): string {
 }
 
 /**
+ * Removes redaction placeholders, because a placeholder is not content.
+ *
+ * `buildReleaseRescueReport` sanitises before it assembles, so this guard was
+ * being asked about text the scanner had already rewritten. An audit measured
+ * what that did: `if (token === expected) return true;` becomes
+ * `if (token === [REDACTED:assigned_secret]) return true;`, the bridge is no
+ * longer `===` but `=== [`, the comparison exclusion misses it, and the whole
+ * report is thrown away. Three ordinary sentences about timing leaks — a routine
+ * release-readiness finding — stopped being reportable, and the tests did not
+ * see it because they call this function on RAW text while production never does.
+ *
+ * Stripping the placeholder makes the answer the same before and after
+ * redaction, which is the property that was missing. It is also the right
+ * answer: once the scanner has replaced a credential with a placeholder, there
+ * is no longer a quoted credential there to refuse — there is a hold, which is a
+ * different control saying a different thing.
+ */
+function withoutPlaceholders(text: string): string {
+  return text.replace(/\[REDACTED:[a-z_]+\]/g, "");
+}
+
+/**
  * The constructs an observation may not contain, in the order they appear.
  *
  * Deterministic and total. Every branch is decided by the KEY and the BRIDGE.
@@ -139,13 +161,19 @@ function withoutMarkup(text: string): string {
  * every LLM executor, and the refusal threw away the whole report. Separating a
  * config line from a sentence needs the tail read as prose, and the owner ruled
  * that out: a credential-named key must never be downgraded because of sentence
- * shape. Since it cannot be done safely, it is not done at all — the colon forms
- * are left to the scanner and to the named human reviewer, and the documentation
- * says so rather than implying otherwise.
+ * shape. Since it cannot be done safely, it is not done at all.
+ *
+ * The comment that used to sit here said the colon forms were "left to the
+ * scanner", on a claim published as measured. It was false: 12 of 35 colon
+ * form × value-shape combinations deliver a live credential, and the parent
+ * commit refused six of the seven that now do. The discriminator is the value —
+ * `#`, `$` or a space defeats the scanner's extractor — and every corpus in this
+ * workstream used alphanumeric bodies, which is how it survived thirteen audits.
+ * `release-rescue-prose.test.ts` measures all 35 and records the 12.
  */
 export function findQuotedCredentialConstructs(input: string): ProseConstruct[] {
   const found: ProseConstruct[] = [];
-  const text = withoutMarkup(input);
+  const text = withoutPlaceholders(withoutMarkup(input));
 
   if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(text)) {
     found.push({ kind: "private_key_block", subject: "PRIVATE KEY" });
