@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { canonicalJsonStringify, sha256Hex } from "@/lib/catalog-evidence-hash";
 import { identifierString, isoDateTimeSchema, nonEmptyString } from "@/lib/catalog-evidence-shared";
+import { PATH_SEGMENT_CHARACTERS } from "@/lib/release-rescue-findings";
 
 // Customer intake boundary for the AI App Release Rescue offer.
 //
@@ -212,6 +213,30 @@ export const repositoryRefSchema = identifierString
   // be. A repository is not named `..`.
   .refine((value) => !value.split("/").includes(".."), "must not contain a `..` segment");
 
+export const branchNameSchema = identifierString
+  .max(200)
+  // IT LIVES HERE, not in the report module, because three layers validate a
+// branch name and they must not each have an opinion: this schema, the library
+// intake, and the customer-facing form. An audit found all three disagreeing at
+// once — the form refused `feature/añadir-login` that the report accepted, and
+// accepted `/main` that the report refused, so a customer could pay for a review
+// whose report could not be issued.
+//
+// The same letter classes a path segment uses, because a branch name is not
+  // required to be ASCII and an audit found intake accepting `feature/日本語対応`
+  // while the report refused it — a customer could sign up and pay for a review
+  // that could never be delivered.
+  .refine(
+    (value) => new RegExp(`^[${PATH_SEGMENT_CHARACTERS}/]+$`, "u").test(value),
+    "must be a branch name",
+  )
+  // What git itself forbids, and what the artifact boundary therefore also
+  // refuses. Without these the schema accepted `/main` and `release/..` while
+  // the boundary refused them, so the boundary was not the superset it is
+  // documented to be. `git check-ref-format` rejects both.
+  .refine((value) => !value.startsWith("/") && !value.endsWith("/"), "must not begin or end with `/`")
+  .refine((value) => !value.split("/").includes(".."), "must not contain a `..` segment");
+
 /**
  * What the customer can state at intake.
  *
@@ -225,7 +250,7 @@ export const repositoryIntakeSchema = z
   .object({
     provider: z.enum(["github", "gitlab", "bitbucket", "uploaded_archive"]),
     repositoryRef: repositoryRefSchema,
-    defaultBranch: identifierString.max(200),
+    defaultBranch: branchNameSchema,
     accessMode: z.enum(REPOSITORY_ACCESS_MODES),
   })
   .strict();
@@ -714,8 +739,25 @@ function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): C
       // still matches across it. Runs of capitals are left whole, which is why
       // this fires only after a lowercase letter or digit: `OAuth` and `SQL`
       // stay one word each.
-      if (mode.splitCaseTransitions && /[A-Z]/.test(character) && /[a-z0-9]/.test(word.slice(-1))) {
-        flush();
+      // A camelCase boundary, decided by LOOKAHEAD before the character is
+      // appended. Two rules, and the second was missing:
+      //
+      //   lower or digit -> UPPER          `AcmeIsSecure` -> `Acme|Is|Secure`
+      //   UPPER -> UPPER followed by lower `ACMEIsSecure` -> `ACME|Is|Secure`
+      //
+      // Without the second, one extra capital in an acronym prefix defeated the
+      // option that exists to catch camelCase, and `ACMEIsSecure Ltd` was
+      // delivered as the reviewer's signature on a report. An acronym prefix is
+      // how a great many real firms spell their name.
+      //
+      // A run of capitals is still one word when nothing lowercase follows, so
+      // `SQL`, `OAuth` and `IBM` stay whole. The boundary carries no break, so a
+      // phrase still matches across it, and it can only ADD boundaries within
+      // this option — the modes without it read the word whole.
+      if (mode.splitCaseTransitions && word.length > 0 && /[A-Z]/.test(character)) {
+        const previous = word.slice(-1);
+        const next = characters[index + 1] ?? "";
+        if (/[a-z0-9]/.test(previous) || (/[A-Z]/.test(previous) && /[a-z]/.test(next))) flush();
       }
       word += character;
       continue;
@@ -1033,7 +1075,20 @@ export function findProhibitedClaimsUnderModes(
 ): string[] {
   const found = new Set<string>();
   for (const name of modeNames) {
-    for (const claim of claimsUnderMode(text, CLAIM_TOKENIZER_MODES[name])) found.add(claim);
+    const mode = CLAIM_TOKENIZER_MODES[name];
+    // Refused, not defaulted. `ClaimTokenizerModeName` had to widen to `string`
+    // when the mode set became generated, so an unknown name silently fell
+    // through to the baseline mode: `findProhibitedClaimsUnderModes(text,
+    // ["caseSplit"])` — the name every earlier round used — quietly became a
+    // different question rather than a compile error. A negative assertion
+    // written with a stale name would have passed vacuously, which is the
+    // "test that cannot fail" shape this module is full of lessons about.
+    if (!mode) {
+      throw new Error(
+        `Unknown claim tokenizer mode "${name}". The modes are: ${Object.keys(CLAIM_TOKENIZER_MODES).join(", ")}.`,
+      );
+    }
+    for (const claim of claimsUnderMode(text, mode)) found.add(claim);
   }
   return RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => found.has(claim));
 }

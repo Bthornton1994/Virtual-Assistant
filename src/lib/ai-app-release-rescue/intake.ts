@@ -14,6 +14,7 @@ import {
   type AppType,
 } from "@/lib/ai-app-release-rescue/constants";
 import { DEMO_ORGANIZATION_ID } from "@/lib/release-rescue-demo-identity";
+import { branchNameSchema } from "@/lib/release-rescue-intake";
 
 // The intake FORM layer.
 //
@@ -299,7 +300,13 @@ export function parseRescueIntake(source: Record<string, unknown>, now: Date = n
   if (applicationName.length === 0) errors.applicationName = "What is this application called?";
 
   const defaultBranch = readString(source, "defaultBranch").trim() || "main";
-  if (!/^[A-Za-z0-9._\/-]{1,200}$/.test(defaultBranch)) {
+  // ONE rule, imported rather than restated. This was its own ASCII-only regex,
+  // and an audit found the three layers disagreeing: the form refused
+  // `feature/añadir-login` and `feature/日本語対応` that the report accepts, and
+  // accepted `/main`, `main/` and `release/..` that the report refuses — so a
+  // customer could pay for a review whose report could never be issued, or be
+  // turned away at signup over an ordinary branch name.
+  if (!branchNameSchema.safeParse(defaultBranch).success) {
     errors.defaultBranch = "Use the branch name, for example main.";
   }
 

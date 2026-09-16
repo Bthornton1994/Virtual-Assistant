@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 668 Release Rescue tests across 30 suites (1,344 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 673 Release Rescue tests across 30 suites (1,349 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2281,9 +2281,11 @@ URL, not absolute, no parent traversal, bounded. The claim guard does not read i
 
 **The grammar is DERIVED from the schema, not restated.** The first version
 restated the character class by hand, ASCII-only and without `$ , & ! ' { } # %`.
-It refused **14 of the 24-path corpus this repository ships** (an audit measured
-13 of a 40-path corpus of its own, which is not in the tree and so cannot be
-re-checked here) — every Remix and React Router v7 dynamic route
+It refused **20 of the 30-path corpus this repository ships** — a figure the test
+now COMPUTES and asserts, because the previous revision published "14 of 24" as
+explicitly reproducible from the tree and it was not: the same commit had added
+six entries, so the corpus was 30 and the refusals 20. A number advertised as
+checkable has to be checked by something — every Remix and React Router v7 dynamic route
 (`app/routes/users.$userId.edit.tsx`) and every non-ASCII filename
 (`src/日本語/page.tsx`, `src/café/resumé.ts`) — and **both of those classes were
 false refusals an earlier audit had already found and fixed in the schema
@@ -2342,15 +2344,61 @@ DECLARATION rather than `Object.keys()` of the shipped modes, which is what let
 the previous version pass vacuously.
 
 **And the claim moved from modes to options, because the per-mode claim is
-false.** The previous round asserted that every mode finds something no other
-mode finds. With four modes that held. With eight it does not, and it was
-measured rather than assumed: **only three of the eight** have a payload no other
-mode catches. Asserting per-mode irreplaceability would have been asserting
-something untrue — the exact defect the round before it was about. What is true,
-and is now the test, is that **every OPTION earns its place**: for each one there
-is a payload that every mode with it turned off misses. The redundancy of the
-other five corners is itself recorded as a number, so a later change that makes
-more or fewer of them load-bearing fails rather than leaving a comment stale.
+false.** An earlier round asserted that every mode finds something no other mode
+finds. With four modes that held; with eight it does not. What is true, and is
+the test, is that **every OPTION earns its place**: for each one there is a
+payload that every mode with it turned off misses.
+
+**A camelCase boundary has two halves, and one was missing.** Splitting only on
+lower-to-upper reads `ACMEIsSecure` as a single token, so one extra capital in an
+acronym prefix defeated the option that exists to catch camelCase — and
+`ACMEIsSecure Ltd` was delivered as the reviewer's signature on a report, which
+is the customer-facing line the whole guard exists to protect. An acronym prefix
+is how a great many real firms spell their name. The rule is the standard one
+now: a run of capitals ends one word before a lowercase letter that follows it,
+so `ACMEIsSecure` is `ACME|Is|Secure` and `XMLHttpRequest` is `XML|Http|Request`,
+while `SQL`, `IBM` and `macOS` stay whole. It was fixed inside the existing
+option rather than as a fourth one: the distinction is what a case boundary IS,
+not a separate policy, and adding an option would have doubled the mode set to
+sixteen for no gain.
+
+### One rule for a branch name, across three layers
+
+Three layers validate a branch name — the customer-facing form, the library
+intake schema, and the report schema — and an audit found all three disagreeing
+at once. A previous revision tightened the report schema to match what
+`git check-ref-format` forbids and left the other two alone, which produced both
+failure directions in the same field:
+
+| Branch name | Form | Report |
+| --- | --- | --- |
+| `feature/añadir-login` | **refused** | accepted |
+| `feature/日本語対応` | **refused** | accepted |
+| `/main`, `main/`, `release/..` | accepted | **refused** |
+
+The first pair turns a customer away at signup over an ordinary Spanish or
+Japanese branch name. The second is worse: the engagement is accepted and paid
+for, and the report cannot be issued after the review work is done. That
+revision's stated purpose was to close exactly this gap; it inverted it instead.
+
+`branchNameSchema` now lives beside the intake schemas rather than in the report
+module, and the form and the library intake both import it. One rule. A test runs
+the same value through `parseRescueIntake` and the schema together — nothing in
+the suite had ever compared the two ends of the customer's journey, which is why
+they could drift without a single test noticing.
+
+**The count of irreplaceable combinations has been wrong once and is now
+computed.** A revision published "only three of the eight" as a measured fact
+about the modes. It was a fact about nine strings hand-written in the test that
+produced it — the corpus composed inside its own conclusion, in the test written
+to be honest about the modes — and an audit found a fourth,
+`splitCaseTransitionsAndInWordFullStopSeparates`, the only mode that catches
+`"This is not a penetration test. AcmeIs.SecureLtd"`. The test now generates its
+corpus (every claim crossed with preludes, joiners and spellings, ~2,900 strings)
+**and** appends every witness a previous audit found, then computes the set and
+records it in a snapshot: **four** — `baseline`, `splitCaseTransitions`,
+`inWordFullStopSeparates`, and the pair of the last two. The number is a property
+of that corpus and never of the modes, and this sentence says so.
 
 Completeness by construction is why the redundant corners stay: they cost 0.09ms
 per call, and the alternative is the bug that has now appeared three times.

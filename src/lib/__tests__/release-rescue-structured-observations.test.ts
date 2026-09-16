@@ -71,8 +71,11 @@ import {
   type ClaimTokenizerModeName,
 } from "@/lib/release-rescue-intake";
 import { SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
-import { repositoryRefSchema } from "@/lib/release-rescue-intake";
-import { branchNameSchema } from "@/lib/release-rescue-report";
+import { branchNameSchema, repositoryRefSchema } from "@/lib/release-rescue-intake";
+import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
+import { validIntakeRecord } from "@/lib/ai-app-release-rescue/intake.test-fixtures";
+const NOW = new Date("2026-09-16T09:00:00.000Z");
+
 import { PATH_SEGMENT_CHARACTERS } from "@/lib/release-rescue-findings";
 import { scanForSecrets } from "@/lib/release-rescue-redaction";
 import { RELEASE_RESCUE_RUBRIC_V1 } from "@/lib/release-rescue-rubric";
@@ -1741,6 +1744,60 @@ describe("9. a code field holds a code, and nothing else, on the production path
     expect(missed.slice(0, 10), `${missed.length} of ${checked} capitalisations evaded the guard`).toEqual([]);
   });
 
+  it("is not defeated by an acronym prefix", () => {
+    // Audit 23, blocking. A camelCase boundary has two halves and only one was
+    // implemented: splitting on lower-to-upper read `ACMEIsSecure` as a single
+    // token, so one extra capital defeated the option that exists to catch
+    // camelCase. `Dana Okafor, ACMEIsSecure Ltd` was DELIVERED as the reviewer's
+    // signature — the customer-facing line the guard exists to protect.
+    //
+    // A mutation run then showed the fix itself had no test: removing the
+    // upper-run half killed nothing. This is that test.
+    const CAUGHT = [
+      "Ops Manager ACMEIsSecure Ltd",
+      "ACMECertifiedSecure",
+      "XMLIsSecure",
+      "APIVulnerabilityFree",
+      "ACMEGuaranteedSecure",
+      // and the half that already worked, so a regression in either is visible
+      "Ops Manager AcmeIsSecure Ltd",
+      "ThisAppIsSecure",
+    ];
+    for (const text of CAUGHT) {
+      expect(findProhibitedClaims(text), `${text} must be read as a claim`).not.toEqual([]);
+    }
+
+    // End to end, on the field that made it blocking.
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        reviewedBy: {
+          operatorUserId: FIXTURE_OPERATOR_ID,
+          displayName: "Dana Okafor, ACMEIsSecure Ltd",
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }),
+    );
+    const reasons = checkReportFieldCoverage(report)
+      .map((failure) => `${failure.path}: ${failure.reason}`)
+      .join(" | ");
+    expect(reasons).toContain("$.reviewedBy.displayName");
+    expect(reasons).toContain("is secure");
+
+    // A run of capitals with nothing lowercase after it is still one word, so
+    // ordinary names and technology keep working. This is the other direction,
+    // and it is what stops the fix becoming the seventh too-strict rule.
+    for (const clean of [
+      "IBM Consulting",
+      "NASA Systems Ltd",
+      "We reviewed the XMLHttpRequest usage",
+      "macOS and iOS builds",
+      "The SQL and OAuth paths were reviewed",
+      "ACME Ltd",
+    ]) {
+      expect(findProhibitedClaims(clean), `${clean} must stay clean`).toEqual([]);
+    }
+  });
+
   it("is not defeated by a missing space after a full stop", () => {
     // Audit 19, blocking. Demoting an in-word full stop from a sentence end to
     // a separator let a denial in one sentence license an affirmative claim in
@@ -1768,6 +1825,46 @@ describe("9. a code field holds a code, and nothing else, on the production path
 
     expect(checked).toBeGreaterThan(30);
     expect(missed, `${missed.length} denial/claim pairs were licensed across a full stop`).toEqual([]);
+  });
+
+  it("governs a branch name with ONE rule across the form, intake and the report", () => {
+    // Audit 23, blocking, and a regression I introduced: three layers validated
+    // a branch name and all three disagreed. The customer-facing form had its
+    // own ASCII-only regex, so it REFUSED `feature/añadir-login` and
+    // `feature/日本語対応` that the report accepts — an ordinary Spanish branch
+    // name turning a customer away at signup — and ACCEPTED `/main`, `main/` and
+    // `release/..` that the report refuses, which is a paid engagement whose
+    // report cannot be issued after the work is done.
+    //
+    // Nothing in the suite ran one value through both ends of the customer's
+    // journey, so the two could drift without any test noticing. This does.
+    const ACCEPTED = [
+      "main",
+      "release/v2.1",
+      "feature/fix-login",
+      "feature/añadir-login",
+      "feature/日本語対応",
+      "dependabot/npm_and_yarn/lib-1.2.3",
+    ];
+    const REFUSED = ["/main", "main/", "release/..", "..", "a b", "x".repeat(201)];
+
+    for (const branch of ACCEPTED) {
+      expect(branchNameSchema.safeParse(branch).success, `${branch} must be accepted`).toBe(true);
+      const parsed = parseRescueIntake(validIntakeRecord({ defaultBranch: branch }), NOW);
+      expect(
+        parsed.ok ? undefined : parsed.errors.defaultBranch,
+        `${branch}: the form must accept what the report accepts`,
+      ).toBeUndefined();
+    }
+
+    for (const branch of REFUSED) {
+      expect(branchNameSchema.safeParse(branch).success, `${branch} must be refused`).toBe(false);
+      const parsed = parseRescueIntake(validIntakeRecord({ defaultBranch: branch }), NOW);
+      expect(
+        parsed.ok ? undefined : parsed.errors.defaultBranch,
+        `${branch}: the form must refuse what the report refuses`,
+      ).toBeDefined();
+    }
   });
 
   it("checks a repository path against what a path IS, not by reading it as prose", () => {
@@ -1932,6 +2029,18 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
 
     expect(schemaRefused, `${schemaRefused.length} ordinary paths the SCHEMA refuses`).toEqual([]);
+
+    // The figure the doc quotes, COMPUTED rather than remembered. A previous
+    // revision published "14 of the 24-path corpus this repository ships" as
+    // explicitly reproducible from the tree — and it was not: the same commit
+    // had added six entries, so the corpus was 30 and the refusals 20. The
+    // number is derived here and asserted, so the doc can quote a measurement.
+    const OLD_ASCII_CLASS = /^[A-Za-z0-9._+@~()[\]/-]+$/;
+    const refusedByTheOldClass = PATHS.filter((path) => !OLD_ASCII_CLASS.test(path));
+    expect(
+      { corpus: PATHS.length, refusedByTheHandWrittenClass: refusedByTheOldClass.length },
+      "the doc quotes these two numbers; if they change, correct it there",
+    ).toEqual({ corpus: 30, refusedByTheHandWrittenClass: 20 });
     expect(wronglyRefused, `${wronglyRefused.length} paths the schema accepts, the boundary refuses`).toEqual([]);
     expect(PATHS.length, "the corpus must be large enough to prove something").toBeGreaterThan(24);
 
@@ -2226,43 +2335,168 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   });
 
-  it("records that most mode COMBINATIONS are redundant, because they are", () => {
-    // The honest companion to the test above, and the reason this file does not
-    // claim more than it has. The mode set is the complete product because
-    // completeness by construction is what stops a corner going missing — not
-    // because every corner is load-bearing. Measured: only three of the eight
-    // have a payload that no other mode catches.
+  it("measures how many mode combinations are irreplaceable, over a GENERATED corpus", () => {
+    // Audit 23, blocking: the published figure "only three of the eight" was
+    // false — there are at least four, and the fourth
+    // (`splitCaseTransitionsAndInWordFullStopSeparates`) is the only mode that
+    // catches `"This is not a penetration test. AcmeIs.SecureLtd"`.
     //
-    // Recorded as a number so that if a later change makes more of them
-    // load-bearing, or fewer, this test says so instead of the comment going
-    // stale.
+    // The number came from a nine-string corpus hand-written in this test, and
+    // was then published in the governing doc as a fact about the MODES. It was
+    // only ever a fact about those nine strings. That is the corpus-composed-
+    // inside-its-own-conclusion shape, in the test written to record honesty
+    // about the modes.
+    //
+    // So the corpus is GENERATED — every claim crossed with preludes, joiners
+    // and spellings — and the number is computed, not asserted. The assertion is
+    // a floor plus an exact set, so finding MORE irreplaceable modes fails here
+    // and forces the doc to be corrected rather than silently drifting.
     const NAMES = Object.keys(CLAIM_TOKENIZER_MODES);
-    const CORPUS = [
+    const PRELUDES = ["", "This is not a penetration test. ", "Reviewed by ", "Ops Manager "];
+    const JOINERS = [" ", ".", ". ", "", "-", "_"];
+    const SPELLINGS = (claim: string): string[] => {
+      const words = claim.split(/\s+/);
+      return [
+        words.join(" "),
+        words.map((w) => `${w[0].toUpperCase()}${w.slice(1)}`).join(""),
+        words.join("."),
+        words.map((w) => `${w[0].toUpperCase()}${w.slice(1)}`).join("."),
+        words.join(" ").replace(/secure/g, "secUre"),
+      ];
+    };
+
+    const corpus: string[] = [];
+    for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
+      for (const prelude of PRELUDES) {
+        for (const joiner of JOINERS) {
+          for (const spelling of SPELLINGS(claim)) {
+            corpus.push(`${prelude}Acme${joiner}${spelling}`);
+          }
+        }
+      }
+    }
+
+    // Plus every witness a previous audit found, because a generator produces
+    // the shapes its author imagined and these are the shapes that actually
+    // defeated something. The generated corpus alone scores differently, which
+    // is the point: this number is a property of a corpus, never of the modes,
+    // and both halves are named here so the doc can say which.
+    corpus.push(
       "This is not a penetration test.Your application is secUre",
       "Not a penetration test.ThisAppIsSecure",
       "Not a pentest. acme.is.secUre",
+      "acme.is.secUre",
       "Reviewed by AcmeIs. SecureLtd",
       "Reviewed by AcmeIs.SecureLtd",
+      "This is not a penetration test. AcmeIs.SecureLtd",
       "Acme Is! Secure Ltd",
-      "ThisAppIsSecure",
-      "acme.is.secure.ltd",
-      "this application is secure",
-    ];
+      "Ops Manager ACMEIsSecure Ltd",
+    );
+
+    expect(corpus.length, "the corpus must be large enough to mean something").toBeGreaterThan(1000);
 
     const irreplaceable = NAMES.filter((name) => {
       const others = NAMES.filter((other) => other !== name);
-      return CORPUS.some(
+      return corpus.some(
         (text) =>
           findProhibitedClaimsUnderModes(text, [name]).length > 0 &&
           findProhibitedClaimsUnderModes(text, others).length === 0,
       );
     });
 
-    expect(NAMES.length).toBe(8);
+    // The floor. If this rises, the doc's sentence is understated and must be
+    // corrected — which is the failure mode the last version hid.
     expect(
       irreplaceable.length,
-      `${irreplaceable.length} of ${NAMES.length} modes are irreplaceable on this corpus: ${irreplaceable.join(", ")}`,
-    ).toBe(3);
+      `irreplaceable modes over ${corpus.length} strings: ${irreplaceable.join(", ")}`,
+    ).toBeGreaterThanOrEqual(4);
+    // Printed so the doc can quote a measured number rather than a remembered
+    // one. It is a property of THIS corpus and the doc says so.
+    expect(irreplaceable.sort()).toMatchInlineSnapshot(`
+      [
+        "baseline",
+        "inWordFullStopSeparates",
+        "splitCaseTransitions",
+        "splitCaseTransitionsAndInWordFullStopSeparates",
+      ]
+    `);
+    expect(irreplaceable.length).toBeLessThanOrEqual(NAMES.length);
+
+    // And the witness the audit found, named so it cannot be lost again.
+    const FOURTH = "splitCaseTransitionsAndInWordFullStopSeparates";
+    const witness = "This is not a penetration test. AcmeIs.SecureLtd";
+    expect(findProhibitedClaimsUnderModes(witness, [FOURTH])).not.toEqual([]);
+    expect(findProhibitedClaimsUnderModes(witness, NAMES.filter((n) => n !== FOURTH))).toEqual([]);
+  }, 60_000);
+
+  it("pins the claim-stem cache to the data that makes it safe", () => {
+    // RESTORED. This and the test below were deleted by a commit that replaced
+    // the block around them, and the deletion was not mentioned in its message —
+    // in the same commit that argues residuals must be recorded as numbers so
+    // they cannot go stale. An audit caught it.
+    //
+    // The per-mode cache is keyed by mode, and today every mode tokenises the
+    // claim LIST identically, because no prohibited claim contains an uppercase
+    // letter or a full stop. So the keying is correct but nothing depends on it.
+    // Pinned to the DATA: if a claim ever gains a capital or an in-word full
+    // stop, this fails and points at the cache.
+    const withCapital = RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => /[A-Z]/.test(claim));
+    const withFullStop = RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => /\w\.\w/.test(claim));
+
+    expect(
+      [...withCapital, ...withFullStop],
+      "a prohibited claim now has a capital or an in-word full stop, so the per-mode claim-stem cache is load-bearing and needs its own test",
+    ).toEqual([]);
+
+    for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
+      for (const name of Object.keys(CLAIM_TOKENIZER_MODES)) {
+        expect(findProhibitedClaimsUnderModes(claim, [name]), `${name} on "${claim}"`).toContain(claim);
+      }
+    }
+  });
+
+  it("records the evasions the claim guard cannot see", () => {
+    // RESTORED, and widened with what audit 23 added: invisible characters and
+    // non-ASCII letterforms, alongside the intra-word mutations. Exact stem
+    // matching cannot close this class — each is a different token to the
+    // matcher, and normalising them away would collapse legitimate words.
+    //
+    // The surface is one field, `reviewedBy.displayName`, which an operator
+    // controls and a named human reviewer signs. That bounds it; it does not
+    // close it. Recorded here so the bound is a measurement rather than a
+    // silence.
+    const EVASIONS = [
+      "is\u200bsecure",
+      "sec\u00adure",
+      "sec'ure",
+      "sec-ure",
+      "secuure",
+      "is secu re",
+      "ｉｓ ｓｅｃｕｒｅ",
+      "ıs secure",
+    ];
+
+    const uncaught = EVASIONS.filter((text) => findProhibitedClaims(`this application ${text}`).length === 0);
+    expect(
+      uncaught.length,
+      "if the guard now catches some of these, this recorded residual is overstated and should be narrowed",
+    ).toBeGreaterThan(0);
+
+    expect(findProhibitedClaims("this application is secure")).not.toEqual([]);
+  });
+
+  it("refuses an unknown mode name instead of quietly reading the baseline", () => {
+    // N1 from audit 23. `ClaimTokenizerModeName` widened to `string` when the
+    // mode set became generated, so `CLAIM_TOKENIZER_MODES["caseSplit"]` — a
+    // name three earlier rounds used — resolved to `undefined` and fell through
+    // to the baseline default. Every negative assertion written with a stale
+    // name would have passed for the wrong reason.
+    expect(() => findProhibitedClaimsUnderModes("this application is secure", ["caseSplit"])).toThrow(
+      /Unknown claim tokenizer mode/,
+    );
+    expect(() => findProhibitedClaimsUnderModes("x", ["nope"])).toThrow(/Unknown claim tokenizer mode/);
+    // And a real name still works.
+    expect(findProhibitedClaimsUnderModes("this application is secure", ["baseline"])).not.toEqual([]);
   });
 
   it("keeps the test hook and production reading the same modes", () => {
