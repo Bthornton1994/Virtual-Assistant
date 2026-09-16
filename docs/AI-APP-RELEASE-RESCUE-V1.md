@@ -255,7 +255,7 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 
 ## Test plan
 
-**Implemented and passing** — 499 Release Rescue tests across 26 suites (1,167 in the whole repository), 255 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
+**Implemented and passing** — 511 Release Rescue tests across 27 suites (1,179 in the whole repository), 257 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
 
 These counts are re-measured each pass rather than carried forward. Three successive audits found stale numbers here, and a stale count is a false claim like any other.
 
@@ -805,7 +805,7 @@ engagements, `updated_at` on grants). Its first version filtered on the
 engagements table alone while its own comment said "these tables", so the
 mechanism covered one of the three it claimed.
 
-`supabase/qa/release_rescue_destructive_authority_v7_proof.sql` runs **39 cases**
+`supabase/qa/release_rescue_destructive_authority_v7_proof.sql` runs **41 cases**
 on live PostgreSQL, attempting the stamp as every caller class that exists —
 anonymous, customer admin, other tenant, plain operator, ops manager, service
 role, direct SQL with RLS out of the picture, a forged retention GUC — plus the
@@ -996,9 +996,15 @@ a list:
 
 - **Run-together names** come from the qualifier × carrier product that already
   generates the separated phrases, anchored at the end of the segment. A test
-  asserts `keyLooksSecret` for **every** pair in both spellings — over 500 of
-  them — so the token family is covered by construction rather than by having
-  been thought of. The anchoring is what fixes the over-reach in the same stroke.
+  asserts `keyLooksSecret` for every pair in both spellings.
+
+  That claim was too strong, and audit 8 said why: the test iterates the same two
+  arrays the rule is built from, so it **cannot fail**, and it did not see
+  `VERCELTOKEN`, `APIACCESSTOKEN` or `MYSQLROOTPW`. A tautology is not a
+  construction. The split is recursive now, and it is the corpus assertions in
+  `release-rescue-audit8-properties.test.ts` — real credential values, real
+  ordinary identifiers — that constrain it. The anchoring still fixes the
+  over-reach in the same stroke.
 - **Composed carriers** get their own product: nine outer contexts (trailing hash
   comment, slash comment, leading comment, indentation, nesting, following key,
   preceding prose) × eight inner forms, asserting the composition is never weaker
@@ -1042,6 +1048,100 @@ false refusals and audit 7's silent acceptance, in turn.
   named `deleted` or `anonymized` matches none of the patterns and would pass. The
   document previously called this "enumerating the class"; it enumerates a naming
   convention, and that is now what it says.
+
+## Eighth independent audit: every allowlist was a silent-drop route
+
+Audit 8 returned nine blocking findings and **seven regressions shipped by audit
+7's own fixes**. Its root-cause diagnosis is the one this round is built on, and
+it is about architecture rather than any single pattern:
+
+> `isNonSecretValue` makes `valueShape` return `placeholder`;
+> `classifyAssignment` turns `placeholder` into `sensitive_prose`; and `pushSpan`
+> **drops a `sensitive_prose` span entirely**. So every entry in the value
+> allowlist is a silent-drop route, and each time a false positive was closed by
+> adding one, a class of real credentials went silent.
+
+That is exactly what happened. The quantity pattern added to close audit 7's
+`Tokens: 30-day lifetime` false positive routed **any** digits-then-letters value
+to silence, so `PGPASSWORD=123456abcdef` and `DB_PASSWORD=1qazXSW` reached a
+`deliverable: true` report with the credential intact. The dotted-path pattern
+added to stop a code reference being redacted also matched
+`PASSPHRASE=correct.horse.battery.staple` — which is how a diceware passphrase is
+written. The keyword list contained `default`, so `DB_PASSWORD=default` was
+dropped.
+
+**The rule now: the allowlist holds structural references only, never a guess.**
+A `${VAR}`, a `process.env.X`, a `<placeholder>`, an `[REDACTED]` marker, a call
+expression, a path rooted at a known object — each of these *cannot* be a literal
+secret. Anything that was a guess about the value has been removed or moved to
+where it belongs. `30-day` is now handled in `valueShape`, which only the
+bare-colon branch consults, so `Tokens: 30-day lifetime` is still prose and
+`PGPASSWORD=123456abcdef` is still evidence, because structured syntax never asks
+about value shape at all.
+
+A property test asserts the inverse of what was being tested before: for a corpus
+of real credential values, **none** may match the allowlist. The old question was
+"is `30-day` a secret?"; the question that matters is "can a secret be shaped like
+`30-day`?"
+
+### The other seven
+
+- **An empty `DB_PASSWORD=` swallowed the whole next line** and stamped it
+  `credential_evidence` — in a committed `.env.example`, a file this product
+  explicitly accepts as evidence. Since a confident hold cannot be cleared by any
+  human, an env template containing no secret made the report permanently
+  undeliverable. The cross-newline reach now requires the next line to be a
+  *continuation*: no operator, no comment marker, not blank, not a fence.
+- **Uppercase SQL was read as CSV.** `looksLikeSourceCode` had no `i` flag, and
+  `HEADER_FIELD` permitted spaces, so `SELECT id, password, email` was a header
+  and the next line's `created_at` was destroyed. The audit-7 defect, moved from
+  JavaScript to SQL.
+- **Real CSV escaped entirely** — a header carrying an ordinary `from` column, a
+  parenthesis, or a long field disabled the form. Both directions are fixed by
+  testing each FIELD rather than the line: a keyword *with an operand* is code, a
+  field that is exactly `from` is a column name.
+- **`APIACCESSTOKEN` and `MYSQLROOTPW` were invisible.** The run-together split
+  peeled exactly one qualifier, so it closed depth 2 and not depth 3 — every
+  product in the suite composed two elements. It now splits recursively.
+- **Nine ordinary configuration names were confident evidence**, including
+  `SMTP_AUTH`, `USER_KEY`, `MAIL_SIGNATURE` and `SESSION_HEADER_NAME`. `header`
+  and `signature` are no longer carriers in the qualifier product (they name a
+  transport, not a secret; the pairs that *are* credentials are listed
+  explicitly), `user`/`id`/`bot` are no longer qualifiers, and a name whose final
+  segment is a reference noun — `_ID`, `_EMAIL`, `_FILE`, `_HOST` — is a pointer
+  to a credential rather than one. `AWS_ACCESS_KEY_ID` is not the secret;
+  `AWS_SECRET_ACCESS_KEY` is.
+- **`const authHeader = request.headers.get("authorization")`** — the most common
+  line in an AI application's auth middleware — was mangled into invalid syntax at
+  `credential_evidence`. The key name is genuinely credential-bearing and stays
+  so; what was wrong is that a **call expression** was treated as a literal.
+- **The intake form refused a prospect over an abbreviated git SHA.** The
+  identifier exclusion started at 32 characters, which admits exactly the
+  7-to-12-character form git itself prints.
+
+### The SECURITY DEFINER proof, rebuilt — and a claim withdrawn
+
+The previous round's proof was unsound in four ways, and the audit demonstrated
+each by planting a function it passed: it filtered on a name pattern (examining 8
+of 15 definer functions), its "conjunct" test was satisfied by `organization_id`
+appearing anywhere later **including inside a comment**, it matched `from` but not
+`join`, and its table list was six hand-written names where the catalogue reports
+**42** tables carrying `organization_id`.
+
+It now examines every definer function in `public`, derives the tenant tables from
+`pg_attribute`, strips comments before matching, splits on statement boundaries so
+a scoped read elsewhere cannot vouch for an unscoped one, and matches `join` as
+well as `from`.
+
+**A claim is withdrawn.** The previous version of this document said that check
+had been "verified against a planted violation, so it is known to be capable of
+failing." It had been verified interactively and **no negative control was
+committed**, which makes the sentence false as written — a property proof that has
+never been seen to fail is not evidence. The four planted shapes are now committed
+cases that the proof asserts it catches, plus one correctly-scoped read it must
+not fire on. Writing that control immediately caught an error in the control
+itself: `release_rescue_retention_runs` is global accounting and carries no
+`organization_id`, so it was the wrong table to plant.
 
 ## What this slice deliberately does not do
 

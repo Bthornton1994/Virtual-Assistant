@@ -90,23 +90,32 @@ const NON_SECRET_VALUE_PATTERNS: readonly RegExp[] = [
   // value length below.
   // A flag is the next argument, not this one's value: `--password --verbose`.
   /^-/,
-  // A QUANTITY. `Tokens: 30-day lifetime with no rotation.` and
-  // `Passwords: 8-character minimum is all we enforce.` both scored as opaque —
-  // a digit and letters, six characters — so the bare-colon branch called them
-  // confident evidence before the prose check could run. That refused the
-  // customer's own stack description at intake and produced an unclearable hold
-  // in a report. No generated secret is `30-day`.
-  /^[0-9]+[-_]?[a-z]+$/i,
-  // A CODE REFERENCE, not a literal. `export const sessionSecret =
+  // A CODE REFERENCE rooted at a known object. `export const sessionSecret =
   // config.sessionSecret;` assigns one name to another, and redacting the
-  // right-hand side destroys a finding's evidence for nothing. Digits are
-  // excluded from the path deliberately: `admin.password123` is not this, and
-  // stays detected.
-  /^[A-Za-z_$][A-Za-z_$]*(?:\.[A-Za-z_$][A-Za-z_$]*)+$/,
-  // A language keyword standing where the value would be: `token = await
-  // refreshToken();` assigns the result of a call, not a literal. Whole-word
-  // only, so a password that merely starts with one is unaffected.
-  /^(?:await|new|this|self|typeof|require|import|function|async|return|yield|delete|void|throw|case|default)$/i,
+  // right-hand side destroys a finding's evidence for nothing.
+  //
+  // The root is required. The first version matched ANY dotted lowercase path,
+  // which is also exactly how a diceware passphrase is written:
+  // `PASSPHRASE=correct.horse.battery.staple` was dropped in silence. Its defence
+  // in the docs checked `admin.password123` — the one shape that contains digits
+  // — and skipped the shape that does not.
+  /^(?:config|configs|cfg|settings|options|opts|props|params|env|environment|process|globalThis|window|self|this|ctx|context|app|client|server|db|store|state|constants|secrets|vault)\.[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/,
+  // An OPERATOR standing where the value would be: `token = await
+  // refreshToken();` assigns the result of a call, not a literal.
+  //
+  // Only words that cannot themselves be a password. `default`, `case`, `self`,
+  // `this` and `void` were in the first version and are gone: `DB_PASSWORD=default`
+  // is a real and common credential, and this list silently dropped it.
+  /^(?:await|typeof|require|function|async|return|yield|delete|throw|instanceof)$/,
+  // A CALL EXPRESSION. `const authHeader = request.headers.get("authorization")`
+  // is the most common line in an AI application's auth middleware — the exact
+  // code this product is sold to review — and `auth header` is a credential
+  // phrase, so the whole call was redacted at `credential_evidence`, mangling the
+  // line into invalid syntax and making the report undeliverable by anyone.
+  //
+  // Structural, not a guess: an identifier followed by `(` is a call, and a call
+  // is not a literal.
+  /^[A-Za-z_$][A-Za-z0-9_$.]*\($/,
 ];
 
 /** The shortest run of characters worth treating as a credential. */
@@ -209,6 +218,37 @@ function skipSpaces(text: string, from: number, stopAtNewline = true): number {
  * The span of the value starting at `from`: a quoted string's interior, or a run
  * of characters up to the next separator.
  */
+/**
+ * Whether the next line continues the value, rather than starting a new record.
+ *
+ * The first version of the cross-newline reach checked only that nothing followed
+ * the operator on ITS OWN line, and its comment claimed that meant "a key with an
+ * empty value cannot reach forward and swallow an unrelated line further down".
+ * It could, and it did. In a committed `.env.example` — a file this product
+ * explicitly accepts as evidence —
+ *
+ *     DB_PASSWORD=
+ *     API_HOST=prod.example.com
+ *
+ * the empty `DB_PASSWORD` consumed all of line 2, and `API_HOST=prod.example.com`
+ * scored `opaque` because `=` counts as a symbol, so the whole line became
+ * `credential_evidence`. That classification cannot be cleared by any human, so
+ * an env template containing no secret made the report permanently undeliverable.
+ *
+ * A continuation is a bare value: no assignment operator, no comment marker, not
+ * blank, not a document fence. Anything shaped like the next record is the next
+ * record.
+ */
+function isContinuationLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return false;
+  if (/^(?:#|\/\/|--|\/\*)/.test(trimmed)) return false;
+  if (/^(?:```|---|\.\.\.)/.test(trimmed)) return false;
+  // A key of its own: `API_HOST=…`, `db_host: …`, `- name: …`.
+  if (/^[-*]?\s*"?[A-Za-z_$][A-Za-z0-9_$.\- ]*"?\s*[:=]/.test(trimmed)) return false;
+  return true;
+}
+
 function valueSpan(text: string, from: number): { start: number; end: number } | null {
   let begin = skipSpaces(text, from);
 
@@ -227,6 +267,9 @@ function valueSpan(text: string, from: number): { start: number; end: number } |
     const lineEnd = text.indexOf("\n", from);
     if (lineEnd === -1) return null;
     if (text.slice(from, lineEnd).trim().length > 0) return null;
+    const nextEnd = text.indexOf("\n", lineEnd + 1);
+    const nextLine = text.slice(lineEnd + 1, nextEnd === -1 ? text.length : nextEnd);
+    if (!isContinuationLine(nextLine)) return null;
     begin = skipSpaces(text, lineEnd + 1);
   }
   if (begin === -1) return null;
@@ -249,6 +292,9 @@ function valueSpan(text: string, from: number): { start: number; end: number } |
       const lineEnd = text.indexOf("\n", begin);
       if (lineEnd === -1) return null;
       if (text.slice(begin, lineEnd).replace(/\\\s*$/, "").trim().length > 0) return null;
+      const nextEnd = text.indexOf("\n", lineEnd + 1);
+      const nextLine = text.slice(lineEnd + 1, nextEnd === -1 ? text.length : nextEnd);
+      if (!isContinuationLine(nextLine)) return null;
       afterOperator = skipSpaces(text, lineEnd + 1);
     }
     if (afterOperator === -1) return null;
@@ -523,9 +569,23 @@ function collectOpaqueTokensNearCredentialNouns(
 
     const token = word.text;
     if (token.length < 12) continue;
-    // Our own identifiers: a commit sha, a content hash, a uuid.
-    if (/^[0-9a-f]{32,}$/.test(token)) continue;
-    if (/^[0-9a-f-]{36}$/.test(token)) continue;
+    // Identifiers, not secrets: a commit sha, a content hash, a uuid.
+    //
+    // The lower bound was 32, which excluded a full SHA and admitted the
+    // ABBREVIATED form git itself prints. A 12-character short SHA landed exactly
+    // in the window, so "We fixed the token leak in commit a1b2c3d4e5f6 last
+    // week." was refused at the public intake form — a prospect being told their
+    // description of the fix they shipped is a credential.
+    //
+    // Any all-hex run is an identifier here. A hex secret in an ASSIGNMENT is
+    // still caught by the assignment forms, which do not consult this; only the
+    // near-noun prose form, which has no syntax to go on, gives them up.
+    // Trimmed first: the tokenizer treats `.` as a word character, so a token at
+    // the end of a sentence arrives as `4f9a2b1c8d3e.` and no anchored pattern
+    // below would match it.
+    const bare = token.replace(/^[.\-_]+|[.\-_]+$/g, "");
+    if (/^[0-9a-f]+$/.test(bare)) continue;
+    if (/^[0-9a-f-]{36}$/.test(bare)) continue;
     if (!/[0-9]/.test(token) || !/[A-Za-z]/.test(token)) continue;
     if (isNonSecretValue(token)) continue;
     if (CREDENTIAL_NOUNS.has(token.toLowerCase()) || keyLooksSecret(token)) continue;
@@ -559,7 +619,29 @@ function collectOpaqueTokensNearCredentialNouns(
  *
  * `import { getToken } from "./auth"` is not one, and that is the point.
  */
-const HEADER_FIELD = /^"?[A-Za-z_][A-Za-z0-9_. -]{0,40}"?$/;
+const HEADER_FIELD = /^"?[A-Za-z_][A-Za-z0-9_.()% -]{0,63}"?$/;
+
+/**
+ * Keywords that make a FIELD a fragment of code rather than a column name.
+ *
+ * Tested per field and only alongside other content, which is the distinction the
+ * first version missed in both directions at once. `SELECT id` is a keyword plus
+ * an operand, so it is code. A field that is exactly `from` is a column name, and
+ * a `from` column is routine in any exported mail, event or ledger table — which
+ * is exactly the artifact a "secrets in version control" finding quotes.
+ *
+ * Case-insensitive, because the first version was not, and uppercase SQL is how
+ * SQL is written. `SELECT id, password, email` was read as a CSV header and the
+ * next line's `created_at` was destroyed as `credential_evidence` — the audit-7
+ * defect this guard was written to fix, moved from JavaScript to SQL.
+ */
+const CODE_KEYWORD =
+  /\b(?:select|from|where|order|group|having|insert|update|delete|join|values|set|into|import|export|return|const|let|var|function|class|await|async|new|throw)\b/i;
+
+function fieldLooksLikeCode(field: string): boolean {
+  const trimmed = field.trim();
+  return /\s/.test(trimmed) && CODE_KEYWORD.test(trimmed);
+}
 
 /**
  * Whether a line is source code rather than delimited data.
@@ -576,9 +658,11 @@ const HEADER_FIELD = /^"?[A-Za-z_][A-Za-z0-9_. -]{0,40}"?$/;
  * a line.
  */
 function looksLikeSourceCode(line: string): boolean {
-  return /[{}()]|=>|\b(?:import|export|return|const|let|var|function|class|await|async|from)\b/.test(
-    line,
-  );
+  // Braces and arrows only. Bare keywords moved to `fieldLooksLikeCode`, which
+  // tests each FIELD rather than the whole line: this version disabled the form
+  // entirely for a header carrying an ordinary `from` column, so real CSV escaped
+  // unredacted where the previous commit caught it.
+  return /[{}]|=>/.test(line);
 }
 
 /**
@@ -656,9 +740,11 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
       for (const candidate of [",", "\t", ";"]) {
         const fields = line.split(candidate);
         if (fields.length < 2) continue;
-        // Every field of a real header is a short column NAME. Requiring that is
-        // what keeps a line of code from being read as one.
+        // Every field of a real header is a column NAME: short, and not a
+        // fragment of a statement. Both halves are needed — the name test alone
+        // admits `SELECT id`, and the code test alone rejects a `from` column.
         if (!fields.every((field) => HEADER_FIELD.test(field.trim()))) continue;
+        if (fields.some(fieldLooksLikeCode)) continue;
         const hits = fields
           .map((field, column) => (keyLooksSecret(field.trim()) ? column : -1))
           .filter((column) => column >= 0);

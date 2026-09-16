@@ -124,6 +124,19 @@ export function valueShape(value: string, isNonSecretValue: (candidate: string) 
     .replace(/[.,!?;:]+$/, "");
   if (trimmed.length === 0 || isNonSecretValue(trimmed)) return "placeholder";
 
+  // A QUANTITY reads as a measurement, not as entropy: `30-day`, `8-character`,
+  // `24h`, `256bit`. Returning `wordlike` rather than `placeholder` is the whole
+  // point — `placeholder` DROPS the span, and this is only ever consulted by the
+  // bare-colon branch, where `Tokens: 30-day lifetime with no rotation.` then
+  // falls through to the sentence check and is correctly left alone. A structured
+  // `PGPASSWORD=123456abcdef` never reaches here at all, because structured
+  // syntax ignores value shape.
+  //
+  // The previous fix put this in the value allowlist instead, which applies to
+  // EVERY form, so `PGPASSWORD=123456abcdef` and `DB_PASSWORD=1qazXSW` were
+  // dropped in silence and shipped to the customer in a deliverable report.
+  if (/^[0-9]+[-_]?[a-z]+$/i.test(trimmed)) return "wordlike";
+
   const hasDigit = /[0-9]/.test(trimmed);
   const hasLower = /[a-z]/.test(trimmed);
   const hasUpper = /[A-Z]/.test(trimmed);

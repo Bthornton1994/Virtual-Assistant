@@ -499,49 +499,127 @@ end $$;
 -- definer function runs with the owner's reach, so any read of a tenant-owned
 -- table inside one must carry an `organization_id` conjunct. A new function
 -- without one fails this proof on the day it is written.
+-- The check itself, and then a NEGATIVE CONTROL that proves it can fail.
+--
+-- The first version of this block was unsound in four ways, and an audit
+-- demonstrated all four by planting functions that it passed:
+--
+--   * it filtered `proname like '%release_rescue%'`, so 8 of 15 definer
+--     functions were examined and renaming one was the bypass;
+--   * it tested `substring(body from position(table in body)) ~ 'organization_id'`,
+--     which is satisfied by the string appearing ANYWHERE later -- in a comment,
+--     or in an unrelated statement further down;
+--   * it matched only `from <table>`, so a `join` read was invisible;
+--   * its table list was six names, where 40-odd public tables carry
+--     `organization_id`.
+--
+-- This version examines every definer function in `public`, derives the tenant
+-- tables from the catalogue, matches `from` and `join`, strips comments, and
+-- tests the conjunct within the same statement.
+create or replace function rrv7.unscoped_tenant_reads(p_src text)
+returns text[] language plpgsql as $fn$
+declare
+  v_body text;
+  v_table text;
+  v_stmt text;
+  v_offenders text[] := '{}';
+begin
+  -- Comments cannot satisfy the conjunct.
+  v_body := regexp_replace(lower(p_src), '--[^\n]*', ' ', 'g');
+  v_body := regexp_replace(v_body, '/\*.*?\*/', ' ', 'g');
+
+  for v_table in
+    select c.relname
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+      join pg_attribute a on a.attrelid = c.oid
+     where n.nspname = 'public' and c.relkind = 'r'
+       and a.attname = 'organization_id' and a.attnum > 0 and not a.attisdropped
+  loop
+    -- Each statement that reads the table, on its own, so a scoped read
+    -- elsewhere in the function cannot vouch for an unscoped one here.
+    for v_stmt in
+      select regexp_split_to_table(v_body, ';')
+    loop
+      if v_stmt ~ ('(from|join)\s+(public\.)?' || v_table || '\M')
+         and v_stmt !~ 'organization_id' then
+        v_offenders := array_append(v_offenders, v_table);
+      end if;
+    end loop;
+  end loop;
+
+  return v_offenders;
+end $fn$;
+
 do $$
 declare
   v_fn record;
-  v_body text;
   v_offenders text[] := '{}';
-  v_tenant_tables text[] := array[
-    'evidence_artifacts', 'release_rescue_engagements', 'release_rescue_reports',
-    'release_rescue_repository_grants', 'workstream_runs', 'delegation_specs'
-  ];
-  v_table text;
+  v_found text[];
   v_checked integer := 0;
 begin
   for v_fn in
     select p.proname, p.prosrc
       from pg_proc p
       join pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public'
-       and p.prosecdef
-       and p.proname like '%release_rescue%'
+     where n.nspname = 'public' and p.prosecdef
   loop
     v_checked := v_checked + 1;
-    v_body := lower(v_fn.prosrc);
-
-    foreach v_table in array v_tenant_tables loop
-      -- A read of the table that is not followed, within the same statement, by
-      -- an organization_id comparison. Crude on purpose: a false alarm costs
-      -- somebody a comment, and a miss costs a tenant their data.
-      if v_body ~ ('from\s+(public\.)?' || v_table || '\M')
-         and not (
-           -- the organization conjunct appears somewhere after that table name
-           substring(v_body from position(v_table in v_body)) ~ 'organization_id'
-         ) then
-        v_offenders := array_append(v_offenders, v_fn.proname || ' -> ' || v_table);
-      end if;
-    end loop;
+    v_found := rrv7.unscoped_tenant_reads(v_fn.prosrc);
+    if cardinality(v_found) > 0 then
+      v_offenders := array_append(v_offenders, v_fn.proname || ' -> ' || array_to_string(v_found, ','));
+    end if;
   end loop;
 
   perform rrv7.assert(
-    format('every definer function was examined (%s of them)', v_checked),
-    v_checked >= 3);
+    format('every SECURITY DEFINER function in public was examined (%s)', v_checked),
+    v_checked >= 12);
   perform rrv7.assert(
-    format('no definer function reads a tenant table unscoped (%s)', v_offenders),
+    format('none reads a tenant table unscoped (%s)', v_offenders),
     cardinality(v_offenders) = 0);
+end $$;
+
+-- The negative control. A property proof that has never been seen to fail is not
+-- evidence, and the document previously claimed this had been verified against a
+-- planted violation when no such control was committed. These are the exact four
+-- shapes the audit planted, including the two the first version missed.
+do $$
+declare v_missed text[] := '{}';
+begin
+  -- 1. Unscoped read, with `organization_id` present only in a comment.
+  if cardinality(rrv7.unscoped_tenant_reads(
+    'select payload into v from public.evidence_artifacts where id = p; -- organization_id checked elsewhere'
+  )) = 0 then v_missed := array_append(v_missed, 'comment-only conjunct'); end if;
+
+  -- 2. A scoped read followed by an unscoped one of the same table.
+  if cardinality(rrv7.unscoped_tenant_reads(
+    'select 1 from public.evidence_artifacts where id = a and organization_id = o; select payload from public.evidence_artifacts where id = b;'
+  )) = 0 then v_missed := array_append(v_missed, 'second unscoped read'); end if;
+
+  -- 3. Reached by JOIN rather than FROM.
+  if cardinality(rrv7.unscoped_tenant_reads(
+    'select ea.payload from public.operators op join public.evidence_artifacts ea on ea.id = op.artifact_id;'
+  )) = 0 then v_missed := array_append(v_missed, 'join read'); end if;
+
+  -- 4. A tenant table outside the old six-name list. The catalogue reports 42
+  --    tables in `public` carrying `organization_id`; the hand-written list had
+  --    six. (`release_rescue_retention_runs` is deliberately NOT one of them: it
+  --    is global accounting and carries no `organization_id`, which the first
+  --    draft of this control got wrong and this control caught.)
+  if cardinality(rrv7.unscoped_tenant_reads(
+    'select * from public.outcome_receipts where id = p;'
+  )) = 0 then v_missed := array_append(v_missed, 'table outside the hand-written list'); end if;
+
+  perform rrv7.assert(
+    format('the definer check catches every planted violation (missed: %s)', v_missed),
+    cardinality(v_missed) = 0);
+
+  -- And does not fire on a correctly scoped read.
+  perform rrv7.assert(
+    'the definer check does not fire on a scoped read',
+    cardinality(rrv7.unscoped_tenant_reads(
+      'select payload into v from public.evidence_artifacts where id = p and organization_id = o;'
+    )) = 0);
 end $$;
 
 -- And the instance audit 7 reproduced, kept as a case in its own right: a report

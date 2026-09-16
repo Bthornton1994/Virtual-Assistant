@@ -125,19 +125,39 @@ export const CREDENTIAL_QUALIFIERS = [
   // invisible while `PG_PASSWORD` was evidence.
   "pg", "postgres", "postgresql", "mysql", "mariadb", "mongo", "mongodb", "redis", "rabbit",
   "npm", "github", "gitlab", "bitbucket", "slack", "stripe", "twilio", "sendgrid", "aws",
-  "azure", "gcp", "docker", "vault", "jwt", "bot", "user", "id", "bind", "ldap", "sso", "saml",
+  "azure", "gcp", "docker", "vault", "jwt", "bind", "ldap", "sso", "saml",
+  // `user`, `id` and `bot` are NOT here. Adding them generated `USER_KEY`,
+  // `ID_KEY` and `BOT_HEADER` as confident credential evidence — an unclearable
+  // hold on ordinary configuration names. A qualifier has to narrow the carrier,
+  // and those three do not.
 ] as const;
 
 export const CREDENTIAL_CARRIERS = [
-  "key", "keys", "token", "tokens", "secret", "secrets", "header", "credential", "credentials",
-  "password", "passwords", "passphrase", "pass", "pw", "signature",
-  "pwd", "pwds", "psw", "pword", "passcode", "auth",
+  "key", "keys", "token", "tokens", "secret", "secrets", "credential", "credentials",
+  "password", "passwords", "passphrase", "pass", "pw",
+  "pwd", "pwds", "psw", "pword", "passcode",
+  // `auth` is NOT a carrier. It names a MECHANISM, not a secret: `SMTP_AUTH=login`,
+  // `LDAP_AUTH=simple` and `SSO_AUTH=saml2` are all configuration values, and
+  // making them confident evidence bricked reports over them.
 ] as const;
 
 const SECRET_KEY_PHRASES: ReadonlySet<string> = new Set([
   ...CREDENTIAL_QUALIFIERS.flatMap((qualifier) =>
     CREDENTIAL_CARRIERS.map((carrier) => `${qualifier} ${carrier}`),
   ),
+  // `header` and `signature` are NOT carriers in the product above. They name a
+  // transport or a field, not a secret, and crossing them with every qualifier
+  // made `MAIL_HEADER_FROM`, `SESSION_HEADER_NAME`, `APP_HEADER` and
+  // `MAIL_SIGNATURE` into confident credential evidence — an unclearable hold on
+  // an email footer. The pairs that ARE credentials are listed instead.
+  "auth header",
+  "authorization header",
+  "bearer header",
+  "api signature",
+  "request signature",
+  "webhook signature",
+  "hmac signature",
+  "signing signature",
   // Pairs that are credentials without fitting the qualifier/carrier shape.
   "service role",
   "connection string",
@@ -191,9 +211,30 @@ export function keyNameSegments(key: string): string[] {
  * any of its parts names a secret. Prefixes, suffixes, infixes, casing and
  * separator style are all irrelevant, which is why none of them appears here.
  */
+/**
+ * Final segments that name a REFERENCE to a credential rather than the credential.
+ *
+ * `AWS_ACCESS_KEY_ID` is not the secret — `AWS_SECRET_ACCESS_KEY` is.
+ * `DB_PASSWORD_FILE` holds a path. `SERVICE_ACCOUNT_EMAIL` holds an address.
+ * Redacting these destroys the part of a finding that tells the customer where to
+ * look, and does it at `credential_evidence`, which no human can clear.
+ *
+ * Vetoed only when the name does not ALSO end in a carrier, so `API_KEY` and
+ * `DB_PASSWORD_PROD` are untouched.
+ */
+const REFERENCE_SUFFIXES: ReadonlySet<string> = new Set([
+  "id", "ids", "email", "emails", "name", "names", "url", "uri", "host", "hostname",
+  "port", "path", "file", "filename", "dir", "directory", "enabled", "disabled",
+  "mode", "type", "kind", "from", "to", "count", "length", "ttl", "expiry", "format",
+]);
+
 export function keyLooksSecret(key: string): boolean {
   const segments = keyNameSegments(key);
   if (segments.length === 0) return false;
+
+  // A reference to a credential is not a credential.
+  const last = segments[segments.length - 1];
+  if (segments.length > 1 && REFERENCE_SUFFIXES.has(last)) return false;
   if (segments.length === 1 && SECRET_WHOLE_KEYS.has(segments[0])) return true;
   if (segments.some((segment) => SECRET_KEY_WORDS.has(segment))) return true;
   for (let index = 0; index + 1 < segments.length; index += 1) {
@@ -229,16 +270,18 @@ function runTogetherLooksSecret(segment: string): boolean {
   // product is for — a floor picked by eye excludes whatever sits just under it.
   if (segment.length < 4 || SECRET_KEY_WORDS.has(segment)) return false;
 
-  // 1. `<qualifier><carrier>`: the same product that generates the separated
-  //    phrases, concatenated. `access` + `token`, `mysql` + `pwd`, `bind` + `pw`.
-  //    `bypass` does not match, because `by` is not a qualifier — which is the
-  //    whole reason the split is anchored rather than free.
+  // 1. A carrier at the end, preceded by one or more qualifiers.
+  //
+  //    Split RECURSIVELY, not once. The first version peeled exactly one
+  //    qualifier, so `ACCESSTOKEN` matched and `APIACCESSTOKEN` did not, and
+  //    `MYSQLROOTPW` did not either — every product in the suite composed two
+  //    elements, so nothing noticed that names compose to three.
+  //
+  //    `bypass` still fails: `by` is not a qualifier, and the split is anchored
+  //    rather than free, which is the whole reason ordinary English survives.
   for (const carrier of CREDENTIAL_CARRIERS) {
     if (!segment.endsWith(carrier)) continue;
-    const prefix = segment.slice(0, -carrier.length);
-    if (prefix.length > 0 && (CREDENTIAL_QUALIFIERS as readonly string[]).includes(prefix)) {
-      return true;
-    }
+    if (qualifierChain(segment.slice(0, -carrier.length))) return true;
   }
 
   // 2. A long carrier word at the end, with any prefix at all. Six characters is
@@ -248,6 +291,24 @@ function runTogetherLooksSecret(segment: string): boolean {
   return LONG_CARRIER_WORDS.some(
     (word) => segment.length > word.length && segment.endsWith(word),
   );
+}
+
+/**
+ * Whether a prefix is one or more qualifiers run together.
+ *
+ * Bounded by the prefix length, and each step consumes at least two characters,
+ * so the recursion is at most half the segment deep.
+ */
+function qualifierChain(prefix: string, depth = 0): boolean {
+  if (prefix.length === 0) return depth > 0;
+  if (depth > 4) return false;
+
+  for (const qualifier of CREDENTIAL_QUALIFIERS) {
+    if (prefix.startsWith(qualifier) && qualifierChain(prefix.slice(qualifier.length), depth + 1)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
