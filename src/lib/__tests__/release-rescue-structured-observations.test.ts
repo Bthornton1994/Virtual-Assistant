@@ -863,6 +863,49 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   });
 
+  it("refuses a sentence as any finding code AT COMPILE TIME", () => {
+    // The type layer, pinned. Each `@ts-expect-error` below fails `tsc` if the
+    // corresponding field in `FindingFacts` goes back to `string` — which is
+    // exactly the mutation an audit ran and found invisible to both the compiler
+    // and all 631 tests.
+    //
+    // There is no runtime assertion in this test on purpose. Its subject is the
+    // build, and it passes by compiling.
+    const facts = {
+      findingId: "f-001",
+      confidence: "likely",
+      locations: [{ path: "src/a.ts", startLine: 1, endLine: 1 }],
+      evidence: [{ kind: "code_reference", path: "src/a.ts", startLine: 1, endLine: 1 }],
+    } as const;
+
+    void (() =>
+      composeFinding({
+        ...facts,
+        // @ts-expect-error a sentence is not an ObservationCode
+        observationCode: "The admin password is Xk92mQvn7Lz.",
+        remediationCode: "scope_query_by_authenticated_principal",
+      }));
+
+    void (() =>
+      composeFinding({
+        ...facts,
+        observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
+        // @ts-expect-error a sentence is not a RemediationCode
+        remediationCode: "The admin password is Xk92mQvn7Lz.",
+      }));
+
+    void (() =>
+      composeFinding({
+        ...facts,
+        observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
+        remediationCode: "scope_query_by_authenticated_principal",
+        // @ts-expect-error a sentence is not an UncertaintyCode
+        uncertaintyCode: "The admin password is Xk92mQvn7Lz.",
+      }));
+
+    expect(true, "this test's subject is the build; it passes by compiling").toBe(true);
+  });
+
   it("refuses a sentence as uncertaintyCode through the supported constructor", () => {
     // THE REPRODUCTION. This is the audit's finding, verbatim, as a test: a
     // supported `composeFinding` call with no cast anywhere.
@@ -876,11 +919,20 @@ describe("9. a code field holds a code, and nothing else, on the production path
             remediationCode: "scope_query_by_authenticated_principal",
             locations: [{ path: "src/app/api/orders/route.ts", startLine: 12, endLine: 20 }],
             evidence: [{ kind: "code_reference", path: "src/app/api/orders/route.ts", startLine: 12, endLine: 20 }],
-            // Cast because the TYPE now refuses this outright, which is the
-            // first of the three fixes. The cast is what a caller holding the
-            // value as `any` — or deserialising a stored payload — looks like,
-            // and the runtime check is what catches that.
-            uncertaintyCode: sentence as never,
+            // `@ts-expect-error`, not `as never`.
+            //
+            // An audit pointed out that `as never` compiles whether or not the
+            // type refuses the value, so the earlier version of this line pinned
+            // nothing: reverting `FindingFacts.uncertaintyCode` to `string` left
+            // `tsc` at exit 0 and the whole suite green. `@ts-expect-error` FAILS
+            // the build when the error it expects stops occurring, which is the
+            // only way a test can assert a compile-time property.
+            //
+            // The suppression is what a caller holding the value as `any`, or
+            // deserialising a stored payload, looks like at runtime — and the
+            // runtime check below is what catches that.
+            // @ts-expect-error a sentence is not an UncertaintyCode, and that is the property under test
+            uncertaintyCode: sentence,
           }),
         sentence.slice(0, 40),
       ).toThrow(/uncertaintyCode must be a code/);
@@ -1044,6 +1096,131 @@ describe("9. a code field holds a code, and nothing else, on the production path
     expect(
       releaseRescueFindingV1Schema.safeParse({ ...finding, observationCode: "authz.not_a_real_code" }).success,
     ).toBe(false);
+  });
+
+  it("refuses a sentence in the two IDENTIFIER fields, not only the six code fields", () => {
+    // The audit of the previous commit found this exactly one field over from
+    // where the fix had been applied.
+    //
+    // `findings[].rubricCheckId` is `identifierString.max(200)` — 200 characters
+    // of arbitrary text, type-legal with NO cast — and `toCustomerReportView`
+    // rendered it verbatim as `checkTitle`, the header of every finding. The
+    // field-coverage policy classifies it `generated`, which exempts it from the
+    // prohibited-claim guard and the credential check, on the justification
+    // "Must match an id in the frozen rubric". Nothing enforced that.
+    //
+    // The audit's own payload is the fixture here.
+    const PAYLOAD = "The production admin password is Xk92mQvn7Lz; this app is secure and free of vulnerabilities.";
+
+    // It is a prohibited claim AND a credential carrier, so the stakes are both.
+    expect(findProhibitedClaims(PAYLOAD).length).toBeGreaterThan(0);
+
+    for (const [field, mutate] of [
+      ["findings[0].rubricCheckId", (input: ReturnType<typeof makeReportInput>) => ({
+        ...input,
+        findings: [{ ...makeFinding(), rubricCheckId: PAYLOAD }],
+      })],
+      ["assessments[0].checkId", (input: ReturnType<typeof makeReportInput>) => ({
+        ...input,
+        assessments: input.assessments.map((assessment, index) =>
+          index === 0 ? { ...assessment, checkId: PAYLOAD } : assessment,
+        ),
+      })],
+    ] as const) {
+      let message = "(no refusal)";
+      try {
+        buildReleaseRescueReport(mutate(makeReportInput()) as never);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message, field).not.toBe("(no refusal)");
+      expect(message, field).toContain(field);
+      expect(message, field).not.toContain("Xk92mQvn7Lz");
+      expect(message, field).not.toContain("free of vulnerabilities");
+    }
+  });
+
+  it("never renders an unknown rubric check id as the finding's header", () => {
+    // The render path of the same finding, asserted separately. Even for a
+    // stored artifact this build cannot fully resolve, the header must not be
+    // the stored string — it is the most prominent line the report has.
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        findings: [makeFinding()],
+        assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+          outcome: "fail",
+          rationaleCode: "control_missing_on_a_reachable_path",
+        }),
+      }),
+    );
+    const tampered = {
+      ...report,
+      findings: [{ ...report.findings[0], rubricCheckId: "Your application is secure and free of vulnerabilities." }],
+    } as typeof report;
+
+    const view = toCustomerReportView(tampered);
+
+    expect(view.findings[0].checkTitle).toBe(UNAVAILABLE_TITLE);
+    expect(JSON.stringify(view)).not.toContain("free of vulnerabilities");
+  });
+
+  it("lets no `generated` field carry a sentence to the customer, whatever the field", () => {
+    // The GENERAL form of the defect, so the next field cannot repeat it.
+    //
+    // Three rounds running, a fix was applied to a named list of fields and an
+    // audit found the next field over. First it was the prose fields; then the
+    // six catalog codes; then `rubricCheckId`, which sat three lines from the
+    // lines the previous fix rewrote. Enumerating fields by hand has now failed
+    // three times, so this enumerates them from the POLICY.
+    //
+    // `generated` means "exempt from the prohibited-claim guard and the
+    // credential check". The property that exemption needs is not that some
+    // particular function refuses the value — it is that the value cannot reach
+    // the customer. So that is what this asserts, for every `generated` string
+    // field, by planting a sentence and looking at the rendered view.
+    const SENTENCE = "The production admin password is Xk92mQvn7Lz and this app is secure.";
+
+    // Every `generated` path that is a string leaf of a finding or an assessment,
+    // read off the policy rather than listed here.
+    const GENERATED = Object.entries(REPORT_FIELD_POLICY)
+      .filter(([, rule]) => rule.disposition === "generated")
+      .map(([path]) => path)
+      .filter((path) => /^\$\.(findings|assessments)\[\]\.[A-Za-z]+$/.test(path));
+
+    expect(GENERATED.length, "the policy walk found nothing, so this proves nothing").toBeGreaterThan(8);
+
+    const leaked: string[] = [];
+
+    for (const path of GENERATED) {
+      const key = path.split(".").pop()!;
+      const onFinding = path.startsWith("$.findings");
+      const input = onFinding
+        ? { ...makeReportInput(), findings: [{ ...makeFinding(), [key]: SENTENCE }] }
+        : {
+            ...makeReportInput(),
+            assessments: makeReportInput().assessments.map((assessment, index) =>
+              index === 0 ? { ...assessment, [key]: SENTENCE } : assessment,
+            ),
+          };
+
+      let report: ReturnType<typeof buildReleaseRescueReport> | null = null;
+      try {
+        report = buildReleaseRescueReport(input as never);
+      } catch {
+        continue; // refused before an artifact existed, which is the best outcome
+      }
+
+      // It built. Then the sentence must not be anywhere a customer can see it.
+      if (JSON.stringify(toCustomerReportView(report)).includes("Xk92mQvn7Lz")) {
+        leaked.push(`${path} (rendered)`);
+      }
+    }
+
+    expect(
+      leaked,
+      `${leaked.length} generated fields carried a sentence into the customer view`,
+    ).toEqual([]);
   });
 
   it("keeps the field-coverage exemption honest", () => {

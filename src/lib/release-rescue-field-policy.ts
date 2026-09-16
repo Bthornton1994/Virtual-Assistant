@@ -115,7 +115,11 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
   },
 
   // --- assessments ---
-  "$.assessments[].checkId": { disposition: "generated", because: "Must match an id in the frozen rubric." },
+  "$.assessments[].checkId": {
+    disposition: "generated",
+    because:
+      "Must match an id in the frozen rubric, and `assembleReleaseRescueReport` refuses the report if it does not. Same field, one level over, and it was unenforced for the same three releases.",
+  },
   "$.assessments[].outcome": { disposition: "generated", because: "A closed enum the rubric module defines." },
   "$.assessments[].rationaleCode": {
     disposition: "generated",
@@ -132,7 +136,11 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
   // --- findings ---
   "$.findings[].schemaVersion": { disposition: "generated", because: "A literal string constant the finding module owns." },
   "$.findings[].findingId": { disposition: "generated", because: "An identifier this codebase mints." },
-  "$.findings[].rubricCheckId": { disposition: "generated", because: "Must match an id in the frozen rubric." },
+  "$.findings[].rubricCheckId": {
+    disposition: "generated",
+    because:
+      "Must match an id in the frozen rubric, and `assembleReleaseRescueReport` refuses the report if it does not. The enforcement is named here on purpose: this field was `generated` on the strength of that sentence for three releases while nothing checked it, and an audit rendered a prohibited claim through it into the header of a customer's finding.",
+  },
   "$.findings[].dimension": { disposition: "generated", because: "A closed enum, taken from the frozen rubric." },
   "$.findings[].severity": { disposition: "generated", because: "Derived from impact, exploitability and confidence." },
   "$.findings[].impact": { disposition: "generated", because: "A closed enum; an input to derived severity." },

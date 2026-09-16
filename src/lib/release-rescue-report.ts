@@ -42,6 +42,8 @@ import {
 import {
   FINDING_SEVERITIES,
   assertNoSourceFieldsInFindings,
+  FINDING_CONFIDENCES,
+  REMEDIATION_EFFORTS,
   computeFindingBlocking,
   computeFindingSeverity,
   describeSourceFieldSightings,
@@ -57,6 +59,7 @@ import {
 import {
   RELEASE_RESCUE_RUBRIC_SCHEMA_VERSION,
   RELEASE_RESCUE_RUBRIC_V1,
+  RUBRIC_DIMENSIONS,
   RELEASE_RESCUE_RUBRIC_V1_HASH,
   getRubricCheck,
   isArtifactEvidence,
@@ -583,23 +586,64 @@ export function buildReleaseRescueReport(raw: AssembleReportInput): ReleaseRescu
  * so a failure does not put the credential into an exception message.
  */
 /**
- * Refuses any code field whose value is not in the catalog it names.
+ * Refuses any code or identifier field whose value is not in the registry it names.
  *
- * Six fields carry a code that resolves to customer-facing words:
- * `findings[].observationCode`, `.remediationCode`, `.uncertaintyCode`,
- * `assessments[].rationaleCode`, `limitationCodes[]` and
- * `clearedSecretHolds[].reasonCode`. Each is declared a closed enum, and the
- * field-coverage policy exempts all six from the claim guard and the credential
- * check ON THE STRENGTH OF THAT CLOSURE. So the closure has to be true on the
- * path that actually produces an artifact, not only in a validator.
+ * EIGHT fields, not six. The first version of this function covered the six
+ * catalog codes — `findings[].observationCode`, `.remediationCode`,
+ * `.uncertaintyCode`, `assessments[].rationaleCode`, `limitationCodes[]` and
+ * `clearedSecretHolds[].reasonCode` — and an audit immediately found the two it
+ * had missed.
+ *
+ * `findings[].rubricCheckId` is `identifierString.max(200)`: 200 characters of
+ * arbitrary text, type-legal with no cast, and RENDERED VERBATIM as the header
+ * of every finding in the customer's report, because `toCustomerReportView` fell
+ * back to `?? finding.rubricCheckId` when the id matched no rubric check. The
+ * audit put "The production admin password is <value>; this app is secure and
+ * free of vulnerabilities." there and watched it render.
+ *
+ * `assessments[].checkId` is the same field one level over. It does not reach
+ * the customer view — `summarizeDimensions` iterates the rubric's own checks and
+ * drops an unknown id — but it reaches storage, and a stored artifact is read
+ * back by things that are not this renderer.
+ *
+ * All eight are classified `generated` in `REPORT_FIELD_POLICY`, which EXEMPTS
+ * them from the prohibited-claim guard and the credential check. For the six
+ * codes the stated justification is "a closed enum"; for these two it is "Must
+ * match an id in the frozen rubric". Both justifications are sound and neither
+ * was enforced on the path that produces an artifact. That is what this function
+ * is: the enforcement those exemptions were already assuming.
  *
  * Every message names the FIELD and never the value. These reach logs.
  */
+/**
+ * The shape of an identifier this codebase mints.
+ *
+ * No whitespace, so it cannot be a sentence, and bounded. `findingId` has no
+ * registry to be checked against — it is generated per finding — so a shape is
+ * the only constraint available, and it is enough for the property that matters:
+ * a sentence cannot be an identifier.
+ */
+const IDENTIFIER_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
 function assertEveryCodeIsInItsCatalog(input: AssembleReportInput): void {
   const bad: string[] = [];
 
   input.findings.forEach((finding, index) => {
+    // `findingId` is an identifier this codebase mints, so there is no registry
+    // to check it against — the constraint is a SHAPE. It is rendered as
+    // `view.findings[].id`, which is why it is here at all.
+    if (!IDENTIFIER_SHAPE.test(finding.findingId)) bad.push(`findings[${index}].findingId`);
+    if (!getRubricCheck(finding.rubricCheckId)) bad.push(`findings[${index}].rubricCheckId`);
     if (!isObservationCode(finding.observationCode)) bad.push(`findings[${index}].observationCode`);
+    if (!(RUBRIC_DIMENSIONS as readonly string[]).includes(finding.dimension)) {
+      bad.push(`findings[${index}].dimension`);
+    }
+    if (!(FINDING_CONFIDENCES as readonly string[]).includes(finding.confidence)) {
+      bad.push(`findings[${index}].confidence`);
+    }
+    if (!(REMEDIATION_EFFORTS as readonly string[]).includes(finding.remediationEffort)) {
+      bad.push(`findings[${index}].remediationEffort`);
+    }
     if (!isRemediationCode(finding.remediationCode)) bad.push(`findings[${index}].remediationCode`);
     if (
       finding.uncertaintyCode !== null &&
@@ -611,6 +655,7 @@ function assertEveryCodeIsInItsCatalog(input: AssembleReportInput): void {
   });
 
   input.assessments.forEach((assessment, index) => {
+    if (!getRubricCheck(assessment.checkId)) bad.push(`assessments[${index}].checkId`);
     if (!isAssessmentRationaleCode(assessment.rationaleCode)) bad.push(`assessments[${index}].rationaleCode`);
   });
 
@@ -624,7 +669,7 @@ function assertEveryCodeIsInItsCatalog(input: AssembleReportInput): void {
 
   if (bad.length > 0) {
     throw new Error(
-      `Release Rescue report assembly: these fields must hold a code from their catalog, not text: ${bad.join(", ")}. A report carries codes; the catalog carries the words. The offending values are withheld from this message deliberately.`,
+      `Release Rescue report assembly: these fields must hold a code from their catalog, or an id from the frozen rubric, not text: ${bad.join(", ")}. A report carries codes and ids; the catalog and the rubric carry the words. The offending values are withheld from this message deliberately.`,
     );
   }
 }

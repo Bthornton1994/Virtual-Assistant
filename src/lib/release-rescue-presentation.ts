@@ -274,7 +274,12 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       id: finding.findingId,
       dimension: finding.dimension,
       dimensionTitle: DIMENSION_TITLES[finding.dimension],
-      checkTitle: check?.title ?? finding.rubricCheckId,
+      // The LAST echoing fallback, and it survived the round that removed the
+      // other four. An audit found it three lines above them, doing exactly what
+      // they had been changed to stop doing: printing an unknown stored string
+      // into the customer's report — as the HEADER of every finding, which is
+      // the most prominent line the artifact has.
+      checkTitle: check?.title ?? UNAVAILABLE_TITLE,
       severity,
       blocking,
       confidence: finding.confidence,

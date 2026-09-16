@@ -59,6 +59,7 @@ returns jsonb language sql immutable as $$
     'observationCatalogHash', repeat('a', 64),
     'findings', jsonb_build_array(jsonb_build_object(
       'findingId', 'f-001',
+      'rubricCheckId', 'secrets.no_secrets_in_version_control',
       -- v10 requires these: a stored report names the catalog its wording came
       -- from, and a finding names the observation it is an instance of.
       'observationCode', 'authz.record_lookup_is_not_scoped_to_the_caller',

@@ -74,6 +74,7 @@ returns jsonb language sql immutable as $$
         'startLine', 4, 'endLine', 6)))),
     'findings', jsonb_build_array(jsonb_build_object(
       'findingId', 'f-001',
+      'rubricCheckId', 'secrets.no_secrets_in_version_control',
       'observationCode', 'secrets.literal_credential_in_repository',
       'remediationCode', 'rotate_and_move_to_secret_store',
       'uncertaintyCode', null,

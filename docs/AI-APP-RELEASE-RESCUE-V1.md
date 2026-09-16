@@ -259,7 +259,9 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 631 Release Rescue tests across 30 suites (1,307 in the whole repository, of which 8 fail for an environmental reason recorded below), 356 live database cases across twelve proofs, and 16 browser tests in real Chromium against the production build.
+**Implemented and passing** — 635 Release Rescue tests across 30 suites (1,311 in the whole repository, of which 8 fail for an environmental reason recorded below), 356 live database cases across twelve proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+
+The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
 The database figure counts labelled `PASS <outcome> |` lines only. An earlier pass reported 306 by counting each proof's closing "every case above printed PASS" banner as a case — a stale count is a false claim, and so is a miscounted one.
 
@@ -1676,7 +1678,7 @@ nested array, an assessment's evidence, a capitalised `Excerpt`, a shouted
 level down, `findings` and `locations` as objects rather than arrays — every one
 refused.
 
-`src/lib/__tests__/release-rescue-excerpt-removal.test.ts` — **30 tests**, of
+`src/lib/__tests__/release-rescue-excerpt-removal.test.ts` — **37 tests**, of
 which 6 are property-shaped over a generated credential corpus (values carrying
 punctuation, whitespace, quotes, delimiters, comments, multiline carriers, URLs
 and common-word passwords, crossed with all 22 forbidden field names and with
@@ -1693,12 +1695,21 @@ certain way. There is no auditor-written prose, so there is no rule, so there is
 nothing for it to prove. Keeping a passing suite for a retired mechanism is how a
 test file becomes decoration.
 
-`src/lib/__tests__/release-rescue-structured-observations.test.ts` — **44 tests**,
+`src/lib/__tests__/release-rescue-structured-observations.test.ts` — **48 tests**,
 the eight property families the structured-observation decision was specified
 against, plus a ninth added after the fourteenth audit: *a code field holds a
 code, on the path that actually produces an artifact*. That ninth family asserts
 the three layers separately — type, schema, runtime — so that fixing one and
-leaving the others cannot make it pass. Notable among them, because they are complete statements rather than
+leaving the others cannot make it pass.
+
+The type layer is asserted with `@ts-expect-error`, not with a cast. The
+fifteenth audit pointed out that the first version used `as never`, which
+compiles whether or not the type refuses the value: reverting `FindingFacts` to
+`string` left `tsc` at exit 0 and the whole suite green, so the layer the fix
+listed first was pinned by nothing. `@ts-expect-error` fails the build when the
+error it expects stops occurring, which is the only way a test can assert a
+compile-time property. Reverting any of the three code fields to `string` now
+fails `tsc`. Notable among them, because they are complete statements rather than
 samples: every sentence the catalog can produce, checked for prohibited claims
 and credentials in one pass; every observation in the catalog, built into a
 report and asserted deliverable; every remediation each observation offers, the
@@ -1766,15 +1777,30 @@ judgement about the finding. There is no field left to shop in.
 
 ### What is left that a person types
 
-Two free-text strings, both named and both guarded. (An audit counted eight and
-was right at the time: the six code fields accepted arbitrary text. They are
-closed now — see *What the fourteenth audit found* — so the count is two again,
-and it is two because the codes are enforced rather than because they are
-described as closed.)
+Two free-text strings, both named and both guarded.
+
+That count has been wrong twice, in the same way both times, and the history is
+worth keeping because it is the shape of the defect rather than an anecdote. The
+fourteenth audit counted **eight** — the two, plus six code fields that accepted
+arbitrary text. The fifteenth counted **three**, because the fix had been applied
+to a hand-written list of six and `findings[].rubricCheckId` was not on it: 200
+characters of arbitrary text, rendered verbatim as the header of every finding.
+A general check then found **four more** of the same class that neither audit had
+reported — `findingId`, `dimension`, `confidence`, `remediationEffort`.
+
+Enumerating the fields by hand failed three times. The check is now driven from
+`REPORT_FIELD_POLICY` itself: every `generated` string field on a finding or an
+assessment is planted with a sentence, built, rendered, and the customer view
+asserted not to contain it. A field added tomorrow is covered the day it is
+classified.
 
 1. **`reviewedBy.displayName`** — the named human reviewer's signature, rendered
    to the customer. Checked for prohibited claims and for credentials by the
-   field-coverage contract.
+   field-coverage contract — which, like the validator that calls it, is not on
+   the production path today (see the disclosure below). What does run on that
+   path is the sanitiser, which removes a recognised credential and raises a
+   hold. A prohibited claim in a reviewer's own name is caught by the contract
+   when delivery is built, and not before.
 2. **`scope.repository.repositoryRef`** and `defaultBranch` — what the customer
    gave at intake, format-checked.
 
@@ -1894,6 +1920,52 @@ those assertions exist *only* because the first fix made them pass for the wrong
 reason: widening the schema enum killed nothing once the runtime guard was added,
 so defence in depth had quietly become the only defence. The schema is now
 asserted closed independently of the runtime checks.
+
+### What the fifteenth audit found: the field next to the fix
+
+The fourteenth audit's findings were closed and the fifteenth verified every one
+of them. It then found the same defect **one field over**.
+
+`findings[].rubricCheckId` is `identifierString.max(200)` — 200 characters of
+arbitrary text, type-legal with no cast — and `toCustomerReportView` rendered it
+verbatim as `checkTitle`, **the header of every finding in the customer's
+report**, via `?? finding.rubricCheckId`. That fallback sat three lines above the
+four that had just been rewritten to stop doing exactly this. It was classified
+`generated` in the field-coverage policy, exempting it from the prohibited-claim
+guard and the credential check, on the justification *"Must match an id in the
+frozen rubric"* — which nothing enforced. Reproduced: the string *"The production
+admin password is <value>; this app is secure and free of vulnerabilities."*
+rendered as a finding header, with `checkReportFieldCoverage` returning `[]`.
+
+`findProhibitedClaims` **does** find two claims in that sentence. The exemption is
+what suppressed it. That is the "exemption sound, premise false" pattern for the
+second release running.
+
+Then a general check found **four more** of the same class that neither audit had
+reported: `findingId`, `dimension`, `confidence` and `remediationEffort` all
+carried a planted sentence into the customer view.
+
+**What closed it, and what changed about how.** All seven fields are now checked
+at the assembly boundary — six against a registry, `findingId` against an
+identifier shape, since it is minted rather than drawn from one. The presenter's
+last echoing fallback is gone. v11 covers `rubricCheckId` and
+`assessments[].checkId` at the row boundary; all 32 rubric ids are code-shaped,
+so it costs nothing, and a test asserts that.
+
+**The more important change is to the test, not the code.** Three rounds running,
+a fix was applied to a hand-written list of fields and an audit found the next
+one along. So the check is no longer a list. It reads `REPORT_FIELD_POLICY`,
+takes every `generated` string field on a finding or an assessment, plants a
+sentence in each, builds, renders, and asserts the customer view does not contain
+it. That is what found the four the audits missed, and a field added tomorrow is
+covered the day someone classifies it.
+
+**Also corrected**: three published counts. "16 browser tests" was misleading in a
+sentence of Release Rescue totals (13 is the spec's count; 16 was what was run
+across three specs). `excerpt-removal` was recorded as 30 tests and is 37. And
+the type layer was asserted with `as never`, which compiles whether or not the
+type refuses the value — it is `@ts-expect-error` now, so reverting `FindingFacts`
+to `string` fails the build.
 
 ### The database half
 

@@ -21,10 +21,18 @@
 -- check. The exemption's stated justification is "a closed enum". This file is
 -- what makes that justification true at the row boundary.
 --
--- WHAT THIS FILE CHECKS, precisely. That each of the six fields holds a value in
+-- AMENDED after the audit of 5d8072d, which found the same gap one field over:
+-- `findings[].rubricCheckId` and `assessments[].checkId` are `generated` in the
+-- field-coverage policy on the justification "Must match an id in the frozen
+-- rubric", nothing enforced that, and the first is rendered verbatim as the
+-- header of every finding in the customer's report. Both are now checked here
+-- and in `assertEveryCodeIsInItsCatalog`. All 32 rubric ids are code-shaped, so
+-- extending the rule costs nothing; a test asserts that.
+--
+-- WHAT THIS FILE CHECKS, precisely. That each of the eight fields holds a value in
 -- CODE SHAPE: lowercase ASCII letters, digits, underscore and dot, 1 to 120
 -- characters, no spaces. It deliberately does NOT hold the code LIST — the
--- application owns the catalog, the catalog changes with the product, and a
+-- application owns the catalog and the rubric, both change with the product, and a
 -- database guard stricter than the application refuses reports the application
 -- considers correct, which is the failure shape three audits in this workstream
 -- have already found. A shape check cannot be a sentence, which is the property
@@ -62,15 +70,21 @@ begin
   if p_payload is null then return v_bad; end if;
   if not public.release_rescue_is_report(p_payload) then return v_bad; end if;
 
-  -- findings[]: observationCode and remediationCode are required; uncertaintyCode
-  -- is nullable, and null is correct for a confirmed finding.
+  -- findings[]: observationCode, remediationCode and rubricCheckId are required;
+  -- uncertaintyCode is nullable, and null is correct for a confirmed finding.
+  --
+  -- `rubricCheckId` is here because an audit found it left out of the first
+  -- version of this function AND out of the application's equivalent check. It
+  -- is `identifierString.max(200)` in TypeScript — 200 characters of arbitrary
+  -- text — and the presenter rendered it verbatim as the header of every
+  -- finding. All 32 rubric ids are code-shaped, so this costs nothing.
   v_index := 0;
   for v_entry in
     select * from jsonb_array_elements(
       case when jsonb_typeof(p_payload->'findings') = 'array'
            then p_payload->'findings' else '[]'::jsonb end)
   loop
-    foreach v_field in array array['observationCode', 'remediationCode'] loop
+    foreach v_field in array array['observationCode', 'remediationCode', 'rubricCheckId'] loop
       if not public.release_rescue_is_code_shaped(v_entry->>v_field) then
         v_bad := array_append(v_bad, format('$.findings[%s].%s', v_index, v_field));
       end if;
@@ -92,9 +106,11 @@ begin
       case when jsonb_typeof(p_payload->'assessments') = 'array'
            then p_payload->'assessments' else '[]'::jsonb end)
   loop
-    if not public.release_rescue_is_code_shaped(v_entry->>'rationaleCode') then
-      v_bad := array_append(v_bad, format('$.assessments[%s].rationaleCode', v_index));
-    end if;
+    foreach v_field in array array['rationaleCode', 'checkId'] loop
+      if not public.release_rescue_is_code_shaped(v_entry->>v_field) then
+        v_bad := array_append(v_bad, format('$.assessments[%s].%s', v_index, v_field));
+      end if;
+    end loop;
     v_index := v_index + 1;
   end loop;
 
@@ -218,6 +234,7 @@ begin
       'rationaleCode', 'control_missing_on_a_reachable_path')),
     'findings', jsonb_build_array(jsonb_build_object(
       'findingId', 'f-1',
+      'rubricCheckId', 'secrets.no_secrets_in_version_control',
       'observationCode', 'secrets.literal_credential_in_repository',
       'remediationCode', 'rotate_and_move_to_secret_store',
       'uncertaintyCode', null,
@@ -262,6 +279,18 @@ begin
        v_report, array['findings', '0'],
        (v_report->'findings'->0) - 'remediationCode'))) = 0 then
     raise exception 'The code-shape guard does not refuse a missing remediationCode';
+  end if;
+
+  -- 4b. The two identifier fields the audit found missing.
+  if cardinality(public.release_rescue_payload_bad_codes(jsonb_set(
+       v_report, array['findings', '0', 'rubricCheckId'],
+       '"The production admin password is Xk92mQvn7Lz and this app is secure."'::jsonb))) = 0 then
+    raise exception 'The code-shape guard does not refuse a sentence in rubricCheckId';
+  end if;
+  if cardinality(public.release_rescue_payload_bad_codes(jsonb_set(
+       v_report, array['assessments', '0', 'checkId'],
+       '"This review is a penetration test and certifies the app is secure."'::jsonb))) = 0 then
+    raise exception 'The code-shape guard does not refuse a sentence in assessments[].checkId';
   end if;
 
   -- 5. It reaches nothing outside Release Rescue.
