@@ -557,8 +557,17 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
 export function assertProseDescribesWithoutQuoting(input: AssembleReportInput, context: string): void {
   const fields: Array<{ at: string; value: string }> = [];
 
+  // EVERY executor-written field that reaches a customer, not the five an
+  // earlier version named. An audit planted an assignment in each of the others
+  // and delivered it: `title` is the finding's headline, `limitations` and
+  // `customerExclusions` are rendered verbatim, `scope.*.description` is the
+  // engagement's own words, `evidence[].reference` refuses newlines but not an
+  // assignment, and a clearance rationale is written by the manager clearing it.
+  // The stated model was "the observation is where the credential now lives" —
+  // but the observation was only where the guard was.
   input.findings.forEach((finding, index) => {
     fields.push(
+      { at: `findings[${index}].title`, value: finding.title },
       { at: `findings[${index}].whatWeObserved`, value: finding.whatWeObserved },
       { at: `findings[${index}].whyItMatters`, value: finding.whyItMatters },
       { at: `findings[${index}].recommendation`, value: finding.recommendation },
@@ -567,6 +576,26 @@ export function assertProseDescribesWithoutQuoting(input: AssembleReportInput, c
   });
   input.assessments.forEach((assessment, index) => {
     fields.push({ at: `assessments[${index}].rationale`, value: assessment.rationale });
+    assessment.evidence.forEach((evidence, evidenceIndex) => {
+      fields.push({
+        at: `assessments[${index}].evidence[${evidenceIndex}].reference`,
+        value: evidence.reference,
+      });
+    });
+  });
+  input.limitations.forEach((limitation, index) => {
+    fields.push({ at: `limitations[${index}]`, value: limitation });
+  });
+  (input.clearedSecretHolds ?? []).forEach((hold, index) => {
+    fields.push({ at: `clearedSecretHolds[${index}].rationale`, value: hold.rationale });
+  });
+  fields.push(
+    { at: "scope.repository.description", value: input.scope.repository.defaultBranch },
+    { at: "scope.application.description", value: input.scope.application.description },
+    { at: "scope.criticalWorkflow.description", value: input.scope.criticalWorkflow.description },
+  );
+  input.scope.customerExclusions.forEach((exclusion, index) => {
+    fields.push({ at: `scope.customerExclusions[${index}]`, value: exclusion });
   });
 
   for (const field of fields) {

@@ -138,7 +138,7 @@ Enforced at the database boundary:
 
 **Artifacts.** Findings and the report body are ordinary immutable `evidence_artifacts` rows, following the Step 3D precedent — `authenticated` holds only `select` and `insert` on that table, which is precisely the immutability these artifacts need. No parallel evidence store was added.
 
-**Excerpts are proof, not copies.** Capped at 480 characters and redacted before storage. `prepareExcerpt` redacts *then* truncates: truncating first could cut a credential in half and leave a fragment that no detector recognises but that still narrows the key for anyone holding the rest.
+**Findings point at source; they do not copy it.** There is no excerpt field, no cap to discuss and nothing to truncate. `prepareExcerpt`, `prepareStoredExcerpt` and `MAX_EXCERPT_LENGTH` were deleted with the field. A finding cites `path`, `startLine` and `endLine`, and the customer opens their own checkout. See *The excerpt decision*.
 
 ## Data isolation and retention rules
 
@@ -255,7 +255,9 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 569 Release Rescue tests across 30 suites (1,245 in the whole repository, of which 8 fail for an environmental reason recorded below), 306 live database cases across ten proofs, and 13 browser tests in real Chromium against the production build.
+**Implemented and passing** — 578 Release Rescue tests across 30 suites (1,254 in the whole repository, of which 8 fail for an environmental reason recorded below), 300 live database cases across ten proofs, and 13 browser tests in real Chromium against the production build.
+
+The database figure counts labelled `PASS <outcome> |` lines only. An earlier pass reported 306 by counting each proof's closing "every case above printed PASS" banner as a case — a stale count is a false claim, and so is a miscounted one.
 
 > **Read *The excerpt decision* before treating any of this as shippable.**
 > Eleven independent audits have run and all eleven returned DO_NOT_MERGE. The
@@ -843,8 +845,9 @@ empty database:
   public.execution_plans`, which collides with the differently-shaped table
   `0004_production_auth.sql` creates earlier in the chain.
 
-The proof base applies 49 of 53 migrations (the two above, plus two that need the
-`http` extension this sandbox does not have). None of the four touch Release
+The proof base applies 51 of 55 migrations: the two above, one that needs the
+`http` extension this sandbox does not have, and one that fails only because a
+function the `http` migration would have created is missing. None of the four touch Release
 Rescue tables, and all ten Release Rescue proofs run against the result.
 
 ## Sixth independent audit: the axis was the key, and the fix was the regression
@@ -1481,11 +1484,26 @@ characters of anything, newlines included. A source window pasted there validate
 stored, and rendered under a "Where" heading.
 
 `repositoryPathSchema` now enforces a grammar: a `/`-separated sequence of
-non-empty segments, each one or more single-space-separated words drawn from
-letters, digits and `. _ - + @ ~ ( ) [ ]`, no segment over 255 characters and no
-path over 400. Brackets are in the set because this product's own routes are
-named `src/app/api/orders/[id]/route.ts`, and a grammar that refuses a customer's
-real file name is a grammar nobody can ship behind.
+non-empty segments of Unicode letters, digits and `. _ - + @ ~ ( ) [ ]`, **with
+no spaces**, no segment over 255 characters and no path over 400.
+
+The first version allowed single spaces between words so that
+`docs/Architecture Overview.md` would validate. An audit put
+`config app.env holds the value Xk92mQvn7Lz on line 14` in the field — a sentence
+carrying a credential, which validated, stored and rendered as a path. The spaces
+are gone; the stated cost is that a file name containing one is refused, and an
+auditor whose customer has one cites the directory instead.
+
+Two refusals were corrected at the same time, both pre-dating this decision:
+
+- **Catch-all routes.** The traversal rule was `!value.includes("..")`, present
+  since this workstream's first commit. It refused
+  `app/api/auth/[...nextauth]/route.ts` — the most common authentication entry
+  point in this product's target framework, on a dimension the rubric gates at
+  weight 3. A confirmed finding must cite a location, so an auth finding on that
+  route could not be recorded at all. The rule now refuses a `..` *segment*.
+- **Non-ASCII file names.** The character class was ASCII-only, so `src/résumé.ts`
+  and `src/日本語/page.tsx` were refused. It uses Unicode letter classes now.
 
 The database enforces the part of that grammar a second implementation cannot get
 wrong — no control characters, the same 400-character cap — and deliberately not
@@ -1512,49 +1530,100 @@ credential is hardcoded here".
 
 | Refused | Because |
 | --- | --- |
-| an assignment (`=`, `:=`) to a credential-named key, with any right-hand side | an observation names the setting; it does not reproduce the line |
-| a configuration line (`key: value`) for a credential-named key that is not a capitalised English word | `db_password: x` is a config line; `Passwords: 8-character minimum` is a sentence |
-| a URL carrying userinfo credentials | the same rule as a finding location: cite the file and line |
-| a `-----BEGIN … PRIVATE KEY-----` header | there is no safe fraction of a private key |
+| an assignment to a credential-named key, with any right-hand side | an observation names the setting; it does not reproduce the line |
+| a URL carrying userinfo credentials, in any case | the same rule as a finding location: cite the file and line |
+| a `-----BEGIN … PRIVATE KEY-----` header, in any case | there is no safe fraction of a private key |
 
-Every branch is decided by the KEY and the OPERATOR. None reads the value. That
-is the point: there is no shape of value that clears it, so there is no question
-for a detector to get wrong, and the round of terminator-set tuning that this
-would otherwise have become does not happen. The refusal is a refusal — assembly
-throws and no artifact exists — rather than a scrub, because blanking after
-assembly means the value existed in this process and in whatever logged it.
+**There is no operator list.** The first version of this rule enumerated
+operators — `:=|=>|={1,3}|!=|<=|>=` — and an audit crossed a generated corpus
+with eighteen carriers against it. `DB_PASSWORD += "value"` delivered **346 of
+366** values to a customer-facing report. So did `**DB_PASSWORD**=value`,
+`<code>DB_PASSWORD</code>=value`, the fullwidth `＝`, and the value placed one
+line down. That list had exactly the shape of the terminator set the owner
+retired: correct for the examples that built it, blind one character away.
+
+So an assignment is now **a credential-named key, then any run of non-word
+characters containing an equals sign, then something assigned** — on that line or
+the next non-blank one. `+=`, `||=`, `??=`, `.=`, `**=` and `＝` are covered
+without being named. Comparisons that share the sign (`==`, `===`, `!=`, `<=`,
+`>=`, `=>`) are excluded. HTML tags are stripped before the scan, because markup
+is not content, which closes `<code>`, `<b>` and every other wrapper at once.
+
+The only thing any branch asks about the value is whether one exists. The refusal
+is a refusal — assembly throws and no artifact exists — rather than a scrub,
+because blanking after assembly means the value existed in this process and in
+whatever logged it.
+
+It applies to **every executor-written field a customer reads**: a finding's
+`title`, `whatWeObserved`, `whyItMatters`, `recommendation` and
+`residualUncertainty`; an assessment's `rationale` and its `evidence[].reference`;
+`limitations`; `scope.*.description`; `customerExclusions`; and a cleared hold's
+`rationale`. An earlier version covered five of those, and an audit planted an
+assignment in each of the rest and delivered every one.
+
+**There is no bare-colon arm, and that is deliberate.** The first version had
+one. It refused `- token: enforce a 30-day expiry`, `OTP: the one-time code is
+six digits`, `Sessions last 24h; auth: cookie-based with no CSRF token` — and,
+worst, `db_password: ${env.DB_PASSWORD_REF}`, which is the **fix this product
+recommends**. A Markdown bullet list is the default output shape of every LLM
+executor, and the refusal threw away the entire report, not the field. Separating
+a config line from a sentence needs the tail read as prose, and the owner ruled
+that out: a credential-named key must never be downgraded because of sentence
+shape. Since it cannot be done safely, it is not done at all.
+
+Removing it cost no safety, and that is measured rather than assumed: every colon
+spelling — `db_password: x`, `"DB_PASSWORD": "x"`, the value indented on the next
+line, a YAML block — is **held** by the scanner and stops at the delivery gate.
+`release-rescue-prose.test.ts` runs each one end to end.
 
 **The stated cost.** An auditor cannot paste a line of code into an observation
 when that line assigns to a credential-named identifier. `const token =
-getToken(req);`, `password = get_password(user)`, `token := fetchToken(ctx)` and
-`const authHeader = request.headers.get("authorization")` are all refused, and
-none of them holds a credential. Letting them through would mean asking whether
-the right-hand side looks like a secret, and that question is the detector ten
-audits took apart. The refusal names the key and says what to write instead. An
-assignment to a key the lexicon does not recognise — `STORAGE_KEY`, `cacheKey`,
-`PORT` — is not this rule's business and passes untouched.
+getToken(req);`, `password = get_password(user)` and `token := fetchToken(ctx)`
+are refused, and none of them holds a credential. Letting them through would mean
+asking whether the right-hand side looks like a secret, and that question is the
+detector ten audits took apart. The refusal names the key and says what to write
+instead. An assignment to a key the lexicon does not recognise — `STORAGE_KEY`,
+`cacheKey`, `PORT` — is not this rule's business and passes untouched.
 
-**What this does not claim.** These fields are free text. No rule short of
-refusing prose can prove a sentence is not a quotation of the customer's source,
-and this one does not try: it closes the credential constructs, not the general
-ability to describe code in English. A report is still read and signed by a named
-human before delivery, and that remains the mitigation for what no rule catches.
+**The gaps this does not close, at their true size.** Each is asserted as a
+measurement in `release-rescue-prose.test.ts`, so it is a number somebody can
+read rather than a sentence somebody wrote:
+
+| Gap | What stands there instead |
+| --- | --- |
+| a credential written with **no key at all** — "the committed value is `Xk92mQvn7Lz`" | nothing structural. It reaches a deliverable report with the value intact. Catching it means judging whether a token looks like a secret, which is the retired detector. The scanner and the named human reviewer are the only controls. |
+| a key the lexicon does not recognise (`STRIPE_SK`, `NEXTAUTH`) | the same. The lexicon is the boundary of what "credential-named" means. |
+| `key: value` on a bare colon | the scanner, which holds every spelling measured above and stops delivery. |
+
+These fields are free text. No rule short of refusing prose can prove a sentence
+is not a quotation of the customer's source, and this one does not try: it closes
+the credential constructs, not the general ability to describe code in English. A
+report is still read and signed by a named human before delivery, and for the
+first gap above that signature is the **only** thing standing there.
+
+**That is an open product question, not a solved one.** Closing it means one of
+two owner decisions, neither of which is taken here: make the observation
+composed rather than free text, so an executor has no field to type a credential
+into; or accept that the observation is human-reviewed and say so in the
+engagement terms. Both are recorded for the owner; neither is implemented.
+
 
 ### Proof
 
-`supabase/qa/release_rescue_excerpt_removal_v8_proof.sql` — **19 live PostgreSQL
+`supabase/qa/release_rescue_excerpt_removal_v8_proof.sql` — **18 live PostgreSQL
 cases**: every forbidden field name refused in a location, a finding-level field
 refused, the refusal carrying the field name and none of the planted content, a
 well-formed report accepted with path, line range, check id, severity, observation
 and remediation all surviving, another workstream's artifacts untouched, and the
 guard confirmed `SECURITY INVOKER`.
 
-`supabase/qa/release_rescue_path_shape_v9_proof.sql` — **26 live PostgreSQL
+`supabase/qa/release_rescue_path_shape_v9_proof.sql` — **25 live PostgreSQL
 cases**: nine control-character carriers refused inside a path, an overlong path
 refused, the refusal naming the finding and location index and none of the
 planted content, ten real repository paths accepted (including this product's own
-bracketed dynamic routes and a file name with a space), and the fourteen payload
-shapes an audit planted through the earlier two-level guard — a nested object, a
+bracketed dynamic routes and a file name with a space), and the fourteen distinct payload
+shapes an audit planted through the earlier two-level guard (it reported
+seventeen plants and sixteen acceptances; deduplicated they are these fourteen) — a nested object, a
 nested array, an assessment's evidence, a capitalised `Excerpt`, a shouted
 `SNIPPET`, a padded and a differently cased schema marker, the whole report one
 level down, `findings` and `locations` as objects rather than arrays — every one

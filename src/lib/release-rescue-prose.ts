@@ -21,123 +21,155 @@ import { keyLooksSecret } from "@/lib/release-rescue-redaction-keys";
 // them used. So this does not look at the VALUE at all.
 //
 // The rule is about the CONSTRUCT: an observation may not contain an assignment
-// to a credential-named key, a credentialed URL, or a private-key header. It is
-// fail-closed by construction — there is no "is this value safe?" question for a
-// detector to get wrong, because there is no shape of value that clears it. An
+// to a credential-named key, a credentialed URL, or a private-key header. No
+// branch asks anything about the value except whether one exists — which is not
+// the same as "nothing can get through", and the limits are listed below. An
 // auditor writes "the file assigns DB_PASSWORD a literal value"; the customer
 // opens `config/app.env:14` and reads it in their own checkout, where it already
 // is. That is the same sentence the excerpt decision made about source windows.
 //
-// What this does NOT claim: that these fields cannot carry customer source at
-// all. They are free text an auditor authors, and no rule short of refusing
-// prose can prove a sentence is not a quotation. See the stated limit in
-// `docs/AI-APP-RELEASE-RESCUE-V1.md`.
+// WHAT THIS DOES NOT CLAIM, stated plainly because two audits in a row have
+// caught this file's neighbours claiming more than they do:
+//
+//   - A credential written with NO KEY AT ALL — "the committed value is
+//     Xk92mQvn7Lz" — has no construct to refuse. Nothing here catches it, and
+//     nothing here can: catching it means judging whether a token looks like a
+//     secret, which is the detector the owner retired after ten rounds.
+//   - A key the lexicon does not recognise (`STRIPE_SK`, `NEXTAUTH`) is not a
+//     credential-named key as far as this rule is concerned.
+//   - `key: value` on a bare colon is not refused, for the reason given on
+//     `findQuotedCredentialConstructs` below.
+//
+// The controls standing at those gaps are the scanner, which still runs over
+// every string as defence in depth, and the named human reviewer who signs the
+// report before it is delivered. That is the honest description, and
+// `docs/AI-APP-RELEASE-RESCUE-V1.md` gives the same one.
 
 /** A refused construct. Names the construct and the key, never the value. */
 export type ProseConstruct = {
-  kind: "assignment" | "configuration_line" | "credentialed_url" | "private_key_block";
+  kind: "assignment" | "credentialed_url" | "private_key_block";
   /** The credential-named key, or the URL scheme. Never what followed it. */
   subject: string;
 };
 
 /** A run of characters that could be an identifier in some language. */
-const TOKEN = /[A-Za-z_][A-Za-z0-9_.-]*/g;
+const TOKEN = /[\p{L}_][\p{L}\p{N}_.-]*/gu;
 
 /**
- * A capitalised English word: `Tokens`, `Passwords`, `Secrets`, `Credentials`,
- * `Auth`.
+ * Equals signs, in the spellings that reach a report.
  *
- * These are subjects of sentences, and the rubric asks auditors to write exactly
- * such sentences — "Tokens: 30-day lifetime with no rotation." A rule that
- * refused them would brick correct reports, which is the other half of what the
- * tenth audit found and the more expensive half to discover in production.
+ * `\uFF1D` is the fullwidth equals an audit used to walk straight past the
+ * first version of this rule.
  */
-function isProseWord(token: string): boolean {
-  return /^[A-Z][a-z]+$/.test(token);
+const EQUALS = /[=\uFF1D]/;
+
+/** Comparisons that share an equals sign with assignment but assign nothing. */
+const COMPARISONS = new Set(["==", "===", "!=", "!==", "<=", ">=", "=>", "==="]);
+
+/**
+ * The bridge between a key and its value: whatever non-word characters sit
+ * between them.
+ *
+ * The first version of this rule enumerated operators — `:=|=>|={1,3}|!=|<=|>=`
+ * — and an audit crossed a credential corpus with eighteen carriers against it.
+ * `DB_PASSWORD += "value"` delivered 346 of 366 values to a customer-facing
+ * report. So did `**DB_PASSWORD**=value`, `<code>DB_PASSWORD</code>=value`, and
+ * the fullwidth sign. That list had exactly the shape of the terminator set the
+ * owner retired: correct for the examples that built it, blind one character
+ * away.
+ *
+ * So there is no list. A bridge is any run of non-word characters, and it counts
+ * as an assignment when it contains an equals sign and is not a comparison.
+ * `+=`, `||=`, `??=`, `.=`, `**=`, `</code>=` and `＝` are all assignments
+ * without ever being named.
+ */
+function assignmentBridge(rest: string): number | null {
+  const bridge = /^[^\p{L}\p{N}_]*/u.exec(rest);
+  if (!bridge) return null;
+  const text = bridge[0];
+  if (!EQUALS.test(text)) return null;
+  if (COMPARISONS.has(text.trim())) return null;
+  return text.length;
 }
 
 /**
- * A token no English sentence contains: it has an underscore, a hyphen, a digit,
- * an internal capital, or it is shouted.
+ * The value assigned, which may be on the next non-blank line.
  *
- * `DB_PASSWORD`, `db_password`, `apiKey`, `PGPASSWORD`. Wherever one of these
- * appears, it is a key — its position in the line does not change that.
+ * `DB_PASSWORD=` with the value one line down was invisible to the first
+ * version, which looked only at the rest of the same line — and an audit
+ * delivered 346 of 366 values through it. This looks at what is actually
+ * assigned, wherever the writer put it. It reads only whether something IS
+ * assigned, never what.
  */
-function isIdentifierShaped(token: string): boolean {
-  if (/[_\-0-9]/.test(token)) return true;
-  if (token.length >= 2 && token === token.toUpperCase() && /[A-Z]/.test(token)) return true;
-  return /^[a-z]+[A-Z]/.test(token);
+function assignsSomething(lines: readonly string[], index: number, rest: string): boolean {
+  if (rest.trim().length > 0) return true;
+  for (let next = index + 1; next < lines.length; next += 1) {
+    if (lines[next].trim().length > 0) return true;
+  }
+  return false;
 }
 
 /**
- * True when nothing but structure precedes the token on its line.
+ * Removes HTML tags, keeping every character of the content between them.
  *
- * `password: swordfish` at the start of a line is a config line. `API keys:
- * rotated quarterly` is a noun phrase, because a word precedes `keys` — and no
- * configuration format has a space inside a key.
+ * `<code>DB_PASSWORD</code>=value` put a word character — the `c` of the closing
+ * tag — between the key and the equals sign, and a bridge made of non-word
+ * characters stopped dead on it. The answer is not to teach the bridge about
+ * tags, which is the enumeration again; it is that a tag is MARKUP and not part
+ * of what the auditor wrote. Stripping it normalises the text once, and closes
+ * `<b>`, `<strong>`, `<em>` and every other wrapper with it.
+ *
+ * Replaced with nothing rather than a space, so `<code>DB_PASSWORD</code>=x`
+ * reads as `DB_PASSWORD=x` and not as two tokens.
  */
-function inKeyPosition(line: string, index: number): boolean {
-  const before = line.slice(0, index);
-  return /(^|[-"'{,;:])\s*$/.test(before);
-}
-
-/** The assignment operators, minus every comparison that shares their spelling. */
-function assignmentAfter(line: string, index: number): boolean {
-  const rest = line.slice(index);
-  const operator = /^\s*(:=|=>|={1,3}|!=|<=|>=)/.exec(rest);
-  if (!operator) return false;
-  if (operator[1] === ":=") return true;
-  // `==`, `===`, `!=`, `<=`, `>=` and `=>` compare or point; they do not assign.
-  if (operator[1] !== "=") return false;
-  return rest.slice(operator[0].length).trim().length > 0;
-}
-
-function configurationValueAfter(line: string, index: number): boolean {
-  const rest = line.slice(index);
-  if (!rest.startsWith(":")) return false;
-  if (rest.startsWith(":=")) return false;
-  return rest.slice(1).trim().length > 0;
+function withoutMarkup(text: string): string {
+  return text.replace(/<\/?[A-Za-z][^>]*>/g, "");
 }
 
 /**
  * The constructs an observation may not contain, in the order they appear.
  *
- * Deterministic and total. Every branch is decided by the KEY and the OPERATOR;
- * no branch reads the value.
+ * Deterministic and total. Every branch is decided by the KEY and the BRIDGE.
+ * The only thing any branch asks about the value is whether one exists.
+ *
+ * There is no bare-colon arm. The first version had one, and it refused
+ * `- token: enforce a 30-day expiry`, `OTP: the one-time code is six digits`,
+ * and — worst — `db_password: ${env.DB_PASSWORD_REF}`, which is the FIX this
+ * product recommends. A Markdown bullet list is the default output shape of
+ * every LLM executor, and the refusal threw away the whole report. Separating a
+ * config line from a sentence needs the tail read as prose, and the owner ruled
+ * that out: a credential-named key must never be downgraded because of sentence
+ * shape. Since it cannot be done safely, it is not done at all — the colon forms
+ * are left to the scanner and to the named human reviewer, and the documentation
+ * says so rather than implying otherwise.
  */
-export function findQuotedCredentialConstructs(text: string): ProseConstruct[] {
+export function findQuotedCredentialConstructs(input: string): ProseConstruct[] {
   const found: ProseConstruct[] = [];
+  const text = withoutMarkup(input);
 
-  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) {
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(text)) {
     found.push({ kind: "private_key_block", subject: "PRIVATE KEY" });
   }
 
-  const url = /\b([a-z][a-z0-9+.-]*):\/\/[^\s/@:]+:[^\s/@]+@/.exec(text);
-  if (url) found.push({ kind: "credentialed_url", subject: url[1] });
+  const url = /\b([a-z][a-z0-9+.-]*):\/\/[^\s/@:]+:[^\s/@]+@/i.exec(text);
+  if (url) found.push({ kind: "credentialed_url", subject: url[1].toLowerCase() });
 
-  for (const line of text.split(/\r?\n/)) {
+  const lines = text.split(/\r?\n/);
+  lines.forEach((line, index) => {
     TOKEN.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = TOKEN.exec(line)) !== null) {
       const token = match[0];
       if (!keyLooksSecret(token)) continue;
 
-      const after = match.index + token.length;
-      if (assignmentAfter(line, after)) {
-        found.push({ kind: "assignment", subject: token });
-        continue;
-      }
+      const rest = line.slice(match.index + token.length);
+      const bridge = assignmentBridge(rest);
+      if (bridge === null) continue;
+      if (!assignsSomething(lines, index, rest.slice(bridge))) continue;
 
-      // A colon is both YAML and punctuation, so this arm is the narrow one: a
-      // capitalised English word never triggers it, and a plain lowercase word
-      // triggers it only where a key can stand.
-      if (isProseWord(token)) continue;
-      if (!isIdentifierShaped(token) && !inKeyPosition(line, match.index)) continue;
-      if (configurationValueAfter(line, after)) {
-        found.push({ kind: "configuration_line", subject: token });
-      }
+      found.push({ kind: "assignment", subject: token });
     }
-  }
+  });
 
   return found;
 }
@@ -145,8 +177,6 @@ export function findQuotedCredentialConstructs(text: string): ProseConstruct[] {
 const GUIDANCE: Readonly<Record<ProseConstruct["kind"], string>> = {
   assignment:
     'name the setting and cite its location instead of writing the assignment — "the file assigns %s a literal value"',
-  configuration_line:
-    'name the setting and cite its location instead of copying the configuration line — "%s is set to a literal value"',
   credentialed_url:
     "cite the file and line that holds the URL instead of reproducing it with its credentials",
   private_key_block: "cite the file that holds the key instead of reproducing any part of it",

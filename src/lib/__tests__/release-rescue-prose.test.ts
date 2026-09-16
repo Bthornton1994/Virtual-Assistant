@@ -5,6 +5,18 @@ import {
   describesWithoutQuoting,
 } from "@/lib/release-rescue-prose";
 import { CREDENTIAL_CARRIERS, CREDENTIAL_QUALIFIERS } from "@/lib/release-rescue-redaction-keys";
+import {
+  buildReleaseRescueReport,
+  pendingSecretHolds,
+  releaseRescueDeliveryGate,
+  validateReleaseRescueReport,
+} from "@/lib/release-rescue-report";
+import {
+  makeFinding,
+  makeReportInput,
+  passingAssessments,
+  setAssessment,
+} from "@/lib/__tests__/release-rescue-fixtures";
 
 // The second half of the excerpt decision, as tests.
 //
@@ -120,17 +132,71 @@ describe("an observation may not reproduce an assignment, whatever the value", (
     expect(message).toContain("cite");
   });
 
-  it("refuses a configuration line, a credentialed URL and a private-key block too", () => {
+  it("refuses a credentialed URL and a private-key block, in any case", () => {
     for (const text of [
-      "db_password: hunter2hunter",
-      "password: swordfish",
-      "apiKey: sk_live_abcdefghijklmnop",
-      "The file contains: DB_PASSWORD: hunter2",
       "postgres://appuser:hunter2hunter2@db.internal:5432/app appears in the config.",
       "redis://default:Xk92mQvn7Lz@cache:6379/0",
+      "POSTGRES://appuser:hunter2hunter2@db.internal:5432/app",
       "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
+      "-----begin rsa private key-----\nMIIEow\n-----end rsa private key-----",
     ]) {
       expect(describesWithoutQuoting(text), text.slice(0, 40)).toBe(false);
+    }
+  });
+
+  it("refuses an assignment however the operator is spelled or wrapped", () => {
+    // The axis eleven rounds never varied. The first version of this rule
+    // enumerated operators — `:=|=>|={1,3}|!=|<=|>=` — and an audit crossed a
+    // corpus with eighteen carriers against it: `DB_PASSWORD += "value"`
+    // delivered 346 of 366 values to a customer-facing report, as did markdown
+    // bold, an HTML code tag, the fullwidth equals, and the value one line down.
+    // There is no operator list now; a bridge is any run of non-word characters
+    // containing an equals sign.
+    const V = "Xk92mQvn7Lz";
+    const missed: string[] = [];
+
+    for (const carrier of [
+      `DB_PASSWORD=${V}`,
+      `DB_PASSWORD = ${V}`,
+      `DB_PASSWORD += "${V}"`,
+      `DB_PASSWORD ||= ${V}`,
+      `DB_PASSWORD ??= ${V}`,
+      `DB_PASSWORD .= ${V}`,
+      `DB_PASSWORD **= ${V}`,
+      `DB_PASSWORD := ${V}`,
+      `DB_PASSWORD\uFF1D${V}`,
+      `**DB_PASSWORD**=${V}`,
+      `__DB_PASSWORD__=${V}`,
+      `\`DB_PASSWORD\`=${V}`,
+      `<code>DB_PASSWORD</code>=${V}`,
+      `<b>DB_PASSWORD</b> = ${V}`,
+      `The committed configuration contains: DB_PASSWORD += "${V}"`,
+      `DB_PASSWORD=\n${V}`,
+      `DB_PASSWORD=\n\n  ${V}`,
+      `The file reads:\nDB_PASSWORD=\n${V}`,
+    ]) {
+      if (describesWithoutQuoting(carrier)) missed.push(JSON.stringify(carrier.slice(0, 44)));
+    }
+
+    expect(missed, `${missed.length} assignment spellings were not refused`).toEqual([]);
+  });
+
+  it("names the gaps it does not close, so nothing downstream assumes otherwise", () => {
+    // Stated, tested, and documented — because the recurring defect in this
+    // workstream is a comment claiming a property the code does not implement.
+    // These are the shapes no construct rule can reach. The scanner and the
+    // named human reviewer are the controls standing here, and a separate test
+    // below measures that the scanner does hold them.
+    for (const text of [
+      "The committed configuration contains the literal Xk92mQvn7Lz on line 14.",
+      "The committed configuration contains: STRIPE_SK=Xk92mQvn7Lz",
+      "db_password: hunter2hunter",
+      "password: swordfish",
+    ]) {
+      expect(
+        describesWithoutQuoting(text),
+        `${text.slice(0, 40)} — if this now returns false, update the documented limit`,
+      ).toBe(true);
     }
   });
 });
@@ -196,7 +262,18 @@ describe("and it may still say everything an auditor needs to say", () => {
       "SESSION_HEADER_NAME=x-acme-session",
       'const STORAGE_KEY = "delegation-cloud-draft-v2";',
       "DB_PASSWORD=",
-      "DB_PASSWORD=\nAPI_HOST=prod.example.com",
+      // The Markdown and colon shapes an audit found the first version of this
+      // rule throwing whole reports away over. A bullet list is the default
+      // output of every LLM executor, and the last one is the FIX this product
+      // recommends — refusing it was the most expensive false positive here.
+      "Recommendation:\n- token: enforce a 30-day expiry\n- refresh: rotate on use",
+      "The findings are:\n- secrets: committed to the repository\n- logging: absent",
+      "OTP: the one-time code is six digits and never expires.",
+      "Sessions last 24h; auth: cookie-based with no CSRF token.",
+      "Move the value into a secret manager, e.g. db_password: ${env.DB_PASSWORD_REF}",
+      "Set NEXTAUTH_SECRET: see the deployment guide for how to generate one.",
+      "pass: the check returns early, so every request passes.",
+      "Rotate these; token: yes, session cookie: yes, database password: yes.",
     ]) {
       expect(describesWithoutQuoting(text), text.slice(0, 44)).toBe(true);
     }
@@ -226,5 +303,77 @@ describe("the rule is total and deterministic", () => {
     for (const text of ["", " ", "\n\n\n", "a".repeat(4000), "=".repeat(500), ":".repeat(500)]) {
       expect(() => findQuotedCredentialConstructs(text)).not.toThrow();
     }
+  });
+});
+
+describe("what stands at the gaps the rule does not close", () => {
+  // The rule names three gaps. A named limit nobody measured is how this
+  // workstream got eleven audits, so each one is measured here end to end
+  // through the real builder and the real delivery gate.
+  const V = "Xk92mQvn7Lz";
+
+  function deliver(observed: string) {
+    try {
+      const report = buildReleaseRescueReport(
+        makeReportInput({
+          assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+            outcome: "fail",
+            rationale: "Order lookup returns records the caller does not own.",
+          }),
+          findings: [
+            makeFinding({
+              rubricCheckId: "authz.object_level_authorization",
+              whatWeObserved: observed,
+              locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
+            }),
+          ],
+        }),
+      );
+      const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
+      const serialized = JSON.stringify(report).replace(/\[REDACTED:[a-z_]+\]/g, "");
+      if (gate.deliverable && serialized.includes(V)) return "delivered-with-credential";
+      if (pendingSecretHolds(report).length > 0) return "held";
+      return gate.deliverable ? "delivered-clean" : "not-deliverable";
+    } catch {
+      return "refused";
+    }
+  }
+
+  it("holds every colon form, which is why dropping that arm cost no safety", () => {
+    // The arm was removed because it refused `- token: enforce a 30-day expiry`
+    // and threw away the whole report. This measures what it was buying: for
+    // every colon spelling, the scanner raises a hold and delivery stops. None
+    // of them was ever reaching a customer through that arm alone.
+    const outcomes = [
+      `db_password: ${V}`,
+      `The file has db_password: ${V} committed.`,
+      `DB_PASSWORD: ${V}`,
+      `"DB_PASSWORD": "${V}"`,
+      `DB_PASSWORD:\n  ${V}`,
+      `services:\n  db:\n    DB_PASSWORD: ${V}`,
+    ].map(deliver);
+
+    expect(outcomes, `colon forms: ${outcomes.join(", ")}`).not.toContain("delivered-with-credential");
+    expect(outcomes.every((outcome) => outcome === "held")).toBe(true);
+  });
+
+  it("does not close a credential written with no key, and says so here too", () => {
+    // Recorded as a measurement, not a claim, and deliberately asserted at its
+    // TRUE size: a credential written with no key reaches a deliverable report
+    // with the value intact. Catching it means judging whether a token looks
+    // like a secret, which is the detector the owner retired after ten rounds.
+    // This test exists so that gap is a number somebody can read rather than a
+    // sentence somebody wrote. If it ever closes, the documentation changes with it.
+    expect(
+      deliver(`The committed configuration contains the literal ${V} on line 14.`),
+      "this is the gap, recorded at its true size",
+    ).toBe("delivered-with-credential");
+  });
+
+  it("does not close a key the lexicon does not recognise", () => {
+    expect(
+      deliver(`The committed configuration contains: STRIPE_SK=${V}`),
+      "this is the gap, recorded at its true size",
+    ).toBe("delivered-with-credential");
   });
 });

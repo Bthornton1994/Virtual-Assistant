@@ -279,11 +279,11 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   });
 
   it("never lets a clearance release confident credential evidence", () => {
-    const base = buildReleaseRescueReport(makeReportInput({ limitations: ["DB_PASS=swordfish"] }));
+    const base = buildReleaseRescueReport(makeReportInput({ limitations: ["DB_PASS: pr0dXk92mQvn7Lz"] }));
     const hold = base.unresolvedHolds[0];
     const report = buildReleaseRescueReport(
       makeReportInput({
-        limitations: ["DB_PASS=swordfish"],
+        limitations: ["DB_PASS: pr0dXk92mQvn7Lz"],
         clearedSecretHolds: [
           {
             path: hold.path,

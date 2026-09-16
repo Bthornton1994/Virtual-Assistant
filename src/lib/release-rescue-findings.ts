@@ -144,23 +144,39 @@ export function severityRank(severity: FindingSeverity): number {
 // --- Schemas ------------------------------------------------------------------------
 
 /**
- * The shape of one path segment, and of a whole path.
+ * The characters a repository path is made of.
  *
- * A segment is one or more space-separated words drawn from the characters that
- * occur in repository file names: letters, digits, and `. _ - + @ ~ ( ) [ ]`.
- * Brackets are in the set because this product's own routes are named
- * `src/app/api/orders/[id]/route.ts`, and a grammar that refuses a customer's
- * real file name is a grammar nobody can ship behind.
+ * Unicode letters and digits, plus `. _ - + @ ~ ( ) [ ]`. An earlier version was
+ * ASCII-only and refused `src/resume.ts` spelled with accents, and
+ * `src/<kanji>/page.tsx` — ordinary file names in most of the world. `\p{L}`
+ * fixes that without widening anything that matters: a letter is not punctuation.
  *
- * Written without lookahead so the same language can be checked in Postgres,
- * and built from one word pattern so the two halves cannot drift.
+ * NO SPACES. The first version allowed single spaces between words so that
+ * `docs/Architecture Overview.md` would validate. An audit used that to put
+ * `config app.env holds the value Xk92mQvn7Lz on line 14` in the field — a
+ * sentence carrying a credential, validated, stored and rendered as a path. A
+ * file name with a space is rarer than that attack, and an auditor whose
+ * customer has one cites the directory instead.
  */
-const PATH_WORD = "[A-Za-z0-9._@+~()\\[\\]-]+";
-const PATH_SEGMENT = `${PATH_WORD}( ${PATH_WORD})*`;
-export const REPOSITORY_PATH_PATTERN = new RegExp(`^${PATH_SEGMENT}(/${PATH_SEGMENT})*$`);
+const PATH_SEGMENT = "[\\p{L}\\p{N}._@+~()\\[\\]-]+";
+export const REPOSITORY_PATH_PATTERN = new RegExp(`^${PATH_SEGMENT}(/${PATH_SEGMENT})*$`, "u");
 
 /** No segment of a real repository path is longer than this. */
 const MAX_PATH_SEGMENT_LENGTH = 255;
+
+/**
+ * True when a path actually walks upward, rather than merely containing dots.
+ *
+ * The rule was `!value.includes("..")`, present since this workstream's first
+ * commit. It refused `app/api/auth/[...nextauth]/route.ts` — the most common
+ * authentication entry point in this product's target framework, on a dimension
+ * the rubric gates at weight 3. A confirmed finding must cite a location, so an
+ * auth finding on that route could not be recorded at all. Three dots inside a
+ * route bracket are not traversal; a `..` SEGMENT is.
+ */
+function walksUpward(value: string): boolean {
+  return value.split("/").some((segment) => segment === ".." || segment === ".");
+}
 
 /**
  * A repository-relative path inside the reviewed snapshot.
@@ -176,22 +192,28 @@ const MAX_PATH_SEGMENT_LENGTH = 255;
  * hundred characters of anything, newlines included. A source window pasted into
  * `locations[].path` would have validated, stored, and rendered. The grammar
  * closes that: no control characters, no quotes, no assignment or statement
- * punctuation, no empty segments, one space between words at most.
+ * punctuation, no empty segments, and no spaces, so a sentence is not a path.
  *
  * What a grammar cannot do is make a path-shaped string harmless — `AKIA...` is
  * a legal file name — so this is not the only control on the field. Every string
  * in a report, this one included, goes through `sanitizeReportInput` before
- * assembly, which redacts credential material and raises a hold. The grammar
- * removes the channel; the scanner covers what still fits through it.
+ * assembly, which redacts credential material and raises a hold.
+ *
+ * The two together are not a guarantee, and an audit caught an earlier version
+ * of this comment saying they were. The grammar removes the pasted-window
+ * channel; the scanner catches what it recognises in what is left. A token the
+ * scanner does not recognise, in a value the grammar considers path-shaped, is
+ * caught by neither — the same gap `release-rescue-prose.ts` documents for the
+ * prose fields, and the named human reviewer is what stands there.
  */
 export const repositoryPathSchema = identifierString
   .max(400)
   .refine((value) => !value.startsWith("/"), "must be repository-relative, not absolute")
-  .refine((value) => !value.includes(".."), "must not contain parent traversal")
+  .refine((value) => !walksUpward(value), "must not contain a parent-traversal segment")
   .refine((value) => !value.includes("://"), "must be a path, not a URL")
   .refine(
     (value) => REPOSITORY_PATH_PATTERN.test(value),
-    "must be a repository path, not source text: only letters, digits, `. _ - + @ ~ ( ) [ ]`, single spaces, and `/` between non-empty segments",
+    "must be a repository path, not source text: letters, digits and `. _ - + @ ~ ( ) [ ]`, separated by `/`, with no spaces",
   )
   .refine(
     (value) => value.split("/").every((segment) => segment.length <= MAX_PATH_SEGMENT_LENGTH),
@@ -247,9 +269,10 @@ export const FORBIDDEN_SOURCE_FIELDS: readonly string[] = [
  *
  * The line numbers are not derived from the file's content. The PATH is — it is
  * a name taken from the customer's repository — which an audit pointed out after
- * an earlier version of this comment claimed otherwise. That is why
- * `repositoryPathSchema` has a grammar: a path-shaped value is all this field
- * can hold, so it cannot become the source window the excerpt used to be.
+ * an earlier version of this comment claimed otherwise. `repositoryPathSchema`
+ * constrains it to a path SHAPE, which stops it becoming the source window the
+ * excerpt used to be. It does not stop it being a single token that happens to
+ * be a credential; nothing here can, and the comment above says what does.
  */
 export const findingLocationSchema = z
   .object({
@@ -376,7 +399,8 @@ export const releaseRescueFindingV1Schema = z
     findingId: identifierString.max(100),
     rubricCheckId: identifierString.max(200),
     dimension: rubricDimensionSchema,
-    title: nonEmptyString.max(200),
+    /** The headline a customer reads. Executor-written, so same prose contract. */
+    title: observationField(200),
     /** What the auditor saw. Observation, not inference. */
     whatWeObserved: observationField(4000),
     /** Why it matters for THIS release, not in general. */

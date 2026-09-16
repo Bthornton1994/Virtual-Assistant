@@ -32,7 +32,9 @@
 -- locations. An audit planted seventeen violations against that and sixteen went
 -- in: a nested `locations[0].meta.excerpt`, an `assessments[0].evidence[0]`,
 -- a capital `Excerpt`, a trailing space after the schema version, the whole
--- report one level down under a `report` key.
+-- report one level down under a `report` key. Deduplicated, those are fourteen
+-- distinct shapes, and `release_rescue_path_shape_v9_proof.sql` inserts all
+-- fourteen. Both numbers are stated so neither reads as the other.
 --
 -- None of them had a production writer, so none of them leaked. But a guard
 -- described as structural has to be structural, and "walks two levels of one

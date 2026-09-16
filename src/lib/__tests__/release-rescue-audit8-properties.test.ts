@@ -262,7 +262,11 @@ describe("the gate, asserted directly, in both directions", () => {
     // A `credential_evidence` hold cannot be cleared by any human, so a false
     // positive at that level is not noise — it is a $299 report nobody can send.
     const ORDINARY = [
-      "DB_PASSWORD=\nAPI_HOST=prod.example.com\nDEBUG=true",
+      // A pasted config block is a quotation: `DB_PASSWORD=` with the value on
+      // the next line was how an audit delivered 346 of 366 credentials, so the
+      // rule now looks at what is assigned wherever the writer put it. The
+      // ordinary form of this observation names the settings instead.
+      "the deploy file sets DB_PASSWORD, API_HOST and DEBUG in one block",
       "SELECT id, password, email\n  ORDER BY id, created_at, name",
       'import { getToken } from "./auth";\nconst user = await getUser(id);',
       "the authorization header is read but never checked against the record owner",

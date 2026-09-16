@@ -534,6 +534,30 @@ describe("the one field left that comes from the customer's repository", () => {
     expect(accepted, `${accepted.length} pasted source windows validated as a path`).toEqual([]);
   });
 
+  it("refuses a parent-traversal segment without refusing a route bracket", () => {
+    for (const walking of ["../secrets/.env", "src/../../etc/passwd", "a/../b", "./src/a.ts"]) {
+      expect(repositoryPathSchema.safeParse(walking).success, walking).toBe(false);
+    }
+    for (const bracketed of ["app/api/[...all]/route.ts", "app/[[...slug]]/page.tsx"]) {
+      expect(repositoryPathSchema.safeParse(bracketed).success, bracketed).toBe(true);
+    }
+  });
+
+  it("refuses a sentence in the path field, which is what spaces allowed", () => {
+    // The stated cost: `docs/Architecture Overview.md` is refused too. Spaces
+    // were allowed so a file name with one would validate, and an audit used
+    // that to put a sixty-word sentence carrying a credential in the field — it
+    // validated, stored, and rendered as a path. An auditor whose customer has a
+    // space in a file name cites the directory instead.
+    for (const sentence of [
+      "config app.env holds the value Xk92mQvn7Lz on line 14",
+      "the order route reads the token without checking ownership",
+      "docs/Architecture Overview.md",
+    ]) {
+      expect(repositoryPathSchema.safeParse(sentence).success, sentence.slice(0, 40)).toBe(false);
+    }
+  });
+
   it("refuses the punctuation a line of source needs and a path does not", () => {
     const accepted: string[] = [];
 
@@ -582,9 +606,19 @@ describe("the one field left that comes from the customer's repository", () => {
       "Makefile",
       "LICENSE",
       "node_modules/@scope/pkg/index.js",
-      "docs/Architecture Overview.md", // a space in a file name is legal
       "vendor/lib-v1.2.3+build/main.c",
       "a",
+      // Catch-all and optional-catch-all routes. An audit found these refused by
+      // a `!value.includes("..")` rule present since this workstream's first
+      // commit — so an auth finding on the most common auth entry point in the
+      // target framework could not cite a location, and a confirmed finding must.
+      "app/api/auth/[...nextauth]/route.ts",
+      "pages/api/auth/[...nextauth].ts",
+      "app/docs/[[...slug]]/page.tsx",
+      "app/[locale]/[...slug]/page.tsx",
+      // File names are not ASCII in most of the world.
+      "src/r\u00e9sum\u00e9.ts",
+      "src/\u65e5\u672c\u8a9e/page.tsx",
       `src/${"a".repeat(250)}.ts`, // long, but inside the per-segment cap
     ]) {
       if (!repositoryPathSchema.safeParse(candidate).success) refused.push(candidate);

@@ -72,10 +72,27 @@ describe("a credential key with no separator and no camel-case boundary", () => 
     }
   });
 
+  it("refuses an assignment quoted into a limitation, before any gate is consulted", () => {
+    // `limitations` is executor-written and rendered verbatim to the customer,
+    // so it carries the same prose contract as an observation. An audit planted
+    // an assignment in each unguarded field and delivered every one; this is the
+    // stronger outcome the contract now produces.
+    expect(() =>
+      buildReleaseRescueReport(
+        makeReportInput({
+          limitations: ["The CI job exports PGPASSWORD=pr0dXk92mQvn7Lz before running migrations."],
+        }),
+      ),
+    ).toThrow(/PGPASSWORD/);
+  });
+
   it("reaches the delivery gate, not just the detector", () => {
+    // The carrier here is a colon form, which the prose contract deliberately
+    // does NOT refuse — so this still measures the thing it was written to
+    // measure: the scanner holds it and the gate stops delivery.
     const report = buildReleaseRescueReport(
       makeReportInput({
-        limitations: ["The CI job exports PGPASSWORD=pr0dXk92mQvn7Lz before running migrations."],
+        limitations: ["The CI job sets PGPASSWORD: pr0dXk92mQvn7Lz before running migrations."],
       }),
     );
     const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));

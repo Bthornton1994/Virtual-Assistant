@@ -49,6 +49,10 @@ const COMPOSE = `services:
 
 const PGPASS = `db.acme.com:5432:prod:app:${SECRETS.pgpass}`;
 const ENVFILE = `AWS_SECRET_ACCESS_KEY="${SECRETS.aws}"\nDEBUG=true\n`;
+// The same file in the shape the prose contract does not refuse, so the
+// defence-in-depth path below still has something to hold. An assignment quoted
+// into a limitation is refused outright now — asserted separately.
+const ENVFILE_AS_YAML = `AWS_SECRET_ACCESS_KEY: "${SECRETS.aws}"\nDEBUG: true\n`;
 
 const ALL_SECRETS = Object.values(SECRETS);
 
@@ -98,6 +102,24 @@ describe("an executor that quotes the credential instead of describing it", () =
     }
   });
 
+  it("is refused when quoted into a limitation, not only into an observation", () => {
+    // Every executor-written field the customer reads carries the contract, not
+    // just the five an earlier version named. An audit planted an assignment in
+    // each of the others and delivered all of them.
+    let message = "(no refusal)";
+    try {
+      buildReleaseRescueReport(makeReportInput({ limitations: [`The admin .env holds ${ENVFILE}`] }));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain("limitations[0]");
+    expect(message).toContain("AWS_SECRET_ACCESS_KEY");
+    for (const secret of ALL_SECRETS) {
+      expect(message, "a refusal reaches logs; it must not carry the value").not.toContain(secret);
+    }
+  });
+
   it("is refused the same way through the schema, for input that reaches one", () => {
     const parsed = releaseRescueFindingV1Schema.safeParse(
       makeFinding({
@@ -139,10 +161,12 @@ describe("a report built from source containing credentials", () => {
           ],
         }),
       ],
-      // Our own field, not an auditor's observation, and still the place a
-      // pasted `.env` would land. The scanner runs on it as defence in depth:
-      // the value is removed, a hold is raised, and delivery stops.
-      limitations: [`The customer excluded the admin console. Its .env holds ${ENVFILE}`],
+      // Executor-written and rendered verbatim, so it carries the same prose
+      // contract — but in a colon shape the contract deliberately does not
+      // refuse, which is exactly where the scanner still has to work. It runs on
+      // it as defence in depth: the value is removed, a hold is raised, and
+      // delivery stops.
+      limitations: [`The customer excluded the admin console. Its .env holds ${ENVFILE_AS_YAML}`],
     }),
   );
 
@@ -217,12 +241,21 @@ describe("no secret reaches logs or error output", () => {
     expect(message).not.toContain(SECRETS.compose);
   });
 
-  it("does not log the value anywhere during a normal build", () => {
+  it("does not log the value anywhere, whether the build succeeds or refuses", () => {
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    buildReleaseRescueReport(makeReportInput({ limitations: [`DB_PASSWORD=${SECRETS.compose}`] }));
+    // The colon form builds and is held; the assignment form is refused. Both
+    // paths run here, because the refusal path is the newer one and an exception
+    // reaches logs just as readily as a println.
+    buildReleaseRescueReport(makeReportInput({ limitations: [`DB_PASSWORD: ${SECRETS.compose}`] }));
+    try {
+      buildReleaseRescueReport(makeReportInput({ limitations: [`DB_PASSWORD=${SECRETS.compose}`] }));
+    } catch {
+      // The message is asserted elsewhere; here it only matters that it did not
+      // reach a console on the way out.
+    }
 
     for (const mock of [spy, errorSpy, warnSpy]) {
       const written = mock.mock.calls.flat().map(String).join(" ");

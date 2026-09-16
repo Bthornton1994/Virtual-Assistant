@@ -435,8 +435,12 @@ describe("the gate, over the generated corpus", () => {
       "SELECT id, password, email\n  ORDER BY id, created_at, name",
       "user id,order date,email\n7,2024-01-01,a@b.com",
       "order date,email,status\n2024-01-01,a@b.com,active",
-      "DB_PASSWORD=\nRotate this before launch.",
-      "DB_PASSWORD=\nAPI_HOST=prod.example.com",
+      // `DB_PASSWORD=` with anything on a following line is now an assignment,
+      // because that is how an audit delivered 346 of 366 credentials. Both of
+      // these were on the ordinary list while an excerpt field existed; the
+      // ordinary form names the setting.
+      "the DB_PASSWORD setting has no value and must be set before launch",
+      "the deploy file sets DB_PASSWORD and API_HOST in the same block",
       "the x-acme-session header name is set in the deploy configuration",
     );
 
