@@ -255,7 +255,11 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 
 ## Test plan
 
-**Implemented and passing** — 518 Release Rescue tests across 28 suites (1,186 in the whole repository), 257 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
+**Implemented and passing** — 521 Release Rescue tests across 28 suites (1,189 in the whole repository), 257 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
+
+> **Read the audit-10 section before treating any of this as shippable.** Ten
+> independent audits have run and all ten returned DO_NOT_MERGE. The database
+> authority model has converged; the credential detector has not.
 
 These counts are re-measured each pass rather than carried forward. Three successive audits found stale numbers here, and a stale count is a false claim like any other.
 
@@ -1077,9 +1081,10 @@ written. The keyword list contained `default`, so `DB_PASSWORD=default` was
 dropped.
 
 **The rule now: the allowlist holds structural references only, never a guess.**
-A `${VAR}`, a `process.env.X`, a `<placeholder>`, an `[REDACTED]` marker, a call
-expression, a path rooted at a known object — each of these *cannot* be a literal
-secret. Anything that was a guess about the value has been removed or moved to
+A `${VAR}`, a `process.env.X`, a `<placeholder>`, an `[REDACTED]` marker, a path
+rooted at a known object — each of these *cannot* be a literal secret. (The call
+expression left the allowlist in the audit-10 round; a call is now a property of
+the value span, not a pattern.) Anything that was a guess about the value has been removed or moved to
 where it belongs. `30-day` is now handled in `valueShape`, which only the
 bare-colon branch consults, so `Tokens: 30-day lifetime` is still prose and
 `PGPASSWORD=123456abcdef` is still evidence, because structured syntax never asks
@@ -1096,16 +1101,19 @@ of real credential values, **none** may match the allowlist. The old question wa
   `credential_evidence` — in a committed `.env.example`, a file this product
   explicitly accepts as evidence. Since a confident hold cannot be cleared by any
   human, an env template containing no secret made the report permanently
-  undeliverable. The cross-newline reach now requires the next line to be a
-  *continuation*: no operator, no comment marker, not blank, not a fence.
+  undeliverable. The cross-newline reach requires the next line to be a
+  *continuation*. **Superseded** — the "no operator" test was replaced by
+  indentation in the audit-9 round, because it fired on `admin:Xk92mQvn7Lz` as
+  readily as on a key.
 - **Uppercase SQL was read as CSV.** `looksLikeSourceCode` had no `i` flag, and
   `HEADER_FIELD` permitted spaces, so `SELECT id, password, email` was a header
   and the next line's `created_at` was destroyed. The audit-7 defect, moved from
   JavaScript to SQL.
 - **Real CSV escaped entirely** — a header carrying an ordinary `from` column, a
-  parenthesis, or a long field disabled the form. Both directions are fixed by
-  testing each FIELD rather than the line: a keyword *with an operand* is code, a
-  field that is exactly `from` is a column name.
+  parenthesis, or a long field disabled the form. Both directions were addressed
+  by testing each FIELD rather than the line. **Superseded twice since** — that
+  test broke a header with an ordinary `order date` column. See the audit-10
+  section for the current rule.
 - **`APIACCESSTOKEN` and `MYSQLROOTPW` were invisible.** The run-together split
   peeled exactly one qualifier, so it closed depth 2 and not depth 3 — every
   product in the suite composed two elements. It now splits recursively.
@@ -1267,6 +1275,100 @@ recorded here for an owner decision:
    one it converts every false positive into a permanently undeliverable paid
    report. Changing what may be cleared is an authority change and belongs to the
    owner, not to this pass.
+
+## Tenth independent audit: the leaks were never in the arm that was fixed
+
+Audit 10 was blunt, and correct on every point I could reproduce — which was all
+of them.
+
+**The structural change did not hold.** Recording `sensitive_prose` spans closed
+one route to silence: *a span was produced and then classified away*. The leaks
+were not there. `valueSpan` scans a character RUN and stops at `#`, `&`, `(`, `;`,
+a quote or a space — so a password containing any of those was captured as a
+two-character prefix, and the rest sat in the text. The recorded span said "I
+assessed 2 characters and judged them harmless", which is indistinguishable from
+a correct suppression. Sixteen real credentials reached a `deliverable: true`
+report.
+
+**And the test written to catch exactly that was vacuous.** The gate assertion in
+`release-rescue-audit9-properties.test.ts` — annotated "the one assertion that
+speaks for the customer" — built its fixture with `passingAssessments()` while
+attaching a finding. That is a contradiction deterministic validation rejects on
+its own, so `deliverable` was false for an empty excerpt, for `"hello world"`, and
+for a real password alike. It could not fail. It is fixed, and a guard now runs
+beside it asserting the fixture itself is deliverable, so if this recurs the
+guard fails instead of the suite passing quietly.
+
+### The real fix: for an assignment, the line IS the value
+
+There is no need to know where a value ends. After `=`, on a line whose purpose is
+the assignment, everything to the end of the line is the value — whatever
+punctuation it contains. That closes the entire mid-value class in one change
+rather than by widening a terminator set, which is what the previous five rounds
+were doing and why each traded a leak for a brick.
+
+Three carve-outs, each because the line genuinely holds more than one field: a
+quoted value ends at its quote; a URL or query string keeps the tight run, so
+`?api_key=x&sort=name` stays two fields; an inline `{...}` structure keeps it too.
+A trailing ` #` comment stays readable, and the span is capped at the same 512
+characters as the run form — without that cap, 80KB on one line made the scan
+quadratic, which the performance test caught at 2,328ms.
+
+It applies only where the assignment **starts the line**. `The deploy config sets
+DB_PASSWORD=<your-password> in production.` is a sentence that happens to contain
+one, and taking the rest of that line redacted the prose around the placeholder.
+
+### The false-positive side, which was worse than the leaks
+
+The `_KEY` inversion made a large class of ordinary identifiers unclearable
+`credential_evidence` — including **this repository's own source**:
+`PUBLIC_WEB_RESEARCHER_KEY`, `VALIDATOR_EXECUTOR_KEY`,
+`CONTEXT_SHUNT_PROVIDER_KEY`, plus `STORAGE_KEY`, `ENTER_KEY`, `STATE_KEY`. A
+review that cannot quote the code it is reviewing has no product. The structural
+deny-list now covers browser, UI and application-constant keys. `session` and
+`registry` are deliberately **not** on it — a session signing key is a credential.
+
+Restoring language keywords to the source-code test also matters: moving them to a
+SQL-only check lost `return`, `await`, `const`, `def` and the rest, so
+`return user, password` over two lines was read as a CSV header and its second
+line destroyed.
+
+Indentation is now compared in **columns**, not characters, so a tab-indented key
+and a space-indented continuation are commensurable. Whether a wrapped value was
+found at all had depended on which whitespace the file happened to use.
+
+### What is still open, stated rather than closed
+
+- `DB_PASSWORD:` followed by an **unindented** value is not associated. Either
+  answer costs something: treating an unindented next line as a continuation is
+  what swallowed `API_HOST=prod.example.com` and bricked a report. This is a
+  genuine ambiguity and it is left as a known gap rather than guessed at.
+- A value longer than 512 characters is redacted for its first 512. It still
+  holds the report, so it does not ship, but a fragment persists.
+- `DB_PASSWORD=Xk92 mQvn7Lz` inside prose (not at line start) still redacts only
+  the first token.
+
+### The trend, updated
+
+Ten audits, ten DO_NOT_MERGE, and **five** consecutive rounds with a regression
+inside the fix. The previous section said four; audit 10 pointed out it was
+already five when written.
+
+The database authority model has converged — 257 live cases, and the last four
+audits found nothing in it beyond two `SECURITY DEFINER` reads, both now scoped.
+The detector has not converged, and the failure is now demonstrably symmetric: it
+has both leaked credentials and permanently bricked correct reports, in the same
+commit, five times.
+
+The two owner decisions recorded in the audit-9 section stand, and the evidence
+for the first has strengthened considerably. Stating it plainly rather than
+neutrally: **the recommendation is to stop putting customer source excerpts in the
+artifact.** A finding that cites `path:line` and describes what was observed
+carries the same diagnostic value to the customer and removes the entire defect
+class, because there is no customer credential in the artifact to leak or to
+redact wrongly. Everything else here is an attempt to make an unbounded text
+scanner precise enough to be safe in both directions at once, and ten audits say
+that is not converging.
 
 ## What this slice deliberately does not do
 

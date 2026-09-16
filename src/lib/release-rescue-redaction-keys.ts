@@ -50,6 +50,10 @@ const SECRET_KEY_WORDS: ReadonlySet<string> = new Set([
   "privatekey",
   "dsn",
   "salt",
+  "salts",
+  // The standard companion to `salt`, and absent while `salt` was present.
+  "pepper",
+  "peppers",
   // Abbreviations. Each one is a segment, so `bypass` and `compass` are still
   // untouched; only a name that has `pass` as its OWN part matches.
   "pass",
@@ -239,6 +243,18 @@ const STRUCTURAL_KEY_QUALIFIERS: ReadonlySet<string> = new Set([
   "index", "map", "object", "record", "row", "group", "shard", "route", "i18n",
   "translation", "locale", "license", "idempotency", "dedupe", "lookup", "hash",
   "bucket", "query", "meta", "field", "column", "arrow", "react", "list", "item",
+  // Browser, UI and application-constant keys. The `_KEY` inversion made every
+  // one of these confident evidence, which is an UNCLEARABLE hold — and this
+  // repository's own source is full of them (`PUBLIC_WEB_RESEARCHER_KEY`,
+  // `VALIDATOR_EXECUTOR_KEY`, `CONTEXT_SHUNT_PROVIDER_KEY`). A review that
+  // cannot quote the code it is reviewing has no product.
+  // `session` and `registry` are NOT here: a session signing key and a registry
+  // key are credentials, and both are qualifiers in the product above.
+  // `SESSION_STORAGE_KEY` is still excluded, because `storage` precedes `key`.
+  "storage", "localstorage", "sessionstorage", "local", "state", "draft",
+  "enter", "tab", "escape", "shift", "arrowup", "arrowdown", "node", "tree", "form",
+  "segment", "researcher", "executor", "provider", "capability", "proof", "shadow",
+  "metadata", "reservation", "template", "layout", "theme", "sort",
   // `USER_KEY` is a per-record identifier far more often than a credential.
   // `USER_SECRET` is not, and the rule below keeps that distinction.
   // `account` is NOT here: an Azure storage "account key" is a credential, and

@@ -101,7 +101,9 @@ const NON_SECRET_VALUE_PATTERNS: readonly RegExp[] = [
   /^%[A-Za-z_][A-Za-z0-9_]*%$/,
   // An angle-bracket placeholder, whose contents must themselves look like a
   // placeholder. `<M3g@Secret>` is a password somebody wrapped in brackets.
-  /^<[a-z][a-z0-9_ -]*>$/i,
+  // Lowercase words only, and no digits: the `i` flag plus `[0-9]` re-admitted
+  // `<Xk92mQvn7Lz>`, which is a password somebody wrapped in brackets.
+  /^<[a-z][a-z_ -]*>$/,
   /^\[REDACTED/i,
   /^(?:null|undefined|none|nil|true|false)$/i,
   // Masking runs, in ONE case. The old pattern carried `i`, so `xXxXxXxXxX` —
@@ -275,9 +277,19 @@ function skipSpaces(text: string, from: number, stopAtNewline = true): number {
 function indentOfLineAt(text: string, offset: number): number {
   const lineStart = text.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
   let index = lineStart;
-  while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
-  return index - lineStart;
+  let column = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) {
+    // COLUMNS, not characters. Comparing raw counts made a four-space key and a
+    // tab continuation incommensurable, so whether a wrapped value was found at
+    // all depended on which whitespace the file happened to use.
+    column = text[index] === "\t" ? column + TAB_WIDTH - (column % TAB_WIDTH) : column + 1;
+    index += 1;
+  }
+  return column;
 }
+
+/** One tab stop, for comparing indentation written with tabs against spaces. */
+const TAB_WIDTH = 8;
 
 function isContinuationLine(line: string, keyIndent: number): boolean {
   const trimmed = line.trim();
@@ -300,11 +312,102 @@ function isContinuationLine(line: string, keyIndent: number): boolean {
   // report at `credential_evidence`.
   //
   // A continuation is indented further than its key. A sibling record is not.
-  const indent = line.length - line.trimStart().length;
-  return indent > keyIndent;
+  return indentOfLineAt(`\n${line}`, 1) > keyIndent;
 }
 
 type ValueSpan = { start: number; end: number; call?: boolean };
+
+/**
+ * The value of an `=`-family assignment: everything to the end of the line.
+ *
+ * `valueSpan` scans a character RUN and stops at `#`, `&`, `(`, `;`, a quote or a
+ * space. That is the right shape for a token inside a URL or a structure, and it
+ * is the wrong shape for a password — because a password may contain any of those
+ * characters, and the scanner then captured a two-character prefix and left the
+ * rest of the credential sitting in the text. Nine real leaks in one audit came
+ * from this, and the recorded span said "I assessed 2 characters and judged them
+ * harmless", which is indistinguishable from a correct suppression.
+ *
+ * For an assignment there is no need to know where the value ends: after `=`, the
+ * line IS the value. Three carve-outs, each because the line genuinely holds more
+ * than one field:
+ *
+ *   - a QUOTED value ends at its closing quote;
+ *   - a URL or query string (`://`, or a `?`/`&` before the key) keeps the tight
+ *     run, so `?api_key=x&sort=name` stays two fields;
+ *   - an inline structure (`{` or `}` on the line) keeps it too, so a JSON object
+ *     written on one line is not swallowed whole.
+ *
+ * A trailing ` #` or ` //` comment is left out, so the comment stays readable.
+ */
+function restOfLineValueSpan(text: string, from: number): ValueSpan | null {
+  const begin = skipSpaces(text, from);
+  if (begin === -1) return valueSpan(text, from);
+
+  // A quoted value is already unambiguous.
+  if (QUOTES.has(text[begin])) return valueSpan(text, from);
+
+  const lineStart = text.lastIndexOf("\n", Math.max(0, begin - 1)) + 1;
+  const before = text.slice(lineStart, begin);
+
+  // The line's PURPOSE must be the assignment.
+  //
+  // `The deploy config sets DB_PASSWORD=<your-password> in production.` is a
+  // sentence that happens to contain one, and taking the rest of that line
+  // redacted the prose around the placeholder. It is also what made the scan
+  // quadratic: on 80KB of `password=` with no newline, every token claimed the
+  // whole remaining line.
+  //
+  // So this applies only where the assignment starts the line, after nothing but
+  // whitespace, a list dash, or a declaring keyword.
+  if (
+    !/^\s*(?:[-*]\s*)?(?:(?:export|set|setenv|declare|readonly|env|arg)\s+)?"?[A-Za-z_$][A-Za-z0-9_$.\-[\]]*"?\s*[:=]{1,2}>?\s*$/i.test(
+      before,
+    )
+  ) {
+    return valueSpan(text, from);
+  }
+  if (before.includes("://") || before.includes("?") || before.includes("&")) {
+    return valueSpan(text, from);
+  }
+  const lineEndRaw = text.indexOf("\n", begin);
+  // Bounded by the same per-value cap as the run form, so one enormous line
+  // cannot make the scan quadratic.
+  const lineEnd = Math.min(
+    lineEndRaw === -1 ? text.length : lineEndRaw,
+    begin + MAX_VALUE_LENGTH,
+  );
+  const line = text.slice(begin, lineEnd);
+  if (line.includes("{") || line.includes("}")) return valueSpan(text, from);
+
+  // Drop a trailing comment, then trailing whitespace.
+  let end = begin + line.length;
+  for (const marker of [" #", "\t#", " //", "\t//"]) {
+    const at = line.indexOf(marker);
+    if (at !== -1) end = Math.min(end, begin + at);
+  }
+  while (end > begin && /\s/.test(text[end - 1])) end -= 1;
+  if (end <= begin) return null;
+
+  // A CALL is still a call when the whole line is taken.
+  //
+  // Shape alone is not enough: `Ab(Xk92mQvn7Lz)` has the shape and is a password.
+  // So the line must also read as code — a declaration keyword, a `:=`, or a
+  // SPACED `=`, which is how source is written and how an env file is not.
+  const value = text.slice(begin, end);
+  // An optional leading operator, because `token = await refreshToken();` is a
+  // call too and the bare-word allowlist cannot see it once the value is the
+  // whole line.
+  const looksCalled = /^(?:await\s+|new\s+|yield\s+|typeof\s+)?[A-Za-z_$][A-Za-z0-9_$.]*\(.*\)[;,]?$/.test(
+    value,
+  );
+  const codeContext =
+    /\b(?:const|let|var|return|await|async|function|import|export|new|yield)\b|:=|=>/.test(
+      text.slice(lineStart, begin),
+    ) || / =\s/.test(text.slice(lineStart, begin));
+
+  return { start: begin, end, call: looksCalled && codeContext };
+}
 
 function valueSpan(text: string, from: number): ValueSpan | null {
   let begin = skipSpaces(text, from);
@@ -578,7 +681,10 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
       // value worth removing is the token after it, and redacting the word
       // "Bearer" while leaving the token — which the first version did — is worse
       // than useless, because it looks like something was protected.
-      const assigned = valueSpan(scanned, after);
+      // On an `=`-family operator the value is the REST OF THE LINE, not a
+      // character run. See `restOfLineValueSpan`.
+      const assigned =
+        scanned[next] === "=" ? restOfLineValueSpan(scanned, after) : valueSpan(scanned, after);
       if (assigned && AUTH_SCHEMES.has(scanned.slice(assigned.start, assigned.end).toLowerCase())) {
         // The scheme introduces the credential, so the span worth taking is what
         // follows it — UNLESS nothing follows, in which case the scheme word IS
@@ -745,11 +851,17 @@ const HEADER_FIELD = /^"?[A-Za-z_][A-Za-z0-9_.()% -]{0,63}"?$/;
  * next line's `created_at` was destroyed as `credential_evidence` — the audit-7
  * defect this guard was written to fix, moved from JavaScript to SQL.
  */
-// The trailing `\s` matters: a statement verb is followed by its operands, while
-// a CSV field is followed by the delimiter. Without it, a header whose first
-// column is literally `from` disabled the form and a real CSV escaped.
-const SQL_STATEMENT_START =
-  /^\s*(?:select|insert|update|delete|with|from|where|order|group|having|join|union|create|alter|drop|values)\s/i;
+// Verbs that only ever start a statement. A column is never called `select`.
+const SQL_VERB_UNAMBIGUOUS =
+  /^\s*(?:select|insert|delete|from|where|having|join|union|create|alter|drop|values|with)\s/i;
+
+// Verbs that are also ordinary column words: `order date`, `update time`,
+// `group name`, `new value`, `set id`. These need a SECOND SQL keyword before the
+// line counts as a statement, which is what separates `ORDER BY id` from an
+// `order date` column — a distinction the single-verb test got wrong in the
+// direction that let a real CSV carrying a password escape unredacted.
+const SQL_VERB_AMBIGUOUS = /^\s*(?:order|group|update|set|new)\s+(\S+)/i;
+const SQL_FOLLOWER = /^(?:by|table|into|values|to|null|default)$/i;
 
 /**
  * Whether a LINE is a fragment of a statement rather than a row of data.
@@ -762,7 +874,9 @@ const SQL_STATEMENT_START =
  * begins with a column name.
  */
 function lineLooksLikeStatement(line: string): boolean {
-  return SQL_STATEMENT_START.test(line);
+  if (SQL_VERB_UNAMBIGUOUS.test(line)) return true;
+  const ambiguous = SQL_VERB_AMBIGUOUS.exec(line);
+  return ambiguous !== null && SQL_FOLLOWER.test(ambiguous[1]);
 }
 
 /**
@@ -784,7 +898,20 @@ function looksLikeSourceCode(line: string): boolean {
   // `lineLooksLikeStatement`, anchored at the start of the line — a per-field
   // keyword test disabled the form for any header with an ordinary two-word
   // column name (`order date`, `update time`), and real CSV escaped unredacted.
-  return /[{}]|=>/.test(line);
+  // Braces, arrows, or a statement keyword at the START of the line.
+  //
+  // Moving the keyword test from per-field to SQL-only lost every other
+  // language: `return user, password` over two lines was read as a CSV header
+  // plus a row, and the second line's column was destroyed at
+  // `credential_evidence` — an unclearable hold on two lines of ordinary code.
+  // Anchored and followed by whitespace, so a `from` or `return` COLUMN in a
+  // real CSV header is untouched.
+  return (
+    /[{}]|=>/.test(line) ||
+    /^\s*(?:return|await|async|const|let|var|function|def|class|import|export|yield|throw|new|if|for|while|switch|elif|lambda|print|echo|package|func|type|struct)\s/i.test(
+      line,
+    )
+  );
 }
 
 /**

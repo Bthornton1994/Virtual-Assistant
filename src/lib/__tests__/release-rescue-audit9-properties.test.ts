@@ -7,7 +7,12 @@ import {
   releaseRescueDeliveryGate,
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
-import { makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
+import {
+  makeFinding,
+  makeReportInput,
+  passingAssessments,
+  setAssessment,
+} from "@/lib/__tests__/release-rescue-fixtures";
 
 // The ninth audit, as tests.
 //
@@ -51,6 +56,20 @@ function generateCredentialValues(): string[] {
     for (const affix of affixes) {
       values.add(`${affix}${body}`);
       values.add(`${body}${affix}`);
+    }
+  }
+
+  // Characters INSIDE the value.
+  //
+  // Audit 10's largest finding class, and one this generator could not express:
+  // every affix above goes on an end, so a password containing `#`, `&`, `(`, a
+  // space or a quote was structurally unreachable. Those are exactly the
+  // characters `valueSpan` terminates on, so the scanner captured a two-character
+  // prefix and left the rest of the password in the text.
+  for (const body of bodies.slice(0, 4)) {
+    for (const inner of ["#", "&", "(", ";", "'", " ", "<", "|", "!", "$", "%", "*"]) {
+      values.add(`Ab${inner}${body}`);
+      values.add(`${body}${inner}cd`);
     }
   }
 
@@ -191,9 +210,24 @@ describe("the structural references are still readable, and still reported", () 
 });
 
 describe("the gate, over the generated corpus", () => {
+  // The fixture has to produce a report that would OTHERWISE be deliverable.
+  //
+  // The first version used the default `passingAssessments()` while attaching a
+  // finding, which is a contradiction deterministic validation rejects on its
+  // own: `deliverable` was false for an empty excerpt, for "hello world", and for
+  // a real password alike. The assertion below could not fail, and it was
+  // annotated as the one that speaks for the customer. Audit 10 found that, and
+  // it was right.
+  //
+  // `setAssessment(..., { outcome: "fail" })` makes the finding consistent with
+  // its check, so the gate's answer now depends on the excerpt.
   function reportWith(excerpt: string) {
     return buildReleaseRescueReport(
       makeReportInput({
+        assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+          outcome: "fail",
+          rationale: "Order lookup returns records the caller does not own.",
+        }),
         findings: [
           makeFinding({
             locations: [{ path: "config/app.env", startLine: 1, endLine: 1, excerpt }],
@@ -202,6 +236,16 @@ describe("the gate, over the generated corpus", () => {
       }),
     );
   }
+
+  it("is a fixture that can actually be delivered", () => {
+    // The guard on the guard. If this ever fails, every assertion below is
+    // vacuous again and says nothing about credentials.
+    const clean = reportWith("PORT=3000");
+    const gate = releaseRescueDeliveryGate(clean, validateReleaseRescueReport(clean));
+
+    expect(validateReleaseRescueReport(clean).hardFailures).toEqual([]);
+    expect(gate.deliverable, "the corpus assertions below are meaningless without this").toBe(true);
+  });
 
   it("delivers no report holding any generated credential", () => {
     const delivered: string[] = [];
@@ -223,6 +267,43 @@ describe("the gate, over the generated corpus", () => {
     // this is the one assertion that speaks for the customer.
   }, 60_000);
 
+  it("leaks no credential through a carrier the generator cannot express", () => {
+    // Multi-line and delimited carriers, which the corpus above cannot reach:
+    // every generated value goes through a single-line `operator_assignment`.
+    // Audit 10 named that as the pinned axis and found four leaks in it.
+    const S = "Xk92mQvn7Lz";
+    const CARRIERS: Array<[string, string]> = [
+      ["angle-wrapped value", `DB_PASSWORD=<${S}>`],
+      ["tab continuation under a space-indented key", `    DB_PASSWORD=\n\t${S}`],
+      ["space continuation under a tab-indented key", `\tDB_PASSWORD=\n            ${S}`],
+      ["csv with an ambiguous verb column", `order date,password,email\n2024-01-01,${S},a@b.com`],
+      ["csv with an update column", `update time,password\nx,${S}`],
+      ["csv with a from column", `from,password,to\na,${S},b`],
+      ["quoted value carrying a hash", `DB_PASSWORD="Ab#${S}"`],
+      ["value carrying a space", `DB_PASSWORD=Ab ${S}`],
+      ["value carrying parentheses", `DB_PASSWORD=Ab(${S})`],
+      ["url userinfo", `postgres://user:${S}@host:5432/db`],
+    ];
+    const leaked: string[] = [];
+
+    for (const [label, text] of CARRIERS) {
+      if (withoutPlaceholders(redactSecrets(text).redacted).includes(S)) leaked.push(label);
+    }
+
+    expect(leaked, `${leaked.length} carriers leaked the credential`).toEqual([]);
+  });
+
+  it("keeps the fields a line legitimately holds beside a credential", () => {
+    // The other side of taking the rest of the line: a query string is several
+    // fields, a JSON object written on one line is several values, and a trailing
+    // comment is not part of the password.
+    expect(redactSecrets("GET /v1?api_key=Xk92mQvn7Lz&sort=name").redacted).toContain("&sort=name");
+    expect(redactSecrets('{"password": "Xk92mQvn7Lz", "host": "db.internal"}').redacted)
+      .toContain("db.internal");
+    expect(redactSecrets("DB_PASSWORD=Xk92mQvn7Lz # rotate quarterly").redacted)
+      .toContain("# rotate quarterly");
+  });
+
   it("bricks no report over ordinary content", () => {
     // A `credential_evidence` hold cannot be cleared by any human, so each false
     // positive at that level is a permanent denial of service on a paid artifact.
@@ -237,6 +318,13 @@ describe("the gate, over the generated corpus", () => {
       "SELECT id, password, email\n  ORDER BY id, created_at, name",
       "user id,order date,email\n7,2024-01-01,a@b.com",
       "const cacheKey = `${userId}:${tenantId}`;",
+      'const STORAGE_KEY = "delegation-cloud-draft-v2";',
+      'export const PUBLIC_WEB_RESEARCHER_KEY = "public-web-researcher-v1" as const;',
+      "return user, password\nreturn admin, Xk92mQvn7Lz9",
+      // A CSV with a `password` column is NOT here: whatever sits under that
+      // header is a credential by the same rule that makes `DB_PASSWORD=password`
+      // a finding. Only a header with no credential column belongs in this list.
+      "order date,email,status\n2024-01-01,a@b.com,active",
     ];
     const bricked: string[] = [];
 
