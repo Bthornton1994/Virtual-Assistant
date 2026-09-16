@@ -2156,8 +2156,8 @@ declared on the format itself (`notCustomerVisible`), not kept in a list inside 
 test, with a dedicated test asserting the property holds. It is a bound, not a
 proof.
 
-This table has been measured twice and corrected twice, which is the point of
-keeping it. The first draft said "a camelCase claim fits them" and left it there;
+This table has been measured three times and corrected three times, which is the
+point of keeping it. The first draft said "a camelCase claim fits them" and left it there;
 a mutation run showed that sentence was understated, because the separated forms
 were already caught. The dotted and camelCase forms genuinely were not — and the
 same audit that found the identifier bound found that hole where it mattered
@@ -2183,19 +2183,64 @@ left whole, so `OAuth` and `SQL` are still one word each.
 | `thisappissecureandfreeofvulnerabilities` | **no** | — |
 | `THISAPPISSECURE` | **no** | — |
 
-The residual is now the two run-together forms, which carry no word boundary of
-any kind — no separator, no case transition. Catching them would mean searching
-for claim text inside longer words, which flags ordinary values. A test asserts
-every row, including the two that are NOT caught, so a later change that starts
+The residual is the two run-together forms, which carry no word boundary of any
+kind — no separator, no case transition. Catching them would mean searching for
+claim text inside longer words, which flags ordinary values. A test asserts every
+row, including the two that are NOT caught, so a later change that starts
 catching them flags this table as understated rather than letting it go stale in
 the safe direction.
+
+**The first version of that fix was a net regression, and this is the correction.**
+It REPLACED the tokenizer rather than adding to it, and a replacement can lose
+detections. The next audit found two it had lost, and one thing it had broken:
+
+| What | Before the change | After it |
+| --- | --- | --- |
+| `this application is secUre` | caught | **not caught** — `secUre` splits to `sec` + `ure` |
+| `...not a penetration test.Your application is secure` | caught | **not caught** — one clause, so the denial licensed the claim |
+| `src/utils/isSecure.ts` | clean | **read as the claim "is secure"** |
+
+The third is the worst of them. `isSecure` is one of the most common helper names
+in JavaScript, Go and C#, and `findings[].locations[].path` holds a path from the
+**customer's** repository — so a customer bought a $299 review and got an
+undeliverable report, with a message asserting that their own filename makes a
+prohibited claim. `VISION.md`'s boundary is that the review is prepare-only and
+honest; refusing to deliver over a filename is neither. This workstream has now
+shipped the too-strict failure three times, and this is the first one triggered by
+data the product does not control.
+
+**So the rules are additive.** `findProhibitedClaims` takes the **union** over
+several tokenizer modes, and the baseline mode — words as ordinary prose splits
+them — is in every set. A mode can add a detection and can never remove one. That
+is the structural property that stops a future tightening from becoming an
+evasion, and a test asserts it directly rather than leaving it to the docblock.
+
+Path-valued fields read under the baseline mode alone, declared per field in the
+policy as `valueIsAPath` rather than as a list inside the checker. The separated
+forms are still caught there — `acme/we-deliver-a-penetration-test` is refused,
+because a hyphen is a separator — and the measured residual is the run-together
+form in a path (`acme/WeDeliverAPenetrationTest`), which a test records.
+
+The two lost detections are now property tests derived from the **offer's own
+claim list** rather than from anything the tokenizer believes, which is what
+makes them able to falsify it: every prohibited claim, with every single
+character upper-cased in turn (500+ variants), must still be found; and every
+denial/claim pair across a full stop, with and without the following space, must
+still be refused.
 
 **The cost was measured too, and paid down rather than absorbed.** Adding token
 boundaries made `findProhibitedClaims` slower, and one property suite went from
 passing to a 5-second timeout. The cause was not the new boundaries: the guard
 re-tokenised the whole prohibited-claim list on every call, three times over. The
-list is a constant, so it is tokenised once now. That suite runs in 1.3s, faster
-than before the tokenizer changed at all.
+list is a constant and is tokenised once per mode now. That suite runs in ~1.3s,
+faster than before the tokenizer changed at all.
+
+**One more thing the mutation run corrected.** The path-reading test passed even
+with the policy ignoring `valueIsAPath` entirely, because it called
+`findProhibitedClaims` directly instead of going through the assembler and the
+gate. Testing one function in isolation and calling the result a property of the
+system is the same mistake recorded one section up; the test now builds a report
+whose finding points at `src/utils/isSecure.ts` and asserts the gate opens.
 
 **The test was rewritten to be capable of failing.** It plants nine payloads per
 path — space, hyphen, underscore, dot, camelCase, slash, two Unicode separators
@@ -2227,8 +2272,8 @@ gap could not exist; it was wrong, and the comment is corrected in v11's header
 rather than left to be rediscovered.
 
 `supabase/qa/release_rescue_structured_observations_v10_proof.sql` proves v10 live
-in **31 labelled cases**, and `release_rescue_code_fields_v11_proof.sql` proves
-v11 in **30**, every one of them the audit's own payload refused, including the whole narrative list crossed with all four
+in **30 labelled cases**, and `release_rescue_code_fields_v11_proof.sql` proves
+v11 in **29**, every one of them the audit's own payload refused, including the whole narrative list crossed with all four
 levels of the payload (100+ insert attempts), and — asserted first, deliberately —
 that the report the product actually produces is still storable. Three audits in
 this workstream have found a guard that refused everything; a $299 artifact nobody
@@ -2241,7 +2286,7 @@ and `RR-` plus three digits for a finding's label. It covers the seven identifie
 paths, checks a field only when that field is PRESENT (absence is a different
 question, and answering it here would make the guard stricter than the
 application), and folds into the same single guard function for the same reason.
-`release_rescue_identifier_shape_v12_proof.sql` proves it live in **18 labelled
+`release_rescue_identifier_shape_v12_proof.sql` proves it live in **17 labelled
 cases**, including the audit's own payload at all six reachable identifier paths,
 nine punctuation forms crossed with four fields, and — in the other direction —
 40 generated UUIDs and all 999 finding labels accepted. A test pins the five demo

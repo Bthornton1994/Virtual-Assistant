@@ -77,6 +77,21 @@ export type FieldRule = {
   readonly disposition: FieldDisposition;
   /** Why this decision. Required: an unexplained exemption is how coverage rots. */
   readonly because: string;
+  /**
+   * This field holds a repository path or ref, not prose.
+   *
+   * It changes how the claim guard reads it: a path is a machine value, and
+   * `src/utils/isSecure.ts` is a filename rather than an assertion that
+   * anything is secure. Splitting it on case transitions read it as the
+   * prohibited claim "is secure" and made the report undeliverable for any
+   * customer whose repository contained one — which is most of them, in three
+   * of the languages this offer reviews.
+   *
+   * Declared here rather than as a list inside the checker, so a new
+   * path-valued field is a visible decision in the policy. Only `guarded`
+   * fields consult it; nothing else reads a value as prose.
+   */
+  readonly valueIsAPath?: true;
 };
 
 /**
@@ -122,11 +137,13 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
   "$.scope.repository.accessMode": { disposition: "generated", because: "A closed enum, validated at intake." },
   "$.scope.repository.repositoryRef": {
     disposition: "guarded",
-    because: "Customer-supplied at intake and shown in the report header.",
+    valueIsAPath: true,
+    because: "Customer-supplied at intake and shown in the report header. A repository ref, so the claim guard reads it as a path.",
   },
   "$.scope.repository.defaultBranch": {
     disposition: "guarded",
-    because: "Customer-supplied free text, shown to the customer.",
+    valueIsAPath: true,
+    because: "Customer-supplied, shown to the customer. A branch name, so the claim guard reads it as a path.",
   },
 
   // --- assessments ---
@@ -144,6 +161,7 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
   "$.assessments[].evidence[].kind": { disposition: "generated", because: "A closed enum the rubric module defines." },
   "$.assessments[].evidence[].path": {
     disposition: "guarded",
+    valueIsAPath: true,
     because:
       "A repository path an executor cites. It is the last class of value taken from the customer's repository that still reaches the report, so it is checked like any other free text.",
   },
@@ -177,12 +195,14 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
   },
   "$.findings[].locations[].path": {
     disposition: "guarded",
+    valueIsAPath: true,
     because:
       "A repository path an executor writes. Bounded and grammar-checked by the finding schema, but still a value derived from the customer's repository, so it carries the guarded contract.",
   },
   "$.findings[].evidence[].kind": { disposition: "generated", because: "A closed enum the rubric module defines." },
   "$.findings[].evidence[].path": {
     disposition: "guarded",
+    valueIsAPath: true,
     because: "A repository path an executor cites as evidence; same contract as a finding location.",
   },
   // --- what sanitisation removed ---
@@ -377,16 +397,7 @@ const JSON_PATH: GeneratedFormat = {
   pattern: /^\$(?:\.[A-Za-z0-9_]+|\[\d+\])*$/,
   because: "A JSON path this codebase produced when it recorded a hold.",
 };
-/**
- * Identifiers this codebase MINTS, so the format is what we actually produce
- * rather than a generic identifier grammar.
- *
- * `rescue_${randomUUID()}` in `ai-app-release-rescue/engagement.ts` is the
- * production form; the short dashed forms are the demo and fixture ids. The
- * tightness is the point: audit 17's payload, 47 characters of eight
- * hyphen-separated words, does not fit, and a generic
- * `[A-Za-z0-9][A-Za-z0-9._-]*` grammar would have accepted it.
- */
+/** A canonical lowercase UUID, which is what every identifier column here is. */
 const UUID_SHAPE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
 function escapeForPattern(value: string): string {
@@ -600,7 +611,7 @@ export function checkReportFieldCoverage(report: unknown): CoverageFailure[] {
         failures.push({ path: leaf.path, reason: `"${leaf.normalized}" must not appear in a report.` });
         break;
       case "guarded": {
-        for (const claim of findProhibitedClaims(leaf.value)) {
+        for (const claim of findProhibitedClaims(leaf.value, rule.valueIsAPath ? "path" : "prose")) {
           failures.push({
             path: leaf.path,
             reason: `Makes a prohibited claim ("${claim}"): "${leaf.value.slice(0, 120)}".`,

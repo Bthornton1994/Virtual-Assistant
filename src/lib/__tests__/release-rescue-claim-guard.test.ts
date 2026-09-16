@@ -162,7 +162,7 @@ describe("the marketing surface makes no prohibited claim", () => {
     // Proves the extractor reaches the kind of text these files contain.
     const planted = `export const COPY = "We deliver a penetration test of your application.";`;
 
-    expect(visibleStrings(planted).flatMap(findProhibitedClaims)).toContain("penetration test");
+    expect(visibleStrings(planted).flatMap((text) => findProhibitedClaims(text))).toContain("penetration test");
   });
 });
 

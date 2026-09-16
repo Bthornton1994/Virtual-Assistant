@@ -625,31 +625,69 @@ function stemWord(word: string): string {
 }
 
 /**
- * Splits text into tokens, recording clause and sentence breaks.
+ * How a value is split into words.
  *
- * Hyphens, underscores and slashes are separators with NO break, which is what
- * makes "penetration-test" and "pen/test" read as the phrases they are.
+ * There is more than one defensible answer, and the reason this is a set of
+ * MODES rather than one tokenizer is a regression an audit caught.
  *
- * Two further rules, both added because a claim written without spaces got past
- * the guard and into a customer-visible field:
+ * A previous version REPLACED the tokenizer: it made a lower-to-upper
+ * transition a word boundary, and an in-word full stop a separator, to catch
+ * `ThisAppIsSecure` and `this.app.is.secure`. Both are real catches. But a
+ * replacement can LOSE detections, and this one lost two classes:
  *
- *   A LOWER-TO-UPPER TRANSITION IS A WORD BOUNDARY. `ThisAppIsSecure` is four
- *   words in every sense that matters here, and reading it as one token is how
- *   it reached the reviewer's display name on a delivered report. The boundary
- *   carries no break, so the phrase still matches across it. Runs of capitals
- *   are left alone — `OAuth` and `SQL` stay whole, because the transition rule
- *   only fires where a lowercase letter or digit is followed by a capital.
+ *   * `secUre` had been one word, lowercased to `secure` and caught. Split, it
+ *     is `sec` + `ure` and matches nothing. One stray capital defeated the
+ *     entire guard — including on a reviewer's display name, the field the
+ *     change was made to protect.
+ *   * `...penetration test.Your application is secure` had been two sentences,
+ *     so the denial in the first could not license the claim in the second.
+ *     With the full stop demoted, one missing space put them in one clause and
+ *     the negation licensed the claim.
  *
- *   A FULL STOP ENDS A SENTENCE ONLY WHEN SOMETHING SEPARATES IT FROM THE NEXT
- *   WORD. `this.app.is.secure` is not four sentences, and treating it as four
- *   was what let a dotted claim through: a sentence break between every pair of
- *   words means no phrase can ever match. Between two words with no space, a
- *   full stop now reads as a separator, the same as a hyphen. A real sentence
- *   ending — a full stop followed by a space, a newline, or the end of the text
- *   — still breaks, which is what keeps a claim from being assembled out of the
- *   end of one sentence and the start of the next.
+ * So the rules are additive now, and the guard takes the UNION of what every
+ * mode finds. A mode can only ever ADD a detection. That is the property, and a
+ * test asserts it directly: for any value, the union is a superset of what the
+ * baseline mode alone finds. A future mode cannot become an evasion.
  */
-function tokenizeClaimText(text: string): ClaimToken[] {
+type TokenizerMode = {
+  /** Treat a lower-to-upper transition as a word boundary: `ThisAppIsSecure`. */
+  readonly splitCaseTransitions: boolean;
+  /** Treat a full stop between two word characters as a separator, not a sentence end. */
+  readonly inWordFullStopSeparates: boolean;
+};
+
+/**
+ * Words as ordinary prose splits them. The mode that must always run.
+ *
+ * It is what the guard did before the modes existed, so including it is what
+ * makes "a mode can only add a detection" true rather than aspirational.
+ */
+const BASELINE_MODE: TokenizerMode = { splitCaseTransitions: false, inWordFullStopSeparates: false };
+const CASE_SPLIT_MODE: TokenizerMode = { splitCaseTransitions: true, inWordFullStopSeparates: false };
+const DOTTED_MODE: TokenizerMode = { splitCaseTransitions: false, inWordFullStopSeparates: true };
+
+/** Prose a person wrote: every mode applies. */
+const PROSE_MODES: readonly TokenizerMode[] = [BASELINE_MODE, CASE_SPLIT_MODE, DOTTED_MODE];
+
+/**
+ * A repository path or ref: the baseline mode only.
+ *
+ * `src/utils/isSecure.ts` is a filename, not an assertion that anything is
+ * secure, and `isSecure` is one of the most common helper names there is in
+ * JavaScript, Go and C#. Under the case-splitting mode it read as the
+ * prohibited claim "is secure", which made the report undeliverable for any
+ * customer whose repository contained one — a $299 review refused because of
+ * the customer's own filename, decided by data the product does not control.
+ *
+ * These fields are grammar-checked machine values, so the claim forms worth
+ * catching in them are the separated ones, and the baseline mode catches those:
+ * `acme/we-deliver-a-penetration-test` is refused, because a hyphen is a
+ * separator. The measured residual is the run-together form in a path
+ * (`acme/WeDeliverAPenetrationTest`), which a test records rather than hides.
+ */
+const PATH_MODES: readonly TokenizerMode[] = [BASELINE_MODE];
+
+function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): ClaimToken[] {
   const tokens: ClaimToken[] = [];
   const characters = [...text];
   let word = "";
@@ -667,22 +705,26 @@ function tokenizeClaimText(text: string): ClaimToken[] {
     const character = characters[index];
 
     if (/[a-z0-9']/i.test(character)) {
-      if (/[A-Z]/.test(character) && /[a-z0-9]/.test(word.slice(-1))) flush();
+      // A case transition splits the word but carries no break, so a phrase
+      // still matches across it. Runs of capitals are left whole, which is why
+      // this fires only after a lowercase letter or digit: `OAuth` and `SQL`
+      // stay one word each.
+      if (mode.splitCaseTransitions && /[A-Z]/.test(character) && /[a-z0-9]/.test(word.slice(-1))) {
+        flush();
+      }
       word += character;
       continue;
     }
 
     flush();
 
-    // A full stop between two word characters is punctuation inside a token,
-    // not the end of a sentence.
     const joinsTwoWords =
       character === "." &&
       index > 0 &&
       /[a-z0-9]/i.test(characters[index - 1]) &&
       index + 1 < characters.length &&
       /[a-z0-9]/i.test(characters[index + 1]);
-    if (joinsTwoWords) continue;
+    if (mode.inWordFullStopSeparates && joinsTwoWords) continue;
 
     if (SENTENCE_MARKS.has(character)) pending = "sentence";
     else if (CLAUSE_MARKS.has(character) && pending !== "sentence") pending = "clause";
@@ -692,8 +734,8 @@ function tokenizeClaimText(text: string): ClaimToken[] {
 }
 
 /** Lowercased, whitespace-normalised, punctuation-stripped word tokens. */
-function tokenize(text: string): string[] {
-  return tokenizeClaimText(text).map((token) => token.word);
+function tokenize(text: string, mode: TokenizerMode = BASELINE_MODE): string[] {
+  return tokenizeClaimText(text, mode).map((token) => token.word);
 }
 
 /**
@@ -713,14 +755,18 @@ function tokenize(text: string): string[] {
  * module scope, because `RELEASE_RESCUE_OFFER` is defined in this file and
  * evaluation order would otherwise matter.
  */
-let claimStemsCache: ReadonlyArray<{ claim: string; stems: readonly string[] }> | null = null;
+const claimStemsCache = new Map<TokenizerMode, ReadonlyArray<{ claim: string; stems: readonly string[] }>>();
 
-function prohibitedClaimStems(): ReadonlyArray<{ claim: string; stems: readonly string[] }> {
-  claimStemsCache ??= RELEASE_RESCUE_OFFER.prohibitedClaims.map((claim) => ({
-    claim,
-    stems: tokenizeClaimText(claim).map((token) => token.stem),
-  }));
-  return claimStemsCache;
+function prohibitedClaimStems(mode: TokenizerMode): ReadonlyArray<{ claim: string; stems: readonly string[] }> {
+  let cached = claimStemsCache.get(mode);
+  if (!cached) {
+    cached = RELEASE_RESCUE_OFFER.prohibitedClaims.map((claim) => ({
+      claim,
+      stems: tokenizeClaimText(claim, mode).map((token) => token.stem),
+    }));
+    claimStemsCache.set(mode, cached);
+  }
+  return cached;
 }
 
 function claimOccurrences(tokens: readonly ClaimToken[], wanted: readonly string[]): number[] {
@@ -761,8 +807,8 @@ function clauseEndIndex(tokens: readonly ClaimToken[], index: number): number {
   return tokens.length;
 }
 
-function containsNegation(clause: string): boolean {
-  const tokens = tokenize(clause);
+function containsNegation(clause: string, mode: TokenizerMode): boolean {
+  const tokens = tokenize(clause, mode);
   if (tokens.some((token) => NEGATION_TOKENS.has(token))) return true;
   const normalised = tokens.join(" ");
   return NEGATION_PHRASES.some((phrase) => normalised.includes(phrase));
@@ -852,11 +898,11 @@ function referralLicenses(
  * test") and a referral ("customers who need penetration testing should engage
  * a qualified specialist") are required copy, not violations.
  */
-export function findProhibitedClaims(text: string): string[] {
-  const tokens = tokenizeClaimText(text);
+function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
+  const tokens = tokenizeClaimText(text, mode);
   if (tokens.length === 0) return [];
 
-  const claims = prohibitedClaimStems();
+  const claims = prohibitedClaimStems(mode);
 
   // Every token belonging to ANY prohibited phrase, so a multi-item referral can
   // tell "another item it is referring away" from unrelated material.
@@ -880,7 +926,7 @@ export function findProhibitedClaims(text: string): string[] {
         .slice(clauseStartIndex(tokens, start), start)
         .map((token) => token.word)
         .join(" ");
-      if (containsNegation(clauseBefore)) continue;
+      if (containsNegation(clauseBefore, mode)) continue;
       if (referralLicenses(tokens, start, start + length, claimTokenIndices)) continue;
       found.push(claim);
       break;
@@ -889,4 +935,39 @@ export function findProhibitedClaims(text: string): string[] {
 
   return found;
 }
+
+/** What kind of value is being checked, which decides the tokenizer modes. */
+export type ClaimTextKind = "prose" | "path";
+
+/**
+ * Guards any customer-facing string this offer produces against the claims it
+ * must never make. Used by the report contract and by a test that runs it over
+ * every marketing surface, so one list genuinely governs both.
+ *
+ * Reports an affirmative claim only. A denial ("this is not a penetration
+ * test") and a referral ("customers who need penetration testing should engage
+ * a qualified specialist") are required copy, not violations.
+ *
+ * The answer is the UNION over every tokenizer mode for this kind of value, and
+ * `BASELINE_MODE` is in every set. That is deliberate and load-bearing: a mode
+ * can add a detection and can never remove one, so tightening how words are
+ * split cannot open an evasion. See `TokenizerMode` for the two evasions a
+ * REPLACEMENT opened when this was one tokenizer instead of several.
+ *
+ * `kind` is "prose" unless the caller knows the value is a repository path or
+ * ref, which the field-coverage policy declares per field rather than guessing.
+ */
+export function findProhibitedClaims(text: string, kind: ClaimTextKind = "prose"): string[] {
+  const modes = kind === "path" ? PATH_MODES : PROSE_MODES;
+  const found = new Set<string>();
+
+  for (const mode of modes) {
+    for (const claim of claimsUnderMode(text, mode)) found.add(claim);
+  }
+
+  // Ordered by the offer's own list rather than by which mode spoke first, so
+  // the result does not depend on the order the modes happen to be tried in.
+  return RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => found.has(claim));
+}
+
 

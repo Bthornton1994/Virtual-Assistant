@@ -60,7 +60,7 @@ import {
   findInternalIdentityLeaks,
   toCustomerReportView,
 } from "@/lib/release-rescue-presentation";
-import { REPOSITORY_ACCESS_MODES, findProhibitedClaims } from "@/lib/release-rescue-intake";
+import { REPOSITORY_ACCESS_MODES, RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import { SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
 import { scanForSecrets } from "@/lib/release-rescue-redaction";
 import { RELEASE_RESCUE_RUBRIC_V1 } from "@/lib/release-rescue-rubric";
@@ -1697,6 +1697,237 @@ describe("9. a code field holds a code, and nothing else, on the production path
 
     expect(every.length).toBeGreaterThan(100);
     expect(every.filter((code) => !shape.test(code))).toEqual([]);
+  });
+
+  it("is not defeated by one stray capital inside a claim word", () => {
+    // Audit 19, blocking. The first version of the camelCase rule REPLACED the
+    // tokenizer instead of adding a mode, and a replacement can lose
+    // detections. `secUre` had been one word, lowercased to `secure` and
+    // caught; split on the case transition it is `sec` + `ure` and matches
+    // nothing. One capital defeated the whole guard — including on
+    // `reviewedBy.displayName`, the field the change was made to protect.
+    //
+    // This property is derived from the OFFER'S OWN CLAIM LIST rather than from
+    // anything the tokenizer believes, which is what makes it able to falsify
+    // the tokenizer. Every claim, with every single character upper-cased in
+    // turn, must still be found.
+    let checked = 0;
+    const missed: string[] = [];
+
+    for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
+      const sentence = `our review confirms ${claim} for this application`;
+      for (let index = 0; index < sentence.length; index += 1) {
+        const character = sentence[index];
+        if (!/[a-z]/.test(character)) continue;
+        const variant = `${sentence.slice(0, index)}${character.toUpperCase()}${sentence.slice(index + 1)}`;
+        checked += 1;
+        if (!findProhibitedClaims(variant).includes(claim)) missed.push(`${claim} @${index}`);
+      }
+    }
+
+    expect(checked, "no variants were generated, so this proves nothing").toBeGreaterThan(500);
+    expect(missed.slice(0, 10), `${missed.length} of ${checked} capitalisations evaded the guard`).toEqual([]);
+  });
+
+  it("is not defeated by a missing space after a full stop", () => {
+    // Audit 19, blocking. Demoting an in-word full stop from a sentence end to
+    // a separator let a denial in one sentence license an affirmative claim in
+    // the next: "This is not a penetration test.Your application is secure."
+    // read as one clause, the negation applied, and the claim passed. One
+    // missing space — a common typo, and trivially author-controlled.
+    const DENIALS = [
+      "This is not a penetration test",
+      "We make no claim of any kind",
+      "Penetration testing is out of scope",
+      "No warranty is offered",
+    ];
+    const missed: string[] = [];
+    let checked = 0;
+
+    for (const denial of DENIALS) {
+      for (const claim of ["is secure", "free of vulnerabilities", "no vulnerabilities"]) {
+        for (const gap of ["", " ", "  "]) {
+          const text = `${denial}.${gap}Your application ${claim}.`;
+          checked += 1;
+          if (findProhibitedClaims(text).length === 0) missed.push(JSON.stringify(text));
+        }
+      }
+    }
+
+    expect(checked).toBeGreaterThan(30);
+    expect(missed, `${missed.length} denial/claim pairs were licensed across a full stop`).toEqual([]);
+  });
+
+  it("reads a repository path as a path, not as prose", () => {
+    // Audit 19, blocking, and the other direction — the one this workstream has
+    // now got wrong three times. Splitting on case transitions made
+    // `src/utils/isSecure.ts` read as the prohibited claim "is secure", so a
+    // customer whose repository contained an `isSecure` helper bought a $299
+    // review and got an undeliverable report, with a message asserting that
+    // their own filename makes a prohibited claim. `isSecure` is one of the
+    // most common helper names there is.
+    //
+    // These are real names from JavaScript, TypeScript, Go and C#.
+    const ORDINARY_PATHS = [
+      "src/utils/isSecure.ts",
+      "src/lib/isSecureContext.ts",
+      "src/Http/Request.IsSecureConnection.cs",
+      "internal/net/IsSecure.go",
+      "src/hooks/useIsSecure.ts",
+      "packages/ui/src/PenTestBanner.tsx",
+      "src/pages/SecurityCertificationPage.tsx",
+      "config/noVulnerabilities.yaml",
+      "app/api/securityCertification/route.ts",
+      "src/components/FullySecureBadge.tsx",
+    ];
+
+    for (const path of ORDINARY_PATHS) {
+      expect(findProhibitedClaims(path, "path"), `${path} must not read as a claim`).toEqual([]);
+    }
+
+    // And the guard still does its job on a path: the separated forms, which are
+    // how a repository or branch name is actually written, are caught.
+    for (const written of [
+      "acme/we-deliver-a-penetration-test",
+      "acme/we_deliver_a_penetration_test",
+      "feature/this-app-is-secure",
+    ]) {
+      expect(findProhibitedClaims(written, "path"), `${written} must still be caught`).not.toEqual([]);
+    }
+
+    // The measured residual, recorded rather than hidden: a run-together claim
+    // in a path is NOT caught, because catching it is what broke the paths
+    // above. If this starts being caught, this test is the thing that flags it.
+    expect(
+      findProhibitedClaims("acme/WeDeliverAPenetrationTest", "path"),
+      "if this is now caught, the documented residual is understated",
+    ).toEqual([]);
+  });
+
+  it("still delivers a report about a repository containing an isSecure helper", () => {
+    // The end-to-end form, and the reason it exists: a mutation run showed the
+    // path-reading test above passed even with the policy ignoring
+    // `valueIsAPath` entirely, because it called `findProhibitedClaims`
+    // directly. Testing one function in isolation and calling the result a
+    // property of the system is how a test comes to disagree with production —
+    // which this file already says about an earlier round, one level up.
+    //
+    // So this goes through the real entry point and the real gate.
+    const withPath = (path: string) =>
+      buildReleaseRescueReport(
+        makeReportInput({
+          findings: [
+            makeFinding({
+              locations: [{ path, startLine: 12, endLine: 20 }],
+              evidence: [{ kind: "code_reference", path, startLine: 12, endLine: 20 }],
+            }),
+          ],
+          assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+            outcome: "fail",
+            rationaleCode: "control_missing_on_a_reachable_path",
+          }),
+        }),
+      );
+
+    for (const path of [
+      "src/utils/isSecure.ts",
+      "src/lib/isSecureContext.ts",
+      "internal/net/IsSecure.go",
+      "src/hooks/useIsSecure.ts",
+      "src/components/FullySecureBadge.tsx",
+    ]) {
+      const report = withPath(path);
+      const coverage = checkReportFieldCoverage(report);
+      const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
+
+      expect(coverage, `${path}: a customer's own filename must not fail field coverage`).toEqual([]);
+      expect(gate.deliverable, `${path}: ${gate.blockers.join("; ")}`).toBe(true);
+    }
+
+    // The control, so this is not passing because the fixture is undeliverable
+    // for some unrelated reason: the same report with a claim in a PROSE
+    // guarded field is still refused.
+    const claimed = buildReleaseRescueReport(
+      makeReportInput({
+        reviewedBy: {
+          operatorUserId: FIXTURE_OPERATOR_ID,
+          displayName: "Certified Secure Reviews Ltd",
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }),
+    );
+    expect(
+      checkReportFieldCoverage(claimed).map((failure) => failure.reason).join(" "),
+      "a claim in a prose guarded field must still be refused",
+    ).toContain("certified secure");
+  });
+
+  it("lets a tokenizer mode add a detection and never remove one", () => {
+    // The structural property, and the reason the two evasions above cannot
+    // recur. The guard takes the UNION over its tokenizer modes, and the
+    // baseline mode is in every set — so `prose` (three modes) can only ever be
+    // a superset of `path` (the baseline alone).
+    //
+    // Asserted over values of every shape the report carries, because a rule
+    // that holds only for the examples someone thought of is the rule five
+    // audits walked through.
+    const CORPUS = [
+      "This app is secure and free of vulnerabilities.",
+      "ThisAppIsSecure",
+      "this.app.is.secure.and.free.of.vulnerabilities",
+      "we deliver a penetration teSt",
+      "src/utils/isSecure.ts",
+      "acme/we-deliver-a-penetration-test",
+      "This is not a penetration test.Your application is secure.",
+      "Ops Manager",
+      "",
+      "grok-4.6",
+      ...RELEASE_RESCUE_OFFER.prohibitedClaims,
+      ...STANDING_DISCLAIMERS,
+    ];
+
+    for (const text of CORPUS) {
+      const prose = findProhibitedClaims(text, "prose");
+      const path = findProhibitedClaims(text, "path");
+      for (const claim of path) {
+        expect(prose, `"${text}": the path reading found ${claim} and the prose reading did not`).toContain(claim);
+      }
+      // And the result is ordered by the offer's list, not by which mode spoke.
+      expect(prose, `"${text}": claims must be reported in a stable order`).toEqual(
+        RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => prose.includes(claim)),
+      );
+    }
+  });
+
+  it("declares which guarded fields hold a path, rather than guessing", () => {
+    // The path reading is a real relaxation, so which fields get it is a
+    // decision recorded in the policy rather than a list inside the checker.
+    // This pins the set: five machine-valued fields, and `displayName` — the
+    // one guarded field that holds prose a person wrote — deliberately not
+    // among them.
+    const pathTyped = Object.entries(REPORT_FIELD_POLICY)
+      .filter(([, rule]) => rule.valueIsAPath)
+      .map(([path]) => path)
+      .sort();
+
+    expect(pathTyped).toEqual(
+      [
+        "$.assessments[].evidence[].path",
+        "$.findings[].evidence[].path",
+        "$.findings[].locations[].path",
+        "$.scope.repository.defaultBranch",
+        "$.scope.repository.repositoryRef",
+      ].sort(),
+    );
+
+    // Every one of them is `guarded`; nothing else consults the flag.
+    for (const path of pathTyped) {
+      expect(REPORT_FIELD_POLICY[path]?.disposition, path).toBe("guarded");
+    }
+
+    // And the prose field stays prose, which is what makes the audit-18 catch
+    // survive this relaxation.
+    expect(REPORT_FIELD_POLICY["$.reviewedBy.displayName"]?.valueIsAPath).toBeUndefined();
   });
 
   it("pins the two value sets that are inlined to avoid an import cycle", () => {
