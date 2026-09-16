@@ -234,6 +234,20 @@ export function summarizeDimensions(report: ReleaseRescueReportV1): DimensionSum
  * These are `verbatim_approved` in the field-coverage policy's sense: they
  * contain the prohibited phrases on purpose, because they are denying them.
  */
+/**
+ * What the customer sees when a stored code is not in this build's catalog.
+ *
+ * Two properties matter and only one is obvious. It must not crash or blank, so
+ * a report written against a newer catalog still renders — that is the obvious
+ * one. It must also not print the stored value, because an unknown code is
+ * precisely the case where that value is untrusted. An audit found the earlier
+ * `?? finding.observationCode` fallback rendering an auditor-supplied sentence,
+ * credential and all, straight into the customer's report.
+ */
+export const UNAVAILABLE_TITLE = "This finding's wording is not available in this build" as const;
+export const UNAVAILABLE_TEXT =
+  "The wording for this entry is not available in the version of the catalog this report was rendered with. The finding's location, severity and remediation scope above are unaffected." as const;
+
 export const STANDING_DISCLAIMERS: readonly string[] = Object.freeze([
   "This review is not a penetration test.",
   "This review is not a compliance certification.",
@@ -271,13 +285,17 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       // executor that wanted to put a credential in this paragraph would have to
       // add an entry to a file in the repository, which is a code review.
       //
-      // The fallbacks exist because this renderer must not throw on a stored
-      // artifact — a report written against a newer catalog and read by an older
-      // build should degrade to the code, not to a blank page or a crash.
-      title: observation?.title ?? finding.observationCode,
-      whatWeObserved: observation?.whatWeObserved ?? finding.observationCode,
+      // THE FALLBACK DOES NOT ECHO THE STORED VALUE. It used to, and an audit
+      // showed why that was the whole render path of a live defect: an unknown
+      // code is exactly the case where the stored string is untrusted, and
+      // `?? finding.observationCode` printed it to the customer verbatim. A
+      // report written against a newer catalog still must not crash or blank, so
+      // it degrades to a fixed sentence that says what happened and quotes
+      // nothing.
+      title: observation?.title ?? UNAVAILABLE_TITLE,
+      whatWeObserved: observation?.whatWeObserved ?? UNAVAILABLE_TEXT,
       whyItMatters: observation?.whyItMatters ?? "",
-      recommendation: remediation?.text ?? finding.remediationCode,
+      recommendation: remediation?.text ?? UNAVAILABLE_TEXT,
       locations: finding.locations.map((location) => ({
         path: location.path,
         lineRange: formatLines(location.startLine, location.endLine),
@@ -292,7 +310,7 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       residualUncertainty:
         finding.uncertaintyCode === null
           ? null
-          : (UNCERTAINTY_CATALOG[finding.uncertaintyCode as UncertaintyCode] ?? finding.uncertaintyCode),
+          : (UNCERTAINTY_CATALOG[finding.uncertaintyCode as UncertaintyCode] ?? UNAVAILABLE_TEXT),
       };
     })
     .sort(compareFindings);
@@ -348,7 +366,7 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       eligibleCount: findings.filter((finding) => finding.inRemediationSprintScope).length,
     },
     limitations: report.limitationCodes.map(
-      (code) => LIMITATION_CATALOG[code as LimitationCode] ?? code,
+      (code) => LIMITATION_CATALOG[code as LimitationCode] ?? UNAVAILABLE_TEXT,
     ),
     disclaimers: [...STANDING_DISCLAIMERS],
     preparedByKind: report.preparedBy.executorKind,

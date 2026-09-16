@@ -395,8 +395,66 @@ export const ASSESSMENT_RATIONALE_CATALOG: Readonly<
 
 // --- Observations ----------------------------------------------------------------
 
+/**
+ * Every observation code, as a literal tuple.
+ *
+ * Declared here rather than derived from `ENTRIES` because the derivation
+ * produced `readonly string[]`, and an audit measured what that cost. A
+ * `readonly string[]` cannot be handed to `z.enum`, so every call site carried
+ * `as [string, ...string[]]` — and that cast makes the schema's INFERRED TYPE
+ * plain `string`. The type system then constrained nothing: `composeFinding`
+ * accepted an arbitrary sentence as a code, `tsc` was happy, and the sentence
+ * rendered verbatim in the customer's report.
+ *
+ * A literal tuple gives `z.enum` a real union, which removes the cast, which
+ * makes the compiler refuse the call. `codesMatchEntries` below asserts this
+ * list and `ENTRIES` stay in step, so the explicitness costs nothing in safety.
+ */
+export const OBSERVATION_CODES = [
+  "secrets.literal_credential_in_repository",
+  "secrets.credential_in_repository_history",
+  "secrets.privileged_key_reaches_the_client",
+  "secrets.key_is_broader_than_the_workflow_needs",
+  "secrets.no_rotation_path_recorded",
+  "auth.check_runs_only_in_the_client",
+  "auth.route_reachable_without_authentication",
+  "auth.session_does_not_end_on_logout",
+  "auth.session_lifetime_is_unbounded",
+  "auth.recovery_token_is_reusable_or_long_lived",
+  "auth.recovery_endpoint_is_not_rate_limited",
+  "authz.record_lookup_is_not_scoped_to_the_caller",
+  "authz.mutation_is_not_scoped_to_the_caller",
+  "authz.tenant_boundary_is_application_only",
+  "authz.staff_and_customer_share_a_role",
+  "ai.model_visible_content_can_grant_authority",
+  "ai.tool_authority_is_not_declared",
+  "ai.model_output_is_trusted_at_its_sink",
+  "ai.no_usage_ceiling",
+  "data.workflow_data_is_not_inventoried",
+  "data.no_retention_limit_or_deletion_path",
+  "data.undocumented_third_party_egress",
+  "input.boundary_accepts_unvalidated_request",
+  "input.no_abuse_or_rate_limit",
+  "deps.known_vulnerable_dependency_on_a_reachable_path",
+  "release.preview_shares_production_credentials",
+  "release.no_tested_rollback_path",
+  "release.unsafe_shipped_default",
+  "observe.sensitive_action_leaves_no_trail",
+  "observe.logs_carry_secrets_or_customer_data",
+  "quality.critical_workflow_has_no_automated_test",
+  "quality.failure_path_is_unhandled",
+  "quality.type_or_lint_checks_are_not_enforced",
+  "docs.cannot_run_and_verify_locally",
+  "docs.no_known_limits_or_on_call_path",
+  "a11y.workflow_cannot_be_completed_by_keyboard",
+  "a11y.controls_lack_names_roles_or_announced_errors",
+  "a11y.contrast_or_motion_preferences_are_not_respected",
+] as const;
+
+export type ObservationCode = (typeof OBSERVATION_CODES)[number];
+
 export type ObservationEntry = {
-  readonly code: string;
+  readonly code: ObservationCode;
   readonly checkId: string;
   readonly dimension: RubricDimension;
   /**
@@ -420,7 +478,7 @@ export type ObservationEntry = {
 };
 
 function entry(
-  code: string,
+  code: ObservationCode,
   checkId: string,
   impact: FindingImpact,
   exploitability: FindingExploitability,
@@ -951,18 +1009,67 @@ export const STANDING_LIMITATIONS: readonly string[] = STANDING_LIMITATION_CODES
   (code) => LIMITATION_CATALOG[code],
 );
 
-export const OBSERVATION_CODES: readonly string[] = ENTRIES.map((observation) => observation.code);
-
-export const OBSERVATION_CATALOG: Readonly<Record<string, ObservationEntry>> = Object.freeze(
+export const OBSERVATION_CATALOG: Readonly<Record<ObservationCode, ObservationEntry>> = Object.freeze(
   Object.fromEntries(ENTRIES.map((observation) => [observation.code, observation])),
-);
+) as Readonly<Record<ObservationCode, ObservationEntry>>;
 
+// The tuple above is written by hand so `z.enum` gets a real union. This is what
+// stops that from drifting: a code in one and not the other throws at import,
+// which is the earliest possible moment and the hardest one to ignore.
+{
+  const declared = new Set<string>(OBSERVATION_CODES);
+  const defined = new Set(ENTRIES.map((observation) => observation.code));
+  const missingEntry = [...declared].filter((code) => !defined.has(code as ObservationCode));
+  const missingCode = [...defined].filter((code) => !declared.has(code));
+  if (missingEntry.length > 0 || missingCode.length > 0) {
+    throw new Error(
+      `OBSERVATION_CODES and ENTRIES disagree. Declared with no entry: ${missingEntry.join(", ") || "none"}. Entry with no declaration: ${missingCode.join(", ") || "none"}.`,
+    );
+  }
+  if (declared.size !== ENTRIES.length) {
+    throw new Error(`OBSERVATION_CODES contains a duplicate: ${ENTRIES.length} entries, ${declared.size} codes.`);
+  }
+}
+
+/**
+ * Looks up an observation. Takes `string`, deliberately.
+ *
+ * Callers include the presenter, which reads a STORED artifact that may have
+ * been written by a different build. Narrowing this to `ObservationCode` would
+ * make the caller cast, and a cast at a trust boundary is how the last defect
+ * got in. It returns `undefined` for an unknown code and the caller decides.
+ */
 export function getObservation(code: string): ObservationEntry | undefined {
-  return OBSERVATION_CATALOG[code];
+  return OBSERVATION_CATALOG[code as ObservationCode];
 }
 
 export function getRemediation(code: string): RemediationEntry | undefined {
   return REMEDIATION_CATALOG[code as RemediationCode];
+}
+
+/** Whether a string is a code this build knows. Used where a cast would otherwise be. */
+export function isObservationCode(code: string): code is ObservationCode {
+  return Object.prototype.hasOwnProperty.call(OBSERVATION_CATALOG, code);
+}
+
+export function isRemediationCode(code: string): code is RemediationCode {
+  return Object.prototype.hasOwnProperty.call(REMEDIATION_CATALOG, code);
+}
+
+export function isUncertaintyCode(code: string): code is UncertaintyCode {
+  return Object.prototype.hasOwnProperty.call(UNCERTAINTY_CATALOG, code);
+}
+
+export function isAssessmentRationaleCode(code: string): code is AssessmentRationaleCode {
+  return Object.prototype.hasOwnProperty.call(ASSESSMENT_RATIONALE_CATALOG, code);
+}
+
+export function isLimitationCode(code: string): code is LimitationCode {
+  return Object.prototype.hasOwnProperty.call(LIMITATION_CATALOG, code);
+}
+
+export function isClearanceReasonCode(code: string): code is ClearanceReasonCode {
+  return Object.prototype.hasOwnProperty.call(CLEARANCE_REASON_CATALOG, code);
 }
 
 /**

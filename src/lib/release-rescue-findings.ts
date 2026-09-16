@@ -13,9 +13,13 @@ import {
 import {
   getObservation,
   getRemediation,
+  isUncertaintyCode,
   OBSERVATION_CODES,
   REMEDIATION_CODES,
   UNCERTAINTY_CODES,
+  type ObservationCode,
+  type RemediationCode,
+  type UncertaintyCode,
 } from "@/lib/release-rescue-observation-catalog";
 import { getRubricCheck, rubricDimensionSchema, rubricEvidenceKindSchema } from "@/lib/release-rescue-rubric";
 
@@ -427,7 +431,7 @@ export const releaseRescueFindingV2Schema = z
     rubricCheckId: identifierString.max(200),
     dimension: rubricDimensionSchema,
     /** The catalog entry that supplies every word a customer reads for this finding. */
-    observationCode: z.enum(OBSERVATION_CODES as [string, ...string[]]),
+    observationCode: z.enum(OBSERVATION_CODES),
     /** The one judgement still left to an executor: did we prove it, or suspect it? */
     confidence: z.enum(FINDING_CONFIDENCES),
     /** Both derived from the observation catalog. Verified, not trusted. */
@@ -440,12 +444,12 @@ export const releaseRescueFindingV2Schema = z
     locations: z.array(findingLocationSchema).max(20),
     evidence: z.array(findingEvidenceSchema).max(10),
     /** One of the remediations the observation declares acceptable. */
-    remediationCode: z.enum(REMEDIATION_CODES as unknown as [string, ...string[]]),
+    remediationCode: z.enum(REMEDIATION_CODES),
     /** Both derived from the remediation catalog. Verified. */
     remediationEffort: z.enum(REMEDIATION_EFFORTS),
     inRemediationSprintScope: z.boolean(),
     /** Required when confidence is not `confirmed`; refused when it is. */
-    uncertaintyCode: z.enum(UNCERTAINTY_CODES as unknown as [string, ...string[]]).nullable(),
+    uncertaintyCode: z.enum(UNCERTAINTY_CODES).nullable(),
   })
   .strict();
 
@@ -459,19 +463,37 @@ export type ReleaseRescueFindingV1 = ReleaseRescueFindingV2;
 /**
  * The facts an executor supplies. Everything else is derived.
  *
- * This is the whole of what a caller may decide about a finding, and it is why
- * `validateFinding` can be a verification rather than a negotiation: there is no
- * input here that could contradict the catalog, because the contradictory fields
- * are not inputs.
+ * This is the whole of what a caller may decide about a finding. Every code
+ * field is the catalog's own union type, not `string`, which is the difference
+ * between a contract and a comment about one.
+ *
+ * An audit found the earlier version of this type declaring all three codes as
+ * `string`. `composeFinding` therefore accepted an arbitrary sentence as an
+ * `uncertaintyCode`, through a supported call with no cast: `tsc` passed,
+ * `validateFinding` returned ok, the credential scanner had no assignment
+ * construct to find, the field-coverage contract exempted the field on the
+ * strength of it being "a closed enum", and the sentence rendered verbatim in
+ * the customer's report. The words had been removed from the contract; the codes
+ * that replaced them were never constrained.
+ *
+ * Three things had to be true at once, and all three are now false:
+ *
+ *   1. this type said `string` — fixed here;
+ *   2. the schema's `z.enum` sat behind an `as [string, ...string[]]` cast that
+ *      erased its inferred type back to `string` — fixed in the catalog, which
+ *      declares a literal tuple so no cast is needed;
+ *   3. nothing on the production path checked the value at runtime — fixed in
+ *      `composeFinding` below and at the assembly boundary, which is where an
+ *      input that never meets a schema arrives.
  */
 export type FindingFacts = {
   findingId: string;
-  observationCode: string;
+  observationCode: ObservationCode;
   confidence: FindingConfidence;
-  remediationCode: string;
+  remediationCode: RemediationCode;
   locations: Array<z.infer<typeof findingLocationSchema>>;
   evidence: Array<z.infer<typeof findingEvidenceSchema>>;
-  uncertaintyCode?: string | null;
+  uncertaintyCode?: UncertaintyCode | null;
 };
 
 /**
@@ -499,6 +521,27 @@ export function composeFinding(facts: FindingFacts): ReleaseRescueFindingV2 {
   const check = getRubricCheck(observation.checkId);
   if (!check) {
     throw new Error(`Observation "${observation.code}" references unknown check "${observation.checkId}".`);
+  }
+
+  // Checked at runtime as well as in the type, because the type is a
+  // compile-time argument and this function is the runtime boundary. A caller
+  // holding the facts as `any`, or rebuilding them from a stored payload,
+  // reaches here with the compiler having had no say.
+  //
+  // `observationCode` and `remediationCode` were already checked above, by their
+  // catalog lookups. This one was not, and that asymmetry is exactly what the
+  // audit walked through.
+  //
+  // The message names the FIELD and never the value: it reaches logs, and the
+  // value is the thing suspected of carrying a credential.
+  if (
+    facts.uncertaintyCode !== undefined &&
+    facts.uncertaintyCode !== null &&
+    !isUncertaintyCode(facts.uncertaintyCode)
+  ) {
+    throw new Error(
+      "A finding's uncertaintyCode must be a code from the uncertainty catalog, not text. The offending value is withheld from this message deliberately.",
+    );
   }
 
   const severity = computeFindingSeverity({

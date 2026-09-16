@@ -1,5 +1,6 @@
 import { freezeScope, releaseRescueIntakeV1Schema, type ReleaseRescueScope } from "@/lib/release-rescue-intake";
 import { RELEASE_RESCUE_RUBRIC_V1 } from "@/lib/release-rescue-rubric";
+import type { AssessmentRationaleCode } from "@/lib/release-rescue-observation-catalog";
 import {
   composeFinding,
   type ReleaseRescueFindingV1,
@@ -74,7 +75,7 @@ export const SAMPLE_SCOPE: ReleaseRescueScope = freezeScope(DEMO_INTAKE);
 // exploitability, severity, blocking, effort, sprint scope — from the code.
 
 /** Checks the sample engagement records as failing, with the rationale code. */
-const FAILING: ReadonlyMap<string, string> = new Map([
+const FAILING: ReadonlyMap<string, AssessmentRationaleCode> = new Map([
   ["authz.object_level_authorization", "control_missing_on_a_reachable_path"],
   ["ai.tool_authority_is_bounded", "control_present_but_not_enforced"],
   ["release.environment_separation", "control_missing_on_a_reachable_path"],

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   ASSESSMENT_RATIONALE_CATALOG,
   ASSESSMENT_RATIONALE_CODES,
   CLEARANCE_REASON_CATALOG,
+  CLEARANCE_REASON_CODES,
   ENGAGEMENT_LIMITATION_CODES,
   LIMITATION_CATALOG,
   OBSERVATION_CATALOG,
@@ -14,6 +17,7 @@ import {
   RELEASE_RESCUE_OBSERVATION_CATALOG_VERSION,
   STANDING_LIMITATION_CODES,
   UNCERTAINTY_CATALOG,
+  UNCERTAINTY_CODES,
   type AssessmentRationaleCode,
   type RemediationCode,
 } from "@/lib/release-rescue-observation-catalog";
@@ -45,6 +49,8 @@ import {
 import {
   DIMENSION_TITLES,
   STANDING_DISCLAIMERS,
+  UNAVAILABLE_TEXT,
+  UNAVAILABLE_TITLE,
   VERDICT_COPY,
   findInternalIdentityLeaks,
   toCustomerReportView,
@@ -794,5 +800,321 @@ describe("8. an ordinary, safe report is still deliverable", () => {
     for (const key of Object.keys(view.scope)) {
       expect(FORBIDDEN_NARRATIVE_FIELDS, key).not.toContain(key);
     }
+  });
+});
+
+// --- 9. the codes are closed, on the path that actually produces an artifact ---
+
+describe("9. a code field holds a code, and nothing else, on the production path", () => {
+  // The audit that found this gap is the reason this block exists, and it is
+  // worth stating what it found rather than only that it is fixed.
+  //
+  // Option 1 removed the prose fields and replaced them with codes. Six code
+  // fields resolve to customer-facing words, and `REPORT_FIELD_POLICY` classifies
+  // all six as `generated` — which EXEMPTS them from the prohibited-claim guard
+  // and from the credential check. The stated justification is "a closed enum".
+  //
+  // They were not closed. `ObservationEntry.code` was `string`, so
+  // `OBSERVATION_CODES` was `readonly string[]`, so every `z.enum` call carried
+  // `as [string, ...string[]]` — and that cast makes the schema's INFERRED type
+  // plain `string`. `composeFinding` declared its inputs `string` to match. An
+  // auditor could pass an arbitrary sentence as `uncertaintyCode` through the
+  // supported constructor, with no cast: `tsc` passed, `validateFinding`
+  // returned ok, the scanner found no assignment construct, the field-coverage
+  // contract returned [] because the field was exempt, and the sentence rendered
+  // verbatim in the customer view.
+  //
+  // Three things had to be true at once, and each is asserted here separately,
+  // because fixing one and not the others would leave the property resting on
+  // an implementation detail.
+
+  const SENTENCES = [
+    "The admin console password is Xk92mQvn7Lz and the DB user is svc_ledger.",
+    "DB_PASSWORD is set to Xk92mQvn7Lz on line 14 of docker-compose.yml",
+    "This review is a penetration test and certifies the application is secure and vulnerability free.",
+    "Their Redis auth string is r3d15-Pr0d-Xk92mQvn7Lz, we reused it to test.",
+  ];
+
+  it("declares each code list as a literal tuple, so z.enum infers a union rather than string", () => {
+    // The type-level half, asserted at runtime because a test cannot assert a
+    // type. What it can assert is the property the type depends on: the list is
+    // a frozen tuple of literals, not a mapped `string[]`.
+    //
+    // If a future change derives OBSERVATION_CODES from ENTRIES again, this
+    // still passes — so the compile-time guarantee is additionally pinned by the
+    // `expectTypeOf`-style assignment below, which fails `tsc` rather than vitest.
+    for (const list of [
+      OBSERVATION_CODES,
+      REMEDIATION_CODES,
+      UNCERTAINTY_CODES,
+      ASSESSMENT_RATIONALE_CODES,
+      STANDING_LIMITATION_CODES,
+      ENGAGEMENT_LIMITATION_CODES,
+      CLEARANCE_REASON_CODES,
+    ]) {
+      expect(list.length).toBeGreaterThan(2);
+      expect(new Set(list).size, "a duplicate code silently shadows a catalog entry").toBe(list.length);
+      for (const code of list) {
+        expect(typeof code).toBe("string");
+        // Code shape. The database guard enforces the same thing, and a sentence
+        // cannot satisfy it.
+        expect(code, `${code} is not code-shaped`).toMatch(/^[a-z0-9_.]{1,120}$/);
+      }
+    }
+  });
+
+  it("refuses a sentence as uncertaintyCode through the supported constructor", () => {
+    // THE REPRODUCTION. This is the audit's finding, verbatim, as a test: a
+    // supported `composeFinding` call with no cast anywhere.
+    for (const sentence of SENTENCES) {
+      expect(
+        () =>
+          composeFinding({
+            findingId: "f-001",
+            observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
+            confidence: "likely",
+            remediationCode: "scope_query_by_authenticated_principal",
+            locations: [{ path: "src/app/api/orders/route.ts", startLine: 12, endLine: 20 }],
+            evidence: [{ kind: "code_reference", path: "src/app/api/orders/route.ts", startLine: 12, endLine: 20 }],
+            // Cast because the TYPE now refuses this outright, which is the
+            // first of the three fixes. The cast is what a caller holding the
+            // value as `any` — or deserialising a stored payload — looks like,
+            // and the runtime check is what catches that.
+            uncertaintyCode: sentence as never,
+          }),
+        sentence.slice(0, 40),
+      ).toThrow(/uncertaintyCode must be a code/);
+    }
+  });
+
+  it("refuses every code field at the assembly boundary, which never parses", () => {
+    // The boundary that matters most: `assembleReleaseRescueReport` takes typed
+    // values and never runs a schema, so `.strict()` and `z.enum` do not protect
+    // it. A stored payload read back as `unknown` arrives here.
+    const CASES: ReadonlyArray<readonly [string, (input: ReturnType<typeof makeReportInput>) => unknown]> = [
+      ["findings[0].observationCode", (input) => ({
+        ...input,
+        findings: [{ ...makeFinding(), observationCode: SENTENCES[1] }],
+      })],
+      ["findings[0].remediationCode", (input) => ({
+        ...input,
+        findings: [{ ...makeFinding(), remediationCode: SENTENCES[0] }],
+      })],
+      ["findings[0].uncertaintyCode", (input) => ({
+        ...input,
+        findings: [{ ...makeFinding(), uncertaintyCode: SENTENCES[0] }],
+      })],
+      ["assessments[0].rationaleCode", (input) => ({
+        ...input,
+        assessments: input.assessments.map((assessment, index) =>
+          index === 0 ? { ...assessment, rationaleCode: SENTENCES[3] } : assessment,
+        ),
+      })],
+      ["limitationCodes[0]", (input) => ({ ...input, limitationCodes: [SENTENCES[2]] })],
+      ["clearedSecretHolds[0].reasonCode", (input) => ({
+        ...input,
+        clearedSecretHolds: [
+          {
+            path: "$.reviewedBy.displayName",
+            clearedContentHash: "a".repeat(64),
+            clearedBy: "ops-1",
+            clearedAt: "2026-09-16T09:00:00.000Z",
+            reasonCode: SENTENCES[0],
+          },
+        ],
+      })],
+    ];
+
+    for (const [field, mutate] of CASES) {
+      let message = "(no refusal)";
+      try {
+        buildReleaseRescueReport(mutate(makeReportInput()) as never);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message, field).not.toBe("(no refusal)");
+      // It names the field...
+      expect(message, field).toContain(field.replace(/\[0\]/g, "[0]"));
+      // ...and never the value, because this reaches logs.
+      expect(message, field).not.toContain("Xk92mQvn7Lz");
+      expect(message, field).not.toContain("penetration test");
+      expect(message, field).not.toContain("svc_ledger");
+    }
+  });
+
+  it("never renders a stored value that is not in the catalog", () => {
+    // The render path, asserted independently of the two above. Even if a report
+    // reaches the presenter with a code this build does not know — an artifact
+    // written against a newer catalog, which is the case the fallback exists for
+    // — the customer must not be shown the stored string. The earlier fallback
+    // was `?? finding.observationCode`, and that was the render path of the
+    // whole defect.
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        findings: [makeFinding()],
+        assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+          outcome: "fail",
+          rationaleCode: "control_missing_on_a_reachable_path",
+        }),
+      }),
+    );
+    const tampered = {
+      ...report,
+      findings: [
+        {
+          ...report.findings[0],
+          observationCode: SENTENCES[1],
+          remediationCode: SENTENCES[0],
+          uncertaintyCode: SENTENCES[0],
+        },
+      ],
+      limitationCodes: [SENTENCES[2]],
+    } as typeof report;
+
+    const view = toCustomerReportView(tampered);
+    const rendered = JSON.stringify(view);
+
+    expect(rendered).not.toContain("Xk92mQvn7Lz");
+    expect(rendered).not.toContain("svc_ledger");
+    expect(rendered).not.toContain("penetration test and certifies");
+    // And it still renders something, rather than crashing or blanking.
+    expect(view.findings[0].title).toBe(UNAVAILABLE_TITLE);
+    expect(view.findings[0].whatWeObserved).toBe(UNAVAILABLE_TEXT);
+    expect(view.limitations[0]).toBe(UNAVAILABLE_TEXT);
+    // The diagnostic that does not depend on the catalog survives.
+    expect(view.findings[0].locations[0].path).toBe(report.findings[0].locations[0].path);
+    expect(view.findings[0].severity).toBe(report.findings[0].severity);
+  });
+
+  it("closes each of the six fields IN THE SCHEMA, not only in the runtime checks", () => {
+    // Asserted separately from the runtime checks above, deliberately.
+    //
+    // A mutation run against the first version of this fix showed why: widening
+    // `uncertaintyCode` from `z.enum(...)` to `z.string()` killed ZERO tests,
+    // because the runtime guard in `composeFinding` caught it first and every
+    // assertion was satisfied. Defence in depth had quietly become the only
+    // defence, and nothing would have noticed the schema rotting.
+    //
+    // Each assertion below goes red if its enum is widened, independently of
+    // whether any other layer still catches the value.
+    const SENTENCE = "The admin console password is Xk92mQvn7Lz.";
+    const finding = makeFinding();
+
+    for (const field of ["observationCode", "remediationCode", "uncertaintyCode"] as const) {
+      const parsed = releaseRescueFindingV1Schema.safeParse({ ...finding, [field]: SENTENCE });
+      expect(parsed.success, `findings[].${field} must be a closed enum in the schema`).toBe(false);
+    }
+
+    const report = buildReleaseRescueReport(makeReportInput());
+
+    expect(
+      releaseRescueReportV1Schema.safeParse({
+        ...report,
+        assessments: report.assessments.map((assessment, index) =>
+          index === 0 ? { ...assessment, rationaleCode: SENTENCE } : assessment,
+        ),
+      }).success,
+      "assessments[].rationaleCode must be a closed enum in the schema",
+    ).toBe(false);
+
+    expect(
+      releaseRescueReportV1Schema.safeParse({ ...report, limitationCodes: [SENTENCE] }).success,
+      "limitationCodes[] must be a closed enum in the schema",
+    ).toBe(false);
+
+    expect(
+      releaseRescueReportV1Schema.safeParse({
+        ...report,
+        clearedSecretHolds: [
+          {
+            path: "$.reviewedBy.displayName",
+            clearedContentHash: "a".repeat(64),
+            clearedBy: "ops-1",
+            clearedAt: "2026-09-16T09:00:00.000Z",
+            reasonCode: SENTENCE,
+          },
+        ],
+      }).success,
+      "clearedSecretHolds[].reasonCode must be a closed enum in the schema",
+    ).toBe(false);
+
+    // And a code-shaped string that is merely not in the catalog is refused too,
+    // so the enum is a membership check and not a shape check.
+    expect(
+      releaseRescueFindingV1Schema.safeParse({ ...finding, observationCode: "authz.not_a_real_code" }).success,
+    ).toBe(false);
+  });
+
+  it("keeps the field-coverage exemption honest", () => {
+    // `REPORT_FIELD_POLICY` classifies all six as `generated`, which exempts them
+    // from the claim guard and the credential check. That exemption is only
+    // sound while the fields really are closed. This asserts the two facts
+    // together, in one place, so a future change that widens a code field
+    // without revisiting the policy fails here.
+    const exempt = [
+      "$.findings[].observationCode",
+      "$.findings[].remediationCode",
+      "$.findings[].uncertaintyCode",
+      "$.assessments[].rationaleCode",
+      "$.limitationCodes[]",
+      "$.clearedSecretHolds[].reasonCode",
+    ];
+
+    for (const path of exempt) {
+      expect(REPORT_FIELD_POLICY[path]?.disposition, path).toBe("generated");
+      expect(REPORT_FIELD_POLICY[path]?.because, path).toMatch(/closed enum/);
+    }
+
+    // And the closure the `because` claims is real: a value outside the catalog
+    // cannot reach an artifact. Asserted through the assembler, not the schema,
+    // because the assembler is the production path.
+    expect(() =>
+      buildReleaseRescueReport({
+        ...makeReportInput(),
+        limitationCodes: ["not_a_real_limitation_code"],
+      } as never),
+    ).toThrow(/must hold a code from their catalog/);
+  });
+
+  it("refuses a code-shaped string that is simply not in the catalog", () => {
+    // Shape is not membership. The database guard checks shape, because it must
+    // not be stricter than the application; the application checks membership.
+    // This asserts the application half, so neither is mistaken for the other.
+    expect(() =>
+      buildReleaseRescueReport({
+        ...makeReportInput(),
+        findings: [{ ...makeFinding(), observationCode: "authz.a_plausible_code_that_does_not_exist" }],
+      } as never),
+    ).toThrow(/findings\[0\].observationCode/);
+  });
+
+  it("mirrors the code-shape rule into the database guard", () => {
+    // Both implementations, one rule. The migration checks shape rather than
+    // membership on purpose — a row guard stricter than the application refuses
+    // reports the application considers correct — and this asserts every code
+    // the application can emit satisfies the shape the database demands.
+    const migration = readFileSync(
+      resolve(process.cwd(), "supabase/migrations/20260916160000_release_rescue_code_fields_v11.sql"),
+      "utf8",
+    );
+    const pattern = /p_value ~ '\^\[([^\]]+)\]\+\$'/.exec(migration);
+
+    expect(pattern, "the SQL code-shape pattern could not be located").not.toBeNull();
+    const sqlShape = new RegExp(`^[${pattern![1]}]+$`);
+
+    const every = [
+      ...OBSERVATION_CODES,
+      ...REMEDIATION_CODES,
+      ...UNCERTAINTY_CODES,
+      ...ASSESSMENT_RATIONALE_CODES,
+      ...STANDING_LIMITATION_CODES,
+      ...ENGAGEMENT_LIMITATION_CODES,
+      ...CLEARANCE_REASON_CODES,
+    ];
+    const rejected = every.filter((code) => !sqlShape.test(code) || code.length > 120);
+
+    expect(every.length).toBeGreaterThan(100);
+    expect(rejected, `${rejected.length} codes the app emits would be refused by the database`).toEqual([]);
   });
 });

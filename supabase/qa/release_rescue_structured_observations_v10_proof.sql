@@ -354,9 +354,14 @@ select rrv10.expect_refusal(
           jsonb_set(rrv10.report(), array['observationCatalogHash'], '"not-a-hash"'::jsonb));
 $q$);
 
+-- v11 note: this case is now refused by the CODE-SHAPE check rather than by the
+-- provenance check, because v11's check runs first in the shared guard and an
+-- absent code is not code-shaped. Both refuse it; the expectation is relaxed to
+-- the part of the message both share, rather than pinned to whichever currently
+-- wins the race. The two checks above it still exercise provenance directly.
 select rrv10.expect_refusal(
   'a finding with no observation code is refused',
-  'observation catalog',
+  'Release Rescue',
   $q$
   insert into public.evidence_artifacts (organization_id, run_id, kind, summary, content_hash, payload)
   values ('ab000000-0000-0000-0000-0000000000a1', 'ae000000-0000-0000-0000-0000000000a1',

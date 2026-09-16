@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 623 Release Rescue tests across 30 suites (1,299 in the whole repository, of which 8 fail for an environmental reason recorded below), 332 live database cases across eleven proofs, and 16 browser tests in real Chromium against the production build.
+**Implemented and passing** — 631 Release Rescue tests across 30 suites (1,307 in the whole repository, of which 8 fail for an environmental reason recorded below), 356 live database cases across twelve proofs, and 16 browser tests in real Chromium against the production build.
 
 The database figure counts labelled `PASS <outcome> |` lines only. An earlier pass reported 306 by counting each proof's closing "every case above printed PASS" banner as a case — a stale count is a false claim, and so is a miscounted one.
 
@@ -1693,9 +1693,12 @@ certain way. There is no auditor-written prose, so there is no rule, so there is
 nothing for it to prove. Keeping a passing suite for a retired mechanism is how a
 test file becomes decoration.
 
-`src/lib/__tests__/release-rescue-structured-observations.test.ts` — **36 tests**,
+`src/lib/__tests__/release-rescue-structured-observations.test.ts` — **44 tests**,
 the eight property families the structured-observation decision was specified
-against. Notable among them, because they are complete statements rather than
+against, plus a ninth added after the fourteenth audit: *a code field holds a
+code, on the path that actually produces an artifact*. That ninth family asserts
+the three layers separately — type, schema, runtime — so that fixing one and
+leaving the others cannot make it pass. Notable among them, because they are complete statements rather than
 samples: every sentence the catalog can produce, checked for prohibited claims
 and credentials in one pass; every observation in the catalog, built into a
 report and asserted deliverable; every remediation each observation offers, the
@@ -1763,7 +1766,11 @@ judgement about the finding. There is no field left to shop in.
 
 ### What is left that a person types
 
-Two strings, both named and both guarded:
+Two free-text strings, both named and both guarded. (An audit counted eight and
+was right at the time: the six code fields accepted arbitrary text. They are
+closed now — see *What the fourteenth audit found* — so the count is two again,
+and it is two because the codes are enforced rather than because they are
+described as closed.)
 
 1. **`reviewedBy.displayName`** — the named human reviewer's signature, rendered
    to the customer. Checked for prohibited claims and for credentials by the
@@ -1783,10 +1790,19 @@ not a judgement about the text.
 person wrote. Every word a customer reads about a finding, an assessment, a
 limitation, an uncertainty or a clearance comes from a frozen catalog, pinned by
 content hash on the artifact so the wording a customer was shown can be
-identified afterwards. An attempt to send a removed field is refused **by name**
-at the schema, at the assembly boundary (which takes findings as typed values and
-never parses them), and at the database row guard — and the refusal message names
-the field and never the value, because it reaches logs.
+identified afterwards.
+
+That claim rests on two properties, and the first version of this change shipped
+with only one of them. Both are now enforced and both are asserted:
+
+1. **The removed field names are refused.** By name, at the schema, at the
+   assembly boundary (which takes findings as typed values and never parses
+   them), and at the database row guard. The refusal names the field and never
+   the value, because it reaches logs.
+2. **The codes that replaced them are closed.** This is the half that was
+   missing. See *What the fourteenth audit found* below — removing the words
+   accomplishes nothing if the codes accept a sentence, and for one release they
+   did.
 
 **Not claimed.** This does not make a review correct, and it does not prevent a
 false negative: an auditor steered away from a file reports nothing about it, and
@@ -1801,6 +1817,84 @@ deliberately *not* the mechanism that keeps credentials out of a report: a repor
 carrying one is undeliverable even when a manager has signed it, and a test
 asserts that directly.
 
+**`validateReleaseRescueReport` and `releaseRescueDeliveryGate` have no
+production call site.** An audit found this and it is recorded here rather than
+quietly fixed, because the honest statement changes what the rest of this section
+means. Delivery is not built — there is no route that sends a report to a
+customer — so there is nothing yet for the gate to gate. The only production path
+today is `buildReleaseRescueReport` → `toCustomerReportView`, which is how the
+demo sample is rendered.
+
+The consequence is that **the structural guarantee must hold at the assembler and
+the presenter, not at the validator**, and that is where the enforcement was
+moved. A validator nobody calls is precisely the defect this workstream found
+once before, when `prepareExcerpt` and `redactSecrets` turned out to have no
+production call site at all and two hundred passing tests were exercising code
+the product never ran. Wiring the gate in is work for whoever builds delivery;
+until then, no claim in this document depends on it.
+
+### What the fourteenth audit found, and why it was the same defect one level up
+
+The first implementation of this decision removed the prose fields, replaced them
+with codes, and did not constrain the codes. An independent audit put an
+arbitrary sentence — with a credential in it — into `uncertaintyCode` through
+`composeFinding`, **the supported constructor, with no cast anywhere**, and it
+rendered verbatim in the customer view.
+
+Three things had to be true at once, and all three were:
+
+| | What it was | Why it let the value through |
+| --- | --- | --- |
+| The type | `FindingFacts.uncertaintyCode?: string \| null` | `tsc` had no objection to a sentence |
+| The schema | `z.enum(UNCERTAINTY_CODES as unknown as [string, ...string[]])` | the cast makes the **inferred type** plain `string`; the enum constrained nothing the compiler could see |
+| The runtime | nothing on the production path checked it | `composeFinding` looked up `observationCode` and `remediationCode` in the catalog and simply passed `uncertaintyCode` through |
+
+Every other layer then declined to catch it, each for a defensible reason:
+`validateFinding` had no uncertainty check; the credential scanner found no
+assignment construct, which is the carrier this document's own measurement
+section records as defeating it 366 times out of 366; and
+`checkReportFieldCoverage` returned `[]` because the field-coverage policy
+classifies all six code fields as `generated`, **which exempts them from the
+prohibited-claim guard and the credential check on the stated justification that
+they are closed enums**. The exemption was sound; the premise was false.
+
+The audit also proved the database half live: a report whose `observationCode`,
+`uncertaintyCode`, `rationaleCode` and `limitationCodes` carried English
+sentences — one a credential, one the prohibited claim *"this review is a
+penetration test and certifies the application is secure and vulnerability
+free"* — was **stored** by the v10 guard, whose own comment asserted the gap did
+not exist because "there is no field to put it in". That comment was reasoning
+about field *names*.
+
+**What closed it**, at each of the three layers rather than at whichever one is
+cheapest:
+
+- `OBSERVATION_CODES` is a literal tuple, so `z.enum` infers a real union and
+  **every cast is gone**. `FindingFacts` uses the catalog's union types, so the
+  sentence is now a compile error at the call site.
+- `composeFinding` checks `uncertaintyCode` against the catalog at runtime, and
+  `assembleReleaseRescueReport` checks **all six** — it is the last point before
+  an artifact exists and the one input reaches without meeting a schema.
+- The presenter no longer echoes an unknown code. `?? finding.observationCode`
+  was the render path of the whole defect; an unknown code is precisely the case
+  where the stored string is untrusted. It degrades to a fixed sentence instead,
+  so a report written against a newer catalog still renders without printing
+  anything a caller supplied.
+- Migration **v11** requires every code field to be *code-shaped* at the row
+  boundary. It checks shape rather than catalog membership deliberately: a row
+  guard stricter than the application refuses reports the application considers
+  correct, which is the failure shape three audits here have already found. A
+  sentence cannot be code-shaped, which is the property that was missing.
+
+**And the tests that should have caught it now do.** The audit ran six mutations
+that delete the mechanism outright and killed **zero** of 623 tests. An
+eleven-mutation harness now runs against the fix; the baseline is 0 failures and
+**every one of the eleven goes red**, including each of the original six. Two of
+those assertions exist *only* because the first fix made them pass for the wrong
+reason: widening the schema enum killed nothing once the runtime guard was added,
+so defence in depth had quietly become the only defence. The schema is now
+asserted closed independently of the runtime checks.
+
 ### The database half
 
 `supabase/migrations/20260916140000_release_rescue_structured_observations_v10.sql`
@@ -1811,8 +1905,14 @@ checks live in the single guard function v9 established, for the reason v9 gave:
 triggers on `evidence_artifacts` fire in alphabetical order and this workstream
 has already been bitten by that once.
 
-`supabase/qa/release_rescue_structured_observations_v10_proof.sql` proves it live
-in **30 labelled cases**, including the whole narrative list crossed with all four
+Migration `20260916160000_release_rescue_code_fields_v11.sql` adds the check v10
+was missing: every code field must be code-shaped. v10's own comment claimed the
+gap could not exist; it was wrong, and the comment is corrected in v11's header
+rather than left to be rediscovered.
+
+`supabase/qa/release_rescue_structured_observations_v10_proof.sql` proves v10 live
+in **30 labelled cases**, and `release_rescue_code_fields_v11_proof.sql` proves
+v11 in **24**, every one of them the audit's own payload refused, including the whole narrative list crossed with all four
 levels of the payload (100+ insert attempts), and — asserted first, deliberately —
 that the report the product actually produces is still storable. Three audits in
 this workstream have found a guard that refused everything; a $299 artifact nobody

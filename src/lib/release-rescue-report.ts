@@ -31,6 +31,12 @@ import {
   RELEASE_RESCUE_OBSERVATION_CATALOG_VERSION,
   STANDING_LIMITATION_CODES,
   STANDING_LIMITATIONS,
+  isAssessmentRationaleCode,
+  isClearanceReasonCode,
+  isLimitationCode,
+  isObservationCode,
+  isRemediationCode,
+  isUncertaintyCode,
   type LimitationCode,
 } from "@/lib/release-rescue-observation-catalog";
 import {
@@ -113,7 +119,7 @@ export const rubricAssessmentSchema = z
      * The validator checks the code is legal for the outcome, so "pass" cannot
      * be paired with the sentence for a missing control.
      */
-    rationaleCode: z.enum(ASSESSMENT_RATIONALE_CODES as unknown as [string, ...string[]]),
+    rationaleCode: z.enum(ASSESSMENT_RATIONALE_CODES),
     evidence: z.array(assessmentEvidenceSchema).max(10),
   })
   .strict();
@@ -290,7 +296,7 @@ export const clearedSecretHoldSchema = z
     clearedBy: identifierString.max(100),
     clearedAt: isoDateTimeSchema,
     /** Why it was safe. Free text, and itself subject to the field policy. */
-    reasonCode: z.enum(CLEARANCE_REASON_CODES as unknown as [string, ...string[]]),
+    reasonCode: z.enum(CLEARANCE_REASON_CODES),
   })
   .strict();
 
@@ -339,7 +345,7 @@ export const releaseRescueReportV1Schema = z
      * customer reads as carefully as the findings.
      */
     limitationCodes: z
-      .array(z.enum([...STANDING_LIMITATION_CODES, ...ENGAGEMENT_LIMITATION_CODES] as unknown as [string, ...string[]]))
+      .array(z.enum([...STANDING_LIMITATION_CODES, ...ENGAGEMENT_LIMITATION_CODES]))
       .min(1)
       .max(30),
     disclaimers: reportDisclaimersSchema,
@@ -576,6 +582,53 @@ export function buildReleaseRescueReport(raw: AssembleReportInput): ReleaseRescu
  * not cast. This one refuses regardless, and it names paths rather than values,
  * so a failure does not put the credential into an exception message.
  */
+/**
+ * Refuses any code field whose value is not in the catalog it names.
+ *
+ * Six fields carry a code that resolves to customer-facing words:
+ * `findings[].observationCode`, `.remediationCode`, `.uncertaintyCode`,
+ * `assessments[].rationaleCode`, `limitationCodes[]` and
+ * `clearedSecretHolds[].reasonCode`. Each is declared a closed enum, and the
+ * field-coverage policy exempts all six from the claim guard and the credential
+ * check ON THE STRENGTH OF THAT CLOSURE. So the closure has to be true on the
+ * path that actually produces an artifact, not only in a validator.
+ *
+ * Every message names the FIELD and never the value. These reach logs.
+ */
+function assertEveryCodeIsInItsCatalog(input: AssembleReportInput): void {
+  const bad: string[] = [];
+
+  input.findings.forEach((finding, index) => {
+    if (!isObservationCode(finding.observationCode)) bad.push(`findings[${index}].observationCode`);
+    if (!isRemediationCode(finding.remediationCode)) bad.push(`findings[${index}].remediationCode`);
+    if (
+      finding.uncertaintyCode !== null &&
+      finding.uncertaintyCode !== undefined &&
+      !isUncertaintyCode(finding.uncertaintyCode)
+    ) {
+      bad.push(`findings[${index}].uncertaintyCode`);
+    }
+  });
+
+  input.assessments.forEach((assessment, index) => {
+    if (!isAssessmentRationaleCode(assessment.rationaleCode)) bad.push(`assessments[${index}].rationaleCode`);
+  });
+
+  input.limitationCodes.forEach((code, index) => {
+    if (!isLimitationCode(code)) bad.push(`limitationCodes[${index}]`);
+  });
+
+  (input.clearedSecretHolds ?? []).forEach((hold, index) => {
+    if (!isClearanceReasonCode(hold.reasonCode)) bad.push(`clearedSecretHolds[${index}].reasonCode`);
+  });
+
+  if (bad.length > 0) {
+    throw new Error(
+      `Release Rescue report assembly: these fields must hold a code from their catalog, not text: ${bad.join(", ")}. A report carries codes; the catalog carries the words. The offending values are withheld from this message deliberately.`,
+    );
+  }
+}
+
 export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput>): ReleaseRescueReportV1 {
   assertNoCredentialMaterial(input, "Release Rescue report assembly");
   // The brand proves the input was scanned. It does not prove the input has the
@@ -590,6 +643,21 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
   // a finding's prose, on a path the findings walk never touched.
   const assessmentSightings = describeSourceFieldSightings(findSourceFieldsInAssessments(input.assessments));
   if (assessmentSightings) throw new Error(`Release Rescue report assembly: ${assessmentSightings}`);
+  // And every code is a code.
+  //
+  // The two checks above refuse a field by NAME. This refuses a VALUE, which is
+  // the half an audit found missing: removing the prose fields accomplishes
+  // nothing if the codes that replaced them accept a sentence. It did — an
+  // arbitrary string in `uncertaintyCode` reached the customer view verbatim,
+  // through a supported call with no cast, because the schema's enum sat behind
+  // a `as [string, ...string[]]` cast that erased it to `string`.
+  //
+  // It runs HERE because this function takes its input as typed values and
+  // never parses it. `.strict()` and `z.enum` only protect the paths that reach
+  // a schema; a stored payload read back as `unknown`, or a caller holding the
+  // input as `any`, arrives here without one. This is the last point before an
+  // artifact exists.
+  assertEveryCodeIsInItsCatalog(input);
   // The prose contract is NOT checked here. It judges what the auditor wrote,
   // and by this point the scanner has rewritten it: an audit found
   // `if (token === expected)` becoming `if (token === [REDACTED:assigned_secret])`,
