@@ -206,7 +206,11 @@ export const repositoryRefSchema = identifierString
   .max(200)
   .refine((value) => !value.includes("://"), "must be an owner/name reference, not a URL")
   .refine((value) => !value.includes("@"), "must not contain credentials or an @ host reference")
-  .refine((value) => /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value), "must look like owner/name");
+  .refine((value) => /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value), "must look like owner/name")
+  // `acme/..` and `../..` satisfied "owner/name" and were refused by the
+  // artifact boundary, so the boundary was not the superset it is documented to
+  // be. A repository is not named `..`.
+  .refine((value) => !value.split("/").includes(".."), "must not contain a `..` segment");
 
 /**
  * What the customer can state at intake.
@@ -654,6 +658,25 @@ type TokenizerMode = {
   readonly splitCaseTransitions: boolean;
   /** Treat a full stop between two word characters as a separator, not a sentence end. */
   readonly inWordFullStopSeparates: boolean;
+  /**
+   * Do not let a sentence mark break a phrase at all.
+   *
+   * The third option, and the one that shows why counting combinations is not
+   * the same as covering distinctions. `inWordFullStopSeparates` only fires
+   * when a full stop has a word character on BOTH sides, so
+   * `"Reviewed by AcmeIs.SecureLtd"` was caught and
+   * `"Reviewed by AcmeIs. SecureLtd"` — one space — was delivered. So were
+   * `"Acme Is! Secure Ltd"` and a claim split across a newline. Every one of
+   * those sets a sentence break in every mode, and no combination of the other
+   * two booleans can reach it.
+   *
+   * Under this option there are no sentence breaks, so a phrase matches across
+   * one. That costs nothing in the union: a denial that used to sit in the
+   * previous sentence now sits in the same clause and LICENSES the claim under
+   * this mode, while the modes that keep the break still report it. A mode can
+   * only add a detection.
+   */
+  readonly sentenceMarksDoNotBreak: boolean;
 };
 
 /**
@@ -662,26 +685,12 @@ type TokenizerMode = {
  * It is what the guard did before the modes existed, so including it is what
  * makes "a mode can only add a detection" true rather than aspirational.
  */
-const BASELINE_MODE: TokenizerMode = { splitCaseTransitions: false, inWordFullStopSeparates: false };
-const CASE_SPLIT_MODE: TokenizerMode = { splitCaseTransitions: true, inWordFullStopSeparates: false };
-const DOTTED_MODE: TokenizerMode = { splitCaseTransitions: false, inWordFullStopSeparates: true };
+const BASELINE_MODE: TokenizerMode = {
+  splitCaseTransitions: false,
+  inWordFullStopSeparates: false,
+  sentenceMarksDoNotBreak: false,
+};
 
-/**
- * The fourth corner: both rules at once.
- *
- * `TokenizerMode` is two booleans, so there are four combinations, and only
- * three shipped. The missing one was a live evasion of the only prose field
- * left under the claim guard: `Reviewed by AcmeIs.SecureLtd` is invisible to
- * `baseline` (no separator), to `caseSplit` (the full stop still ends a
- * sentence) and to `dotted` (no case boundary). One added full stop defeated
- * all three. Catching it needs both rules in the same reading.
- *
- * The lesson is the shape rather than this corner: a mode set that enumerates
- * some combinations of its own options is a test corpus composed inside its own
- * premise, one level up. The set is the full product now, and a test asserts
- * that it is.
- */
-const CASE_SPLIT_DOTTED_MODE: TokenizerMode = { splitCaseTransitions: true, inWordFullStopSeparates: true };
 
 function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): ClaimToken[] {
   const tokens: ClaimToken[] = [];
@@ -722,8 +731,13 @@ function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): C
       /[a-z0-9]/i.test(characters[index + 1]);
     if (mode.inWordFullStopSeparates && joinsTwoWords) continue;
 
-    if (SENTENCE_MARKS.has(character)) pending = "sentence";
-    else if (CLAUSE_MARKS.has(character) && pending !== "sentence") pending = "clause";
+    if (SENTENCE_MARKS.has(character)) {
+      // Under `sentenceMarksDoNotBreak` a sentence mark is an ordinary
+      // separator. That is what reaches the corner `inWordFullStopSeparates`
+      // cannot: a full stop with a SPACE after it, an exclamation mark, a
+      // newline — none of which has a word character on both sides.
+      if (!mode.sentenceMarksDoNotBreak) pending = "sentence";
+    } else if (CLAUSE_MARKS.has(character) && pending !== "sentence") pending = "clause";
   }
   flush();
   return tokens;
@@ -961,12 +975,43 @@ function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
  * a subset of the other, which is true by construction and cannot fail. An
  * audit pointed that out. Testing the real machinery needs the real modes.
  */
-export const CLAIM_TOKENIZER_MODES = {
-  baseline: BASELINE_MODE,
-  caseSplit: CASE_SPLIT_MODE,
-  dotted: DOTTED_MODE,
-  caseSplitDotted: CASE_SPLIT_DOTTED_MODE,
-} as const;
+/**
+ * Every option a tokenizer mode has, named once.
+ *
+ * The mode set is GENERATED from this. Three audits in a row found a gap that
+ * came from naming combinations by hand: the set had three of four corners, and
+ * the missing one was a live evasion. Naming the options and taking their
+ * product means a new option cannot be added without its combinations
+ * appearing, which is the only version of "the set is complete" that a later
+ * edit cannot quietly undo.
+ */
+export const TOKENIZER_OPTIONS = [
+  "splitCaseTransitions",
+  "inWordFullStopSeparates",
+  "sentenceMarksDoNotBreak",
+] as const satisfies readonly (keyof TokenizerMode)[];
+
+/** A short name per combination: the options it turns on, or `baseline`. */
+function modeName(mode: TokenizerMode): string {
+  const on = TOKENIZER_OPTIONS.filter((option) => mode[option]);
+  if (on.length === 0) return "baseline";
+  return on
+    .map((option, index) => (index === 0 ? option : `${option[0].toUpperCase()}${option.slice(1)}`))
+    .join("And");
+}
+
+function everyTokenizerMode(): Record<string, TokenizerMode> {
+  const modes: Record<string, TokenizerMode> = {};
+  for (let bits = 0; bits < 2 ** TOKENIZER_OPTIONS.length; bits += 1) {
+    const mode = Object.fromEntries(
+      TOKENIZER_OPTIONS.map((option, index) => [option, Boolean(bits & (1 << index))]),
+    ) as unknown as TokenizerMode;
+    modes[modeName(mode)] = mode;
+  }
+  return modes;
+}
+
+export const CLAIM_TOKENIZER_MODES: Readonly<Record<string, TokenizerMode>> = everyTokenizerMode();
 
 /**
  * Prose a person wrote: every mode applies.
@@ -979,7 +1024,7 @@ export const CLAIM_TOKENIZER_MODES = {
  */
 const PROSE_MODES: readonly TokenizerMode[] = Object.values(CLAIM_TOKENIZER_MODES);
 
-export type ClaimTokenizerModeName = keyof typeof CLAIM_TOKENIZER_MODES;
+export type ClaimTokenizerModeName = string;
 
 /** The claims a named subset of modes finds. For tests; production uses them all. */
 export function findProhibitedClaimsUnderModes(

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PATH_SEGMENT_CHARACTERS } from "@/lib/release-rescue-findings";
 import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import type { ValidationResult } from "@/lib/catalog-evidence-validator";
 import {
@@ -140,9 +141,22 @@ export type RubricAssessment = z.infer<typeof rubricAssessmentSchema>;
  * `identifierString.max(200)` accepted two hundred characters of anything. Git
  * itself is stricter than this.
  */
-const branchNameSchema = identifierString
+export const branchNameSchema = identifierString
   .max(200)
-  .refine((value) => /^[A-Za-z0-9._\/-]+$/.test(value), "must be a branch name");
+  // The same letter classes a path segment uses, because a branch name is not
+  // required to be ASCII and an audit found intake accepting `feature/日本語対応`
+  // while the report refused it — a customer could sign up and pay for a review
+  // that could never be delivered.
+  .refine(
+    (value) => new RegExp(`^[${PATH_SEGMENT_CHARACTERS}/]+$`, "u").test(value),
+    "must be a branch name",
+  )
+  // What git itself forbids, and what the artifact boundary therefore also
+  // refuses. Without these the schema accepted `/main` and `release/..` while
+  // the boundary refused them, so the boundary was not the superset it is
+  // documented to be. `git check-ref-format` rejects both.
+  .refine((value) => !value.startsWith("/") && !value.endsWith("/"), "must not begin or end with `/`")
+  .refine((value) => !value.split("/").includes(".."), "must not contain a `..` segment");
 
 /**
  * The scope AS THE REPORT CARRIES IT: identifiers, enums and booleans.

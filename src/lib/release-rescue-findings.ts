@@ -91,6 +91,21 @@ export type {
 /**
  * The characters a path segment may hold, as a character CLASS.
  *
+ * `\\p{M}` is not decoration. Devanagari, Bengali, Tamil, Thai and Khmer need
+ * combining marks to spell anything, and so does every NFD-normalised Latin
+ * path — which is the form an APFS or HFS+ filesystem hands back, so
+ * `src/café/resumé.ts` validated in NFC and was refused in NFD: the same file,
+ * in the same repository, answered two ways. An audit found it while the test
+ * corpus for "every non-ASCII filename works" was five entries built only from
+ * `\\p{L}`, which is exactly what the rule declared legal.
+ *
+ * The `-` is escaped for the same reason the class is exported: the policy
+ * appends `/` to it, and an unescaped trailing `-` turned into a RANGE
+ * operator, so the boundary silently accepted `%`–`/` — including the asterisk,
+ * making a glob a legal path there and not here. A mutation that appended a
+ * character sorting below `-` made the whole expression throw at module load
+ * and took thirteen test files down with it.
+ *
  * Exported because the field-coverage policy re-asserts the path grammar at the
  * artifact boundary and must not invent its own. It restated this class by hand
  * once: ASCII-only, without `$ , & ! \' { } # %`, which refused every Remix and
@@ -99,7 +114,7 @@ export type {
  * A boundary check stricter than the schema refuses reports the product
  * considers correct. Deriving it is the only way that cannot drift.
  */
-export const PATH_SEGMENT_CHARACTERS = "\\p{L}\\p{N}._@+~()\\[\\]$,&!'{}#%-";
+export const PATH_SEGMENT_CHARACTERS = "\\p{L}\\p{M}\\p{N}._@+~()\\[\\]$,&!'{}#%\\-";
 
 const PATH_SEGMENT = `[${PATH_SEGMENT_CHARACTERS}]+`;
 export const REPOSITORY_PATH_PATTERN = new RegExp(`^${PATH_SEGMENT}(/${PATH_SEGMENT})*$`, "u");

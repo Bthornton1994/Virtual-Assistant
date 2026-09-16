@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 667 Release Rescue tests across 30 suites (1,343 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 668 Release Rescue tests across 30 suites (1,344 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -876,10 +876,10 @@ empty database:
   public.execution_plans`, which collides with the differently-shaped table
   `0004_production_auth.sql` creates earlier in the chain.
 
-The proof base applies 51 of 55 migrations: the two above, one that needs the
+The proof base applies 54 of 58 migrations: the two above, one that needs the
 `http` extension this sandbox does not have, and one that fails only because a
 function the `http` migration would have created is missing. None of the four touch Release
-Rescue tables, and all ten Release Rescue proofs run against the result.
+Rescue tables, and all thirteen Release Rescue proofs run against the result.
 
 ## Sixth independent audit: the axis was the key, and the fix was the regression
 
@@ -2281,8 +2281,10 @@ URL, not absolute, no parent traversal, bounded. The claim guard does not read i
 
 **The grammar is DERIVED from the schema, not restated.** The first version
 restated the character class by hand, ASCII-only and without `$ , & ! ' { } # %`.
-It refused thirteen of a forty-path corpus — every Remix and React Router v7
-dynamic route (`app/routes/users.$userId.edit.tsx`) and every non-ASCII filename
+It refused **14 of the 24-path corpus this repository ships** (an audit measured
+13 of a 40-path corpus of its own, which is not in the tree and so cannot be
+re-checked here) — every Remix and React Router v7 dynamic route
+(`app/routes/users.$userId.edit.tsx`) and every non-ASCII filename
 (`src/日本語/page.tsx`, `src/café/resumé.ts`) — and **both of those classes were
 false refusals an earlier audit had already found and fixed in the schema
 itself**. Restating a rule reintroduces the bugs its source has already fixed.
@@ -2317,84 +2319,63 @@ owner-visible gap in the guard's coverage, not something this pass has closed �
 and with `repositoryRef` and `defaultBranch` being customer-supplied, it is a gap
 on customer-controlled values as well as executor-written ones.
 
-### The mode set is the full product of its options, not a chosen subset
+### The mode set is generated from its options, and most corners are redundant
 
-`TokenizerMode` is two booleans, so there are four combinations. Three shipped,
-and the missing corner was a live evasion of the one prose field the claim guard
-still reads: `Reviewed by AcmeIs.SecureLtd` was invisible to all three, because
-one added full stop defeats the case rule and the case boundary defeats the
-full-stop rule. One character.
+`TokenizerMode` began as two booleans. Three combinations shipped, and the
+missing corner was a live evasion of the one prose field the claim guard still
+reads: `Reviewed by AcmeIs.SecureLtd` was invisible to all three. That corner was
+added — and the next audit defeated it by adding **one space**:
+`Reviewed by AcmeIs. SecureLtd` was delivered, and so were `Acme Is! Secure Ltd`
+and a claim split across a newline.
 
-That is the cross-of-axes failure recorded two sections above, one corner over —
-the round that named the lesson tested one of the two crosses. The mode set is
-the complete product now, computed from the options rather than listed, and a
-test requires it to be.
+The reason is a distinction the two booleans could not express.
+`inWordFullStopSeparates` only fires when a full stop has a word character on
+*both* sides; a sentence mark next to a space, a newline or an exclamation mark
+sets a sentence break in **every** mode, and a claim may not span one. So there
+is a third option, `sentenceMarksDoNotBreak`, and eight modes.
 
-The modes also had **two independent declarations**, one for production and one
-for the test hook, and an audit showed a fourth mode added to either alone passed
-the whole suite. Production derives from the hook's map now, and a test asserts
-the consequence over a corpus rather than trusting the derivation.
+**The set is generated from the options now, not listed.** Three rounds in a row
+found a gap that came from naming combinations by hand. A new option cannot be
+added without its combinations appearing, which is the only version of "the set
+is complete" that a later edit cannot quietly undo. The test reads the option
+DECLARATION rather than `Object.keys()` of the shipped modes, which is what let
+the previous version pass vacuously.
 
-**And the property test that guarded all this could not fail.** It ran every
-subset of the modes and required the full union to be a superset of each — a
-set-union identity that holds for any implementation, including one that ignores
-its input entirely; an audit demonstrated exactly that and showed it killed no
-mutant. The replacement is a property that can fail: **every mode must find
-something no other mode finds**. Writing it surfaced a real fact immediately —
-the first set of payloads chosen for it were merely *sufficient* for their mode
-rather than *unique* to it, and the test said so.
+**And the claim moved from modes to options, because the per-mode claim is
+false.** The previous round asserted that every mode finds something no other
+mode finds. With four modes that held. With eight it does not, and it was
+measured rather than assumed: **only three of the eight** have a payload no other
+mode catches. Asserting per-mode irreplaceability would have been asserting
+something untrue — the exact defect the round before it was about. What is true,
+and is now the test, is that **every OPTION earns its place**: for each one there
+is a payload that every mode with it turned off misses. The redundancy of the
+other five corners is itself recorded as a number, so a later change that makes
+more or fewer of them load-bearing fails rather than leaving a comment stale.
 
-**The cost was measured too, and paid down rather than absorbed.** Adding token
-boundaries made `findProhibitedClaims` slower, and one property suite went from
-passing to a 5-second timeout. The cause was not the new boundaries: the guard
-re-tokenised the whole prohibited-claim list on every call, three times over. The
-list is a constant and is tokenised once per mode now. That suite runs in ~1.3s,
-faster than before the tokenizer changed at all.
+Completeness by construction is why the redundant corners stay: they cost 0.09ms
+per call, and the alternative is the bug that has now appeared three times.
 
-**A claim about the evidence that was itself wrong.** The commit introducing the
-modes reported that dropping `BASELINE_MODE` killed no test and called it an
-*equivalent* mutant, reasoning that the other two modes jointly cover it. An
-audit falsified that by execution. A payload carrying **both** an internal
-capital and a missing space after a full stop —
-`"This is not a penetration test.Your application is secUre"` — defeats
-`caseSplit` (which splits `secUre` into `sec` + `ure`) and `dotted` (which
-demotes the full stop, so the denial licenses the claim). Only `baseline`
-catches it, so the mutant is a genuine survivor.
+**Two earlier records kept, because they are the evidence lessons rather than the
+code ones.**
 
-The reason it went unchallenged is the more useful part: the two property tests
-each moved along **one axis**. The capitalisation property used a sentence with
-no full stop; the full-stop property used claims with no internal capital. The
-cross of the two axes was untested — the same shape of gap as the round before,
-one axis over. That cross is now a test, and it asserts the inverse too: that
-`caseSplit ∪ dotted` really does miss it, so the sentence above cannot become
-quietly wrong.
+*The cost was measured and paid down, not absorbed.* Adding token boundaries made
+`findProhibitedClaims` slower and took one property suite from passing to a
+5-second timeout. The cause was not the new boundaries: the guard re-tokenised
+the whole prohibited-claim list on every call, three times over. It is tokenised
+once per mode now, and that suite runs in ~1.3s — faster than before the
+tokenizer changed at all. Eight modes cost 0.09ms per call, measured.
 
-The monotonicity test was rewritten for the same reason. It used to compare the
-prose reading against the path reading and assert the first contained the
-second, which was true by construction — one mode set was a subset of the other —
-and so could not fail. It now runs every subset of the modes against a corpus and
-requires the full union to be a superset of each.
-
-**One more thing the mutation run corrected.** The path-reading test passed even
-with the policy ignoring `valueIsAPath` entirely, because it called
-`findProhibitedClaims` directly instead of going through the assembler and the
-gate. Testing one function in isolation and calling the result a property of the
-system is the same mistake recorded one section up; the test now builds a report
-whose finding points at `src/utils/isSecure.ts` and asserts the gate opens.
-
-**The test was rewritten to be capable of failing.** It plants nine payloads per
-path — space, hyphen, underscore, dot, camelCase, slash, two Unicode separators
-outside `\s`, and a credential — and it runs both assembly checks rather than one
-function, after an earlier version reported catalog-code paths as accepting a
-claim that production actually refuses. Testing one function in isolation and
-calling the result a property of the system is how a test comes to disagree with
-production.
-
-**One over-strictness bug, caught by the existing suite.** The first
-control-plane pattern required at least one character, and a human-prepared
-report has `preparedBy.provider = ""`. It refused every human-prepared report.
-That is the reason a tightening pass runs the whole suite and not only its own
-tests, and the empty string is now pinned by a test.
+*A claim about the evidence that was itself wrong.* The commit introducing the
+modes reported that dropping the baseline mode killed no test and called it an
+**equivalent** mutant, reasoning that the other modes jointly cover it. An audit
+falsified that by execution: a payload carrying both an internal capital and a
+missing space after a full stop defeats them together, and only the baseline
+reading catches it. The reason it went unchallenged is the useful part — the two
+property tests each moved along ONE axis, so their cross was untested. That was
+the second time a property test here asserted more than it proved, and the third
+was the set-union tautology described above. The pattern is worth more than any
+of the three fixes: **a property test that cannot fail is worse than no test,
+because it is counted as evidence.**
 
 ### The database half
 
