@@ -1,3 +1,4 @@
+import { OBSERVATION_CATALOG } from "@/lib/release-rescue-observation-catalog";
 import { describe, expect, it } from "vitest";
 import { validateReleaseRescueReport, releaseRescueDeliveryGate } from "@/lib/release-rescue-report";
 import { findInternalIdentityLeaks } from "@/lib/release-rescue-presentation";
@@ -65,10 +66,22 @@ describe("the sample report shown to prospective customers", () => {
     // Reaching it needs someone to upload a crafted receipt, so exploitability is
     // requires_user_interaction and the matrix caps it at high. A demo that
     // showed "critical" here would be selling alarm rather than the model.
+    //
+    // Under Option 1 that exploitability is the CATALOG's, fixed against the
+    // observation code, not a per-finding judgement an executor makes. So this
+    // test now checks two things at once: that the demo still shows `high`, and
+    // that it gets there by naming the observation that actually matches its
+    // scenario rather than by writing a smaller word.
     const injection = SAMPLE_CUSTOMER_REPORT.findings.find((f) => f.id === "RR-002");
 
     expect(injection?.severity).toBe("high");
     expect(injection?.blocking).toBe(true);
+
+    const stored = SAMPLE_REPORT.findings.find((f) => f.findingId === "RR-002");
+    expect(stored?.observationCode).toBe("ai.tool_authority_is_not_declared");
+    expect(stored?.exploitability).toBe(
+      OBSERVATION_CATALOG["ai.tool_authority_is_not_declared"].exploitability,
+    );
   });
 
   it("covers every rubric check", () => {

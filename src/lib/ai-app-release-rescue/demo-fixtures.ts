@@ -1,9 +1,7 @@
 import { freezeScope, releaseRescueIntakeV1Schema, type ReleaseRescueScope } from "@/lib/release-rescue-intake";
 import { RELEASE_RESCUE_RUBRIC_V1 } from "@/lib/release-rescue-rubric";
 import {
-  RELEASE_RESCUE_FINDING_SCHEMA_VERSION,
-  computeFindingBlocking,
-  computeFindingSeverity,
+  composeFinding,
   type ReleaseRescueFindingV1,
 } from "@/lib/release-rescue-findings";
 import {
@@ -70,153 +68,107 @@ const DEMO_INTAKE = releaseRescueIntakeV1Schema.parse({
 
 export const SAMPLE_SCOPE: ReleaseRescueScope = freezeScope(DEMO_INTAKE);
 
-/** Builds a finding with severity and blocking derived, never hand-declared. */
-function finding(
-  input: Omit<ReleaseRescueFindingV1, "schemaVersion" | "severity" | "blocking" | "dimension">,
-): ReleaseRescueFindingV1 {
-  const check = getRubricCheck(input.rubricCheckId);
-  if (!check) throw new Error(`Demo fixture references unknown rubric check "${input.rubricCheckId}".`);
-  const severity = computeFindingSeverity(input);
-  return {
-    schemaVersion: RELEASE_RESCUE_FINDING_SCHEMA_VERSION,
-    dimension: check.dimension,
-    severity,
-    blocking: computeFindingBlocking(check, severity, input.confidence),
-    ...input,
-  };
-}
+// The local `finding()` helper is gone, and so is the `CONCERNS` map of prose it
+// fed. `composeFinding` in `release-rescue-findings.ts` is the only way to build
+// a finding now, and it derives everything the catalog owns — dimension, impact,
+// exploitability, severity, blocking, effort, sprint scope — from the code.
 
-const CONCERNS = new Map<string, string>([
-  [
-    "ai.untrusted_input_is_not_authority",
-    "The assistant reads receipt text and can call the approval tool in the same turn.",
-  ],
-  [
-    "authz.object_level_authorization",
-    "The claim detail route loads by id without comparing the owner to the session.",
-  ],
-  [
-    "release.environment_separation",
-    "Preview deployments point at the production database.",
-  ],
-  [
-    "observe.error_reporting_without_leakage",
-    "Unhandled errors return a stack trace to the browser.",
-  ],
-  [
-    "deps.known_vulnerable_dependencies",
-    "A transitive dependency on the upload path has a published advisory.",
-  ],
+/** Checks the sample engagement records as failing, with the rationale code. */
+const FAILING: ReadonlyMap<string, string> = new Map([
+  ["authz.object_level_authorization", "control_missing_on_a_reachable_path"],
+  ["ai.tool_authority_is_bounded", "control_present_but_not_enforced"],
+  ["release.environment_separation", "control_missing_on_a_reachable_path"],
+  ["observe.error_reporting_without_leakage", "control_present_but_not_enforced"],
+  ["deps.known_vulnerable_dependencies", "partial_control_with_a_gap"],
 ]);
 
 function assessments(): RubricAssessment[] {
   return RELEASE_RESCUE_RUBRIC_V1.map((check) => {
-    const concern = CONCERNS.get(check.id);
-    if (concern) {
-      return {
-        checkId: check.id,
-        outcome: "fail" as const,
-        rationale: concern,
-        evidence: [{ kind: "code_reference" as const, reference: `src/${check.dimension}/index.ts` }],
-      };
-    }
+    const failing = FAILING.get(check.id);
     return {
       checkId: check.id,
-      outcome: "pass" as const,
-      rationale: `Reviewed ${check.title.toLowerCase()} against the expense-claim workflow and found it sound.`,
-      evidence: [{ kind: "code_reference" as const, reference: `src/${check.dimension}/index.ts` }],
+      outcome: failing ? ("fail" as const) : ("pass" as const),
+      rationaleCode: failing ?? "controls_present_and_evidenced",
+      evidence: [
+        {
+          kind: "code_reference" as const,
+          path: `src/${check.dimension}/index.ts`,
+          startLine: 1,
+          endLine: null,
+        },
+      ],
     };
   });
 }
 
+// Five findings, composed the only way a finding can be composed: from a code in
+// the observation catalog plus the facts an executor is allowed to supply. Not
+// one sentence of what the customer reads is written here — open
+// `release-rescue-observation-catalog.ts` to see the words.
 const FINDINGS: ReleaseRescueFindingV1[] = [
-  finding({
+  composeFinding({
     findingId: "RR-001",
-    rubricCheckId: "authz.object_level_authorization",
-    title: "Any employee can open another employee's expense claim",
-    whatWeObserved:
-      "The claim detail route loads a claim by the id in the URL and returns it without comparing the claim's owner to the signed-in user.",
-    whyItMatters:
-      "Every employee can read every colleague's expense claims, including receipts and amounts, by changing one number in the address bar.",
-    recommendation:
-      "Filter the claim query by the session's user id, and return 404 rather than 403 so the route does not confirm that a claim exists.",
-    impact: "serious",
-    exploitability: "requires_privilege",
+    observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
     confidence: "confirmed",
+    remediationCode: "scope_query_by_authenticated_principal",
     locations: [
       { path: "src/app/expenses/[id]/page.tsx", startLine: 18, endLine: 27 },
       { path: "src/lib/claims.ts", startLine: 44, endLine: 51 },
     ],
-    remediationEffort: "small",
-    inRemediationSprintScope: true,
-    residualUncertainty: "",
+    evidence: [
+      { kind: "code_reference", path: "src/lib/claims.ts", startLine: 44, endLine: 51 },
+    ],
   }),
-  finding({
+  composeFinding({
     findingId: "RR-002",
-    rubricCheckId: "ai.untrusted_input_is_not_authority",
-    title: "Receipt text can reach the approval tool",
-    whatWeObserved:
-      "Text extracted from an uploaded receipt is placed in the same prompt as the tool definitions, and the approval tool is available in that turn.",
-    whyItMatters:
-      "A receipt image containing instructions could cause the assistant to approve a claim that no manager approved.",
-    recommendation:
-      "Remove the approval tool from the drafting turn. Approval should be a separate, human-initiated action that the model cannot call.",
-    impact: "severe",
-    exploitability: "requires_user_interaction",
+    // `ai.tool_authority_is_not_declared`, not
+    // `ai.model_visible_content_can_grant_authority`. The two describe adjacent
+    // problems and the catalog gives them different exploitability: the first is
+    // reachable by anyone who can put text where the model reads it, the second
+    // needs a user to upload something. This demo's scenario is the second, and
+    // the severity that follows is `high` rather than `critical`.
+    //
+    // Choosing the OBSERVATION that matches the scenario is the only lever left,
+    // which is the point of the derived model — the alternative would be
+    // severity-shopping, and there is no field to shop in.
+    observationCode: "ai.tool_authority_is_not_declared",
     confidence: "confirmed",
+    remediationCode: "declare_tool_authority_explicitly",
     locations: [{ path: "src/lib/assistant/tools.ts", startLine: 61, endLine: 88 }],
-    remediationEffort: "medium",
-    inRemediationSprintScope: true,
-    residualUncertainty: "",
+    evidence: [
+      { kind: "code_reference", path: "src/lib/assistant/tools.ts", startLine: 61, endLine: 88 },
+    ],
   }),
-  finding({
+  composeFinding({
     findingId: "RR-003",
-    rubricCheckId: "release.environment_separation",
-    title: "Preview deployments write to the production database",
-    whatWeObserved:
-      "The preview environment and the production environment resolve the same database connection setting.",
-    whyItMatters:
-      "A pull request preview can modify real expense claims, and a destructive migration tested in preview would run against production data.",
-    recommendation: "Give preview its own database and seed it. Fail the build if preview resolves the production host.",
-    impact: "severe",
-    exploitability: "requires_privilege",
+    observationCode: "release.preview_shares_production_credentials",
     confidence: "confirmed",
+    remediationCode: "separate_production_from_preview_credentials",
     locations: [{ path: "vercel.json", startLine: 4, endLine: 9 }],
-    remediationEffort: "medium",
-    inRemediationSprintScope: true,
-    residualUncertainty: "",
+    evidence: [
+      { kind: "configuration_reference", path: "vercel.json", startLine: 4, endLine: 9 },
+    ],
   }),
-  finding({
+  composeFinding({
     findingId: "RR-004",
-    rubricCheckId: "deps.known_vulnerable_dependencies",
-    title: "Vulnerable image parser on the receipt upload path",
-    whatWeObserved:
-      "The upload handler depends on a version of the image library with a published advisory for malformed input.",
-    whyItMatters: "A crafted receipt upload could crash the handler, and the advisory describes worse outcomes.",
-    recommendation: "Upgrade to a patched version and add a regression test that uploads a malformed image.",
-    impact: "serious",
-    exploitability: "requires_user_interaction",
+    observationCode: "deps.known_vulnerable_dependency_on_a_reachable_path",
     confidence: "likely",
+    remediationCode: "upgrade_or_replace_the_dependency",
     locations: [{ path: "package.json", startLine: 31, endLine: 31 }],
-    remediationEffort: "trivial",
-    inRemediationSprintScope: true,
-    residualUncertainty:
-      "We could not confirm the vulnerable code path is reachable with the options this application passes.",
+    evidence: [
+      { kind: "dependency_manifest_reference", path: "package.json", startLine: 31, endLine: 31 },
+    ],
+    uncertaintyCode: "path_reachable_only_under_conditions_not_tested",
   }),
-  finding({
+  composeFinding({
     findingId: "RR-005",
-    rubricCheckId: "observe.error_reporting_without_leakage",
-    title: "Stack traces reach the browser",
-    whatWeObserved: "Unhandled errors in the claim routes return the stack trace in the response body.",
-    whyItMatters: "Stack traces disclose file paths and library versions that make other problems easier to find.",
-    recommendation: "Return a generic message with a correlation id, and log the detail server-side.",
-    impact: "limited",
-    exploitability: "remote_unauthenticated",
+    observationCode: "observe.logs_carry_secrets_or_customer_data",
     confidence: "confirmed",
+    remediationCode: "strip_secrets_and_customer_data_from_logs",
     locations: [{ path: "src/app/expenses/error.tsx", startLine: 8, endLine: 14 }],
-    remediationEffort: "trivial",
-    inRemediationSprintScope: false,
-    residualUncertainty: "",
+    evidence: [
+      { kind: "code_reference", path: "src/app/expenses/error.tsx", startLine: 8, endLine: 14 },
+    ],
   }),
 ];
 
@@ -229,9 +181,9 @@ export const SAMPLE_REPORT: ReleaseRescueReportV1 = buildReleaseRescueReport({
   reviewedCommitSha: DEMO_COMMIT,
   assessments: assessments(),
   findings: FINDINGS,
-  limitations: [
-    "The customer excluded the marketing site under /www from this review.",
-    "We reviewed the assistant's tool definitions as written. We did not observe the assistant running against live traffic.",
+  limitationCodes: [
+    "customer_excluded_part_of_the_repository",
+    "third_party_service_behaviour_not_observable",
   ],
   authorityReport: {
     externalMessagesSent: 0,

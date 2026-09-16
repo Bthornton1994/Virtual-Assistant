@@ -88,6 +88,15 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
   "$.rubricVersion": { disposition: "generated", because: "Pinned by the frozen rubric module." },
   "$.rubricHash": { disposition: "generated", because: "A hash computed from the frozen rubric." },
   "$.scopeHash": { disposition: "generated", because: "A hash computed from the frozen scope." },
+  "$.observationCatalogVersion": {
+    disposition: "generated",
+    because: "A literal string constant the observation catalog owns.",
+  },
+  "$.observationCatalogHash": {
+    disposition: "generated",
+    because:
+      "A hash computed from the frozen observation catalog. It binds a delivered report to the exact wording the customer was shown.",
+  },
   "$.reviewedCommitSha": { disposition: "generated", because: "Pinned on the engagement and format-checked." },
   "$.verdict": { disposition: "generated", because: "Derived from the findings, never chosen. One of four values." },
   "$.generatedAt": { disposition: "generated", because: "A timestamp this codebase writes." },
@@ -104,29 +113,20 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
     disposition: "guarded",
     because: "Customer-supplied free text, shown to the customer.",
   },
-  "$.scope.application.name": { disposition: "guarded", because: "Customer-supplied at intake, shown in the header." },
-  "$.scope.application.description": {
-    disposition: "guarded",
-    because:
-      "Customer-supplied and used VERBATIM in the report header. This is the field the coverage gap was found in.",
-  },
-  "$.scope.application.primaryStack": { disposition: "guarded", because: "Customer-supplied at intake, rendered to them." },
-  "$.scope.criticalWorkflow.name": { disposition: "guarded", because: "Customer-supplied at intake, rendered to them." },
-  "$.scope.criticalWorkflow.description": { disposition: "guarded", because: "Customer-supplied at intake, rendered to them." },
-  "$.scope.criticalWorkflow.entryPoint": { disposition: "guarded", because: "Customer-supplied at intake, rendered to them." },
-  "$.scope.customerExclusions[]": {
-    disposition: "guarded",
-    because: "Customer-supplied free text, rendered as the exclusions list.",
-  },
 
   // --- assessments ---
   "$.assessments[].checkId": { disposition: "generated", because: "Must match an id in the frozen rubric." },
   "$.assessments[].outcome": { disposition: "generated", because: "A closed enum the rubric module defines." },
-  "$.assessments[].rationale": { disposition: "guarded", because: "Executor-written, rendered per check." },
+  "$.assessments[].rationaleCode": {
+    disposition: "generated",
+    because:
+      "A closed enum. The sentence the customer reads is the catalog's, resolved at render time; the artifact stores only the code.",
+  },
   "$.assessments[].evidence[].kind": { disposition: "generated", because: "A closed enum the rubric module defines." },
-  "$.assessments[].evidence[].reference": {
+  "$.assessments[].evidence[].path": {
     disposition: "guarded",
-    because: "A path or identifier an executor writes; rendered beside the check.",
+    because:
+      "A repository path an executor cites. It is the last class of value taken from the customer's repository that still reaches the report, so it is checked like any other free text.",
   },
 
   // --- findings ---
@@ -139,14 +139,28 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
   "$.findings[].exploitability": { disposition: "generated", because: "A closed enum; an input to derived severity." },
   "$.findings[].confidence": { disposition: "generated", because: "A closed enum; caps derived severity." },
   "$.findings[].remediationEffort": { disposition: "generated", because: "A closed enum the finding contract defines." },
-  "$.findings[].title": { disposition: "guarded", because: "Executor-written free text, rendered to the customer." },
-  "$.findings[].whatWeObserved": { disposition: "guarded", because: "Executor-written free text, rendered to the customer." },
-  "$.findings[].whyItMatters": { disposition: "guarded", because: "Executor-written free text, rendered to the customer." },
-  "$.findings[].recommendation": { disposition: "guarded", because: "Executor-written free text, rendered to the customer." },
-  "$.findings[].residualUncertainty": { disposition: "guarded", because: "Executor-written free text, rendered to the customer." },
+  "$.findings[].observationCode": {
+    disposition: "generated",
+    because:
+      "A closed enum over the observation catalog. Every customer-facing sentence about this finding — title, what we observed, why it matters — is resolved from this code at render time and never written by a caller.",
+  },
+  "$.findings[].remediationCode": {
+    disposition: "generated",
+    because: "A closed enum over the remediation catalog, constrained to the remediations the observation offers.",
+  },
+  "$.findings[].uncertaintyCode": {
+    disposition: "generated",
+    because: "A closed enum over the uncertainty catalog. Required whenever confidence is not `confirmed`.",
+  },
   "$.findings[].locations[].path": {
     disposition: "guarded",
-    because: "A repository path an executor writes; free text in practice, and rendered.",
+    because:
+      "A repository path an executor writes. Bounded and grammar-checked by the finding schema, but still a value derived from the customer's repository, so it carries the guarded contract.",
+  },
+  "$.findings[].evidence[].kind": { disposition: "generated", because: "A closed enum the rubric module defines." },
+  "$.findings[].evidence[].path": {
+    disposition: "guarded",
+    because: "A repository path an executor cites as evidence; same contract as a finding location.",
   },
   // --- what sanitisation removed ---
   "$.unresolvedHolds[].path": {
@@ -183,13 +197,18 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
     disposition: "generated",
     because: "A timestamp this codebase writes when the hold is cleared.",
   },
-  "$.clearedSecretHolds[].rationale": {
-    disposition: "guarded",
+  "$.clearedSecretHolds[].reasonCode": {
+    disposition: "generated",
     because:
-      "A reviewer's written reason for releasing held material, shown to the customer alongside the hold. Free text, so it is checked like any other.",
+      "A closed enum over the clearance-reason catalog. A reviewer selects a reason; they do not write one, because a written reason is free text on a path that exists to release withheld material.",
   },
 
-  "$.limitations[]": { disposition: "guarded", because: "Rendered as the report's own limitations." },
+  "$.limitationCodes[]": {
+    disposition: "generated",
+    because:
+      "A closed enum over the limitation catalog. The standing limitations are appended by the builder; a caller may only select from the engagement-specific ones.",
+  },
+
   "$.preparedBy.executorKey": { disposition: "generated", because: "A control-plane identifier, not product truth." },
   "$.preparedBy.executorKind": { disposition: "generated", because: "Enum; execution provenance, not product truth." },
   "$.preparedBy.provider": { disposition: "generated", because: "Enum; execution provenance, not product truth." },

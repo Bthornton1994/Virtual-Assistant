@@ -1,10 +1,23 @@
 import { z } from "zod";
-import { identifierString, nonEmptyString } from "@/lib/catalog-evidence-shared";
+import { identifierString } from "@/lib/catalog-evidence-shared";
 import {
-  describeQuotedCredentialConstructs,
-  findQuotedCredentialConstructs,
-} from "@/lib/release-rescue-prose";
-import { getRubricCheck, rubricDimensionSchema, type RubricCheck } from "@/lib/release-rescue-rubric";
+  computeFindingBlocking,
+  computeFindingSeverity,
+  FINDING_CONFIDENCES,
+  FINDING_EXPLOITABILITIES,
+  FINDING_IMPACTS,
+  FINDING_SEVERITIES,
+  REMEDIATION_EFFORTS,
+  type FindingConfidence,
+} from "@/lib/release-rescue-findings-model";
+import {
+  getObservation,
+  getRemediation,
+  OBSERVATION_CODES,
+  REMEDIATION_CODES,
+  UNCERTAINTY_CODES,
+} from "@/lib/release-rescue-observation-catalog";
+import { getRubricCheck, rubricDimensionSchema, rubricEvidenceKindSchema } from "@/lib/release-rescue-rubric";
 
 // The finding contract and the severity model.
 //
@@ -25,121 +38,27 @@ import { getRubricCheck, rubricDimensionSchema, type RubricCheck } from "@/lib/r
 // observations cannot disagree on the severity, and a report whose stored
 // severity does not match the recomputation is rejected as tampered.
 
-export const RELEASE_RESCUE_FINDING_SCHEMA_VERSION = "release-rescue-finding/v1" as const;
+export const RELEASE_RESCUE_FINDING_SCHEMA_VERSION = "release-rescue-finding/v2" as const;
 
-export const FINDING_IMPACTS = ["none", "limited", "serious", "severe"] as const;
-export type FindingImpact = (typeof FINDING_IMPACTS)[number];
+export {
+  FINDING_IMPACTS,
+  FINDING_EXPLOITABILITIES,
+  FINDING_CONFIDENCES,
+  FINDING_SEVERITIES,
+  REMEDIATION_EFFORTS,
+  computeFindingSeverity,
+  computeFindingBlocking,
+  severityRank,
+} from "@/lib/release-rescue-findings-model";
+export type {
+  FindingImpact,
+  FindingExploitability,
+  FindingConfidence,
+  FindingSeverity,
+  RemediationEffort,
+  SeverityInputs,
+} from "@/lib/release-rescue-findings-model";
 
-export const FINDING_EXPLOITABILITIES = [
-  "theoretical",
-  "requires_privilege",
-  "requires_user_interaction",
-  "remote_unauthenticated",
-] as const;
-export type FindingExploitability = (typeof FINDING_EXPLOITABILITIES)[number];
-
-export const FINDING_CONFIDENCES = ["confirmed", "likely", "possible"] as const;
-export type FindingConfidence = (typeof FINDING_CONFIDENCES)[number];
-
-export const FINDING_SEVERITIES = ["critical", "high", "medium", "low", "informational"] as const;
-export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
-
-export const REMEDIATION_EFFORTS = ["trivial", "small", "medium", "large"] as const;
-export type RemediationEffort = (typeof REMEDIATION_EFFORTS)[number];
-
-const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = {
-  informational: 0,
-  low: 1,
-  medium: 2,
-  high: 3,
-  critical: 4,
-};
-
-const RANK_TO_SEVERITY: readonly FindingSeverity[] = ["informational", "low", "medium", "high", "critical"];
-
-/**
- * Base severity before confidence is applied.
- *
- * Read down a column to see the intent: the same outcome gets progressively less
- * severe as the attacker needs more to reach it. `theoretical` never reaches
- * high on its own — a real path to the problem has to be shown first.
- */
-const BASE_SEVERITY: Readonly<Record<FindingImpact, Readonly<Record<FindingExploitability, FindingSeverity>>>> = {
-  severe: {
-    remote_unauthenticated: "critical",
-    requires_user_interaction: "high",
-    requires_privilege: "high",
-    theoretical: "medium",
-  },
-  serious: {
-    remote_unauthenticated: "high",
-    requires_user_interaction: "medium",
-    requires_privilege: "medium",
-    theoretical: "low",
-  },
-  limited: {
-    remote_unauthenticated: "medium",
-    requires_user_interaction: "low",
-    requires_privilege: "low",
-    theoretical: "low",
-  },
-  none: {
-    remote_unauthenticated: "informational",
-    requires_user_interaction: "informational",
-    requires_privilege: "informational",
-    theoretical: "informational",
-  },
-};
-
-/**
- * Confidence caps severity; it never raises it.
- *
- * An unproven suspicion is worth reporting and worth the customer's time to
- * check, but it is not worth telling them their release is blocked. Only
- * `confirmed` reaches critical, and only `confirmed` can block — see
- * `computeFindingBlocking`.
- */
-const CONFIDENCE_CEILING: Readonly<Record<FindingConfidence, FindingSeverity>> = {
-  confirmed: "critical",
-  likely: "high",
-  possible: "medium",
-};
-
-export type SeverityInputs = {
-  impact: FindingImpact;
-  exploitability: FindingExploitability;
-  confidence: FindingConfidence;
-};
-
-export function computeFindingSeverity(inputs: SeverityInputs): FindingSeverity {
-  const base = BASE_SEVERITY[inputs.impact][inputs.exploitability];
-  const ceiling = CONFIDENCE_CEILING[inputs.confidence];
-  const rank = Math.min(SEVERITY_RANK[base], SEVERITY_RANK[ceiling]);
-  return RANK_TO_SEVERITY[rank];
-}
-
-/**
- * Whether this finding stops the release verdict.
- *
- * Confirmation is required in every case: we do not block a customer's release
- * on a suspicion. Beyond that, a confirmed CRITICAL blocks wherever it was
- * found — the rubric's `blocking` flag marks which checks are release gates,
- * and a proven critical outranks that classification rather than being filed
- * under it. A confirmed HIGH blocks only on a check the rubric gates.
- *
- * An unconfirmed critical is loud in the report and absent from this gate. It
- * still holds the verdict at `conditional_release` (see the report contract),
- * so it is neither used to block a release nor quietly dropped.
- */
-export function computeFindingBlocking(check: RubricCheck, severity: FindingSeverity, confidence: FindingConfidence): boolean {
-  if (confidence !== "confirmed") return false;
-  if (severity === "critical") return true;
-  return check.blocking && SEVERITY_RANK[severity] >= SEVERITY_RANK.high;
-}
-
-export function severityRank(severity: FindingSeverity): number {
-  return SEVERITY_RANK[severity];
-}
 
 // --- Schemas ------------------------------------------------------------------------
 
@@ -210,8 +129,14 @@ function walksUpward(value: string): boolean {
  * of this comment saying they were. The grammar removes the pasted-window
  * channel; the scanner catches what it recognises in what is left. A token the
  * scanner does not recognise, in a value the grammar considers path-shaped, is
- * caught by neither — the same gap `release-rescue-prose.ts` documents for the
- * prose fields, and the named human reviewer is what stands there.
+ * caught by neither, and the named human reviewer is what stands there.
+ *
+ * `release-rescue-prose.ts` is GONE. It refused credential constructs in
+ * executor prose, and four rounds established that the question it asked has no
+ * safe answer. There is no prose left for it to ask about: a finding carries
+ * codes and the catalog carries the words. Deleting it rather than leaving it
+ * unused is deliberate — an orphaned module that claims a safety property is how
+ * three separate audits found this codebase asserting more than it implemented.
  */
 export const repositoryPathSchema = identifierString
   .max(400)
@@ -268,6 +193,66 @@ export const FORBIDDEN_SOURCE_FIELDS: readonly string[] = [
 ];
 
 /**
+ * Field names that used to carry executor- or customer-written NARRATIVE.
+ *
+ * Distinct from the list above, and for a different reason. Those fields carried
+ * a copy of the customer's source. These carried sentences somebody wrote about
+ * it — the finding's title, what we observed, why it matters, the
+ * recommendation, the residual uncertainty, an assessment's rationale, the
+ * customer's own application and workflow descriptions, a reviewer's clearance
+ * note.
+ *
+ * Four rounds of measurement established that no rule over such a sentence can
+ * keep a credential out of it: a rule keyed on an assignment construct is walked
+ * straight past by `DB_PASSWORD is set to <value>`, and a rule strict enough to
+ * catch that refuses fifteen of twenty-one sentences an auditor legitimately
+ * needs to write. So the fields are gone and the words come from a frozen
+ * catalog, keyed by code.
+ *
+ * The names stay here so that a caller still sending one is told WHAT CHANGED.
+ * "unrecognized key: whatWeObserved" is a true message that teaches nothing; the
+ * refusal below says the contract composes that sentence from a code now.
+ */
+export const FORBIDDEN_NARRATIVE_FIELDS: readonly string[] = [
+  "title",
+  "whatWeObserved",
+  "whatWeFound",
+  "whyItMatters",
+  "recommendation",
+  "recommendations",
+  "remediation",
+  "residualUncertainty",
+  "uncertainty",
+  "rationale",
+  "reasoning",
+  "justification",
+  "description",
+  "summary",
+  "detail",
+  "details",
+  "narrative",
+  "explanation",
+  "note",
+  "notes",
+  "comment",
+  "comments",
+  "observation",
+  "observations",
+  "finding",
+  "message",
+  "prose",
+  "limitations",
+  "customerExclusions",
+  "exclusions",
+];
+
+/** Every field name a finding, an assessment or a report may not carry. */
+export const FORBIDDEN_REPORT_TEXT_FIELDS: readonly string[] = [
+  ...FORBIDDEN_SOURCE_FIELDS,
+  ...FORBIDDEN_NARRATIVE_FIELDS,
+];
+
+/**
  * A finding location: where to look, never what is there.
  *
  * `path`, `startLine` and `endLine` are everything a customer needs to open the
@@ -299,7 +284,7 @@ export const findingLocationSchema = z
 export function findForbiddenSourceField(value: unknown): string | null {
   if (value === null || typeof value !== "object") return null;
   for (const key of Object.keys(value as Record<string, unknown>)) {
-    if (FORBIDDEN_SOURCE_FIELDS.includes(key)) return key;
+    if (FORBIDDEN_REPORT_TEXT_FIELDS.includes(key)) return key;
   }
   return null;
 }
@@ -335,12 +320,47 @@ export function findSourceFieldsInFindings(findings: unknown): SourceFieldSighti
     const onFinding = findForbiddenSourceField(finding);
     if (onFinding) sightings.push({ at: `findings[${index}]`, field: onFinding });
 
-    const locations = (finding as { locations?: unknown } | null)?.locations;
-    if (!Array.isArray(locations)) return;
-    locations.forEach((location, locationIndex) => {
-      const onLocation = findForbiddenSourceField(location);
-      if (onLocation) {
-        sightings.push({ at: `findings[${index}].locations[${locationIndex}]`, field: onLocation });
+    // Both child collections, not just `locations`. `evidence` was added with
+    // the same shape and the same one value taken from the customer's
+    // repository, and a walk that covered one and not the other would leave the
+    // newer of the two unguarded — which is how the original gap happened.
+    for (const collection of ["locations", "evidence"] as const) {
+      const entries = (finding as Record<string, unknown> | null)?.[collection];
+      if (!Array.isArray(entries)) continue;
+      entries.forEach((entry, entryIndex) => {
+        const onEntry = findForbiddenSourceField(entry);
+        if (onEntry) {
+          sightings.push({ at: `findings[${index}].${collection}[${entryIndex}]`, field: onEntry });
+        }
+      });
+    }
+  });
+
+  return sightings;
+}
+
+/**
+ * The same question, asked of rubric assessments.
+ *
+ * An assessment used to carry a `rationale` — executor-written, rendered beside
+ * the check, and every bit as reachable as a finding's prose. It now carries a
+ * `rationaleCode`. This walk is what tells a caller still sending the old field
+ * that the contract changed, on the same terms as the findings walk.
+ */
+export function findSourceFieldsInAssessments(assessments: unknown): SourceFieldSighting[] {
+  if (!Array.isArray(assessments)) return [];
+
+  const sightings: SourceFieldSighting[] = [];
+  assessments.forEach((assessment, index) => {
+    const onAssessment = findForbiddenSourceField(assessment);
+    if (onAssessment) sightings.push({ at: `assessments[${index}]`, field: onAssessment });
+
+    const evidence = (assessment as { evidence?: unknown } | null)?.evidence;
+    if (!Array.isArray(evidence)) return;
+    evidence.forEach((entry, entryIndex) => {
+      const onEntry = findForbiddenSourceField(entry);
+      if (onEntry) {
+        sightings.push({ at: `assessments[${index}].evidence[${entryIndex}]`, field: onEntry });
       }
     });
   });
@@ -351,9 +371,11 @@ export function findSourceFieldsInFindings(findings: unknown): SourceFieldSighti
 /** One sentence naming every sighting, or null when there are none. */
 export function describeSourceFieldSightings(sightings: readonly SourceFieldSighting[]): string | null {
   if (sightings.length === 0) return null;
-  return `A Release Rescue finding carries source-bearing fields that were removed from this contract: ${sightings
+  return `A Release Rescue report carries fields that were removed from this contract: ${sightings
     .map((sighting) => `${sighting.at}.${sighting.field}`)
-    .join(", ")}. A finding cites path and line; it does not carry the source. The offending values are withheld from this message deliberately.`;
+    .join(
+      ", ",
+    )}. A finding cites path and line; it does not carry the source, and it does not carry a sentence — every word a customer reads is composed from the observation catalog by code. The offending values are withheld from this message deliberately.`;
 }
 
 /**
@@ -369,68 +391,141 @@ export function assertNoSourceFieldsInFindings(findings: unknown, context: strin
 }
 
 /**
- * A prose field an auditor authors, which may describe but may not quote.
+ * Structured evidence: where the auditor looked, never what was there.
  *
- * The refusal is a REFUSAL, not a scrub: blanking after assembly would mean the
- * value existed in this process and in whatever logged it on the way here. See
- * `release-rescue-prose.ts` for why this is about the construct and never about
- * the value.
+ * The `reference` field this replaces was 300 characters of free text described
+ * as "a pointer", and an audit measured that a pointer-shaped field is still a
+ * field. A kind and a location cannot carry a sentence.
  */
-export function observationField(maxLength: number) {
-  return nonEmptyString.max(maxLength).superRefine((value, ctx) => {
-    const message = describeQuotedCredentialConstructs(
-      findQuotedCredentialConstructs(value),
-      "This field",
-    );
-    if (message) ctx.addIssue({ code: "custom", message });
-  });
-}
+export const findingEvidenceSchema = z
+  .object({
+    kind: rubricEvidenceKindSchema,
+    path: repositoryPathSchema,
+    startLine: z.number().int().min(1).nullable(),
+    endLine: z.number().int().min(1).nullable(),
+  })
+  .strict();
 
-/** The same rule for a field that is allowed to be empty. */
-export function optionalObservationField(maxLength: number) {
-  return z
-    .string()
-    .max(maxLength)
-    .superRefine((value, ctx) => {
-      const message = describeQuotedCredentialConstructs(
-        findQuotedCredentialConstructs(value),
-        "This field",
-      );
-      if (message) ctx.addIssue({ code: "custom", message });
-    });
-}
-
-export const releaseRescueFindingV1Schema = z
+/**
+ * A finding: typed facts only.
+ *
+ * Every customer-facing sentence this produces comes from
+ * `release-rescue-observation-catalog.ts`, looked up by `observationCode` when
+ * the report is rendered. There is no field here for an executor to write prose
+ * into, which is the point — thirteen audits established that no rule over
+ * arbitrary prose can keep a credential out of it, so the prose is gone and the
+ * codes remain.
+ *
+ * `impact` and `exploitability` are stored because a reader of the stored
+ * artifact should see what severity was derived from, and VERIFIED against the
+ * catalog by `validateFinding`, so storing them grants no authority to set them.
+ */
+export const releaseRescueFindingV2Schema = z
   .object({
     schemaVersion: z.literal(RELEASE_RESCUE_FINDING_SCHEMA_VERSION),
     findingId: identifierString.max(100),
     rubricCheckId: identifierString.max(200),
     dimension: rubricDimensionSchema,
-    /** The headline a customer reads. Executor-written, so same prose contract. */
-    title: observationField(200),
-    /** What the auditor saw. Observation, not inference. */
-    whatWeObserved: observationField(4000),
-    /** Why it matters for THIS release, not in general. */
-    whyItMatters: observationField(4000),
-    /** What the customer should do. Actionable, specific to the code. */
-    recommendation: observationField(4000),
+    /** The catalog entry that supplies every word a customer reads for this finding. */
+    observationCode: z.enum(OBSERVATION_CODES as [string, ...string[]]),
+    /** The one judgement still left to an executor: did we prove it, or suspect it? */
+    confidence: z.enum(FINDING_CONFIDENCES),
+    /** Both derived from the observation catalog. Verified, not trusted. */
     impact: z.enum(FINDING_IMPACTS),
     exploitability: z.enum(FINDING_EXPLOITABILITIES),
-    confidence: z.enum(FINDING_CONFIDENCES),
-    /** Derived. Stored so a reader sees it; verified so it cannot be edited. */
+    /** Derived from impact, exploitability and confidence. Verified. */
     severity: z.enum(FINDING_SEVERITIES),
-    /** Derived from the rubric check, the severity, and the confidence. */
+    /** Derived from the rubric check, the severity and the confidence. Verified. */
     blocking: z.boolean(),
     locations: z.array(findingLocationSchema).max(20),
+    evidence: z.array(findingEvidenceSchema).max(10),
+    /** One of the remediations the observation declares acceptable. */
+    remediationCode: z.enum(REMEDIATION_CODES as unknown as [string, ...string[]]),
+    /** Both derived from the remediation catalog. Verified. */
     remediationEffort: z.enum(REMEDIATION_EFFORTS),
-    /** Whether the remediation sprint would cover this. Commercial, not technical. */
     inRemediationSprintScope: z.boolean(),
-    /** What the auditor could not establish. Non-empty when confidence is not `confirmed`. */
-    residualUncertainty: optionalObservationField(2000),
+    /** Required when confidence is not `confirmed`; refused when it is. */
+    uncertaintyCode: z.enum(UNCERTAINTY_CODES as unknown as [string, ...string[]]).nullable(),
   })
   .strict();
 
-export type ReleaseRescueFindingV1 = z.infer<typeof releaseRescueFindingV1Schema>;
+/** The v1 name, kept pointing at the current contract so callers read naturally. */
+export const releaseRescueFindingV1Schema = releaseRescueFindingV2Schema;
+
+
+export type ReleaseRescueFindingV2 = z.infer<typeof releaseRescueFindingV2Schema>;
+export type ReleaseRescueFindingV1 = ReleaseRescueFindingV2;
+
+/**
+ * The facts an executor supplies. Everything else is derived.
+ *
+ * This is the whole of what a caller may decide about a finding, and it is why
+ * `validateFinding` can be a verification rather than a negotiation: there is no
+ * input here that could contradict the catalog, because the contradictory fields
+ * are not inputs.
+ */
+export type FindingFacts = {
+  findingId: string;
+  observationCode: string;
+  confidence: FindingConfidence;
+  remediationCode: string;
+  locations: Array<z.infer<typeof findingLocationSchema>>;
+  evidence: Array<z.infer<typeof findingEvidenceSchema>>;
+  uncertaintyCode?: string | null;
+};
+
+/**
+ * Builds a finding from facts, deriving every field the catalog owns.
+ *
+ * The only supported way to make one. Hand-assembling the object is what let an
+ * earlier contract store an impact that did not match its observation, and the
+ * validator then had to catch what the constructor should never have allowed.
+ */
+export function composeFinding(facts: FindingFacts): ReleaseRescueFindingV2 {
+  const observation = getObservation(facts.observationCode);
+  if (!observation) {
+    throw new Error(`Unknown observation code "${facts.observationCode}".`);
+  }
+  const remediation = getRemediation(facts.remediationCode);
+  if (!remediation) {
+    throw new Error(`Unknown remediation code "${facts.remediationCode}".`);
+  }
+  if (!observation.remediationCodes.includes(remediation.code)) {
+    throw new Error(
+      `Observation "${observation.code}" does not offer remediation "${remediation.code}".`,
+    );
+  }
+
+  const check = getRubricCheck(observation.checkId);
+  if (!check) {
+    throw new Error(`Observation "${observation.code}" references unknown check "${observation.checkId}".`);
+  }
+
+  const severity = computeFindingSeverity({
+    impact: observation.impact,
+    exploitability: observation.exploitability,
+    confidence: facts.confidence,
+  });
+
+  return {
+    schemaVersion: RELEASE_RESCUE_FINDING_SCHEMA_VERSION,
+    findingId: facts.findingId,
+    rubricCheckId: observation.checkId,
+    dimension: observation.dimension,
+    observationCode: observation.code,
+    confidence: facts.confidence,
+    impact: observation.impact,
+    exploitability: observation.exploitability,
+    severity,
+    blocking: computeFindingBlocking(check, severity, facts.confidence),
+    locations: facts.locations,
+    evidence: facts.evidence,
+    remediationCode: remediation.code,
+    remediationEffort: remediation.effort,
+    inRemediationSprintScope: remediation.inSprintScope,
+    uncertaintyCode: facts.uncertaintyCode ?? null,
+  };
+}
 
 export type FindingValidation = {
   ok: boolean;
@@ -475,11 +570,64 @@ export function validateFinding(finding: ReleaseRescueFindingV1): FindingValidat
     );
   }
 
+  // The observation catalog is the authority on impact and exploitability, so a
+  // stored pair that disagrees with it is a tampered artifact. Without this the
+  // executor could reach the severity it wanted by asserting the inputs next to
+  // a code that does not support them.
+  const observation = getObservation(finding.observationCode);
+  if (!observation) {
+    failures.push(
+      `Finding ${finding.findingId} references unknown observation code "${finding.observationCode}".`,
+    );
+    return { ok: false, failures };
+  }
+  if (observation.checkId !== finding.rubricCheckId) {
+    failures.push(
+      `Finding ${finding.findingId} pairs observation "${finding.observationCode}" with check "${finding.rubricCheckId}", but that observation belongs to "${observation.checkId}".`,
+    );
+  }
+  if (finding.impact !== observation.impact || finding.exploitability !== observation.exploitability) {
+    failures.push(
+      `Finding ${finding.findingId} stores impact/exploitability "${finding.impact}/${finding.exploitability}" but observation "${finding.observationCode}" defines "${observation.impact}/${observation.exploitability}".`,
+    );
+  }
+
+  // A remediation the observation does not offer is an executor writing its own
+  // advice by picking an unrelated code.
+  const remediation = getRemediation(finding.remediationCode);
+  if (!remediation) {
+    failures.push(
+      `Finding ${finding.findingId} references unknown remediation code "${finding.remediationCode}".`,
+    );
+  } else {
+    if (!observation.remediationCodes.includes(remediation.code)) {
+      failures.push(
+        `Finding ${finding.findingId} pairs observation "${finding.observationCode}" with remediation "${finding.remediationCode}", which that observation does not offer.`,
+      );
+    }
+    if (finding.remediationEffort !== remediation.effort) {
+      failures.push(
+        `Finding ${finding.findingId} stores remediation effort "${finding.remediationEffort}" but "${remediation.code}" defines "${remediation.effort}".`,
+      );
+    }
+    if (finding.inRemediationSprintScope !== remediation.inSprintScope) {
+      failures.push(
+        `Finding ${finding.findingId} stores sprint scope ${finding.inRemediationSprintScope} but "${remediation.code}" defines ${remediation.inSprintScope}.`,
+      );
+    }
+  }
+
   // An unproven finding that does not say what is unproven is not reportable:
   // the customer cannot act on "maybe" without knowing what to go and check.
-  if (finding.confidence !== "confirmed" && finding.residualUncertainty.trim().length === 0) {
+  // A proven one that carries an uncertainty code is contradicting itself.
+  if (finding.confidence !== "confirmed" && finding.uncertaintyCode === null) {
     failures.push(
-      `Finding ${finding.findingId} has confidence "${finding.confidence}" and must state its residual uncertainty.`,
+      `Finding ${finding.findingId} has confidence "${finding.confidence}" and must name its residual uncertainty.`,
+    );
+  }
+  if (finding.confidence === "confirmed" && finding.uncertaintyCode !== null) {
+    failures.push(
+      `Finding ${finding.findingId} is confirmed and must not also claim a residual uncertainty.`,
     );
   }
 

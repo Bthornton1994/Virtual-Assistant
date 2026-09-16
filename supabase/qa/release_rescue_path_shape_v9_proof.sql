@@ -55,8 +55,14 @@ create or replace function rrv9.report_with_path(p_path text)
 returns jsonb language sql immutable as $$
   select jsonb_build_object(
     'schemaVersion', 'release-rescue-report/v1',
+    'observationCatalogVersion', 'release-rescue-observations/v1',
+    'observationCatalogHash', repeat('a', 64),
     'findings', jsonb_build_array(jsonb_build_object(
       'findingId', 'f-001',
+      -- v10 requires these: a stored report names the catalog its wording came
+      -- from, and a finding names the observation it is an instance of.
+      'observationCode', 'authz.record_lookup_is_not_scoped_to_the_caller',
+      'remediationCode', 'scope_query_by_authenticated_principal',
       'locations', jsonb_build_array(jsonb_build_object(
         'path', p_path, 'startLine', 1, 'endLine', 3)))))
 $$;
@@ -207,12 +213,15 @@ begin
           '9e000000-0000-0000-0000-00000000aa01', 'observation', 'clean report', repeat('6', 64),
           jsonb_build_object(
             'schemaVersion', 'release-rescue-report/v1',
+            'observationCatalogVersion', 'release-rescue-observations/v1',
+            'observationCatalogHash', repeat('a', 64),
             'findings', jsonb_build_array(jsonb_build_object(
               'findingId', 'f-001',
               'rubricCheckId', 'authz.object_level_authorization',
               'severity', 'high',
-              'whatWeObserved', 'The order lookup returns records the caller does not own.',
-              'recommendation', 'Scope the query by the authenticated organization.',
+              -- v10: codes, not sentences.
+              'observationCode', 'authz.record_lookup_is_not_scoped_to_the_caller',
+              'remediationCode', 'scope_query_by_authenticated_principal',
               'locations', jsonb_build_array(jsonb_build_object(
                 'path', 'src/app/api/orders/[id]/route.ts', 'startLine', 18, 'endLine', 27))))));
 
@@ -227,8 +236,10 @@ begin
     (v_payload#>>'{findings,0,locations,0,endLine}')::int = 27);
   perform rrv9.assert('the check identifier survives',
     v_payload#>>'{findings,0,rubricCheckId}' = 'authz.object_level_authorization');
-  perform rrv9.assert('the remediation guidance survives',
-    length(v_payload#>>'{findings,0,recommendation}') > 20);
+  -- v10: the remediation the customer reads is resolved from the catalog at
+  -- render time, so what a stored finding carries is the code for it.
+  perform rrv9.assert('the remediation code survives',
+    v_payload#>>'{findings,0,remediationCode}' = 'scope_query_by_authenticated_principal');
 end $$;
 
 \echo ''
@@ -259,6 +270,8 @@ begin
     cardinality(public.release_rescue_payload_shaped_paths(
       jsonb_build_object(
         'schemaVersion', 'release-rescue-report/v1',
+        'observationCatalogVersion', 'release-rescue-observations/v1',
+        'observationCatalogHash', repeat('a', 64),
         'findings', jsonb_build_array(jsonb_build_object(
           'locations', jsonb_build_array(jsonb_build_object('startLine', 1))))))) = 0);
 end $$;
@@ -272,13 +285,15 @@ end $$;
 -- would have sorted against the isolation rules already there.
 select rrv9.expect_refusal(
   'an excerpt is still refused after the guard was replaced',
-  'points at source',
+  'not source and not sentences',
   $q$
   insert into public.evidence_artifacts (organization_id, run_id, kind, summary, content_hash, payload)
   values ('9b000000-0000-0000-0000-00000000aa01', '9e000000-0000-0000-0000-00000000aa01',
           'observation', 'v8 still holds', repeat('8', 64),
           jsonb_build_object(
             'schemaVersion', 'release-rescue-report/v1',
+            'observationCatalogVersion', 'release-rescue-observations/v1',
+            'observationCatalogHash', repeat('a', 64),
             'findings', jsonb_build_array(jsonb_build_object(
               'locations', jsonb_build_array(jsonb_build_object(
                 'path', 'src/a.ts', 'excerpt', 'const key = "sk_live_x";'))))));
@@ -311,29 +326,43 @@ begin
     select * from (values
       ('nested object under a location',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_array(jsonb_build_object(
            'locations', jsonb_build_array(jsonb_build_object(
              'path', 'src/a.ts', 'meta', jsonb_build_object('excerpt', 'DB_PASSWORD=hunter2'))))))),
       ('nested array under a location',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_array(jsonb_build_object(
            'locations', jsonb_build_array(jsonb_build_object(
              'path', 'src/a.ts', 'detail', jsonb_build_array(
                jsonb_build_object('source', 'const k = 1;')))))))),
       ('nested object under a finding',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_array(jsonb_build_object(
            'detail', jsonb_build_object('excerpt', 'x'))))),
       ('evidence array under a finding',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_array(jsonb_build_object(
            'evidence', jsonb_build_array(jsonb_build_object('snippet', 'x')))))),
       ('top level of the payload',
-       jsonb_build_object('schemaVersion', 'release-rescue-report/v1', 'excerpt', 'x')),
+       jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64), 'excerpt', 'x')),
       ('top level, a different name',
-       jsonb_build_object('schemaVersion', 'release-rescue-report/v1', 'source', 'x')),
+       jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64), 'source', 'x')),
       ('under an assessment',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'assessments', jsonb_build_array(jsonb_build_object(
            'evidence', jsonb_build_array(jsonb_build_object('excerpt', 'x')))))),
       ('schema version with a trailing space',
@@ -345,20 +374,30 @@ begin
       ('the whole report one level down',
        jsonb_build_object('report', jsonb_build_object(
          'schemaVersion', 'release-rescue-report/v1',
+         'observationCatalogVersion', 'release-rescue-observations/v1',
+         'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_array(jsonb_build_object('excerpt', 'x'))))),
       ('a capitalised key',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_array(jsonb_build_object(
            'locations', jsonb_build_array(jsonb_build_object('path', 'a', 'Excerpt', 'x')))))),
       ('a shouted key',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_array(jsonb_build_object(
            'locations', jsonb_build_array(jsonb_build_object('path', 'a', 'SNIPPET', 'x')))))),
       ('findings as an object rather than an array',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_object('a', jsonb_build_object('excerpt', 'x')))),
       ('locations as an object rather than an array',
        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
          'findings', jsonb_build_array(jsonb_build_object(
            'locations', jsonb_build_object('a', jsonb_build_object('excerpt', 'x'))))))
     ) as t(label, payload)
@@ -392,6 +431,8 @@ select rrv9.expect_refusal(
           'observation', 'nested path', repeat('a', 64),
           jsonb_build_object(
             'schemaVersion', 'release-rescue-report/v1',
+            'observationCatalogVersion', 'release-rescue-observations/v1',
+            'observationCatalogHash', repeat('a', 64),
             'appendix', jsonb_build_object('locations', jsonb_build_array(
               jsonb_build_object('path', 'src/a.ts' || chr(10) || 'const p = 1;')))));
 $q$);

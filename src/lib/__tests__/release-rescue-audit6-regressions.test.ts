@@ -14,7 +14,13 @@ import {
   releaseRescueDeliveryGate,
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
-import { makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
+import { LIMITATION_CATALOG, type LimitationCode } from "@/lib/release-rescue-observation-catalog";
+import {
+  makeFinding,
+  makeReportInput,
+  passingAssessments,
+  setAssessment,
+} from "@/lib/__tests__/release-rescue-fixtures";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 
 // The sixth audit, as tests.
@@ -72,27 +78,39 @@ describe("a credential key with no separator and no camel-case boundary", () => 
     }
   });
 
-  it("refuses an assignment quoted into a limitation, before any gate is consulted", () => {
-    // `limitations` is executor-written and rendered verbatim to the customer,
-    // so it carries the same prose contract as an observation. An audit planted
-    // an assignment in each unguarded field and delivered every one; this is the
-    // stronger outcome the contract now produces.
-    expect(() =>
-      buildReleaseRescueReport(
-        makeReportInput({
-          limitations: ["The CI job exports PGPASSWORD=pr0dXk92mQvn7Lz before running migrations."],
-        }),
-      ),
-    ).toThrow(/PGPASSWORD/);
+  it("has no limitation field left to quote an assignment into", () => {
+    // `limitations` was an executor-written string array rendered verbatim to the
+    // customer. An audit planted an assignment in each unguarded field and
+    // delivered every one. The field is now `limitationCodes`, a closed enum
+    // over the limitation catalog, and the old key is not part of the contract.
+    const raw = makeReportInput() as unknown as Record<string, unknown>;
+    const report = buildReleaseRescueReport({
+      ...raw,
+      limitations: ["PGPASSWORD=pr0dXk92mQvn7Lz"],
+    } as never);
+
+    expect(JSON.stringify(report)).not.toContain("pr0dXk92mQvn7Lz");
+    expect(Object.keys(report)).not.toContain("limitations");
+    // And what the customer reads comes from the catalog, keyed by code.
+    expect(report.limitationCodes.length).toBeGreaterThan(0);
+    for (const code of report.limitationCodes) {
+      expect(LIMITATION_CATALOG[code as LimitationCode], code).toBeDefined();
+    }
   });
 
   it("reaches the delivery gate, not just the detector", () => {
-    // The carrier here is a colon form, which the prose contract deliberately
-    // does NOT refuse — so this still measures the thing it was written to
-    // measure: the scanner holds it and the gate stops delivery.
+    // The carrier here is the reviewer's display name — one of the two free-text
+    // strings a human still types into a report — in a colon form, which is what
+    // the scanner rather than the schema has to catch. It still measures the
+    // thing it was written to measure: the value is removed, the hold is raised,
+    // and the gate stops delivery.
     const report = buildReleaseRescueReport(
       makeReportInput({
-        limitations: ["The CI job sets PGPASSWORD: pr0dXk92mQvn7Lz before running migrations."],
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: "Ops Manager PGPASSWORD: pr0dXk92mQvn7Lz",
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
       }),
     );
     const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
@@ -143,7 +161,13 @@ describe("one character of punctuation cannot switch the detector off", () => {
 
   it("does not deliver a report carrying one", () => {
     const report = buildReleaseRescueReport(
-      makeReportInput({ limitations: ["The compose file sets password: swordfish."] }),
+      makeReportInput({
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: "Ops Manager password: swordfish.",
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }),
     );
 
     expect(JSON.stringify(report)).not.toContain("swordfish");
@@ -178,15 +202,33 @@ describe("ordinary audit prose is not destroyed by the opaque-token rule", () =>
       makeReportInput({
         findings: [
           makeFinding({
-            whatWeObserved:
-              "The session token is created in src/lib/auth-v2-helpers.ts and never rotated.",
+            observationCode: "auth.session_lifetime_is_unbounded",
+            remediationCode: "shorten_session_lifetime_and_revoke_on_logout",
+            locations: [{ path: "src/lib/auth-v2-helpers.ts", startLine: 12, endLine: 20 }],
+            evidence: [
+              { kind: "code_reference", path: "src/lib/auth-v2-helpers.ts", startLine: 12, endLine: 20 },
+            ],
           }),
         ],
+        assessments: setAssessment(passingAssessments(), "auth.session_integrity", {
+          outcome: "fail",
+          rationaleCode: "control_missing_on_a_reachable_path",
+        }),
       }),
     );
 
-    expect(report.findings[0].whatWeObserved).toContain("src/lib/auth-v2-helpers.ts");
+    // The citation is the diagnostic now, and it is structured: the finding says
+    // WHERE, and the catalog says what that means. An earlier version asserted
+    // on executor prose, which no longer exists.
+    //
+    // The versioned filename is the point. `src/lib/auth-v2-helpers.ts` is a
+    // twelve-character token with a digit and a letter beside a credential noun
+    // — exactly the shape the opaque-token detector destroyed reports over — and
+    // it must survive into the delivered artifact untouched.
+    expect(report.findings[0].locations[0].path).toBe("src/lib/auth-v2-helpers.ts");
+    expect(report.findings[0].evidence[0].path).toBe("src/lib/auth-v2-helpers.ts");
     expect(pendingSecretHolds(report)).toEqual([]);
+    expect(releaseRescueDeliveryGate(report, validateReleaseRescueReport(report)).deliverable).toBe(true);
   });
 
   it("does not refuse a prospect describing their own stack", () => {

@@ -285,7 +285,7 @@ insert into public.evidence_artifacts
   (id, organization_id, run_id, kind, summary, content_hash, payload)
 values ('88888888-0000-0000-0000-00000000aaaa', '22222222-0000-0000-0000-00000000aaaa',
         '55555555-0000-0000-0000-00000000aaaa', 'observation', 'Release Rescue report body',
-        repeat('e', 64), '{"schemaVersion":"release-rescue-report/v1","verdict":"conditional_release"}'::jsonb);
+        repeat('e', 64), '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"conditional_release"}'::jsonb);
 
 -- An artifact belonging to a different run, used to prove the binding check.
 insert into public.workstream_runs (id, organization_id, workstream_id, delegation_spec_id, status)
@@ -296,7 +296,7 @@ insert into public.evidence_artifacts
   (id, organization_id, run_id, kind, summary, content_hash, payload)
 values ('88888888-0000-0000-0000-00000000bbbb', '22222222-0000-0000-0000-00000000aaaa',
         '55555555-0000-0000-0000-00000000bbbb', 'observation', 'Other run body',
-        repeat('f', 64), '{"schemaVersion":"release-rescue-report/v1"}'::jsonb);
+        repeat('f', 64), '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'::jsonb);
 
 select rrtest.expect_error('a report signed by a plain operator is refused', $q$
   insert into public.release_rescue_reports
@@ -498,7 +498,7 @@ select rrtest.expect_error('evidence is immutable again after the sweep', $q$
     (id, organization_id, run_id, kind, summary, content_hash, payload)
   values ('88888888-0000-0000-0000-0000000000ff', '22222222-0000-0000-0000-00000000aaaa',
           '55555555-0000-0000-0000-00000000aaaa', 'observation', 'post-purge', repeat('0', 64),
-          '{"schemaVersion":"release-rescue-report/v1"}'::jsonb);
+          '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'::jsonb);
   delete from public.evidence_artifacts where id = '88888888-0000-0000-0000-0000000000ff';
 $q$);
 

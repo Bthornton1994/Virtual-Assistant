@@ -139,14 +139,25 @@ describe("ordinary audit prose stays readable and does not hold anything", () =>
     });
   }
 
-  it("does not hard-fail a report whose finding is worded that way", () => {
-    const report = buildReleaseRescueReport(
-      makeReportInput({ limitations: ["Authorization: object-level checks are missing on three routes."] }),
-    );
-    const validation = validateReleaseRescueReport(report);
+  it("does not hard-fail a report carrying that wording", () => {
+    // A finding has no field for this wording any more. The reviewer's name is
+    // the string a human still types, so that is where the property is asserted:
+    // ordinary language containing a credential noun must not hold a report.
+    for (const text of PROSE.slice(0, 4)) {
+      const report = buildReleaseRescueReport(
+        makeReportInput({
+          reviewedBy: {
+            operatorUserId: "op-1",
+            displayName: `Ops Manager — ${text}`.slice(0, 180),
+            reviewedAt: "2026-09-16T10:00:00.000Z",
+          },
+        }),
+      );
+      const validation = validateReleaseRescueReport(report);
 
-    expect(validation.hardGatePass).toBe(true);
-    expect(releaseRescueDeliveryGate(report, validation).deliverable).toBe(true);
+      expect(validation.hardGatePass, text).toBe(true);
+      expect(releaseRescueDeliveryGate(report, validation).deliverable, text).toBe(true);
+    }
   });
 
   it("does not reject valid security language on the public intake form", () => {
@@ -216,8 +227,14 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   const AMBIGUOUS = "password: Zephyrbolt";
 
   it("records what it removed, as a hash rather than a copy", () => {
-    const report = buildReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
-    const hold = report.unresolvedHolds.find((entry) => entry.path.startsWith("$.limitations"));
+    const report = buildReleaseRescueReport(makeReportInput({
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: `Ops Manager ${AMBIGUOUS}`,
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }));
+    const hold = report.unresolvedHolds.find((entry) => entry.path.startsWith("$.reviewedBy.displayName"));
 
     expect(hold).toBeDefined();
     expect(hold?.originalHash).toMatch(/^[0-9a-f]{64}$/);
@@ -225,7 +242,13 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   });
 
   it("refuses delivery while the hold stands", () => {
-    const report = buildReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
+    const report = buildReleaseRescueReport(makeReportInput({
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: `Ops Manager ${AMBIGUOUS}`,
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }));
     const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
 
     expect(pendingSecretHolds(report).length).toBeGreaterThan(0);
@@ -234,18 +257,24 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   });
 
   it("delivers once the exact content is cleared", () => {
-    const base = buildReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
+    const base = buildReleaseRescueReport(makeReportInput({
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: `Ops Manager ${AMBIGUOUS}`,
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }));
     const hold = base.unresolvedHolds[0];
     const cleared = buildReleaseRescueReport(
       makeReportInput({
-        limitations: [AMBIGUOUS],
+        limitationCodes: ["customer_excluded_part_of_the_repository"],
         clearedSecretHolds: [
           {
             path: hold.path,
             clearedContentHash: hold.originalHash,
             clearedBy: "ops-manager-1",
             clearedAt: "2026-09-16T09:00:00.000Z",
-            rationale: "Reviewed the source line; it is a product name, not a credential.",
+            reasonCode: "value_is_a_placeholder_not_a_credential",
           },
         ],
       }),
@@ -258,18 +287,28 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   it("does not let a clearance for other content release this hold", () => {
     // Binding to the path alone let a blanket pre-clearance of speculative paths
     // switch the mechanism off before the content existed.
-    const base = buildReleaseRescueReport(makeReportInput({ limitations: [AMBIGUOUS] }));
+    const base = buildReleaseRescueReport(makeReportInput({
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: `Ops Manager ${AMBIGUOUS}`,
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }));
     const hold = base.unresolvedHolds[0];
     const report = buildReleaseRescueReport(
       makeReportInput({
-        limitations: [AMBIGUOUS],
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: `Ops Manager ${AMBIGUOUS}`,
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
         clearedSecretHolds: [
           {
             path: hold.path,
             clearedContentHash: "b".repeat(64),
             clearedBy: "ops-manager-1",
             clearedAt: "2026-09-16T09:00:00.000Z",
-            rationale: "Cleared something else entirely.",
+            reasonCode: "value_is_a_placeholder_not_a_credential",
           },
         ],
       }),
@@ -279,18 +318,32 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   });
 
   it("never lets a clearance release confident credential evidence", () => {
-    const base = buildReleaseRescueReport(makeReportInput({ limitations: ["DB_PASS: pr0dXk92mQvn7Lz"] }));
+    // The assignment form, not the colon form the tests above use. A confident
+    // detection is the one `pendingSecretHolds` refuses to let any human clear,
+    // and that refusal is the property under test here.
+    const CONFIDENT = "DB_PASSWORD=Zephyrbolt";
+    const base = buildReleaseRescueReport(makeReportInput({
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: `Ops Manager ${CONFIDENT}`,
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }));
     const hold = base.unresolvedHolds[0];
     const report = buildReleaseRescueReport(
       makeReportInput({
-        limitations: ["DB_PASS: pr0dXk92mQvn7Lz"],
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: `Ops Manager ${CONFIDENT}`,
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
         clearedSecretHolds: [
           {
             path: hold.path,
             clearedContentHash: hold.originalHash,
             clearedBy: "ops-manager-1",
             clearedAt: "2026-09-16T09:00:00.000Z",
-            rationale: "Looks fine to me.",
+            reasonCode: "value_is_a_placeholder_not_a_credential",
           },
         ],
       }),

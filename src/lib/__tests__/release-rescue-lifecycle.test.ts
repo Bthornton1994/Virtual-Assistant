@@ -14,6 +14,8 @@ import {
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
 import { toCustomerReportView } from "@/lib/release-rescue-presentation";
+import { sha256Hex } from "@/lib/catalog-evidence-hash";
+import { toReportScope } from "@/lib/release-rescue-report";
 import { COMMIT_SHA, makeIntake, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
 
 // The engagement lifecycle, at the contract level.
@@ -134,7 +136,13 @@ describe("the sequence intake -> freeze -> snapshot -> pin -> report runs end to
       makeReportInput({ scope, reviewedCommitSha: target.reviewedCommitSha }),
     );
 
-    expect(report.scopeHash).toBe(scopeHash);
+    // The report's own hash is of the PROJECTION it carries — the scope with the
+    // customer's prose removed — so a reader of the artifact can recompute it
+    // from what the artifact contains. The binding back to the engagement's
+    // frozen agreement is `target.scopeHash`, asserted at step 3, and enforced
+    // by the database's composite foreign key.
+    expect(report.scopeHash).toBe(sha256Hex(toReportScope(scope)));
+    expect(target.scopeHash).toBe(scopeHash);
     expect(report.reviewedCommitSha).toBe(snapshottedCommit);
     expect(validateReleaseRescueReport(report).hardFailures).toEqual([]);
   });

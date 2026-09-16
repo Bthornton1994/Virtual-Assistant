@@ -218,7 +218,17 @@ describe("the storage and delivery paths, not just the detector's return value",
       // the property is stronger than "the report is refused": the credential is
       // not in the artifact at all, and the report is held rather than delivered.
       const report = buildReleaseRescueReport(
-        makeReportInput({ limitations: [`The customer excluded the admin console. ${planted}`] }),
+        makeReportInput({
+          // The carrier is the reviewer's display name: the one free-text string
+          // a report still holds after Option 1. It used to be a finding's
+          // `whatWeObserved`, and before that a location excerpt; both are gone,
+          // so this is where the scanner still has work to do.
+          reviewedBy: {
+            operatorUserId: "op-1",
+            displayName: `Ops Manager ${planted}`.slice(0, 180),
+            reviewedAt: "2026-09-16T10:00:00.000Z",
+          },
+        }),
       );
       const validation = validateReleaseRescueReport(report);
 
@@ -247,7 +257,6 @@ describe("the storage and delivery paths, not just the detector's return value",
       makeReportInput({
         findings: [
           makeFinding({
-            whatWeObserved: "The compose file sets ENV DB_PASSWORD S3cretP4ssw0rdHere in the image.",
             locations: [{ path: "docker-compose.yml", startLine: 4, endLine: 4 }],
           }),
         ],

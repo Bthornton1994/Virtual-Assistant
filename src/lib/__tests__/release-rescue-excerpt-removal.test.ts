@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  FORBIDDEN_NARRATIVE_FIELDS,
+  FORBIDDEN_REPORT_TEXT_FIELDS,
   FORBIDDEN_SOURCE_FIELDS,
   findForbiddenSourceField,
   findSourceFieldsInFindings,
+  findingEvidenceSchema,
   releaseRescueFindingV1Schema,
   repositoryPathSchema,
 } from "@/lib/release-rescue-findings";
@@ -151,12 +154,10 @@ describe("no source-derived text crosses the persistence boundary", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [
           makeFinding({
-            whatWeObserved: "The order route loads a record by id without an ownership check.",
-            recommendation: "Scope the query by the authenticated organization.",
             locations: [{ path: "src/app/api/orders/route.ts", startLine: 18, endLine: 27 }],
           }),
         ],
@@ -267,14 +268,12 @@ describe("the finding is still worth paying for", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [
           makeFinding({
-            rubricCheckId: "authz.object_level_authorization",
-            whatWeObserved: "The order route loads a record by id without an ownership check.",
-            whyItMatters: "Any authenticated customer can read another customer's orders.",
-            recommendation: "Scope the query by the authenticated organization.",
+            observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
+            remediationCode: "scope_query_by_authenticated_principal",
             locations: [{ path: "src/app/api/orders/route.ts", startLine: 18, endLine: 27 }],
           }),
         ],
@@ -288,8 +287,10 @@ describe("the finding is still worth paying for", () => {
     expect(finding.locations[0].endLine).toBe(27);
     expect(finding.rubricCheckId).toBe("authz.object_level_authorization");
     expect(finding.severity.length).toBeGreaterThan(0);
-    expect(finding.whatWeObserved.length).toBeGreaterThan(20);
-    expect(finding.recommendation.length).toBeGreaterThan(20);
+    // The words are the catalog's, reached through the code the finding stores.
+    const rendered = toCustomerReportView(report).findings[0];
+    expect(rendered.whatWeObserved.length).toBeGreaterThan(20);
+    expect(rendered.recommendation.length).toBeGreaterThan(20);
 
     // And the customer sees the citation, rendered.
     expect(view.locations[0].path).toBe("src/app/api/orders/route.ts");
@@ -320,20 +321,30 @@ describe("the decision is bound to the database, not only to TypeScript", () => 
     "utf8",
   );
 
-  /** The names inside `release_rescue_forbidden_source_fields()`, read from SQL. */
-  function sqlForbiddenFields(): string[] {
-    const body = /release_rescue_forbidden_source_fields\(\)[\s\S]*?select array\[([\s\S]*?)\]/.exec(
-      MIGRATION,
-    );
-    expect(body, "the SQL list could not be located, so this test proves nothing").not.toBeNull();
+  const STRUCTURED = readFileSync(
+    resolve(
+      process.cwd(),
+      "supabase/migrations/20260916140000_release_rescue_structured_observations_v10.sql",
+    ),
+    "utf8",
+  );
+
+  /** The names inside a named SQL array-returning function. */
+  function sqlFields(source: string, fn: string): string[] {
+    const body = new RegExp(`${fn}\\(\\)[\\s\\S]*?select array\\[([\\s\\S]*?)\\]`).exec(source);
+    expect(body, `the SQL list for ${fn} could not be located, so this test proves nothing`).not.toBeNull();
     return [...body![1].matchAll(/'([^']+)'/g)].map((entry) => entry[1]);
   }
 
-  it("refuses the same field names in SQL as in TypeScript, in both directions", () => {
-    // Two lists in two languages drift apart silently. The previous version of
+  it("refuses the same source field names in SQL as in TypeScript, in both directions", () => {
+    // Two lists in two languages drift apart silently. An earlier version of
     // this test only checked TS → SQL, so a name added to SQL alone, or a later
     // migration shortening the SQL array, passed. An audit named that.
-    const inSql = sqlForbiddenFields();
+    //
+    // Read from v8, which is where this list is defined. v10 REPLACES the
+    // function that returns it, so the test below reads v10 for the composed
+    // list — both are asserted, because either one drifting is a hole.
+    const inSql = sqlFields(MIGRATION, "release_rescue_forbidden_source_fields");
 
     expect(inSql.length, "the parsed SQL list is implausibly short").toBeGreaterThan(20);
     expect(
@@ -345,6 +356,50 @@ describe("the decision is bound to the database, not only to TypeScript", () => 
       "refused in SQL but not in TypeScript",
     ).toEqual([]);
     expect([...inSql].sort()).toEqual([...FORBIDDEN_SOURCE_FIELDS].sort());
+  });
+
+  it("refuses the same NARRATIVE field names in SQL as in TypeScript, in both directions", () => {
+    // The Option 1 half. These are the fields that carried an executor's or a
+    // customer's sentences: a finding's title and observation, an assessment's
+    // rationale, the report's limitations, a reviewer's clearance note. They are
+    // refused for a different reason from the source fields, so they are a
+    // separate list in both languages — and both languages have to agree.
+    const inSql = sqlFields(STRUCTURED, "release_rescue_forbidden_narrative_fields");
+
+    expect(inSql.length, "the parsed SQL list is implausibly short").toBeGreaterThan(20);
+    expect(
+      FORBIDDEN_NARRATIVE_FIELDS.filter((field) => !inSql.includes(field)),
+      "refused in TypeScript but not in SQL",
+    ).toEqual([]);
+    expect(
+      inSql.filter((field) => !FORBIDDEN_NARRATIVE_FIELDS.includes(field)),
+      "refused in SQL but not in TypeScript",
+    ).toEqual([]);
+    expect([...inSql].sort()).toEqual([...FORBIDDEN_NARRATIVE_FIELDS].sort());
+  });
+
+  it("composes the two lists the same way in SQL as in TypeScript", () => {
+    // v10 replaces `release_rescue_forbidden_source_fields()` with the
+    // concatenation of both lists, so that the single walker v9 added sees
+    // everything in one pass. `FORBIDDEN_REPORT_TEXT_FIELDS` is that same
+    // concatenation, and it is what `findForbiddenSourceField` actually uses.
+    const composed = sqlFields(STRUCTURED, "release_rescue_forbidden_source_fields");
+    const narrative = sqlFields(STRUCTURED, "release_rescue_forbidden_narrative_fields");
+
+    // The v10 definition ends with `|| release_rescue_forbidden_narrative_fields()`,
+    // so the literal it parses is the source half alone.
+    expect(STRUCTURED).toContain("|| public.release_rescue_forbidden_narrative_fields()");
+    expect([...composed, ...narrative].sort()).toEqual([...FORBIDDEN_REPORT_TEXT_FIELDS].sort());
+  });
+
+  it("keeps `reason` out of both lists, because a held report depends on it", () => {
+    // The direction a too-wide list breaks. `unresolvedHolds[].reason` is one of
+    // two fixed sentences this codebase owns, stored so a customer can be told
+    // why their report is held. Refusing it would make every held report
+    // unstorable — which is the denial-of-service shape three audits in this
+    // workstream have already found, arriving inside a fix.
+    expect(FORBIDDEN_REPORT_TEXT_FIELDS).not.toContain("reason");
+    expect(sqlFields(STRUCTURED, "release_rescue_forbidden_narrative_fields")).not.toContain("reason");
   });
 
   it("collides with none of the contract's own key names, which is what lets the guard walk deep", () => {
@@ -371,15 +426,16 @@ describe("the decision is bound to the database, not only to TypeScript", () => 
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [
           makeFinding({
-            rubricCheckId: "authz.object_level_authorization",
+            observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
+            remediationCode: "scope_query_by_authenticated_principal",
             locations: [{ path: "src/a.ts", startLine: 1, endLine: 2 }],
           }),
         ],
-        limitations: ["A limitation."],
+        limitationCodes: ["customer_excluded_part_of_the_repository"],
       }),
     );
     collect(report);
@@ -415,29 +471,75 @@ describe("the remaining pointer fields stay pointers", () => {
   // With the excerpt gone, the widest field still shaped like somewhere to put
   // source was an assessment's evidence `reference` — 500 characters of
   // unconstrained free text for what is meant to be a path or a test id.
-  it("refuses a quotation in an evidence reference", () => {
-    const quoted = [
+  //
+  // Option 1 finished the job: `reference` is gone too. An assessment's evidence
+  // is now the same four typed fields a finding's evidence has — a kind from a
+  // closed enum, a repository path under the path grammar, and two line numbers.
+  // There is no string left on this path that is not one of those.
+
+  it("has no free-text reference field left to put a quotation in", () => {
+    for (const reference of [
       'const key = "sk_live_x";\nif (!key) throw new Error("missing");',
       "line one\nline two",
       "src/a.ts\r\nsrc/b.ts",
-    ];
-
-    for (const reference of quoted) {
+    ]) {
+      // Refused as an unknown key, before anything looks at the text — which is
+      // a stronger refusal than the length-and-newline rule it replaces, because
+      // it does not depend on judging the content.
       const parsed = assessmentEvidenceSchema.safeParse({ kind: "code_reference", reference });
       expect(parsed.success, reference.slice(0, 24)).toBe(false);
     }
   });
 
-  it("still accepts the pointers a real assessment cites", () => {
-    for (const reference of [
-      "src/app/api/orders/route.ts",
-      "package.json#dependencies",
-      "test:authz.object_level_authorization",
-      "SECURITY.md",
+  it("refuses a quotation in the path that replaced it", () => {
+    // The field that remains is a path, and the path grammar is what bounds it:
+    // no whitespace, no newline, no quote, bounded segments. A pasted source
+    // window is not a legal path, structurally rather than by inspection.
+    for (const path of [
+      'const key = "sk_live_x";',
+      "line one\nline two",
+      "src/a.ts\r\nsrc/b.ts",
+      "src/app/api orders/route.ts",
+      `${"a".repeat(260)}/route.ts`,
     ]) {
-      const parsed = assessmentEvidenceSchema.safeParse({ kind: "code_reference", reference });
-      expect(parsed.success, reference).toBe(true);
+      const parsed = assessmentEvidenceSchema.safeParse({
+        kind: "code_reference",
+        path,
+        startLine: 1,
+        endLine: 2,
+      });
+      expect(parsed.success, path.slice(0, 24)).toBe(false);
     }
+  });
+
+  it("still accepts the pointers a real assessment cites", () => {
+    // The check that keeps the bound honest: the ordinary citations an auditor
+    // needs must still parse, including the bracketed route segments and the
+    // dotted filenames this codebase is full of.
+    for (const path of [
+      "src/app/api/orders/route.ts",
+      "src/app/api/orders/[id]/route.ts",
+      "src/app/api/auth/[...nextauth]/route.ts",
+      "package.json",
+      "SECURITY.md",
+      ".github/workflows/ci.yml",
+      "supabase/migrations/0007_release_rescue.sql",
+    ]) {
+      const parsed = assessmentEvidenceSchema.safeParse({
+        kind: "code_reference",
+        path,
+        startLine: 1,
+        endLine: null,
+      });
+      expect(parsed.success, path).toBe(true);
+    }
+  });
+
+  it("is the same schema a finding's evidence uses, so there is one bound to reason about", () => {
+    // Two shapes for the same thing is how the `reference` gap survived a
+    // dedicated audit: the findings walk was tightened and the assessments one
+    // was not. They are now literally the same schema object.
+    expect(assessmentEvidenceSchema).toBe(findingEvidenceSchema);
   });
 });
 
@@ -470,9 +572,11 @@ describe("the boundaries the decision must not disturb", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
-        findings: [makeFinding({ rubricCheckId: "authz.object_level_authorization" })],
+        findings: [makeFinding({
+            observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
+            remediationCode: "scope_query_by_authenticated_principal" })],
       }),
     );
 
@@ -708,11 +812,12 @@ describe("the refusal is enforced where input arrives untyped, not only at a sch
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [
           makeFinding({
-            rubricCheckId: "authz.object_level_authorization",
+            observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
+            remediationCode: "scope_query_by_authenticated_principal",
             locations: [{ path: "src/app/api/orders/route.ts", startLine: 18, endLine: 27 }],
           }),
         ],

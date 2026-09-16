@@ -45,7 +45,11 @@ export function ReportView({
 
       <header className="space-y-3">
         <p className="text-[11px] uppercase tracking-[0.2em] text-muted">Customer-safe report</p>
-        <h1 className="text-balance text-3xl font-semibold tracking-tight">{report.scope.applicationName}</h1>
+        {/* The repository reference, not the customer's own description of
+            their app. The header used to render `scope.application.name` and
+            `description` verbatim; an audit planted an assignment in the
+            description and delivered it to this heading. */}
+        <h1 className="text-balance text-3xl font-semibold tracking-tight">{report.scope.repositoryRef}</h1>
         <p className="text-sm text-ink-soft">
           Engagement {report.engagementId}. Reviewed commit {report.scope.commitSha.slice(0, 12)}. Rubric{" "}
           {report.rubricVersion}.
@@ -75,9 +79,18 @@ export function ReportView({
             <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
               <Item term="Repository" detail={report.scope.repositoryRef} />
               <Item term="Commit" detail={report.scope.commitSha} />
-              <Item term="Stack" detail={report.scope.primaryStack.replaceAll("_", " ")} />
-              <Item term="Critical workflow" detail={report.scope.criticalWorkflowName} />
-              <Item term="Workflow entry point" detail={report.scope.criticalWorkflowDescription} />
+              <Item term="Default branch" detail={report.scope.defaultBranch} />
+              <Item
+                term="Critical workflow"
+                detail={[
+                  report.scope.handlesCustomerData ? "handles customer data" : "no customer data",
+                  report.scope.triggersExternalActions ? "triggers external actions" : "no external actions",
+                ].join(", ")}
+              />
+              <Item
+                term="AI features"
+                detail={report.scope.usesAiFeatures ? "in scope for this review" : "none declared"}
+              />
               <Item term="Reviewed by" detail={report.reviewedByName ?? "Pending human review"} />
               <Item
                 term="Review mode"
@@ -88,9 +101,11 @@ export function ReportView({
                 }
               />
             </dl>
-            {report.scope.exclusions.length > 0 ? (
+            {report.scope.exclusionCount > 0 ? (
               <p className="mt-4 text-sm text-ink-soft">
-                Excluded at your request: {report.scope.exclusions.join(" ")}
+                {report.scope.exclusionCount === 1
+                  ? "One part of the repository was excluded at your request and was not examined."
+                  : `${report.scope.exclusionCount} parts of the repository were excluded at your request and were not examined.`}
               </p>
             ) : null}
           </section>

@@ -9,11 +9,9 @@ import {
   sumAuthorityReport,
 } from "@/lib/catalog-evidence-shared";
 import {
-  applicationScopeSchema,
-  criticalWorkflowScopeSchema,
-  hashScope,
   commitShaSchema,
-  repositoryScopeSchema,
+  repositoryRefSchema,
+  REPOSITORY_ACCESS_MODES,
   RELEASE_RESCUE_OFFER_VERSION,
   type ReleaseRescueScope,
 } from "@/lib/release-rescue-intake";
@@ -26,17 +24,24 @@ import {
 } from "@/lib/release-rescue-pipeline";
 import { blocksDelivery, type SecretClassification } from "@/lib/release-rescue-secret-classification";
 import {
-  describeQuotedCredentialConstructs,
-  findQuotedCredentialConstructs,
-} from "@/lib/release-rescue-prose";
+  CLEARANCE_REASON_CODES,
+  ASSESSMENT_RATIONALE_CODES,
+  ENGAGEMENT_LIMITATION_CODES,
+  RELEASE_RESCUE_OBSERVATION_CATALOG_HASH,
+  RELEASE_RESCUE_OBSERVATION_CATALOG_VERSION,
+  STANDING_LIMITATION_CODES,
+  STANDING_LIMITATIONS,
+  type LimitationCode,
+} from "@/lib/release-rescue-observation-catalog";
 import {
   FINDING_SEVERITIES,
   assertNoSourceFieldsInFindings,
   computeFindingBlocking,
   computeFindingSeverity,
   describeSourceFieldSightings,
+  findSourceFieldsInAssessments,
   findSourceFieldsInFindings,
-  observationField,
+  findingEvidenceSchema,
   releaseRescueFindingV1Schema,
   severityRank,
   validateFinding,
@@ -50,7 +55,6 @@ import {
   getRubricCheck,
   isArtifactEvidence,
   rubricCheckOutcomeSchema,
-  rubricEvidenceKindSchema,
   totalRubricWeight,
 } from "@/lib/release-rescue-rubric";
 import { scanForSecrets } from "@/lib/release-rescue-redaction";
@@ -87,52 +91,110 @@ export type ReleaseVerdict = (typeof RELEASE_VERDICTS)[number];
 
 // --- Schemas ------------------------------------------------------------------------
 
-export const assessmentEvidenceSchema = z
-  .object({
-    kind: rubricEvidenceKindSchema,
-    /**
-     * Where to look: a repository path, a policy name, a manifest entry, a test id.
-     *
-     * A POINTER, structurally. It was 500 characters of unconstrained free text,
-     * which is enough room to paste the thing it is supposed to point at — and
-     * with source excerpts removed from findings, this was the widest remaining
-     * field shaped like a place to put source. A reference is one line: the
-     * newline refusal is what makes that true rather than merely intended.
-     */
-    reference: nonEmptyString
-      .max(300)
-      .refine((value) => !/[\r\n]/.test(value), "an evidence reference is a pointer, not a quotation")
-      .refine((value) => !/[\u0000-\u0008\u000b-\u001f]/.test(value), "must not carry control characters"),
-  })
-  .strict();
+/**
+ * Structured evidence for an assessment: a kind and a place to look.
+ *
+ * The `reference` field this replaces was 300 characters of free text described
+ * in its own comment as "a POINTER, structurally". An audit measured what a
+ * pointer-shaped free-text field actually holds. A kind plus a bounded path and
+ * line numbers cannot hold a sentence, which is the difference between a
+ * description and a contract.
+ */
+export const assessmentEvidenceSchema = findingEvidenceSchema;
 
 export const rubricAssessmentSchema = z
   .object({
     checkId: identifierString.max(200),
     outcome: rubricCheckOutcomeSchema,
     /**
-     * Why this outcome. Required even for `not_assessed`, where it states why not.
+     * Why this outcome, as a code the catalog renders. Required even for
+     * `not_assessed`, where it states why not.
      *
-     * Same prose contract as a finding's observation: an assessment describes
-     * what the check found, and does not reproduce a credential construct to do it.
+     * The validator checks the code is legal for the outcome, so "pass" cannot
+     * be paired with the sentence for a missing control.
      */
-    rationale: observationField(2000),
+    rationaleCode: z.enum(ASSESSMENT_RATIONALE_CODES as unknown as [string, ...string[]]),
     evidence: z.array(assessmentEvidenceSchema).max(10),
   })
   .strict();
 
 export type RubricAssessment = z.infer<typeof rubricAssessmentSchema>;
 
+/**
+ * A git ref name, not a sentence.
+ *
+ * `identifierString.max(200)` accepted two hundred characters of anything. Git
+ * itself is stricter than this.
+ */
+const branchNameSchema = identifierString
+  .max(200)
+  .refine((value) => /^[A-Za-z0-9._\/-]+$/.test(value), "must be a branch name");
+
+/**
+ * The scope AS THE REPORT CARRIES IT: identifiers, enums and booleans.
+ *
+ * The engagement keeps the full frozen scope, descriptions and all, because
+ * operators need it. This is the projection that reaches a customer artifact,
+ * and the difference between the two is every free-text field:
+ *
+ *   application.name, application.description, application.primaryStack
+ *   criticalWorkflow.name, criticalWorkflow.description, criticalWorkflow.entryPoint
+ *   customerExclusions[]
+ *
+ * Those were customer-authored prose copied verbatim into the report header. An
+ * audit planted an assignment in `scope.application.description` and delivered
+ * it. What survives here is what identifies the engagement without quoting
+ * anybody: the repository reference, which is already `owner/name` with a
+ * bounded charset, and the booleans the rubric actually branches on.
+ *
+ * `toReportScope` is the only way to build one, and it drops rather than
+ * transforms, so a field added to intake does not silently arrive here.
+ */
 export const reportScopeSchema = z
   .object({
     offerVersion: z.literal(RELEASE_RESCUE_OFFER_VERSION),
-    repository: repositoryScopeSchema,
-    application: applicationScopeSchema,
-    criticalWorkflow: criticalWorkflowScopeSchema,
-    customerExclusions: z.array(nonEmptyString.max(500)).max(20),
+    repository: z
+      .object({
+        provider: z.enum(["github", "gitlab", "bitbucket", "uploaded_archive"]),
+        repositoryRef: repositoryRefSchema,
+        defaultBranch: branchNameSchema,
+        accessMode: z.enum(REPOSITORY_ACCESS_MODES),
+      })
+      .strict(),
+    application: z.object({ usesAiFeatures: z.boolean() }).strict(),
+    criticalWorkflow: z
+      .object({
+        handlesCustomerData: z.boolean(),
+        triggersExternalActions: z.boolean(),
+      })
+      .strict(),
+    /** How many exclusions the customer recorded, not what they said. */
+    exclusionCount: z.number().int().min(0).max(20),
     aiAssistedReviewAccepted: z.boolean(),
   })
   .strict();
+
+export type ReportScope = z.infer<typeof reportScopeSchema>;
+
+/** Projects the engagement's frozen scope down to what a report may carry. */
+export function toReportScope(scope: ReleaseRescueScope): ReportScope {
+  return {
+    offerVersion: scope.offerVersion,
+    repository: {
+      provider: scope.repository.provider,
+      repositoryRef: scope.repository.repositoryRef,
+      defaultBranch: scope.repository.defaultBranch,
+      accessMode: scope.repository.accessMode,
+    },
+    application: { usesAiFeatures: scope.application.usesAiFeatures },
+    criticalWorkflow: {
+      handlesCustomerData: scope.criticalWorkflow.handlesCustomerData,
+      triggersExternalActions: scope.criticalWorkflow.triggersExternalActions,
+    },
+    exclusionCount: scope.customerExclusions.length,
+    aiAssistedReviewAccepted: scope.aiAssistedReviewAccepted,
+  };
+}
 
 export const coverageSchema = z
   .object({
@@ -228,7 +290,7 @@ export const clearedSecretHoldSchema = z
     clearedBy: identifierString.max(100),
     clearedAt: isoDateTimeSchema,
     /** Why it was safe. Free text, and itself subject to the field policy. */
-    rationale: nonEmptyString.max(1000),
+    reasonCode: z.enum(CLEARANCE_REASON_CODES as unknown as [string, ...string[]]),
   })
   .strict();
 
@@ -241,6 +303,15 @@ export const releaseRescueReportV1Schema = z
     organizationId: identifierString.max(100),
     rubricVersion: z.literal(RELEASE_RESCUE_RUBRIC_SCHEMA_VERSION),
     rubricHash: z.string().regex(/^[0-9a-f]{64}$/),
+    /**
+     * The catalog this report's words came from.
+     *
+     * Same job the rubric hash does for the checks: a delivered report names the
+     * wording it was rendered from, so editing a sentence later cannot silently
+     * change what an already-delivered report is understood to have said.
+     */
+    observationCatalogVersion: z.literal(RELEASE_RESCUE_OBSERVATION_CATALOG_VERSION),
+    observationCatalogHash: z.string().regex(/^[0-9a-f]{64}$/),
     scope: reportScopeSchema,
     scopeHash: z.string().regex(/^[0-9a-f]{64}$/),
     /**
@@ -261,8 +332,16 @@ export const releaseRescueReportV1Schema = z
     severityCounts: severityCountsSchema,
     blockingFindingCount: z.number().int().min(0),
     verdict: z.enum(RELEASE_VERDICTS),
-    /** What this review could not establish. Never empty — see the validator. */
-    limitations: z.array(nonEmptyString.max(1000)).min(1).max(30),
+    /**
+     * What this review could not establish, as catalog codes.
+     *
+     * Free text until Option 1. Thirty strings an executor wrote, on a surface a
+     * customer reads as carefully as the findings.
+     */
+    limitationCodes: z
+      .array(z.enum([...STANDING_LIMITATION_CODES, ...ENGAGEMENT_LIMITATION_CODES] as unknown as [string, ...string[]]))
+      .min(1)
+      .max(30),
     disclaimers: reportDisclaimersSchema,
     /** The auditor's own account of external actions taken. Any non-zero entry fails the gate. */
     authorityReport: authorityReportSchema,
@@ -442,7 +521,7 @@ export type AssembleReportInput = {
   reviewedCommitSha: string;
   assessments: RubricAssessment[];
   findings: ReleaseRescueFindingV1[];
-  limitations: string[];
+  limitationCodes: LimitationCode[];
   authorityReport: z.infer<typeof authorityReportSchema>;
   preparedBy: z.infer<typeof preparedBySchema>;
   unresolvedHolds?: z.infer<typeof unresolvedHoldSchema>[];
@@ -451,16 +530,11 @@ export type AssembleReportInput = {
   generatedAt: string;
 };
 
-/** Standing limitations every report carries, before engagement-specific ones. */
-export const STANDING_LIMITATIONS: readonly string[] = [
-  "This review examined one repository at one commit. Changes made after that commit were not reviewed.",
-  "The review read source, configuration, and dependency manifests. It did not attack, load-test, or otherwise exercise a running system.",
-  "Findings describe what this review identified. The absence of a finding is not evidence that a problem does not exist.",
-  "Severity reflects the impact, exploitability, and confidence recorded for each finding, judged against the one critical workflow in scope.",
-  // Stated plainly, because the honest answer is uncomfortable and a customer
-  // who believes otherwise will over-trust the report.
-  "Part of this review is performed by an AI system reading your source. Text inside a repository can attempt to influence such a system. Our controls prevent that text from changing this report's findings, severity, counts, or verdict, which are computed by deterministic code from recorded observations. They cannot rule out that it caused a real problem to go unreported. This residual risk is not solved, and a human reviewer signing this report is the mitigation, not a guarantee.",
-];
+// `STANDING_LIMITATIONS` used to be five literal strings here. They are codes in
+// `release-rescue-observation-catalog.ts` now, with every other sentence a
+// customer reads, and re-exported so callers that only want the rendered text do
+// not have to know that.
+export { STANDING_LIMITATIONS };
 
 /**
  * The production entry point: raw observations in, a safe report out.
@@ -480,8 +554,6 @@ export function buildReleaseRescueReport(raw: AssembleReportInput): ReleaseRescu
   // asking it about text the scanner has already rewritten is asking the wrong
   // question, and an audit measured the answer — it destroyed reports over a
   // placeholder that had landed between a comparison's two halves.
-  assertProseDescribesWithoutQuoting(raw, "Release Rescue report assembly");
-
   const { value, holds } = sanitizeReportInput(raw);
   // The holds go INTO the artifact. They cannot be recomputed later: by then the
   // text is a placeholder, which is the whole point of having redacted it.
@@ -513,6 +585,11 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
   // `excerpt` intact and `.strict()` never sees it. So the named refusal runs
   // here, on the same scope the database trigger walks.
   assertNoSourceFieldsInFindings(input.findings, "Release Rescue report assembly");
+  // Assessments carry the same refusal. An assessment's `rationale` was
+  // executor-written text rendered beside the check — the same class of field as
+  // a finding's prose, on a path the findings walk never touched.
+  const assessmentSightings = describeSourceFieldSightings(findSourceFieldsInAssessments(input.assessments));
+  if (assessmentSightings) throw new Error(`Release Rescue report assembly: ${assessmentSightings}`);
   // The prose contract is NOT checked here. It judges what the auditor wrote,
   // and by this point the scanner has rewritten it: an audit found
   // `if (token === expected)` becoming `if (token === [REDACTED:assigned_secret])`,
@@ -524,7 +601,15 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
   // test called the rule on raw text while production never did.
 
   const metrics = deriveReportMetrics(input.assessments, input.findings, input.authorityReport);
-  const limitations = [...STANDING_LIMITATIONS, ...input.limitations];
+  // Standing codes first, then whatever the engagement added, deduplicated so a
+  // caller repeating a standing code cannot make the list say it twice.
+  const limitationCodes: LimitationCode[] = [
+    ...STANDING_LIMITATION_CODES,
+    ...input.limitationCodes.filter(
+      (code) => !(STANDING_LIMITATION_CODES as readonly string[]).includes(code),
+    ),
+  ];
+  const reportScope = toReportScope(input.scope);
 
   return {
     schemaVersion: RELEASE_RESCUE_REPORT_SCHEMA_VERSION,
@@ -534,8 +619,14 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
     organizationId: input.organizationId,
     rubricVersion: RELEASE_RESCUE_RUBRIC_SCHEMA_VERSION,
     rubricHash: RELEASE_RESCUE_RUBRIC_V1_HASH,
-    scope: input.scope,
-    scopeHash: hashScope(input.scope),
+    scope: reportScope,
+    // The hash of the PROJECTION, so a reader of the artifact can recompute it
+    // from what the artifact contains. The binding to the engagement's frozen
+    // scope is the database's job — a composite foreign key and the report
+    // trigger — and always was; this hash is tamper-evidence within the report.
+    scopeHash: sha256Hex(reportScope),
+    observationCatalogVersion: RELEASE_RESCUE_OBSERVATION_CATALOG_VERSION,
+    observationCatalogHash: RELEASE_RESCUE_OBSERVATION_CATALOG_HASH,
     reviewedCommitSha: commitShaSchema.parse(input.reviewedCommitSha),
     assessments: input.assessments,
     findings: input.findings,
@@ -543,7 +634,7 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
     severityCounts: metrics.severityCounts,
     blockingFindingCount: metrics.blockingFindingCount,
     verdict: metrics.verdict,
-    limitations,
+    limitationCodes,
     disclaimers: {
       notPenetrationTest: true,
       notComplianceCertification: true,
@@ -559,70 +650,16 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
   };
 }
 
-/**
- * Refuses an input whose prose reproduces a credential construct.
- *
- * The schema refuses the same thing, but the schema only sees input that reaches
- * it — and assembly never parses. This covers every field the prose contract
- * governs, named individually rather than by walking every string, because
- * `unresolvedHolds[].reason` and the standing limitations are OUR prose and are
- * allowed to talk about what a credential assignment looks like.
- */
-export function assertProseDescribesWithoutQuoting(input: AssembleReportInput, context: string): void {
-  const fields: Array<{ at: string; value: string }> = [];
-
-  // EVERY executor-written field that reaches a customer, not the five an
-  // earlier version named. An audit planted an assignment in each of the others
-  // and delivered it: `title` is the finding's headline, `limitations` and
-  // `customerExclusions` are rendered verbatim, `scope.*.description` is the
-  // engagement's own words, `evidence[].reference` refuses newlines but not an
-  // assignment, and a clearance rationale is written by the manager clearing it.
-  // The stated model was "the observation is where the credential now lives" —
-  // but the observation was only where the guard was.
-  input.findings.forEach((finding, index) => {
-    fields.push(
-      { at: `findings[${index}].title`, value: finding.title },
-      { at: `findings[${index}].whatWeObserved`, value: finding.whatWeObserved },
-      { at: `findings[${index}].whyItMatters`, value: finding.whyItMatters },
-      { at: `findings[${index}].recommendation`, value: finding.recommendation },
-      { at: `findings[${index}].residualUncertainty`, value: finding.residualUncertainty },
-    );
-  });
-  input.assessments.forEach((assessment, index) => {
-    fields.push({ at: `assessments[${index}].rationale`, value: assessment.rationale });
-    assessment.evidence.forEach((evidence, evidenceIndex) => {
-      fields.push({
-        at: `assessments[${index}].evidence[${evidenceIndex}].reference`,
-        value: evidence.reference,
-      });
-    });
-  });
-  input.limitations.forEach((limitation, index) => {
-    fields.push({ at: `limitations[${index}]`, value: limitation });
-  });
-  (input.clearedSecretHolds ?? []).forEach((hold, index) => {
-    fields.push({ at: `clearedSecretHolds[${index}].rationale`, value: hold.rationale });
-  });
-  fields.push(
-    // `repositoryScopeSchema` has no `description`; this is the branch name, and
-    // an audit caught the label claiming otherwise.
-    { at: "scope.repository.defaultBranch", value: input.scope.repository.defaultBranch },
-    { at: "scope.application.description", value: input.scope.application.description },
-    { at: "scope.criticalWorkflow.description", value: input.scope.criticalWorkflow.description },
-  );
-  input.scope.customerExclusions.forEach((exclusion, index) => {
-    fields.push({ at: `scope.customerExclusions[${index}]`, value: exclusion });
-  });
-
-  for (const field of fields) {
-    if (typeof field.value !== "string") continue;
-    const message = describeQuotedCredentialConstructs(
-      findQuotedCredentialConstructs(field.value),
-      field.at,
-    );
-    if (message) throw new Error(`${context}: ${message}`);
-  }
-}
+// `assertProseDescribesWithoutQuoting` is GONE, and so is the module behind it.
+//
+// It existed to decide whether an executor's sentence had quoted a credential.
+// Four rounds established that the question has no safe answer: a rule keyed on
+// a construct is walked past by prose that has no construct, and a rule strict
+// enough to catch prose refuses the sentences the product exists to produce.
+//
+// There is nothing left for it to ask about. A finding carries codes; the
+// catalog carries the words. An executor cannot write a sentence into a report
+// because no field in a report holds one.
 
 /** Canonical content hash used to bind a stored report row to its payload. */
 export function hashReleaseRescueReport(report: ReleaseRescueReportV1): string {
@@ -702,7 +739,7 @@ export function validateReleaseRescueReport(candidate: unknown): ValidationResul
     );
   }
 
-  const recomputedScopeHash = hashScope(report.scope);
+  const recomputedScopeHash = sha256Hex(report.scope);
   if (report.scopeHash !== recomputedScopeHash) {
     hardFailures.push(
       `Report scope hash "${report.scopeHash}" does not match the hash recomputed from its scope ("${recomputedScopeHash}").`,
@@ -941,7 +978,7 @@ export function releaseRescueDeliveryGate(
   if (report.reviewedBy === null) {
     blockers.push("No human reviewer has signed this report. An ops reviewer must approve before delivery.");
   }
-  if (report.limitations.length === 0) {
+  if (report.limitationCodes.length === 0) {
     blockers.push("The report states no limitations.");
   }
 

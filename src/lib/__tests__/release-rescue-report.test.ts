@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { LIMITATION_CATALOG, type LimitationCode } from "@/lib/release-rescue-observation-catalog";
 import { RELEASE_RESCUE_RUBRIC_V1_HASH } from "@/lib/release-rescue-rubric";
-import { hashScope } from "@/lib/release-rescue-intake";
+
+import { findProhibitedClaims } from "@/lib/release-rescue-intake";
+import { sha256Hex } from "@/lib/catalog-evidence-hash";
 import {
   STANDING_LIMITATIONS,
   buildReleaseRescueReport,
+  toReportScope,
   deriveReportMetrics,
   hashReleaseRescueReport,
   releaseRescueDeliveryGate,
@@ -32,14 +36,18 @@ describe("report assembly", () => {
     expect(report.verdict).toBe("no_blocking_findings_identified");
     expect(report.coverage.notAssessedChecks).toBe(0);
     expect(report.rubricHash).toBe(RELEASE_RESCUE_RUBRIC_V1_HASH);
-    expect(report.scopeHash).toBe(hashScope(makeScope()));
+    // The hash is of the PROJECTION the report carries, so a reader of the
+    // artifact can recompute it from what the artifact contains. The binding to
+    // the engagement's frozen intake scope is the database's job.
+    expect(report.scopeHash).toBe(sha256Hex(toReportScope(makeScope())));
   });
 
   it("always carries the standing limitations and the required disclaimers", () => {
-    const report = buildReleaseRescueReport(makeReportInput({ limitations: [] }));
+    const report = buildReleaseRescueReport(makeReportInput({ limitationCodes: ["customer_excluded_part_of_the_repository"] }));
 
+    const rendered = report.limitationCodes.map((code) => LIMITATION_CATALOG[code as LimitationCode]);
     for (const limitation of STANDING_LIMITATIONS) {
-      expect(report.limitations).toContain(limitation);
+      expect(rendered).toContain(limitation);
     }
     expect(report.disclaimers).toEqual({
       notPenetrationTest: true,
@@ -67,7 +75,7 @@ describe("verdict ladder", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [makeFinding()],
       }),
@@ -83,18 +91,14 @@ describe("verdict ladder", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "ai.untrusted_input_is_not_authority", {
           outcome: "concern",
-          rationale: "The assistant may act on document text; we could not reach the tool call path.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [
           makeFinding({
-            rubricCheckId: "ai.untrusted_input_is_not_authority",
-            dimension: "ai_boundary",
-            impact: "severe",
-            exploitability: "remote_unauthenticated",
+            observationCode: "ai.model_visible_content_can_grant_authority",
+            remediationCode: "declare_tool_authority_explicitly",
             confidence: "likely",
-            severity: "high",
-            blocking: false,
-            residualUncertainty: "We could not confirm the assistant actually invokes the refund tool.",
+            uncertaintyCode: "static_read_only_no_runtime_confirmation",
           }),
         ],
       }),
@@ -110,7 +114,7 @@ describe("verdict ladder", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "deps.known_vulnerable_dependencies", {
           outcome: "not_assessed",
-          rationale: "The lockfile was not included in the snapshot the customer shared.",
+          rationaleCode: "controls_present_and_evidenced",
           evidence: [],
         }),
       }),
@@ -126,17 +130,13 @@ describe("verdict ladder", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "observe.error_reporting_without_leakage", {
           outcome: "concern",
-          rationale: "Stack traces reach the client on unhandled errors.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [
           makeFinding({
-            rubricCheckId: "observe.error_reporting_without_leakage",
-            dimension: "observability_and_incident_response",
-            impact: "limited",
-            exploitability: "requires_user_interaction",
+            observationCode: "observe.logs_carry_secrets_or_customer_data",
+            remediationCode: "strip_secrets_and_customer_data_from_logs",
             confidence: "confirmed",
-            severity: "low",
-            blocking: false,
           }),
         ],
       }),
@@ -150,17 +150,13 @@ describe("verdict ladder", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "deps.known_vulnerable_dependencies", {
           outcome: "fail",
-          rationale: "A reachable dependency has a published advisory.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [
           makeFinding({
-            rubricCheckId: "deps.known_vulnerable_dependencies",
-            dimension: "dependency_and_supply_chain",
-            impact: "serious",
-            exploitability: "remote_unauthenticated",
+            observationCode: "deps.known_vulnerable_dependency_on_a_reachable_path",
+            remediationCode: "upgrade_or_replace_the_dependency",
             confidence: "confirmed",
-            severity: "high",
-            blocking: false,
           }),
         ],
       }),
@@ -183,7 +179,7 @@ describe("report integrity", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [makeFinding()],
       }),
@@ -232,7 +228,7 @@ describe("report integrity", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
           outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
         findings: [makeFinding(), makeFinding()],
       }),
@@ -245,8 +241,8 @@ describe("report integrity", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.tenant_isolation_at_data_layer", {
           outcome: "pass",
-          rationale: "The team told us row level security is enabled.",
-          evidence: [{ kind: "reasoned_argument", reference: "Discussion with the engineering lead." }],
+          rationaleCode: "controls_present_and_evidenced",
+          evidence: [{ kind: "reasoned_argument", path: "src/a.ts", startLine: 1, endLine: null }],
         }),
       }),
     );
@@ -259,8 +255,8 @@ describe("report integrity", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "data.customer_data_inventory", {
           outcome: "pass",
-          rationale: "The workflow's data footprint was walked through and matches the described inventory.",
-          evidence: [{ kind: "reasoned_argument", reference: "Walkthrough of the checkout data path." }],
+          rationaleCode: "controls_present_and_evidenced",
+          evidence: [{ kind: "reasoned_argument", path: "src/a.ts", startLine: 1, endLine: null }],
         }),
       }),
     );
@@ -274,7 +270,7 @@ describe("report integrity", () => {
         makeReportInput({
           assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
             outcome,
-            rationale: "Recorded outcome.",
+            rationaleCode: "controls_present_and_evidenced",
           }),
           findings: [makeFinding()],
         }),
@@ -288,7 +284,7 @@ describe("report integrity", () => {
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "input.boundary_validation", {
           outcome: "fail",
-          rationale: "Webhook bodies are used unvalidated.",
+          rationaleCode: "controls_present_and_evidenced",
         }),
       }),
     );
@@ -300,8 +296,20 @@ describe("report integrity", () => {
     // Validation used to be the only defence, and its only move was to refuse the
     // whole report. The pipeline now removes the material at build, so the
     // artifact is clean and the report is held for a reviewer instead.
+    //
+    // The carrier changed with Option 1. `limitations` was executor-written
+    // prose; it is a closed enum now, and there is no field on a finding or an
+    // assessment that holds a sentence either. The reviewer's display name is
+    // one of the two free-text strings that remain — it is a person's name, an
+    // operator types it, and it is rendered to the customer as the signature.
     const report = buildReleaseRescueReport(
-      makeReportInput({ limitations: ["Reviewer note: the key is AKIAIOSFODNN7EXAMPLE."] }),
+      makeReportInput({
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: "Ops Manager AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }),
     );
 
     expect(JSON.stringify(report)).not.toContain("AKIAIOSFODNN7EXAMPLE");
@@ -313,7 +321,10 @@ describe("report integrity", () => {
     // The backstop, for an artifact assembled somewhere this pipeline did not
     // touch — a database row read back, say. Validation keeps its refusal.
     const clean = buildReleaseRescueReport(makeReportInput());
-    const tampered = { ...clean, limitations: [...clean.limitations, "AKIAIOSFODNN7EXAMPLE"] };
+    const tampered = {
+      ...clean,
+      reviewedBy: { ...clean.reviewedBy, displayName: "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE" },
+    };
 
     expect(validateReleaseRescueReport(tampered).hardFailures.join(" ")).toContain("Unredacted secret material");
   });
@@ -327,11 +338,47 @@ describe("report integrity", () => {
   });
 
   it("rejects report text that makes a prohibited claim", () => {
+    // Same change of carrier. The catalog's own wording is fixed and asserted
+    // clean elsewhere; what a human still types is the signature, and the claim
+    // guard keeps its job there.
     const report = buildReleaseRescueReport(
-      makeReportInput({ limitations: ["This penetration test covered only the checkout flow."] }),
+      makeReportInput({
+        reviewedBy: {
+          operatorUserId: "op-1",
+          displayName: "Ops Manager, who certifies this application is secure",
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }),
     );
 
     expect(failures(report)).toContain("prohibited claim");
+  });
+
+  it("cannot be given a prohibited claim through a finding, because a finding has no prose", () => {
+    // The stronger half, and the reason the carrier above is the ONLY one left.
+    // Every customer-facing sentence about a finding comes from the frozen
+    // catalog, so there is no executor-written string on this path to guard.
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        findings: [makeFinding()],
+        assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+          outcome: "fail",
+          rationaleCode: "control_missing_on_a_reachable_path",
+        }),
+      }),
+    );
+    const findingStrings = JSON.stringify(report.findings);
+
+    for (const value of Object.values(report.findings[0])) {
+      if (typeof value !== "string") continue;
+      expect(findProhibitedClaims(value), value).toEqual([]);
+    }
+    // A stronger, structural statement of the same thing: the serialised
+    // finding contains no space anywhere. Every string it holds is a code, an
+    // identifier, an enum value or a path, and none of those may contain one.
+    // A sentence cannot be written without a space, so this assertion fails the
+    // moment any prose field returns to a finding.
+    expect(findingStrings, "a finding must not carry a sentence").not.toContain(" ");
   });
 
   it("warns, without failing, when a report contains no findings at all", () => {
@@ -355,12 +402,7 @@ describe("report integrity", () => {
       passingAssessments(),
       [
         makeFinding({
-          rubricCheckId: "made.up_check",
-          impact: "severe",
-          exploitability: "remote_unauthenticated",
           confidence: "confirmed",
-          severity: "critical",
-          blocking: true,
         }),
       ],
       ZERO_AUTHORITY,
@@ -371,7 +413,7 @@ describe("report integrity", () => {
   });
 
   it("computes metrics from observations even when stored severity is inflated", () => {
-    const metrics = deriveReportMetrics(passingAssessments(), [makeFinding({ severity: "critical" })], ZERO_AUTHORITY);
+    const metrics = deriveReportMetrics(passingAssessments(), [{ ...makeFinding(), severity: "critical" }], ZERO_AUTHORITY);
 
     // Stored "critical" is ignored; the observations derive "high".
     expect(metrics.severityCounts.critical).toBe(0);

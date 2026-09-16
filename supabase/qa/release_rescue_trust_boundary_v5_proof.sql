@@ -94,7 +94,7 @@ update public.workstream_runs set status = 'running' where id = '5e000000-0000-0
 insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload) values
   ('5f000000-0000-0000-0000-00000000bb01', '5b000000-0000-0000-0000-00000000bb01',
    '5e000000-0000-0000-0000-00000000bb01', 'observation', 'VICTIM confidential excerpt',
-   repeat('9', 64), '{"schemaVersion":"release-rescue-report/v1"}'::jsonb);
+   repeat('9', 64), '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'::jsonb);
 
 -- The same, inside the ATTACKER organization, so they have a legitimate run.
 insert into public.workstreams (id, organization_id, name, objective, sla) values

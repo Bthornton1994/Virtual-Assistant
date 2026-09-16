@@ -190,7 +190,7 @@ insert into public.evidence_artifacts
   (id, organization_id, run_id, kind, summary, content_hash, payload)
 values ('bbbb1111-0000-0000-0000-000000000001', 'eeee0000-0000-0000-0000-000000000001',
         'aaaa1111-0000-0000-0000-000000000001', 'observation', 'body', repeat('e', 64),
-        '{"schemaVersion":"release-rescue-report/v1","verdict":"release_blocked","blockingFindingCount":2,"coverage":{"totalChecks":32,"assessedChecks":32}}'::jsonb);
+        '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"release_blocked","blockingFindingCount":2,"coverage":{"totalChecks":32,"assessedChecks":32}}'::jsonb);
 
 -- A body that states only its schema version. The body-contradiction checks stay
 -- silent for it, so the row's SELF-consistency rules are what these cases test.
@@ -198,7 +198,7 @@ insert into public.evidence_artifacts
   (id, organization_id, run_id, kind, summary, content_hash, payload)
 values ('bbbb1111-0000-0000-0000-000000000002', 'eeee0000-0000-0000-0000-000000000001',
         'aaaa1111-0000-0000-0000-000000000001', 'observation', 'bare body', repeat('f', 64),
-        '{"schemaVersion":"release-rescue-report/v1"}'::jsonb);
+        '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'::jsonb);
 
 select rrv2.expect_refusal(
   'a tracked-findings verdict cannot carry blocking findings',

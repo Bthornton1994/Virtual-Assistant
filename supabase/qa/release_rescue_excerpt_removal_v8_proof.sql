@@ -81,6 +81,8 @@ begin
               'observation', 'planted ' || v_key, repeat('1', 64),
               jsonb_build_object(
                 'schemaVersion', 'release-rescue-report/v1',
+                'observationCatalogVersion', 'release-rescue-observations/v1',
+                'observationCatalogHash', repeat('a', 64),
                 'findings', jsonb_build_array(jsonb_build_object(
                   'locations', jsonb_build_array(
                     jsonb_build_object('path', 'src/a.ts', v_key, 'DB_PASSWORD=hunter2'))))));
@@ -98,13 +100,15 @@ end $$;
 
 select rrv8.expect_refusal(
   'an excerpt on the finding itself is refused too',
-  'points at source',
+  'not source and not sentences',
   $q$
   insert into public.evidence_artifacts (organization_id, run_id, kind, summary, content_hash, payload)
   values ('8b000000-0000-0000-0000-00000000aa01', '8e000000-0000-0000-0000-00000000aa01',
           'observation', 'finding-level', repeat('2', 64),
           jsonb_build_object(
             'schemaVersion', 'release-rescue-report/v1',
+            'observationCatalogVersion', 'release-rescue-observations/v1',
+            'observationCatalogHash', repeat('a', 64),
             'findings', jsonb_build_array(jsonb_build_object(
               'findingId', 'f-001', 'excerpt', 'const key = "sk_live_x";'))));
 $q$);
@@ -118,6 +122,8 @@ select rrv8.expect_refusal(
           'observation', 'naming', repeat('3', 64),
           jsonb_build_object(
             'schemaVersion', 'release-rescue-report/v1',
+            'observationCatalogVersion', 'release-rescue-observations/v1',
+            'observationCatalogHash', repeat('a', 64),
             'findings', jsonb_build_array(jsonb_build_object(
               'locations', jsonb_build_array(jsonb_build_object(
                 'path', 'src/a.ts', 'excerpt', 'VICTIM-SECRET-STRING-abc123'))))));
@@ -132,6 +138,8 @@ begin
             'observation', 'naming2', repeat('4', 64),
             jsonb_build_object(
               'schemaVersion', 'release-rescue-report/v1',
+              'observationCatalogVersion', 'release-rescue-observations/v1',
+              'observationCatalogHash', repeat('a', 64),
               'findings', jsonb_build_array(jsonb_build_object(
                 'locations', jsonb_build_array(jsonb_build_object(
                   'path', 'src/a.ts', 'excerpt', 'VICTIM-SECRET-STRING-abc123'))))));
@@ -154,13 +162,17 @@ begin
           '8e000000-0000-0000-0000-00000000aa01', 'observation', 'clean report', repeat('5', 64),
           jsonb_build_object(
             'schemaVersion', 'release-rescue-report/v1',
+            'observationCatalogVersion', 'release-rescue-observations/v1',
+            'observationCatalogHash', repeat('a', 64),
             'reviewedCommitSha', repeat('a', 40),
             'findings', jsonb_build_array(jsonb_build_object(
               'findingId', 'f-001',
               'rubricCheckId', 'authz.object_level_authorization',
               'severity', 'high',
-              'whatWeObserved', 'The order lookup returns records the caller does not own.',
-              'recommendation', 'Scope the query by the authenticated organization.',
+              -- v10: codes, not sentences. The words the customer reads come
+              -- from the observation catalog at render time.
+              'observationCode', 'authz.record_lookup_is_not_scoped_to_the_caller',
+              'remediationCode', 'scope_query_by_authenticated_principal',
               'locations', jsonb_build_array(jsonb_build_object(
                 'path', 'src/app/api/orders/route.ts', 'startLine', 18, 'endLine', 27))))));
 
@@ -179,10 +191,23 @@ begin
   perform rrv8.assert('the check identifier survives',
     v_payload#>>'{findings,0,rubricCheckId}' = 'authz.object_level_authorization');
   perform rrv8.assert('the severity survives', v_payload#>>'{findings,0,severity}' = 'high');
-  perform rrv8.assert('the observation survives',
-    length(v_payload#>>'{findings,0,whatWeObserved}') > 20);
-  perform rrv8.assert('the remediation guidance survives',
-    length(v_payload#>>'{findings,0,recommendation}') > 20);
+  -- v10 changed WHAT survives, and this is the honest restatement.
+  --
+  -- v8 asserted that the executor's sentences came back out of storage intact,
+  -- which was the right property while a finding held sentences. It does not.
+  -- Every customer-facing word is resolved from the observation catalog at
+  -- render time, so what a stored finding must carry is the CODE that resolves
+  -- to it — and a report must carry the catalog identity that makes the
+  -- resolution reproducible later.
+  perform rrv8.assert('the observation code survives',
+    v_payload#>>'{findings,0,observationCode}' = 'authz.record_lookup_is_not_scoped_to_the_caller');
+  perform rrv8.assert('the remediation code survives',
+    v_payload#>>'{findings,0,remediationCode}' = 'scope_query_by_authenticated_principal');
+  perform rrv8.assert('the catalog the wording came from is named',
+    v_payload#>>'{observationCatalogVersion}' = 'release-rescue-observations/v1'
+    and v_payload#>>'{observationCatalogHash}' ~ '^[0-9a-f]{64}$');
+  perform rrv8.assert('and no sentence came back out of storage',
+    v_payload#>'{findings,0}' ?| array['whatWeObserved', 'recommendation', 'title'] = false);
 end $$;
 
 \echo ''
@@ -239,6 +264,8 @@ begin
       jsonb_set(
         jsonb_build_object(
           'schemaVersion', 'release-rescue-report/v1',
+          'observationCatalogVersion', 'release-rescue-observations/v1',
+          'observationCatalogHash', repeat('a', 64),
           'findings', jsonb_build_array(jsonb_build_object(
             'locations', jsonb_build_array(jsonb_build_object('path', 'src/a.ts'))))),
         '{findings,0,locations,0,excerpt}', '"DB_PASSWORD=hunter2"'))) > 0);

@@ -2,6 +2,7 @@ import {
   RELEASE_RESCUE_RUBRIC_V1,
   RUBRIC_DIMENSIONS,
   getRubricCheck,
+  type RubricEvidenceKind,
   type RubricDimension,
 } from "@/lib/release-rescue-rubric";
 import {
@@ -10,6 +11,14 @@ import {
   severityRank,
   type FindingSeverity,
 } from "@/lib/release-rescue-findings";
+import {
+  getObservation,
+  getRemediation,
+  LIMITATION_CATALOG,
+  UNCERTAINTY_CATALOG,
+  type LimitationCode,
+  type UncertaintyCode,
+} from "@/lib/release-rescue-observation-catalog";
 import type { ReleaseRescueReportV1, ReleaseVerdict } from "@/lib/release-rescue-report";
 
 // The customer-facing view of a Release Rescue report.
@@ -99,6 +108,13 @@ export type CustomerFindingView = {
    * "18–27", never file content.
    */
   locations: Array<{ path: string; lineRange: string | null }>;
+  /**
+   * What the auditor looked at, on the same terms as a location: a kind from the
+   * rubric's closed set, a path, and a formatted line range. It replaced a
+   * 500-character free-text `reference`, which was a pointer-shaped field that
+   * was still a field.
+   */
+  evidence: Array<{ kind: RubricEvidenceKind; path: string; lineRange: string | null }>;
   effort: string;
   inRemediationSprintScope: boolean;
   residualUncertainty: string | null;
@@ -125,12 +141,11 @@ export type CustomerReportView = {
     repositoryRef: string;
     commitSha: string;
     defaultBranch: string;
-    applicationName: string;
-    applicationDescription: string;
-    primaryStack: string;
-    criticalWorkflowName: string;
-    criticalWorkflowDescription: string;
-    exclusions: string[];
+    usesAiFeatures: boolean;
+    handlesCustomerData: boolean;
+    triggersExternalActions: boolean;
+    /** How many exclusions the customer recorded, not what they said. */
+    exclusionCount: number;
     aiAssistedReviewAccepted: boolean;
   };
   verdict: ReleaseVerdict;
@@ -208,6 +223,24 @@ export function summarizeDimensions(report: ReleaseRescueReportV1): DimensionSum
  * anywhere in this function, which is what keeps a newly added internal field
  * from reaching a customer by default.
  */
+/**
+ * The four standing disclaimers, rendered on every report.
+ *
+ * Hoisted out of the presenter body so they have a NAME. A test that asks "does
+ * every sentence in the customer's view have an owner in this repository?" needs
+ * something to point at; an inline literal is indistinguishable from a sentence
+ * somebody smuggled in.
+ *
+ * These are `verbatim_approved` in the field-coverage policy's sense: they
+ * contain the prohibited phrases on purpose, because they are denying them.
+ */
+export const STANDING_DISCLAIMERS: readonly string[] = Object.freeze([
+  "This review is not a penetration test.",
+  "This review is not a compliance certification.",
+  "This review does not guarantee the absence of security vulnerabilities.",
+  "Findings describe one repository at one commit. Changes made after that commit were not reviewed.",
+]);
+
 export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerReportView {
   const findings: CustomerFindingView[] = report.findings
     .map((finding) => {
@@ -219,6 +252,8 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       // artifact claimed. Deriving here means the document a customer reads
       // cannot disagree with the observations behind it, whatever reached it.
       const check = getRubricCheck(finding.rubricCheckId);
+      const observation = getObservation(finding.observationCode);
+      const remediation = getRemediation(finding.remediationCode);
       const severity = computeFindingSeverity(finding);
       const blocking = check ? computeFindingBlocking(check, severity, finding.confidence) : true;
       return {
@@ -229,17 +264,35 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       severity,
       blocking,
       confidence: finding.confidence,
-      title: finding.title,
-      whatWeObserved: finding.whatWeObserved,
-      whyItMatters: finding.whyItMatters,
-      recommendation: finding.recommendation,
+      // THE WORDS COME FROM THE CATALOG, not from the artifact.
+      //
+      // This is where Option 1 actually lands. The stored finding has an
+      // observation code; the sentences a customer reads are looked up here. An
+      // executor that wanted to put a credential in this paragraph would have to
+      // add an entry to a file in the repository, which is a code review.
+      //
+      // The fallbacks exist because this renderer must not throw on a stored
+      // artifact — a report written against a newer catalog and read by an older
+      // build should degrade to the code, not to a blank page or a crash.
+      title: observation?.title ?? finding.observationCode,
+      whatWeObserved: observation?.whatWeObserved ?? finding.observationCode,
+      whyItMatters: observation?.whyItMatters ?? "",
+      recommendation: remediation?.text ?? finding.remediationCode,
       locations: finding.locations.map((location) => ({
         path: location.path,
         lineRange: formatLines(location.startLine, location.endLine),
       })),
+      evidence: finding.evidence.map((item) => ({
+        kind: item.kind,
+        path: item.path,
+        lineRange: formatLines(item.startLine, item.endLine),
+      })),
       effort: finding.remediationEffort,
       inRemediationSprintScope: finding.inRemediationSprintScope,
-      residualUncertainty: finding.residualUncertainty.trim().length > 0 ? finding.residualUncertainty : null,
+      residualUncertainty:
+        finding.uncertaintyCode === null
+          ? null
+          : (UNCERTAINTY_CATALOG[finding.uncertaintyCode as UncertaintyCode] ?? finding.uncertaintyCode),
       };
     })
     .sort(compareFindings);
@@ -267,12 +320,15 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       // commit, because it is frozen before one exists.
       commitSha: report.reviewedCommitSha,
       defaultBranch: report.scope.repository.defaultBranch,
-      applicationName: report.scope.application.name,
-      applicationDescription: report.scope.application.description,
-      primaryStack: report.scope.application.primaryStack,
-      criticalWorkflowName: report.scope.criticalWorkflow.name,
-      criticalWorkflowDescription: report.scope.criticalWorkflow.description,
-      exclusions: [...report.scope.customerExclusions],
+      // The header identifies the engagement and stops there. It used to carry
+      // the customer's own application and workflow descriptions verbatim; an
+      // audit planted an assignment in `scope.application.description` and
+      // delivered it to this surface. What identifies a review is the repository
+      // reference and the commit, both of which are already bounded identifiers.
+      usesAiFeatures: report.scope.application.usesAiFeatures,
+      handlesCustomerData: report.scope.criticalWorkflow.handlesCustomerData,
+      triggersExternalActions: report.scope.criticalWorkflow.triggersExternalActions,
+      exclusionCount: report.scope.exclusionCount,
       aiAssistedReviewAccepted: report.scope.aiAssistedReviewAccepted,
     },
     verdict: report.verdict,
@@ -291,13 +347,10 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       eligibleFindingIds: findings.filter((finding) => finding.inRemediationSprintScope).map((finding) => finding.id),
       eligibleCount: findings.filter((finding) => finding.inRemediationSprintScope).length,
     },
-    limitations: [...report.limitations],
-    disclaimers: [
-      "This review is not a penetration test.",
-      "This review is not a compliance certification.",
-      "This review does not guarantee the absence of security vulnerabilities.",
-      "Findings describe one repository at one commit. Changes made after that commit were not reviewed.",
-    ],
+    limitations: report.limitationCodes.map(
+      (code) => LIMITATION_CATALOG[code as LimitationCode] ?? code,
+    ),
+    disclaimers: [...STANDING_DISCLAIMERS],
     preparedByKind: report.preparedBy.executorKind,
     reviewedByName: report.reviewedBy?.displayName ?? null,
   };

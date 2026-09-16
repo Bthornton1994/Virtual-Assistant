@@ -3,7 +3,8 @@ import {
   type RubricCheck,
 } from "@/lib/release-rescue-rubric";
 import {
-  RELEASE_RESCUE_FINDING_SCHEMA_VERSION,
+  composeFinding,
+  type FindingFacts,
   type ReleaseRescueFindingV1,
 } from "@/lib/release-rescue-findings";
 import {
@@ -97,8 +98,15 @@ export function passingAssessments(): RubricAssessment[] {
   return RELEASE_RESCUE_RUBRIC_V1.map((check: RubricCheck) => ({
     checkId: check.id,
     outcome: "pass" as const,
-    rationale: `Reviewed ${check.title.toLowerCase()} against the checkout workflow and found it sound.`,
-    evidence: [{ kind: "code_reference" as const, reference: `src/${check.dimension}.ts` }],
+    rationaleCode: "controls_present_and_evidenced" as const,
+    evidence: [
+      {
+        kind: "code_reference" as const,
+        path: `src/${check.dimension}.ts`,
+        startLine: 1,
+        endLine: null,
+      },
+    ],
   }));
 }
 
@@ -112,27 +120,30 @@ export function setAssessment(
   );
 }
 
-export function makeFinding(overrides: Partial<ReleaseRescueFindingV1> = {}): ReleaseRescueFindingV1 {
-  const base: ReleaseRescueFindingV1 = {
-    schemaVersion: RELEASE_RESCUE_FINDING_SCHEMA_VERSION,
+/**
+ * A finding, built the only way findings are built.
+ *
+ * `overrides` takes FACTS, not fields. A test can no longer patch `severity` or
+ * `whatWeObserved` onto a finding, because neither is an input — which is the
+ * contract this fixture exists to exercise rather than to work around.
+ */
+export function makeFinding(overrides: Partial<FindingFacts> = {}): ReleaseRescueFindingV1 {
+  return composeFinding({
     findingId: "f-001",
-    rubricCheckId: "authz.object_level_authorization",
-    dimension: "authorization_and_tenancy",
-    title: "Order lookup does not check ownership",
-    whatWeObserved: "The order route loads an order by id and returns it without comparing the owner to the session.",
-    whyItMatters: "Any signed-in customer can read another customer's order by changing the id in the URL.",
-    recommendation: "Filter the order query by the session's customer id and return 404 on a miss.",
-    impact: "serious",
-    exploitability: "remote_unauthenticated",
+    observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
     confidence: "confirmed",
-    severity: "high",
-    blocking: true,
+    remediationCode: "scope_query_by_authenticated_principal",
     locations: [{ path: "src/app/api/orders/[id]/route.ts", startLine: 12, endLine: 20 }],
-    remediationEffort: "small",
-    inRemediationSprintScope: true,
-    residualUncertainty: "",
-  };
-  return { ...base, ...overrides };
+    evidence: [
+      {
+        kind: "code_reference",
+        path: "src/app/api/orders/[id]/route.ts",
+        startLine: 12,
+        endLine: 20,
+      },
+    ],
+    ...overrides,
+  });
 }
 
 export function makeReportInput(overrides: Partial<AssembleReportInput> = {}): AssembleReportInput {
@@ -145,7 +156,7 @@ export function makeReportInput(overrides: Partial<AssembleReportInput> = {}): A
     reviewedCommitSha: COMMIT_SHA,
     assessments: passingAssessments(),
     findings: [],
-    limitations: ["The customer excluded the admin console from scope."],
+    limitationCodes: ["customer_excluded_part_of_the_repository"],
     authorityReport: { ...ZERO_AUTHORITY },
     preparedBy: {
       executorKey: "release-rescue-auditor",

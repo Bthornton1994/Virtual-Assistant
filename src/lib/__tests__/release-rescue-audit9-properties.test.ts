@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
 import { isNonSecretValue } from "@/lib/release-rescue-credential-scanner";
+import { blocksDelivery } from "@/lib/release-rescue-secret-classification";
+import {
+  ASSESSMENT_RATIONALE_CATALOG,
+  LIMITATION_CATALOG,
+  OBSERVATION_CATALOG,
+  REMEDIATION_CATALOG,
+  UNCERTAINTY_CATALOG,
+} from "@/lib/release-rescue-observation-catalog";
 import { releaseRescueFindingV1Schema } from "@/lib/release-rescue-findings";
 import {
   buildReleaseRescueReport,
@@ -211,44 +219,35 @@ describe("the structural references are still readable, and still reported", () 
 });
 
 describe("the gate, over the generated corpus", () => {
-  // The fixture has to produce a report that would OTHERWISE be deliverable.
+  // What this block measures changed with Option 1, and the change is the point.
   //
-  // The first version used the default `passingAssessments()` while attaching a
-  // finding, which is a contradiction deterministic validation rejects on its
-  // own: `deliverable` was false for an empty excerpt, for "hello world", and for
-  // a real password alike. The assertion below could not fail, and it was
-  // annotated as the one that speaks for the customer. Audit 10 found that, and
-  // it was right.
+  // Every earlier version planted a generated credential in a field an executor
+  // wrote — an excerpt, then `whatWeObserved` — and asked whether the detector
+  // had made it safe. Four rounds established that the question has no safe
+  // answer in either direction: audit 9 measured 366 of 366 credentials
+  // delivered through a prose-prefixed carrier, and the rule strict enough to
+  // stop them refused fifteen of twenty-one sentences an auditor must write.
   //
-  // `setAssessment(..., { outcome: "fail" })` makes the finding consistent with
-  // its check, so the gate's answer now depends on the excerpt.
-  // The carrier is `whatWeObserved`, not a location excerpt.
-  //
-  // Excerpts are gone: a finding points at source and never carries it, so the
-  // only way text still enters a report is a free-text field an auditor writes.
-  // That is where redaction now serves as DEFENCE IN DEPTH — it is no longer
-  // what proves the deliverable is safe, because there is no longer a field for
-  // customer source to sit in.
-  //
-  // It returns `null` when assembly REFUSES the observation, which is now a
-  // possible and desirable outcome: an observation that reproduces a credential
-  // construct never becomes an artifact. A refusal is the strongest form of "not
-  // delivered", so the callers below treat it as one.
-  function reportWith(observed: string) {
+  // There is no such field now. A finding carries codes; the catalog carries the
+  // words. So the corpus is crossed with two things instead: the fields that are
+  // REFUSED, and the one free-text string a human still types into a report.
+
+  /** Builds a report with `text` in the only free-text string a report still has. */
+  function reportWithReviewerName(text: string) {
     try {
       return buildReleaseRescueReport(
-      makeReportInput({
-        assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
-          outcome: "fail",
-          rationale: "Order lookup returns records the caller does not own.",
-        }),
-        findings: [
-          makeFinding({
-            whatWeObserved: `The committed configuration contains: ${observed}`,
-            locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
+        makeReportInput({
+          assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+            outcome: "fail",
+            rationaleCode: "control_missing_on_a_reachable_path",
           }),
-        ],
-      }),
+          findings: [makeFinding({ locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }] })],
+          reviewedBy: {
+            operatorUserId: "op-1",
+            displayName: text.slice(0, 180),
+            reviewedAt: "2026-09-16T10:00:00.000Z",
+          },
+        }),
       );
     } catch {
       return null;
@@ -258,7 +257,7 @@ describe("the gate, over the generated corpus", () => {
   it("is a fixture that can actually be delivered", () => {
     // The guard on the guard. If this ever fails, every assertion below is
     // vacuous again and says nothing about credentials.
-    const clean = reportWith("PORT=3000");
+    const clean = reportWithReviewerName("Ops Manager");
 
     expect(clean, "the fixture itself must assemble").not.toBeNull();
     const gate = releaseRescueDeliveryGate(clean!, validateReleaseRescueReport(clean!));
@@ -291,6 +290,43 @@ describe("the gate, over the generated corpus", () => {
     expect(accepted, `${accepted.length} credentials were accepted into a stored finding`).toEqual([]);
   });
 
+  it("cannot be built with a credential in a NARRATIVE field either, for any generated value", () => {
+    // The five fields Option 1 removed, crossed with the whole corpus. These are
+    // the fields the previous two rounds were fought over; each is now a refusal
+    // at the assembly boundary rather than a judgement about the text.
+    const NARRATIVE = ["title", "whatWeObserved", "whyItMatters", "recommendation", "residualUncertainty"];
+    const accepted: string[] = [];
+
+    for (const value of GENERATED) {
+      for (const field of NARRATIVE) {
+        const finding = { ...makeFinding(), [field]: assign("DB_PASSWORD", value) };
+        if (releaseRescueFindingV1Schema.safeParse(finding).success) {
+          accepted.push(`${field}=${value}`);
+          continue;
+        }
+        // And the boundary the schema does not cover, which is the one that
+        // matters: assembly takes findings as typed values and never parses them.
+        let refused = false;
+        try {
+          buildReleaseRescueReport(
+            makeReportInput({
+              assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+                outcome: "fail",
+                rationaleCode: "control_missing_on_a_reachable_path",
+              }),
+              findings: [finding as never],
+            }),
+          );
+        } catch {
+          refused = true;
+        }
+        if (!refused) accepted.push(`assembly:${field}=${value}`);
+      }
+    }
+
+    expect(accepted, `${accepted.length} credentials were accepted into a narrative field`).toEqual([]);
+  }, 120_000);
+
   // `password`, `secret` and `token` are in the corpus because people really do
   // choose them, and they are also ordinary English words that a rubric check
   // title and a disclaimer legitimately contain. A whole-artifact substring test
@@ -299,7 +335,7 @@ describe("the gate, over the generated corpus", () => {
   const DICTIONARY_WORDS = new Set(["password", "secret", "token", "apikey", "monkey", "dragon"]);
   const CHECKABLE = GENERATED.filter((value) => !DICTIONARY_WORDS.has(value));
 
-  it("delivers no report holding any generated credential, on the carrier the product uses", () => {
+  it("delivers no report holding any generated credential, on the carrier that remains", () => {
     // THE ASSERTION THAT SPEAKS FOR THE CUSTOMER, and the one an audit caught
     // this suite deleting.
     //
@@ -310,16 +346,14 @@ describe("the gate, over the generated corpus", () => {
     // from a fixed clean string and checked against values it was never given —
     // a test that cannot fail for any input.
     //
-    // This crosses every generated value with the gate, THROUGH THE CARRIER THE
-    // PRODUCT ACTUALLY USES: a prose sentence with the assignment inside it,
-    // which is how an executor writes "a credential is hardcoded here". That
-    // exact carrier measured 30 of 116 delivered before the prose contract
-    // existed, while the bare assignment measured 0 — the prefix was the whole
-    // difference, and no hand-picked list contained it.
+    // The carrier is now the reviewer's display name. That is not a cosmetic
+    // substitution: it is the honest worst case, because it is the only
+    // free-text string an artifact still holds. Everything else a customer reads
+    // is catalog text keyed by a code, and a code cannot carry a value.
     const delivered: string[] = [];
 
     for (const value of CHECKABLE) {
-      const report = reportWith(assign("DB_PASSWORD", value));
+      const report = reportWithReviewerName(assign("DB_PASSWORD", value));
       if (report === null) continue; // refused before an artifact existed
       const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
       if (gate.deliverable && withoutPlaceholders(JSON.stringify(report)).includes(value)) {
@@ -332,24 +366,10 @@ describe("the gate, over the generated corpus", () => {
       .toEqual([]);
   }, 60_000);
 
-  it("refuses every one of them outright, rather than cleaning them", () => {
-    // Stronger, and the reason the assertion above can be trusted: none of these
-    // got as far as a gate decision. If this ever weakens to "held" or
-    // "redacted", the test above is the one that still has to hold.
-    const assembled: string[] = [];
-
-    for (const value of CHECKABLE) {
-      if (reportWith(assign("DB_PASSWORD", value)) !== null) assembled.push(value);
-    }
-
-    expect(assembled, `${assembled.length} quoted assignments were assembled instead of refused`)
-      .toEqual([]);
-  }, 60_000);
-
   it("carries no generated credential in a report the auditor wrote correctly", () => {
-    // The legitimate path: the observation names the setting and cites the file,
-    // and the artifact has nowhere for the value to be.
-    const report = reportWith("the DB_PASSWORD setting is assigned a literal value");
+    // The legitimate path: the observation names the setting through its code,
+    // the finding cites the file, and the artifact has nowhere for a value to be.
+    const report = reportWithReviewerName("Ops Manager");
     expect(report).not.toBeNull();
 
     const serialized = withoutPlaceholders(JSON.stringify(report));
@@ -366,6 +386,10 @@ describe("the gate, over the generated corpus", () => {
     // Multi-line and delimited carriers, which the corpus above cannot reach:
     // every generated value goes through a single-line `operator_assignment`.
     // Audit 10 named that as the pinned axis and found four leaks in it.
+    //
+    // This runs on the scanner directly. The scanner is DEFENCE IN DEPTH now,
+    // for transient processing and for the one free-text field that remains —
+    // it is no longer what proves a delivered report is safe.
     const S = "Xk92mQvn7Lz";
     const CARRIERS: Array<[string, string]> = [
       ["angle-wrapped value", `DB_PASSWORD=<${S}>`],
@@ -399,108 +423,101 @@ describe("the gate, over the generated corpus", () => {
       .toContain("# rotate quarterly");
   });
 
-  it("bricks no report over ordinary content", () => {
-    // A `credential_evidence` hold cannot be cleared by any human, so each false
-    // positive at that level is a permanent denial of service on a paid artifact.
-    // Neither is a refusal, which is the newer way to brick one.
+  it("bricks no report over the catalog's own words", () => {
+    // Requirement 8 of the structural change, as a property over the whole
+    // catalog rather than over a hand-picked list.
     //
-    // Driven as a PRODUCT rather than a hand-picked list. The audit that found
-    // the gate test vacuous also named the pinned axis: the credential direction
-    // used products while the safe direction used fifteen strings somebody typed.
-    // Both directions are products now.
-    const SUBJECTS = [
-      "The session token",
-      "The API key check",
-      "Password rotation",
-      "The credential store",
-      "The bearer token in the authorization header",
-      "The signing secret",
-    ];
-    const PREDICATES = [
-      "has a 30-day lifetime and is never rotated.",
-      "is read from the platform secret store rather than the repository.",
-      "is missing on this route, so any caller reaches the record.",
-      "is configured, logged, and covered by a test.",
-      "is assigned a literal value in the committed configuration.",
-      "is validated on every request except the two listed above.",
-    ];
-
-    const ORDINARY: string[] = [];
-    for (const subject of SUBJECTS) {
-      for (const predicate of PREDICATES) ORDINARY.push(`${subject} ${predicate}`);
+    // A `credential_evidence` hold cannot be cleared by any human, so each false
+    // positive at that level is a permanent denial of service on a paid
+    // artifact. Every customer-facing sentence the product can now produce is in
+    // this catalog, so this crosses ALL of them with the scanner — which is a
+    // complete statement rather than a sample, and was not possible while an
+    // auditor could write arbitrary prose.
+    const catalogText: string[] = [];
+    for (const observation of Object.values(OBSERVATION_CATALOG)) {
+      catalogText.push(observation.title, observation.whatWeObserved, observation.whyItMatters);
     }
-    // Plus the non-assignment shapes an observation legitimately reproduces: a
-    // query, a CSV header, a header name. None of them is a quoted credential.
-    ORDINARY.push(
-      "SELECT id, password, email\n  ORDER BY id, created_at, name",
-      "user id,order date,email\n7,2024-01-01,a@b.com",
-      "order date,email,status\n2024-01-01,a@b.com,active",
-      // `DB_PASSWORD=` with anything on a following line is now an assignment,
-      // because that is how an audit delivered 346 of 366 credentials. Both of
-      // these were on the ordinary list while an excerpt field existed; the
-      // ordinary form names the setting.
-      "the DB_PASSWORD setting has no value and must be set before launch",
-      "the deploy file sets DB_PASSWORD and API_HOST in the same block",
-      "the x-acme-session header name is set in the deploy configuration",
+    for (const remediation of Object.values(REMEDIATION_CATALOG)) catalogText.push(remediation.text);
+    for (const text of Object.values(UNCERTAINTY_CATALOG)) catalogText.push(text);
+    for (const text of Object.values(LIMITATION_CATALOG)) catalogText.push(text);
+    for (const rationale of Object.values(ASSESSMENT_RATIONALE_CATALOG)) catalogText.push(rationale.text);
+
+    const bricked = catalogText.filter((text) =>
+      blocksDelivery(redactSecrets(text).classification ?? "sensitive_prose"),
     );
 
+    expect(catalogText.length, "the catalog must actually have been walked").toBeGreaterThan(100);
+    expect(bricked, `${bricked.length} catalog sentences would brick a report`).toEqual([]);
+  });
+
+  it("bricks no report over an ordinary reviewer name", () => {
+    // The other free-text string, driven as a product rather than a list.
+    const FIRST = ["Alex", "Priya", "Jordan", "Mei", "Sam", "Tomás"];
+    const ROLES = [
+      "Ops Manager",
+      "Release Manager",
+      "Head of Engineering",
+      "Security Lead",
+      "Principal Engineer",
+      "Delivery Manager",
+    ];
     const bricked: string[] = [];
     const refused: string[] = [];
 
-    for (const observed of ORDINARY) {
-      const report = reportWith(observed);
-      if (report === null) {
-        refused.push(observed.slice(0, 44));
-        continue;
-      }
-      if (pendingSecretHolds(report).some((hold) => hold.classification === "credential_evidence")) {
-        bricked.push(observed.slice(0, 44));
+    for (const first of FIRST) {
+      for (const role of ROLES) {
+        const name = `${first} — ${role}`;
+        const report = reportWithReviewerName(name);
+        if (report === null) {
+          refused.push(name);
+          continue;
+        }
+        if (pendingSecretHolds(report).some((hold) => hold.classification === "credential_evidence")) {
+          bricked.push(name);
+        }
       }
     }
 
-    expect(ORDINARY.length).toBeGreaterThan(40);
-    expect(refused, `${refused.length} ordinary observations were refused outright`).toEqual([]);
-    expect(bricked, `${bricked.length} ordinary observations became permanently undeliverable`)
+    expect(FIRST.length * ROLES.length).toBeGreaterThan(30);
+    expect(refused, `${refused.length} ordinary reviewer names were refused outright`).toEqual([]);
+    expect(bricked, `${bricked.length} ordinary reviewer names became permanently undeliverable`)
       .toEqual([]);
   });
 
-  it("does refuse a pasted assignment, including one that is not a credential", () => {
-    // The stated cost of the prose contract, recorded here so it reads as a
-    // decision rather than a defect.
+  it("no longer pays the prose contract's cost, because there is no prose contract", () => {
+    // This test INVERTED, and the inversion is the clearest single measure of
+    // what Option 1 bought.
     //
-    // All four of these were on the ordinary list while an excerpt field
-    // existed. They are quotations, and none of them actually holds a
-    // credential: `getToken(req)`, `get_password(user)`, `fetchToken(ctx)` and a
-    // header read. Letting them through would mean asking whether the
-    // right-hand side looks like a secret, and that question is the detector ten
-    // audits took apart. So the rule reads the KEY and the OPERATOR and never
-    // the value, and pays for it with these four. An auditor names the setting
-    // and cites its line instead.
-    const QUOTED = [
+    // The previous version recorded four sentences the product refused as a
+    // stated cost: `const token = getToken(req);`, `password = get_password(user)`,
+    // `token := fetchToken(ctx)` and a header read. None of them holds a
+    // credential. They were refused because the only way to stop a quoted
+    // assignment was to refuse every assignment-shaped sentence, and an auditor
+    // paid for that in sentences they could not write.
+    //
+    // An auditor writes no sentences at all now, so the cost is zero. The
+    // observation catalog says what was found; the finding says where. The four
+    // strings below are not refused because nothing asks about them.
+    const FORMERLY_REFUSED = [
       "const token = getToken(req);",
       "password = get_password(user)",
       "token := fetchToken(ctx)",
       'const authHeader = request.headers.get("authorization");',
     ];
 
-    for (const quoted of QUOTED) {
-      expect(reportWith(quoted), `${quoted} should have been refused`).toBeNull();
+    for (const text of FORMERLY_REFUSED) {
+      // They cannot enter a report at all — there is no field — which is a
+      // different and stronger outcome than being refused for looking like code.
+      const finding = { ...makeFinding(), whatWeObserved: text };
+      expect(releaseRescueFindingV1Schema.safeParse(finding).success, text).toBe(false);
     }
-  });
 
-  it("leaves an assignment to an ordinary constant alone", () => {
-    // The cost above is bounded by the lexicon, not by the operator. A key that
-    // is not credential-named is not this rule's business, however much it looks
-    // like code — which is why the rule can afford to be absolute about the ones
-    // that are.
-    for (const ordinary of [
-      'const STORAGE_KEY = "delegation-cloud-draft-v2";',
-      'export const PUBLIC_WEB_RESEARCHER_KEY = "public-web-researcher-v1" as const;',
-      "const cacheKey = `${userId}:${tenantId}`;",
-      "PORT=3000",
-      "SESSION_HEADER_NAME=x-acme-session",
-    ]) {
-      expect(reportWith(ordinary), `${ordinary} should not have been refused`).not.toBeNull();
-    }
+    // And the report an auditor actually produces is deliverable, with the same
+    // diagnostic content those sentences were trying to convey: a code, a path
+    // and a line.
+    const report = reportWithReviewerName("Ops Manager");
+    expect(report).not.toBeNull();
+    expect(releaseRescueDeliveryGate(report!, validateReleaseRescueReport(report!)).deliverable).toBe(true);
+    expect(report!.findings[0].locations[0].path).toBe("config/app.env");
   });
 });

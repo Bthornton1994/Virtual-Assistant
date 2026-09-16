@@ -12,6 +12,7 @@ import { releaseRescueFindingV1Schema } from "@/lib/release-rescue-findings";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
 import { sanitizeReportInput } from "@/lib/release-rescue-pipeline";
 import { toCustomerReportView } from "@/lib/release-rescue-presentation";
+import { OBSERVATION_CATALOG } from "@/lib/release-rescue-observation-catalog";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 import {
   makeFinding,
@@ -66,72 +67,198 @@ function assertNothingLeaked(subject: unknown, where: string): void {
 describe("an executor that quotes the credential instead of describing it", () => {
   // The most likely finding this product will ever produce is "a credential is
   // hardcoded here", and the most likely way an executor writes it is by pasting
-  // the line. That is refused before an artifact exists — not redacted, not
-  // held, refused — because the detector that would have had to judge the value
-  // safe is the thing ten audits took apart.
-  function quotingReport() {
-    return buildReleaseRescueReport(
+  // the line.
+  //
+  // Four earlier rounds tried to decide, from the text, whether a given sentence
+  // had quoted a credential or merely described one. Each produced a measured
+  // failure: a rule keyed on an assignment construct was walked past by
+  // `DB_PASSWORD is set to <value>`, and a rule strict enough to catch that
+  // refused fifteen of twenty-one sentences an auditor legitimately needs to
+  // write.
+  //
+  // So the question is no longer asked. There is no field on a finding, an
+  // assessment or a report that holds a sentence. These tests assert that the
+  // fields are refused — by the schema, and by a named refusal at the assembly
+  // boundary that input can reach without passing a schema.
+
+  const NARRATIVE_INJECTIONS: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ["whatWeObserved", { whatWeObserved: `docker-compose.yml line 4: DB_PASSWORD=${SECRETS.compose}` }],
+    ["title", { title: `Hardcoded DB_PASSWORD=${SECRETS.compose}` }],
+    ["whyItMatters", { whyItMatters: `Anyone reading the repo has ${SECRETS.compose}.` }],
+    ["recommendation", { recommendation: `Rotate ${SECRETS.compose} and move it to a secret store.` }],
+    ["residualUncertainty", { residualUncertainty: `Unsure whether ${SECRETS.smtp} is still live.` }],
+    ["description", { description: `The .pgpass holds ${SECRETS.pgpass}.` }],
+    ["notes", { notes: `Reviewer note: AWS_SECRET_ACCESS_KEY=${SECRETS.aws}` }],
+    ["summary", { summary: `SMTP_PASS=${SECRETS.smtp}` }],
+    ["excerpt", { excerpt: COMPOSE }],
+    ["source", { source: PGPASS }],
+  ];
+
+  for (const [field, extra] of NARRATIVE_INJECTIONS) {
+    it(`refuses a finding carrying "${field}", by name, without repeating the value`, () => {
+      const finding = { ...makeFinding(), ...extra };
+
+      // 1. The schema refuses it.
+      const parsed = releaseRescueFindingV1Schema.safeParse(finding);
+      expect(parsed.success, `${field} should not parse`).toBe(false);
+
+      // 2. And so does the assembly boundary, which input can reach WITHOUT a
+      //    parse — a stored artifact read back as `unknown`, or a caller holding
+      //    the input as `any`. This is the one that matters: `.strict()` only
+      //    protects the paths that go through a schema.
+      let message = "(no refusal)";
+      try {
+        buildReleaseRescueReport(
+          makeReportInput({
+            assessments: setAssessment(passingAssessments(), "secrets.no_secrets_in_version_control", {
+              outcome: "fail",
+              rationaleCode: "control_missing_on_a_reachable_path",
+            }),
+            findings: [finding as never],
+          }),
+        );
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).not.toBe("(no refusal)");
+      // It names the FIELD, so a caller is told what changed rather than being
+      // told their key is unrecognised.
+      expect(message).toContain(`findings[0].${field}`);
+      // And it carries none of the value, because a refusal reaches logs.
+      for (const secret of ALL_SECRETS) {
+        expect(message, "a refusal reaches logs; it must not carry the value").not.toContain(secret);
+      }
+    });
+  }
+
+  it("refuses the same fields on an assessment, not only on a finding", () => {
+    // An assessment's `rationale` was executor-written and rendered beside the
+    // check. The findings walk never touched it, which is how the original
+    // coverage gap happened one level up.
+    let message = "(no refusal)";
+    try {
+      buildReleaseRescueReport(
+        makeReportInput({
+          assessments: passingAssessments().map((assessment, index) =>
+            index === 0
+              ? ({ ...assessment, rationale: `AWS_SECRET_ACCESS_KEY=${SECRETS.aws}` } as never)
+              : assessment,
+          ),
+        }),
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain("assessments[0].rationale");
+    for (const secret of ALL_SECRETS) {
+      expect(message).not.toContain(secret);
+    }
+  });
+
+  it("refuses them on a finding's evidence entry, the newer of the two child collections", () => {
+    let message = "(no refusal)";
+    try {
+      buildReleaseRescueReport(
+        makeReportInput({
+          findings: [
+            {
+              ...makeFinding(),
+              evidence: [
+                {
+                  kind: "configuration_reference" as const,
+                  path: "docker-compose.yml",
+                  startLine: 4,
+                  endLine: 6,
+                  excerpt: COMPOSE,
+                },
+              ],
+            } as never,
+          ],
+          assessments: setAssessment(passingAssessments(), "secrets.no_secrets_in_version_control", {
+            outcome: "fail",
+            rationaleCode: "control_missing_on_a_reachable_path",
+          }),
+        }),
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain("findings[0].evidence[0].excerpt");
+    for (const secret of ALL_SECRETS) {
+      expect(message).not.toContain(secret);
+    }
+  });
+
+  it("has no field left on a report for a limitation sentence", () => {
+    // `limitations` was a string array an executor wrote and the customer read
+    // verbatim. An audit planted an assignment in it and delivered the report.
+    // It is now `limitationCodes`, a closed enum, and the old key is refused.
+    const raw = makeReportInput() as unknown as Record<string, unknown>;
+    const withProse = { ...raw, limitations: [`AWS_SECRET_ACCESS_KEY=${SECRETS.aws}`] };
+
+    let message = "(no refusal)";
+    try {
+      buildReleaseRescueReport(withProse as never);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    // The value never reaches an artifact: either the build refuses, or the key
+    // is simply not read and the assembled report has no trace of it. Both are
+    // acceptable outcomes; carrying the text is not.
+    if (message === "(no refusal)") {
+      const built = buildReleaseRescueReport(withProse as never);
+      assertNothingLeaked(built, "a report built with a stray `limitations` key");
+      expect(Object.keys(built)).not.toContain("limitations");
+    } else {
+      for (const secret of ALL_SECRETS) {
+        expect(message).not.toContain(secret);
+      }
+    }
+  });
+
+  it("cannot carry the credential in the one field that remains, because it is not a path", () => {
+    // A finding location's `path` is the last value taken from the customer's
+    // repository that reaches a report. It is bounded to a path GRAMMAR — no
+    // spaces, no `=`, bounded segments — so a pasted assignment is not a legal
+    // value for it. That is a structural bound, not a judgement about the text.
+    for (const attempt of [
+      `docker-compose.yml: DB_PASSWORD=${SECRETS.compose}`,
+      `DB_PASSWORD=${SECRETS.compose}`,
+      `${COMPOSE}`,
+      `db.acme.com:5432:prod:app:${SECRETS.pgpass}`,
+    ]) {
+      const parsed = releaseRescueFindingV1Schema.safeParse(
+        makeFinding({ locations: [{ path: attempt, startLine: 1, endLine: 1 }] }),
+      );
+      expect(parsed.success, attempt.slice(0, 40)).toBe(false);
+    }
+  });
+
+  it("still accepts the finding written the way the contract requires", () => {
+    // The check that keeps the removal honest: the ordinary, correct report must
+    // still build. A contract that refuses everything is not a contract.
+    const report = buildReleaseRescueReport(
       makeReportInput({
-        assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+        assessments: setAssessment(passingAssessments(), "secrets.no_secrets_in_version_control", {
           outcome: "fail",
-          rationale: "The committed database password is reachable by anyone with repository access.",
+          rationaleCode: "control_missing_on_a_reachable_path",
         }),
         findings: [
           makeFinding({
-            whatWeObserved: `docker-compose.yml sets DB_PASSWORD=${SECRETS.compose} and SMTP_PASS=${SECRETS.smtp}.`,
+            observationCode: "secrets.literal_credential_in_repository",
+            remediationCode: "rotate_and_move_to_secret_store",
             locations: [{ path: "docker-compose.yml", startLine: 4, endLine: 6 }],
           }),
         ],
       }),
     );
-  }
 
-  it("is refused at assembly, naming the construct and not the value", () => {
-    let message = "(no refusal)";
-    try {
-      quotingReport();
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-
-    expect(message).not.toBe("(no refusal)");
-    expect(message).toContain("findings[0].whatWeObserved");
-    expect(message).toContain("DB_PASSWORD");
-    for (const secret of ALL_SECRETS) {
-      expect(message, "a refusal reaches logs; it must not carry the value").not.toContain(secret);
-    }
-  });
-
-  it("is refused when quoted into a limitation, not only into an observation", () => {
-    // Every executor-written field the customer reads carries the contract, not
-    // just the five an earlier version named. An audit planted an assignment in
-    // each of the others and delivered all of them.
-    let message = "(no refusal)";
-    try {
-      buildReleaseRescueReport(makeReportInput({ limitations: [`The admin .env holds ${ENVFILE}`] }));
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-
-    expect(message).toContain("limitations[0]");
-    expect(message).toContain("AWS_SECRET_ACCESS_KEY");
-    for (const secret of ALL_SECRETS) {
-      expect(message, "a refusal reaches logs; it must not carry the value").not.toContain(secret);
-    }
-  });
-
-  it("is refused the same way through the schema, for input that reaches one", () => {
-    const parsed = releaseRescueFindingV1Schema.safeParse(
-      makeFinding({
-        whatWeObserved: `docker-compose.yml sets DB_PASSWORD=${SECRETS.compose}.`,
-        locations: [{ path: "docker-compose.yml", startLine: 4, endLine: 6 }],
-      }),
-    );
-
-    expect(parsed.success).toBe(false);
-    const message = parsed.success ? "" : JSON.stringify(parsed.error.issues);
-    expect(message).toContain("DB_PASSWORD");
-    expect(message).not.toContain(SECRETS.compose);
+    expect(validateReleaseRescueReport(report).hardFailures).toEqual([]);
+    assertNothingLeaked(report, "the correctly written report");
   });
 });
 
@@ -140,33 +267,24 @@ describe("a report built from source containing credentials", () => {
     makeReportInput({
       // The finding's check must be marked failing, or the report contradicts
       // itself for reasons that have nothing to do with credentials.
-      assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+      assessments: setAssessment(passingAssessments(), "secrets.no_secrets_in_version_control", {
         outcome: "fail",
-        rationale: "The committed database password is reachable by anyone with repository access.",
+        rationaleCode: "control_missing_on_a_reachable_path",
       }),
       findings: [
         // The same finding, written the way the contract requires: it names the
-        // settings and cites the lines. The customer opens their own checkout.
+        // observation and cites the lines. The customer opens their own checkout.
         makeFinding({
-          title: "Database password committed to the repository",
-          whatWeObserved:
-            "docker-compose.yml assigns literal values to the DB_PASSWORD and SMTP_PASS settings rather than reading them from the environment.",
-          whyItMatters:
-            "Anyone with repository access has the production database password, including every past and future collaborator.",
-          recommendation:
-            "Rotate both values, read them from the platform secret store, and add a scanner to the pipeline so a committed credential fails the build.",
+          observationCode: "secrets.literal_credential_in_repository",
+          remediationCode: "rotate_and_move_to_secret_store",
           locations: [
             { path: "docker-compose.yml", startLine: 4, endLine: 6 },
             { path: ".pgpass", startLine: 1, endLine: 1 },
           ],
+          evidence: [{ kind: "configuration_reference", path: "docker-compose.yml", startLine: 4, endLine: 6 }],
         }),
       ],
-      // Executor-written and rendered verbatim, so it carries the same prose
-      // contract — but in a colon shape the contract deliberately does not
-      // refuse, which is exactly where the scanner still has to work. It runs on
-      // it as defence in depth: the value is removed, a hold is raised, and
-      // delivery stops.
-      limitations: [`The customer excluded the admin console. Its .env holds ${ENVFILE_AS_YAML}`],
+      limitationCodes: ["customer_excluded_part_of_the_repository"],
     }),
   );
 
@@ -182,6 +300,9 @@ describe("a report built from source containing credentials", () => {
         expect(location.path.length, "a finding must still say where to look").toBeGreaterThan(0);
         expect(Object.keys(location).sort()).toEqual(["endLine", "path", "startLine"]);
       }
+      for (const item of finding.evidence) {
+        expect(Object.keys(item).sort()).toEqual(["endLine", "kind", "path", "startLine"]);
+      }
     }
   });
 
@@ -189,33 +310,82 @@ describe("a report built from source containing credentials", () => {
     assertNothingLeaked(toCustomerReportView(report), "the customer view");
   });
 
-  it("records what it removed, with a hash rather than a copy", () => {
-    expect(report.unresolvedHolds.length).toBeGreaterThan(0);
-    for (const hold of report.unresolvedHolds) {
+  it("raises no holds, because there is no free text left to hold", () => {
+    // This assertion INVERTED with Option 1, and the inversion is the point.
+    //
+    // Previously this file asserted the report carried unresolved holds: an
+    // executor wrote a sentence, the scanner found a credential in it, the value
+    // was replaced by a placeholder and a hold recorded so a human could decide.
+    // That whole mechanism was downstream of a credential having already entered
+    // a customer-deliverable field.
+    //
+    // A correctly built report now has nothing for the scanner to find, because
+    // every customer-facing word came from the frozen catalog and every other
+    // value is a code, a count or a path. The hold machinery is retained as
+    // defence in depth for transient processing — the two tests below exercise
+    // it where text actually flows — but on this path an empty hold list is the
+    // correct outcome rather than a missed detection.
+    expect(report.unresolvedHolds).toEqual([]);
+    expect(pendingSecretHolds(report)).toEqual([]);
+  });
+
+  it("is deliverable once a human has signed it, which the removal must not have broken", () => {
+    // Requirement 8 of the structural change: ordinary, safe reports must not be
+    // made undeliverable by the removal of free-form prose. A contract that
+    // refuses everything is not a contract.
+    const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
+
+    expect(gate.blockers).toEqual([]);
+    expect(gate.deliverable).toBe(true);
+  });
+
+  it("still holds and blocks when credential-bearing text does reach the sanitiser", () => {
+    // Defence in depth, exercised at the boundary where transient text genuinely
+    // exists: `sanitizeReportInput` runs over whatever a caller hands it,
+    // including a stray key no schema knows about. The value is removed, a hold
+    // is recorded with a hash rather than a copy, and nothing carries the text.
+    const { value, holds } = sanitizeReportInput({ strayInternalField: COMPOSE });
+
+    expect(holds.length).toBeGreaterThan(0);
+    for (const hold of holds) {
       expect(hold.originalHash).toMatch(/^[0-9a-f]{64}$/);
       expect(hold.reason.length).toBeGreaterThan(20);
     }
-    assertNothingLeaked(report.unresolvedHolds, "the holds");
+    assertNothingLeaked(value, "the sanitised value");
+    assertNothingLeaked(holds, "the holds");
+    expect(holds.some((hold) => hold.classification === "credential_evidence")).toBe(true);
   });
 
-  it("refuses delivery while credential evidence is unresolved", () => {
-    const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
+  it("still refuses the credential at intake, which is where a customer pastes one", () => {
+    // The other surface where free text genuinely exists and always will: the
+    // intake form. Removing prose from the REPORT does not remove it from the
+    // conversation, so the intake guard keeps its job.
+    const result = parseRescueIntake({ evidenceNotes: `DB_PASSWORD=${SECRETS.compose}` });
 
-    expect(gate.deliverable).toBe(false);
-    expect(gate.blockers.join(" ")).toContain("held for human review");
-    expect(pendingSecretHolds(report).some((hold) => hold.classification === "credential_evidence")).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain("looks like a credential");
+    assertNothingLeaked(result, "the intake rejection");
   });
 
   it("keeps the finding readable — the point is the finding, not the secret", () => {
     const finding = report.findings[0];
 
-    // The setting is named, the file is named, the lines are cited. Nothing
-    // needed redacting in the observation, because nothing was quoted into it.
-    expect(finding.whatWeObserved).toContain("docker-compose.yml");
-    expect(finding.whatWeObserved).toContain("DB_PASSWORD");
-    expect(finding.whatWeObserved).not.toContain("[REDACTED");
+    // The file is named and the lines are cited, and the words come from the
+    // catalog rather than from the finding. The stored artifact carries a code;
+    // the rendered view carries the sentence.
+    const rendered = toCustomerReportView(report).findings[0];
+    expect(finding.observationCode).toBe("secrets.literal_credential_in_repository");
+    expect(rendered.whatWeObserved).toBe(
+      OBSERVATION_CATALOG["secrets.literal_credential_in_repository"].whatWeObserved,
+    );
+    expect(rendered.whatWeObserved).not.toContain("[REDACTED");
     expect(finding.locations[0].path).toBe("docker-compose.yml");
     expect(finding.locations[0].startLine).toBe(4);
+
+    // And the diagnostic survives the removal: a customer can act on this.
+    expect(rendered.evidence[0].path).toBe("docker-compose.yml");
+    expect(rendered.evidence[0].lineRange).toContain("4");
+    expect(rendered.recommendation.length).toBeGreaterThan(20);
   });
 
   it("still passes deterministic validation, because a clean artifact is valid", () => {
@@ -227,7 +397,22 @@ describe("no secret reaches logs or error output", () => {
   it("does not put the value in an exception when sanitisation is bypassed", () => {
     // The runtime backstop behind the branded type. Its message must name the
     // path and the classification, never the text, because it reaches logs.
-    const raw = makeReportInput({ limitations: [`DB_PASSWORD=${SECRETS.compose}`] });
+    //
+    // Reaching it takes a deliberately malformed input now: a correctly shaped
+    // report has no field that can hold credential material, so the assertion
+    // has nothing to fire on. A caller casting past the brand with a location
+    // `path` that is not a path is what a careless caller actually looks like —
+    // assembly does not parse, so the grammar bound is not in force there, and
+    // this assertion is what catches it.
+    const raw = {
+      ...makeReportInput(),
+      findings: [
+        {
+          ...makeFinding(),
+          locations: [{ path: `DB_PASSWORD=${SECRETS.compose}`, startLine: 1, endLine: 1 }],
+        },
+      ],
+    };
     let message = "";
     try {
       // Deliberately casting past the brand, which is what a careless caller
@@ -246,12 +431,14 @@ describe("no secret reaches logs or error output", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // The colon form builds and is held; the assignment form is refused. Both
-    // paths run here, because the refusal path is the newer one and an exception
-    // reaches logs just as readily as a println.
-    buildReleaseRescueReport(makeReportInput({ limitations: [`DB_PASSWORD: ${SECRETS.compose}`] }));
+    // The clean path builds; the malformed path refuses. Both run here, because
+    // an exception reaches logs just as readily as a println.
+    buildReleaseRescueReport(makeReportInput({ limitationCodes: ["customer_excluded_part_of_the_repository"] }));
     try {
-      buildReleaseRescueReport(makeReportInput({ limitations: [`DB_PASSWORD=${SECRETS.compose}`] }));
+      buildReleaseRescueReport({
+        ...makeReportInput(),
+        findings: [{ ...makeFinding(), whatWeObserved: `DB_PASSWORD=${SECRETS.compose}` } as never],
+      });
     } catch {
       // The message is asserted elsewhere; here it only matters that it did not
       // reach a console on the way out.
@@ -327,11 +514,15 @@ describe("sanitisation is the only way in", () => {
   });
 
   it("is idempotent, so building twice is safe", () => {
-    const raw = makeReportInput({ limitations: [`DB_PASSWORD=${SECRETS.compose}`] });
+    // A report input has no free-text field to carry the credential any more, so
+    // the idempotence property is asserted where the sanitiser genuinely has
+    // work to do: an arbitrary object, which is what it takes.
+    const raw = { report: makeReportInput(), stray: `DB_PASSWORD=${SECRETS.compose}` };
     const once = sanitizeReportInput(raw);
     const twice = sanitizeReportInput(once.value);
 
     expect(JSON.stringify(twice.value)).toBe(JSON.stringify(once.value));
+    expect(JSON.stringify(once.value)).not.toContain(SECRETS.compose);
   });
 });
 

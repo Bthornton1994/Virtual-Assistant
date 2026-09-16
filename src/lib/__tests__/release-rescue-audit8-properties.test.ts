@@ -8,7 +8,13 @@ import {
   releaseRescueDeliveryGate,
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
-import { makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
+import { releaseRescueFindingV1Schema } from "@/lib/release-rescue-findings";
+import {
+  makeFinding,
+  makeReportInput,
+  passingAssessments,
+  setAssessment,
+} from "@/lib/__tests__/release-rescue-fixtures";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 
 // The eighth audit's diagnosis, as tests.
@@ -197,28 +203,32 @@ describe("the gate, asserted directly, in both directions", () => {
   // matters to a customer is the gate, and it matters in both directions: a
   // credential must never be deliverable, and an ordinary report must never be
   // undeliverable.
-  // The carrier is `whatWeObserved`, not a location excerpt.
   //
-  // Excerpts are gone: a finding points at source and never carries it, so the
-  // only way text still enters a report is a free-text field an auditor writes.
-  // That is where redaction now serves as DEFENCE IN DEPTH — it is no longer
-  // what proves the deliverable is safe, because there is no longer a field for
-  // customer source to sit in.
-  //
-  // `reportWith` no longer always returns a report. An observation that
-  // reproduces a credential construct is REFUSED at assembly, so the honest
-  // shape of this helper is "a report, or the refusal that stopped it" — and a
-  // refusal is the strongest possible form of "not delivered".
-  function reportWith(observed: string) {
+  // The carrier changed with Option 1. It was a location excerpt, then
+  // `whatWeObserved`. Both are gone — a finding carries codes and the catalog
+  // carries the words — so the honest carrier is the reviewer's display name,
+  // the one free-text string a report still holds. Redaction is DEFENCE IN
+  // DEPTH on that field and on transient processing; it is no longer what proves
+  // a delivered report is safe.
+
+  function reportWithReviewerName(text: string) {
     try {
       return buildReleaseRescueReport(
         makeReportInput({
           findings: [
             makeFinding({
-              whatWeObserved: `The committed configuration contains: ${observed}`,
               locations: [{ path: "config/app.env", startLine: 1, endLine: 3 }],
             }),
           ],
+          assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+            outcome: "fail",
+            rationaleCode: "control_missing_on_a_reachable_path",
+          }),
+          reviewedBy: {
+            operatorUserId: "op-1",
+            displayName: text.slice(0, 180),
+            reviewedAt: "2026-09-16T10:00:00.000Z",
+          },
         }),
       );
     } catch {
@@ -226,12 +236,22 @@ describe("the gate, asserted directly, in both directions", () => {
     }
   }
 
+  it("is a fixture that can actually be delivered", () => {
+    // The guard on the guard. An audit found this suite's gate assertions
+    // vacuous because the fixture failed validation for every input.
+    const clean = reportWithReviewerName("Ops Manager");
+
+    expect(clean).not.toBeNull();
+    expect(validateReleaseRescueReport(clean!).hardFailures).toEqual([]);
+    expect(releaseRescueDeliveryGate(clean!, validateReleaseRescueReport(clean!)).deliverable).toBe(true);
+  });
+
   it("never delivers a report holding a real credential", () => {
     const delivered: string[] = [];
 
     for (const key of ["PGPASSWORD", "DB_PASSWORD", "ACCESSTOKEN", "APIACCESSTOKEN", "PASSPHRASE"]) {
       for (const value of REAL_CREDENTIALS) {
-        const report = reportWith(`${key}=${value}`);
+        const report = reportWithReviewerName(`${key}=${value}`);
         if (report === null) continue; // refused before an artifact existed
         const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
 
@@ -244,59 +264,73 @@ describe("the gate, asserted directly, in both directions", () => {
     expect(delivered, `${delivered.length} credentials reached a deliverable report`).toEqual([]);
   });
 
-  it("refuses every one of them, rather than relying on the scanner to catch it", () => {
+  it("cannot express them at all in the fields that used to carry them", () => {
     // The stronger statement, and the one that made the previous rounds
-    // unnecessary: none of these got as far as a gate decision.
-    const built: string[] = [];
+    // unnecessary. The excerpt and the five narrative fields are not guarded
+    // now; they are absent, and an attempt to send one is refused by name.
+    const accepted: string[] = [];
 
-    for (const key of ["PGPASSWORD", "DB_PASSWORD", "ACCESSTOKEN", "APIACCESSTOKEN", "PASSPHRASE"]) {
-      for (const value of REAL_CREDENTIALS) {
-        if (reportWith(`${key}=${value}`) !== null) built.push(`${key}=${value}`);
+    for (const field of ["excerpt", "whatWeObserved", "recommendation", "title"]) {
+      for (const key of ["PGPASSWORD", "DB_PASSWORD", "ACCESSTOKEN"]) {
+        for (const value of REAL_CREDENTIALS) {
+          const finding = { ...makeFinding(), [field]: `${key}=${value}` };
+          if (releaseRescueFindingV1Schema.safeParse(finding).success) {
+            accepted.push(`${field}:${key}=${value}`);
+          }
+        }
       }
     }
 
-    expect(built, `${built.length} quoted assignments were assembled instead of refused`).toEqual([]);
+    expect(accepted, `${accepted.length} credentials were accepted into a removed field`).toEqual([]);
   });
 
-  it("never makes an ordinary observation permanently undeliverable", () => {
+  it("never makes an ordinary report permanently undeliverable", () => {
     // A `credential_evidence` hold cannot be cleared by any human, so a false
     // positive at that level is not noise — it is a $299 report nobody can send.
+    //
+    // The list below used to be observations an auditor wrote. Those are gone,
+    // so the ordinary content that still passes through the scanner is the
+    // reviewer's name and the catalog's own text. Both are checked: names here,
+    // the whole catalog in the audit-9 suite.
     const ORDINARY = [
-      // A pasted config block is a quotation: `DB_PASSWORD=` with the value on
-      // the next line was how an audit delivered 346 of 366 credentials, so the
-      // rule now looks at what is assigned wherever the writer put it. The
-      // ordinary form of this observation names the settings instead.
-      "the deploy file sets DB_PASSWORD, API_HOST and DEBUG in one block",
-      "SELECT id, password, email\n  ORDER BY id, created_at, name",
-      'import { getToken } from "./auth";\nconst user = await getUser(id);',
-      "the authorization header is read but never checked against the record owner",
-      "SESSION_HEADER_NAME=x-acme-session",
+      "Ops Manager",
+      "Alex Rivera — Release Manager",
+      "Dr. Mei Chen, Head of Engineering",
+      "Sam O'Neill (Security Lead)",
+      "Tomás Álvarez — Principal Engineer",
     ];
     const bricked: string[] = [];
 
-    for (const observed of ORDINARY) {
-      const report = reportWith(observed);
-      expect(report, `an ordinary observation was refused: ${observed.slice(0, 40)}`).not.toBeNull();
+    for (const name of ORDINARY) {
+      const report = reportWithReviewerName(name);
+      expect(report, `an ordinary reviewer name was refused: ${name}`).not.toBeNull();
       if (report && pendingSecretHolds(report).some((hold) => hold.classification === "credential_evidence")) {
-        bricked.push(observed.slice(0, 40));
+        bricked.push(name);
       }
     }
 
-    expect(bricked, `${bricked.length} ordinary observations became undeliverable`).toEqual([]);
+    expect(bricked, `${bricked.length} ordinary reviewer names became undeliverable`).toEqual([]);
   });
 
-  it("does refuse a pasted line of code, and that cost is deliberate", () => {
-    // `const authHeader = request.headers.get("authorization");` was on the
-    // ordinary list above while an excerpt field existed. It is refused now, and
-    // this records that as a decision rather than letting it look like a bug:
-    // an observation DESCRIBES. A rule that let this through would have to ask
-    // whether the right-hand side looks like a literal, and that question is the
-    // detector the owner retired. The refusal names the key, and the auditor
-    // writes the sentence instead.
-    expect(reportWith('const authHeader = request.headers.get("authorization");')).toBeNull();
+  it("no longer refuses a pasted line of code, because nothing asks about one", () => {
+    // This test INVERTED with Option 1.
+    //
+    // `const authHeader = request.headers.get("authorization");` was refused by
+    // the prose contract, and the previous version of this test recorded that as
+    // a deliberate cost: an auditor could not write the sentence. The cost is
+    // gone along with the contract — an auditor writes no sentences, so there is
+    // nothing to refuse. The line cannot enter a report at all, which is a
+    // different and stronger outcome than being refused for its shape.
+    const text = 'const authHeader = request.headers.get("authorization");';
+
+    expect(releaseRescueFindingV1Schema.safeParse({ ...makeFinding(), whatWeObserved: text }).success).toBe(false);
+    // And the report an auditor does produce is unaffected.
+    expect(reportWithReviewerName("Ops Manager")).not.toBeNull();
   });
 
   it("does not refuse a prospect describing work they have already shipped", () => {
+    // Intake keeps its free text and therefore keeps its guard: removing prose
+    // from the REPORT does not remove it from the conversation.
     const refused: string[] = [];
 
     for (const notes of [

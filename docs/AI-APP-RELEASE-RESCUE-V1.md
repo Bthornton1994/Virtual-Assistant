@@ -48,7 +48,8 @@ Eight application modules, all pure and deterministic, and the migration chain t
 | --- | --- |
 | `src/lib/release-rescue-rubric.ts` | The frozen, content-hashed rubric: 32 checks across 12 dimensions, 12 of them release-gating |
 | `src/lib/release-rescue-intake.ts` | Offer terms, scope ceiling, service refusals, attestations, retention election |
-| `src/lib/release-rescue-redaction.ts` | Secret detection, applied to the source the scanner reads transiently and to a report's free text as defence in depth. It no longer prepares excerpts, because none are stored |
+| `src/lib/release-rescue-redaction.ts` | Secret detection, applied to the source the scanner reads transiently, to the intake form, and to the two guarded strings a report still holds. It no longer prepares excerpts, because none are stored, and it is no longer what proves a delivered report is safe |
+| `src/lib/release-rescue-observation-catalog.ts` | Every customer-facing sentence the product can produce: observations, remediations, uncertainties, assessment rationales, limitations and clearance reasons, keyed by stable code and pinned by content hash |
 | `src/lib/release-rescue-findings.ts` | The finding contract and the derived severity model |
 | `src/lib/release-rescue-report.ts` | Report schema, deterministic assembly, validation, delivery gate |
 | `src/lib/release-rescue-presentation.ts` | The customer-facing view, built by construction so internal identity cannot leak into it |
@@ -173,13 +174,16 @@ Evidence artifacts are otherwise immutable, which is right for evidence and wron
 schemaVersion, reportId, engagementId, runId, organizationId
 rubricVersion, rubricHash            binds the report to an exact rubric
 scope, scopeHash                     binds it to an exact repository and commit
-assessments[]                        one per rubric check, with rationale and evidence
-findings[]                           release-rescue-finding/v1
+observationCatalogVersion, observationCatalogHash
+                                     binds it to the exact wording the customer read
+assessments[]                        one per rubric check: checkId, outcome,
+                                     rationaleCode, and structured evidence
+findings[]                           release-rescue-finding/v2
 coverage{}                           DERIVED
 severityCounts{}                     DERIVED
 blockingFindingCount                 DERIVED
 verdict                              DERIVED
-limitations[]                        never empty
+limitationCodes[]                    never empty; resolved from the catalog
 disclaimers{}                        four literal-true fields
 authorityReport{}                    any non-zero entry fails the gate
 preparedBy{}                         executor provenance: key, kind, provider, model
@@ -228,7 +232,7 @@ Four things carry the security weight, and all four are enforced rather than doc
 
 The posture is conservative: over-redacting costs a reader some context, under-redacting copies a production key into three new places. An allowlist keeps correct patterns readable, because a finding that recommends `process.env.API_KEY` has to be able to show it. Redaction is idempotent and order-independent — a fresh `RegExp` per call, since the module-level `/g` literals carry `lastIndex` that would otherwise leak between calls and make a later redaction miss a match.
 
-Defence in depth: `validateReleaseRescueReport` scans the **entire assembled report** at freeze time. This is no longer what proves a deliverable is safe — the absence of any source-carrying field is — but a recommendation or a rationale is written by a person, and a second look before the artifact is frozen costs nothing.
+Defence in depth: `validateReleaseRescueReport` scans the **entire assembled report** at freeze time. This is not what proves a deliverable is safe — the absence of any field that holds a sentence is — but two strings in a report are still typed by a person (the reviewer's display name and the repository reference the customer gave at intake), and a second look before the artifact is frozen costs nothing.
 
 **2. Deterministic computation.** Coverage, severity counts, blocking count, and verdict are recomputed from the findings in `deriveReportMetrics` and compared against the stored values. Stored values that disagree are hard failures. An executor's self-report is evidence, never truth.
 
@@ -255,18 +259,20 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 578 Release Rescue tests across 30 suites (1,254 in the whole repository, of which 8 fail for an environmental reason recorded below), 300 live database cases across ten proofs, and 13 browser tests in real Chromium against the production build.
+**Implemented and passing** — 623 Release Rescue tests across 30 suites (1,299 in the whole repository, of which 8 fail for an environmental reason recorded below), 332 live database cases across eleven proofs, and 16 browser tests in real Chromium against the production build.
 
 The database figure counts labelled `PASS <outcome> |` lines only. An earlier pass reported 306 by counting each proof's closing "every case above printed PASS" banner as a case — a stale count is a false claim, and so is a miscounted one.
 
-> **Read *The excerpt decision* before treating any of this as shippable.**
-> Eleven independent audits have run and all eleven returned DO_NOT_MERGE. The
-> owner has taken a structural decision that retires the class of defect they
-> kept finding: customer source excerpts are removed from every persisted
-> artifact, and an observation may not reproduce a credential construct. The
-> eleventh audit found the first half shipped with the channel reopened in two
-> places — `locations[].path` and the free-text observation fields — and both are
-> now closed. Independent QA has not yet audited that result.
+Three of the six Playwright specs need live preview credentials (`E2E_PASSWORD`) and a deployed preview, neither of which this environment has or should have. They are not run here, and the 16 above does not include them.
+
+> **Read *The structured-observation decision* before treating any of this as shippable.**
+> Thirteen independent audits have run and all thirteen returned DO_NOT_MERGE.
+> The first twelve turned, one way or another, on the same question: can a rule
+> decide, from a sentence an auditor wrote, whether it has quoted a credential?
+> Four rounds of measurement answered no in both directions. The owner's
+> decision removes the question rather than answering it: a report carries
+> codes, and a frozen catalog carries the words. Independent QA has not yet
+> audited that result.
 
 These counts are re-measured each pass rather than carried forward. Three successive audits found stale numbers here, and a stale count is a false claim like any other.
 
@@ -274,7 +280,7 @@ These counts are re-measured each pass rather than carried forward. Three succes
 | --- | --- | --- |
 | **Authentication** | The session boundary itself is the existing platform's (`rls.test.ts`, `auth-redirect.test.ts`). This workstream adds identity checks at the authority boundary: the named report reviewer must hold manager authority, verified against `operators` rather than accepted as a user id | QA fixture §4; migration suite |
 | **Authorization** | A customer admin may open an engagement only for their own organization; an ops manager cannot mint an access grant on a customer's behalf; a plain operator cannot issue a report; only a manager may issue or update one; the customer may revoke their own access | QA fixture §1, §3, §4; migration suite |
-| **Secrets** | Structural first: a finding carries no source, and every source-carrying field name is refused in TypeScript and in PostgreSQL. Then, as defence in depth over free text: 15 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; nested JSON scanning; whole-report scan | `release-rescue-redaction.test.ts` (28), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
+| **Secrets** | Structural first: a finding carries no source and no sentence, and every source-carrying and narrative field name is refused in TypeScript and in PostgreSQL. Then, as defence in depth over the two strings a person still types and over transient processing: 15 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; nested JSON scanning; whole-report scan | `release-rescue-structured-observations.test.ts` (36), `release-rescue-redaction.test.ts` (28), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
 | **Data access** | Organization B reads none of A's engagements or reports; credential-named keys, credential-shaped values, credentialed URLs, over-long windows, and write access all refused; grants are revoke-only and one-way; retention cannot be extended; the purge clears content, keeps accounting, revokes grants, is idempotent, does not reach past its own workstream, and does not leak its flag | `release_rescue_v1_isolation_proof.sql` (45 cases), migration suite (28) |
 | **Report integrity** | Edited severity counts, verdict, coverage, rubric hash, and scope hash all rejected; missing or duplicated assessments and findings rejected; blocking pass on argument alone rejected; finding/assessment contradictions rejected; prohibited claims rejected; non-zero authority rejected; deterministic hashing; delivery gate refuses unsigned or invalid reports | `release-rescue-report.test.ts`, `release-rescue-findings.test.ts`, `demo-fixtures.test.ts` |
 
@@ -1397,8 +1403,8 @@ artifact and every customer-facing surface.
 | `startLine`, `endLine` | any source window |
 | `rubricCheckId` | any raw source text |
 | `severity` (derived, not chosen) | any scanner span exposing source |
-| `whatWeObserved` — the observation | a quoted credential assignment in any prose field |
-| `recommendation` — what to do about it | a credentialed URL or private-key block in prose |
+| `observationCode` — resolves to the observation | `whatWeObserved`, and every other prose field (see below) |
+| `remediationCode` — resolves to what to do | `recommendation`, likewise |
 
 The customer opens `src/app/api/orders/route.ts:18–27` in their own checkout,
 where the source already is. Nothing diagnostic is lost; the copy is.
@@ -1681,11 +1687,144 @@ the then-16 went red; the two that read as the structural guarantees were
 tautologies. Both were rewritten to plant the value and assert no artifact comes
 out, and the suite now goes red under that mutation.
 
-`src/lib/__tests__/release-rescue-prose.test.ts` — **9 tests**, driven from the
-key and the operator rather than the value: the corpus crossed with five
-assignment spellings inside eight sentence wrappers (5,000+ cases), the full
-qualifier × carrier lexicon in prose (500+ keys), and the false-positive
-direction as its own product so the safe side is no longer a hand-picked list.
+`src/lib/__tests__/release-rescue-prose.test.ts` — **deleted**, along with the
+module it tested. It proved that a rule over auditor-written prose behaved a
+certain way. There is no auditor-written prose, so there is no rule, so there is
+nothing for it to prove. Keeping a passing suite for a retired mechanism is how a
+test file becomes decoration.
+
+`src/lib/__tests__/release-rescue-structured-observations.test.ts` — **36 tests**,
+the eight property families the structured-observation decision was specified
+against. Notable among them, because they are complete statements rather than
+samples: every sentence the catalog can produce, checked for prohibited claims
+and credentials in one pass; every observation in the catalog, built into a
+report and asserted deliverable; every remediation each observation offers, the
+same; and a walk of the whole customer view asserting that each sentence in it
+has a named owner in this repository. The last of those found three rubric checks
+with no observation entry — an auditor could not have reported an accessibility
+failure at all — which under the old contract would have been invisible, because
+an auditor simply wrote a sentence.
+
+## The structured-observation decision
+
+**Owner decision, after thirteen independent audits: a report carries CODES, and
+a frozen catalog carries the WORDS.** Every customer-deliverable sentence is
+composed at render time from `src/lib/release-rescue-observation-catalog.ts`,
+keyed by a stable code the artifact stores. There is no field on a finding, an
+assessment or a report that a caller can write a sentence into.
+
+### Why, stated as the measurement rather than as a preference
+
+The excerpt decision above removed the customer's *source* from the artifact. It
+did not remove the auditor's *sentences about it*, and four rounds then went into
+the question of whether a rule could tell a description from a quotation.
+
+Both directions were measured, and both failed:
+
+| Rule | What it was for | What it measured |
+| --- | --- | --- |
+| Construct-keyed (key + operator, never the value) | Refuse a quoted assignment without judging the right-hand side | **366 of 366** generated credentials delivered through `DB_PASSWORD is set to <value>`. A sentence with no construct has nothing to key on. A separate measurement put the prose-prefixed carrier at **30 of 116** where the bare assignment was 0 |
+| Strict enough to catch that | Refuse anything that could be read as carrying a value | **15 of 21** sentences an auditor legitimately needs to write were refused. A $299 report nobody can send is not a safer report |
+
+There is no rule between those two. The question — *is this sentence a quotation?*
+— does not have a decidable answer over arbitrary prose, and each round of
+sharpening moved the failure rather than removing it.
+
+So the owner's decision removes the question. An auditor does not write a
+sentence, therefore no rule needs to judge one.
+
+### What replaced each removed field
+
+| Was | Is | Resolved by |
+| --- | --- | --- |
+| `findings[].title`, `.whatWeObserved`, `.whyItMatters` | `findings[].observationCode` | `OBSERVATION_CATALOG` |
+| `findings[].recommendation` | `findings[].remediationCode` | `REMEDIATION_CATALOG` |
+| `findings[].residualUncertainty` | `findings[].uncertaintyCode` | `UNCERTAINTY_CATALOG` |
+| `assessments[].rationale` | `assessments[].rationaleCode` | `ASSESSMENT_RATIONALE_CATALOG` |
+| `assessments[].evidence[].reference` | `kind`, `path`, `startLine`, `endLine` | the same schema a finding's evidence uses |
+| `limitations[]` | `limitationCodes[]` | `LIMITATION_CATALOG` |
+| `clearedSecretHolds[].rationale` | `clearedSecretHolds[].reasonCode` | `CLEARANCE_REASON_CATALOG` |
+| `scope.application.{name,description,primaryStack}` | removed | — |
+| `scope.criticalWorkflow.{name,description,entryPoint}` | `handlesCustomerData`, `triggersExternalActions` (booleans) | — |
+| `scope.customerExclusions[]` | `scope.exclusionCount` (a number) | — |
+
+`impact` and `exploitability` moved with the words. They are fixed per
+observation by the catalog and **verified** against it by `validateFinding`, so
+storing them on the artifact grants no authority to set them. The only judgement
+an executor still makes about severity is `confidence`, which can lower a
+severity and never raise one.
+
+That has a consequence worth naming, because the demo hit it: the way to report a
+less severe instance is to name the **observation that matches the scenario**, not
+to write a smaller word. `ai.model_visible_content_can_grant_authority` is
+`remote_unauthenticated` and derives `critical`; `ai.tool_authority_is_not_declared`
+is `requires_user_interaction` and derives `high`. Choosing between them is a
+judgement about the finding. There is no field left to shop in.
+
+### What is left that a person types
+
+Two strings, both named and both guarded:
+
+1. **`reviewedBy.displayName`** — the named human reviewer's signature, rendered
+   to the customer. Checked for prohibited claims and for credentials by the
+   field-coverage contract.
+2. **`scope.repository.repositoryRef`** and `defaultBranch` — what the customer
+   gave at intake, format-checked.
+
+And one value still taken from the customer's repository: **`path`**, on a
+finding location and on an evidence entry. It is bounded by a path *grammar* —
+no whitespace, no control characters, bounded segments, 400 characters — so a
+pasted source window is not a legal value for it. That is a structural bound,
+not a judgement about the text.
+
+### What this does and does not claim
+
+**Proven.** A customer-deliverable report has no field that holds a sentence a
+person wrote. Every word a customer reads about a finding, an assessment, a
+limitation, an uncertainty or a clearance comes from a frozen catalog, pinned by
+content hash on the artifact so the wording a customer was shown can be
+identified afterwards. An attempt to send a removed field is refused **by name**
+at the schema, at the assembly boundary (which takes findings as typed values and
+never parses them), and at the database row guard — and the refusal message names
+the field and never the value, because it reaches logs.
+
+**Not claimed.** This does not make a review correct, and it does not prevent a
+false negative: an auditor steered away from a file reports nothing about it, and
+a report with a missing finding is structurally perfect. It also does not claim
+the credential scanner proves anything about arbitrary prose — that claim is
+exactly what the measurements above refuted. The scanner is retained for
+transient processing, for the intake form, and for the two guarded strings.
+
+**Human review is the accountability gate, not the credential control.** A named
+manager must still sign before delivery. That requirement is unchanged and is
+deliberately *not* the mechanism that keeps credentials out of a report: a report
+carrying one is undeliverable even when a manager has signed it, and a test
+asserts that directly.
+
+### The database half
+
+`supabase/migrations/20260916140000_release_rescue_structured_observations_v10.sql`
+extends v8's field-name refusal with the narrative names, generalises v9's
+`path`-only string bound to every string in the payload (no control characters,
+400 characters), and requires catalog provenance on every stored report. All four
+checks live in the single guard function v9 established, for the reason v9 gave:
+triggers on `evidence_artifacts` fire in alphabetical order and this workstream
+has already been bitten by that once.
+
+`supabase/qa/release_rescue_structured_observations_v10_proof.sql` proves it live
+in **30 labelled cases**, including the whole narrative list crossed with all four
+levels of the payload (100+ insert attempts), and — asserted first, deliberately —
+that the report the product actually produces is still storable. Three audits in
+this workstream have found a guard that refused everything; a $299 artifact nobody
+can store is a worse outcome than the one the guard exists to prevent.
+
+One of those cases changed what it claims after measurement. The obvious assertion
+was that the guard refuses an UPDATE planting a narrative field. It does not:
+`trg_evidence_artifacts_immutable` sorts alphabetically before it, so the row is
+refused as immutable before this guard is consulted. That is recorded as what it
+is rather than claimed as a win for this guard, and the narrative guard's
+independent refusal is asserted separately so the claim does not rest on trigger
+ordering staying put.
 
 ### What this does not authorize
 

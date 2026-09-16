@@ -316,7 +316,7 @@ insert into public.evidence_artifacts
 values ('2222a000-0000-0000-0000-000000000001', 'bbbb4000-0000-0000-0000-000000000001',
         'eeee4000-0000-0000-0000-000000000001', 'observation', 'Release Rescue report body',
         repeat('1', 64),
-        '{"schemaVersion":"release-rescue-report/v1","verdict":"conditional_release","blockingFindingCount":0,"reviewedCommitSha":"9f2c1b7e4d5a308c6b1e0f72a4d9c83b5e017642","coverage":{"totalChecks":32,"assessedChecks":32}}'::jsonb);
+        '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"conditional_release","blockingFindingCount":0,"reviewedCommitSha":"9f2c1b7e4d5a308c6b1e0f72a4d9c83b5e017642","coverage":{"totalChecks":32,"assessedChecks":32}}'::jsonb);
 
 -- A body naming a DIFFERENT commit. The report row that points at it must be
 -- refused, or the pin would be decoration.
@@ -325,7 +325,7 @@ insert into public.evidence_artifacts
 values ('2222a000-0000-0000-0000-000000000002', 'bbbb4000-0000-0000-0000-000000000001',
         'eeee4000-0000-0000-0000-000000000001', 'observation', 'Body naming another commit',
         repeat('2', 64),
-        '{"schemaVersion":"release-rescue-report/v1","verdict":"conditional_release","blockingFindingCount":0,"reviewedCommitSha":"0000000000000000000000000000000000000000","coverage":{"totalChecks":32,"assessedChecks":32}}'::jsonb);
+        '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"conditional_release","blockingFindingCount":0,"reviewedCommitSha":"0000000000000000000000000000000000000000","coverage":{"totalChecks":32,"assessedChecks":32}}'::jsonb);
 
 select rrl4.expect_refusal(
   'a report naming a commit the engagement did not pin is refused',

@@ -79,7 +79,7 @@ update public.workstream_runs set status = 'running' where id = '7e000000-0000-0
 insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload) values
   ('7f000000-0000-0000-0000-00000000bb01', '7b000000-0000-0000-0000-00000000bb01',
    '7e000000-0000-0000-0000-00000000bb01', 'observation', 'VICTIM confidential excerpt',
-   repeat('9', 64), '{"schemaVersion":"release-rescue-report/v1"}'::jsonb);
+   repeat('9', 64), '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'::jsonb);
 
 -- Two engagements of the attacker's, both due for purge.
 insert into public.release_rescue_engagements
@@ -248,10 +248,16 @@ values ('7f000000-0000-0000-0000-00000000aa01', '7b000000-0000-0000-0000-0000000
         '7e000000-0000-0000-0000-00000000aa01', 'observation', 'forged clearance', repeat('a', 64),
         jsonb_build_object(
           'schemaVersion', 'release-rescue-report/v1',
+          'observationCatalogVersion', 'release-rescue-observations/v1',
+          'observationCatalogHash', repeat('a', 64),
           'reviewedCommitSha', repeat('a', 40),
           'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
-            'path', '$.limitations[0]', 'clearedContentHash', repeat('b', 64),
-            'clearedBy', 'x', 'clearedAt', '2026-09-16T00:00:00Z', 'rationale', 'Looks fine.'))));
+            -- v10: a clearance records a reason CODE from a closed set, not a
+            -- note. A written reason is free text on the one path that exists
+            -- to RELEASE withheld material, which is the worst place for it.
+            'path', '$.reviewedBy.displayName', 'clearedContentHash', repeat('b', 64),
+            'clearedBy', 'x', 'clearedAt', '2026-09-16T00:00:00Z',
+            'reasonCode', 'value_is_a_placeholder_not_a_credential'))));
 
 select rrv7.expect_refusal(
   'a clearance naming an arbitrary string is refused',
@@ -273,11 +279,14 @@ values ('7f000000-0000-0000-0000-00000000aa02', '7b000000-0000-0000-0000-0000000
         '7e000000-0000-0000-0000-00000000aa01', 'observation', 'operator clearance', repeat('c', 64),
         jsonb_build_object(
           'schemaVersion', 'release-rescue-report/v1',
+          'observationCatalogVersion', 'release-rescue-observations/v1',
+          'observationCatalogHash', repeat('a', 64),
           'reviewedCommitSha', repeat('a', 40),
           'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
-            'path', '$.limitations[0]', 'clearedContentHash', repeat('b', 64),
+            'path', '$.reviewedBy.displayName', 'clearedContentHash', repeat('b', 64),
             'clearedBy', '7a000000-0000-0000-0000-00000000dd01',
-            'clearedAt', '2026-09-16T00:00:00Z', 'rationale', 'Looks fine.'))));
+            'clearedAt', '2026-09-16T00:00:00Z',
+            'reasonCode', 'value_is_a_placeholder_not_a_credential'))));
 
 select rrv7.expect_refusal(
   'a clearance by a plain operator is refused',
@@ -299,11 +308,13 @@ values ('7f000000-0000-0000-0000-00000000aa03', '7b000000-0000-0000-0000-0000000
         '7e000000-0000-0000-0000-00000000aa01', 'observation', 'manager clearance', repeat('d', 64),
         jsonb_build_object(
           'schemaVersion', 'release-rescue-report/v1',
+          'observationCatalogVersion', 'release-rescue-observations/v1',
+          'observationCatalogHash', repeat('a', 64),
           'reviewedCommitSha', repeat('a', 40),
           'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
-            'path', '$.limitations[0]', 'clearedContentHash', repeat('b', 64),
+            'path', '$.reviewedBy.displayName', 'clearedContentHash', repeat('b', 64),
             'clearedBy', '7a000000-0000-0000-0000-00000000cc01',
-            'clearedAt', '2026-09-16T00:00:00Z', 'rationale', 'Reviewed the line.'))));
+            'clearedAt', '2026-09-16T00:00:00Z', 'reasonCode', 'value_is_a_documented_example'))));
 
 do $$
 begin
@@ -448,11 +459,13 @@ values ('7f000000-0000-0000-0000-00000000bb09', '7b000000-0000-0000-0000-0000000
         '7e000000-0000-0000-0000-00000000bb01', 'observation', 'victim body', repeat('c', 64),
         jsonb_build_object(
           'schemaVersion', 'release-rescue-report/v1',
+          'observationCatalogVersion', 'release-rescue-observations/v1',
+          'observationCatalogHash', repeat('a', 64),
           'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
-            'path', '$.limitations[0]',
+            'path', '$.reviewedBy.displayName',
             'clearedBy', 'VICTIM-CONFIDENTIAL-STRING-abc123',
             'clearedContentHash', repeat('b', 64),
-            'clearedAt', '2026-09-16T00:00:00Z', 'rationale', 'Victim tenant.'))));
+            'clearedAt', '2026-09-16T00:00:00Z', 'reasonCode', 'value_is_a_documented_example'))));
 
 do $$
 declare v_message text; v_state text;
@@ -629,6 +642,8 @@ insert into public.evidence_artifacts (id, organization_id, run_id, kind, summar
 values ('7f000000-0000-0000-0000-00000000bb0a', '7b000000-0000-0000-0000-00000000bb01',
         '7e000000-0000-0000-0000-00000000bb01', 'observation', 'victim commit', repeat('7', 64),
         jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
                            'reviewedCommitSha', repeat('f', 40)));
 
 do $$
@@ -687,6 +702,8 @@ insert into public.evidence_artifacts (id, organization_id, run_id, kind, summar
 values ('7f000000-0000-0000-0000-00000000aa04', '7b000000-0000-0000-0000-00000000aa01',
         '7e000000-0000-0000-0000-00000000aa44', 'observation', 'due report body', repeat('e', 64),
         jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'observationCatalogVersion', 'release-rescue-observations/v1',
+                           'observationCatalogHash', repeat('a', 64),
                            'reviewedCommitSha', repeat('a', 40)));
 
 insert into public.release_rescue_reports

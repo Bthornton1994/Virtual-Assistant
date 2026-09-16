@@ -210,8 +210,6 @@ describe("ordinary content, as a product rather than a list", () => {
       makeReportInput({
         findings: [
           makeFinding({
-            whatWeObserved:
-              "The route reads a session token and then loads the record by id without an ownership check.",
             locations: [{ path: "src/app/api/users/route.ts", startLine: 1, endLine: 3 }],
           }),
         ],
@@ -242,7 +240,6 @@ describe("the outcome the whole workstream exists to prevent", () => {
             makeReportInput({
               findings: [
                 makeFinding({
-                  whatWeObserved: `The committed configuration sets ${key}.`,
                   locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
                 }),
               ],

@@ -119,38 +119,43 @@ describe("finding validation", () => {
   it("rejects an inflated severity label", () => {
     // The whole point of the derived model: an executor cannot promote its own
     // finding by writing a bigger word next to the same observations.
-    const result = validateFinding(makeFinding({ severity: "critical" }));
+    // The composer cannot produce this, which is the point: the only way to
+    // get an inflated severity into a finding now is to tamper with a composed
+    // one, and the validator is what catches a tampered artifact.
+    const result = validateFinding({ ...makeFinding(), severity: "critical" });
 
     expect(result.ok).toBe(false);
     expect(result.failures.join(" ")).toContain('stores severity "critical"');
   });
 
   it("rejects a hand-set blocking flag", () => {
-    const result = validateFinding(
-      makeFinding({
-        rubricCheckId: "deps.known_vulnerable_dependencies",
-        dimension: "dependency_and_supply_chain",
-        impact: "serious",
-        exploitability: "remote_unauthenticated",
-        confidence: "confirmed",
-        severity: "high",
-        blocking: true,
-      }),
-    );
+    // Same shape as the severity test above and for the same reason: the
+    // composer derives `blocking` from the severity the catalog fixes, so a
+    // caller cannot set it on the way in. What it CAN do is tamper with a
+    // composed finding — a stored artifact edited in the database, say — and the
+    // validator is what refuses that.
+    const nonBlocking = makeFinding({
+      observationCode: "docs.cannot_run_and_verify_locally",
+      remediationCode: "document_local_setup_and_verification",
+      confidence: "confirmed",
+    });
+    expect(nonBlocking.blocking, "the fixture must start non-blocking for this to mean anything").toBe(false);
+
+    const result = validateFinding({ ...nonBlocking, blocking: true });
 
     expect(result.ok).toBe(false);
     expect(result.failures.join(" ")).toContain("stores blocking=true");
   });
 
   it("rejects a finding on an unknown rubric check", () => {
-    const result = validateFinding(makeFinding({ rubricCheckId: "made.up_check" }));
+    const result = validateFinding({ ...makeFinding(), rubricCheckId: "made.up_check" });
 
     expect(result.ok).toBe(false);
     expect(result.failures.join(" ")).toContain("unknown rubric check");
   });
 
   it("rejects a dimension that disagrees with its check", () => {
-    const result = validateFinding(makeFinding({ dimension: "ai_boundary" }));
+    const result = validateFinding({ ...makeFinding(), dimension: "ai_boundary" });
 
     expect(result.ok).toBe(false);
     expect(result.failures.join(" ")).toContain("belongs to");
@@ -158,7 +163,7 @@ describe("finding validation", () => {
 
   it("requires an unconfirmed finding to say what is unproven", () => {
     const result = validateFinding(
-      makeFinding({ confidence: "possible", severity: "medium", blocking: false, residualUncertainty: "  " }),
+      { ...makeFinding({ confidence: "possible" }), severity: "medium", blocking: false, uncertaintyCode: null },
     );
 
     expect(result.ok).toBe(false);

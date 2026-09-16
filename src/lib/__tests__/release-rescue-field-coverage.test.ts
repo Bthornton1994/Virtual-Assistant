@@ -37,7 +37,7 @@ const REAL_REPORTS = [
       findings: [makeFinding()],
       assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
         outcome: "fail",
-        rationale: "Order lookup returns records the caller does not own.",
+        rationaleCode: "controls_present_and_evidenced",
       }),
     }),
   ),
@@ -100,66 +100,84 @@ describe("an unclassified field is a hard failure, not a pass", () => {
   });
 });
 
-describe("the gap the audit actually found", () => {
+describe("the gap the audit actually found, and what replaced it", () => {
+  // The audit's finding was that `scope.application.description` — customer-written,
+  // rendered verbatim in the report header — was outside the claim guard's
+  // hand-written allowlist. The first fix classified it as `guarded` and pointed
+  // the guard at it.
+  //
+  // Option 1 removed the field instead. The scope the report carries now holds
+  // booleans and a count; there is no application description, no workflow
+  // description, and no customer exclusion prose to guard. So the honest
+  // assertion changed shape: these tests no longer prove the guard catches a
+  // claim in that field, because nothing reaches that field. They prove the
+  // field cannot be reintroduced by a caller without breaking.
   const CLAIMS = [
     "A bookkeeping app. After this review your application is secure.",
     "A checkout flow, now vulnerability free.",
     "Our SOC 2 certified payments service.",
   ];
 
+  it("no longer has the field the audit found, in the schema or in the policy", () => {
+    const schemaPaths = enumerateSchemaStringPaths(releaseRescueReportV1Schema);
+    const gone = [
+      "$.scope.application.description",
+      "$.scope.application.name",
+      "$.scope.application.primaryStack",
+      "$.scope.criticalWorkflow.name",
+      "$.scope.criticalWorkflow.description",
+      "$.scope.criticalWorkflow.entryPoint",
+      "$.scope.customerExclusions[]",
+    ];
+
+    for (const path of gone) {
+      expect(schemaPaths, path).not.toContain(path);
+      expect(Object.keys(REPORT_FIELD_POLICY), path).not.toContain(path);
+    }
+  });
+
   for (const claim of CLAIMS) {
-    it(`catches a prohibited claim in scope.application.description: "${claim.slice(0, 40)}"`, () => {
+    it(`refuses a reintroduced application description outright: "${claim.slice(0, 40)}"`, () => {
       const report = {
         ...SAMPLE_REPORT,
         scope: { ...SAMPLE_REPORT.scope, application: { ...SAMPLE_REPORT.scope.application, description: claim } },
       };
       const failures = checkReportFieldCoverage(report);
+      const reason = failures.find((failure) => failure.path === "$.scope.application.description")?.reason ?? "";
 
-      expect(failures.map((failure) => failure.path)).toContain("$.scope.application.description");
+      // Asserted on the REASON, not just the path. The weaker assertion passes
+      // for either mechanism, which would hide the fact that the claim guard is
+      // no longer what stops this — the missing classification is.
+      expect(reason).toContain("No field-coverage decision is recorded");
       expect(validateReleaseRescueReport(report).hardGatePass).toBe(false);
     });
   }
 
-  it("catches one in the other fields the allowlist missed", () => {
-    const cases: Array<[string, unknown]> = [
-      [
-        "$.scope.customerExclusions[0]",
-        { ...SAMPLE_REPORT, scope: { ...SAMPLE_REPORT.scope, customerExclusions: ["The admin console, which is secure."] } },
-      ],
-      [
-        "$.scope.criticalWorkflow.description",
-        {
-          ...SAMPLE_REPORT,
-          scope: {
-            ...SAMPLE_REPORT.scope,
-            criticalWorkflow: { ...SAMPLE_REPORT.scope.criticalWorkflow, description: "Checkout. It is secure." },
-          },
-        },
-      ],
-      [
-        "$.scope.application.name",
-        {
-          ...SAMPLE_REPORT,
-          scope: { ...SAMPLE_REPORT.scope, application: { ...SAMPLE_REPORT.scope.application, name: "Pentest Pro" } },
-        },
-      ],
-    ];
+  it("still catches a prohibited claim in the free text that remains", () => {
+    // Two guarded strings survive Option 1 that a human writes: the reviewer's
+    // display name and the repository reference the customer gave at intake.
+    // The guard's job is smaller now, and it is not gone.
+    for (const claim of CLAIMS) {
+      const report = {
+        ...SAMPLE_REPORT,
+        reviewedBy: { ...SAMPLE_REPORT.reviewedBy, displayName: claim },
+      };
+      const reasons = checkReportFieldCoverage(report).map((failure) => failure.reason).join(" ");
 
-    for (const [path, report] of cases) {
-      const paths = checkReportFieldCoverage(report).map((failure) => failure.path);
-      expect(paths, path).toContain(path);
+      expect(reasons, claim).toContain("prohibited claim");
     }
   });
 
   it("catches a credential in a guarded field as well as a claim", () => {
+    // The last class of value taken from the customer's repository that still
+    // reaches a report is a path. It is bounded and grammar-checked, and it is
+    // still checked here, because "the schema would not allow it" is a claim
+    // about today's schema rather than a property of the contract.
     const report = {
       ...SAMPLE_REPORT,
-      scope: {
-        ...SAMPLE_REPORT.scope,
-        application: {
-          ...SAMPLE_REPORT.scope.application,
-          description: "A bookkeeping app. Config: DB_PASSWORD_PROD=hunter2hunter2hunter2",
-        },
+      reviewedBy: {
+        ...SAMPLE_REPORT.reviewedBy,
+        displayName: "Config: DB_PASSWORD_PROD=hunter2hunter2hunter2",
       },
     };
 
