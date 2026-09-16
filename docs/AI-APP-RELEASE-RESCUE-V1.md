@@ -259,15 +259,36 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 661 Release Rescue tests across 30 suites (1,337 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 667 Release Rescue tests across 30 suites (1,343 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
 The database figure counts labelled `PASS <outcome> |` lines only. An earlier pass reported 306 by counting each proof's closing "every case above printed PASS" banner as a case — a stale count is a false claim, and so is a miscounted one.
 
-That banner has now been miscounted **twice**. A later pass published 387 by the same `grep -c "PASS "`, which also inflated every per-proof figure by one; an audit caught it, and the numbers above are counted by the convention this paragraph states. Writing the convention down did not stop it being broken, because the convention lived here and the counting happened in a shell one-liner. The figures are re-measured per proof rather than totalled from memory, and the per-proof list is in the v12 section so a future total can be checked against its parts.
+That banner has now been miscounted **twice**. A later pass published 387 by the same `grep -c "PASS "`, which also inflated every per-proof figure by one; an audit caught it, and the numbers above are counted by the convention this paragraph states. Writing the convention down did not stop it being broken, because the convention lived here and the counting happened in a shell one-liner. The figures are re-measured per proof rather than totalled from memory. A previous
+revision said the per-proof list "is in the v12 section"; it was not — that section
+lists three of the thirteen proofs, so the total could not in fact be checked
+against its parts, and that is how a stale per-proof figure survived. The complete
+list is here:
 
-Three of the six Playwright specs need live preview credentials (`E2E_PASSWORD`) and a deployed preview, neither of which this environment has or should have. They are not run here, and the 16 above does not include them.
+| Proof | Cases |
+| --- | --- |
+| `release_rescue_v1_isolation_proof.sql` | 45 |
+| `release_rescue_hardening_v1_proof.sql` | 25 |
+| `release_rescue_hardening_v2_proof.sql` | 17 |
+| `release_rescue_hardening_v3_proof.sql` | 14 |
+| `release_rescue_lifecycle_v4_proof.sql` | 41 |
+| `release_rescue_trust_boundary_v5_proof.sql` | 45 |
+| `release_rescue_timestamp_authority_v6_proof.sql` | 29 |
+| `release_rescue_destructive_authority_v7_proof.sql` | 41 |
+| `release_rescue_excerpt_removal_v8_proof.sql` | 20 |
+| `release_rescue_path_shape_v9_proof.sql` | 25 |
+| `release_rescue_structured_observations_v10_proof.sql` | 30 |
+| `release_rescue_code_fields_v11_proof.sql` | 29 |
+| `release_rescue_identifier_shape_v12_proof.sql` | 17 |
+| **Total** | **378** |
+
+Three of the six Playwright specs need live preview credentials (`E2E_PASSWORD`) and a deployed preview, neither of which this environment has or should have. They are not run here, and the 13 above does not include them.
 
 > **Read *The structured-observation decision* before treating any of this as shippable.**
 > Thirteen independent audits have run and all thirteen returned DO_NOT_MERGE.
@@ -1661,7 +1682,7 @@ credentials, and nothing in this document should be read as saying they are.
 
 ### Proof
 
-`supabase/qa/release_rescue_excerpt_removal_v8_proof.sql` — **18 live PostgreSQL
+`supabase/qa/release_rescue_excerpt_removal_v8_proof.sql` — **20 live PostgreSQL
 cases**: every forbidden field name refused in a location, a finding-level field
 refused, the refusal carrying the field name and none of the planted content, a
 well-formed report accepted with path, line range, check id, severity, observation
@@ -2258,19 +2279,70 @@ declared as the union of the three schemas that already govern those fields so i
 can never be stricter than the product. No spaces, no control characters, no
 URL, not absolute, no parent traversal, bounded. The claim guard does not read it.
 
-**What that gives up, stated rather than argued away.** An executor could write
-`src/this-app-is-secure.ts` as a finding location and the grammar would not
-object. Four things stand between that and a customer reading it as a claim, and
-none of them is the claim guard: the grammar itself; the credential scanner,
-which still runs on every guarded field; the fact that every customer-facing
-sentence is resolved from the frozen observation catalog and is never written by
-a caller; and the named human reviewer who must sign before delivery. A test
-asserts this residual in both directions so it cannot drift.
+**The grammar is DERIVED from the schema, not restated.** The first version
+restated the character class by hand, ASCII-only and without `$ , & ! ' { } # %`.
+It refused thirteen of a forty-path corpus — every Remix and React Router v7
+dynamic route (`app/routes/users.$userId.edit.tsx`) and every non-ASCII filename
+(`src/日本語/page.tsx`, `src/café/resumé.ts`) — and **both of those classes were
+false refusals an earlier audit had already found and fixed in the schema
+itself**. Restating a rule reintroduces the bugs its source has already fixed.
+The test for this executes all three schemas over a corpus and requires that
+whatever a schema accepts, the boundary accepts; the previous version asserted
+the union in a comment and never called `safeParse` once.
+
+**What that gives up, measured rather than illustrated.** The residual is not one
+example. It is **every one of the 24 prohibited claims**, across all five
+path-valued fields, and dropping the claim guard from those fields took its
+coverage of the delivered artifact from six fields to **one**
+(`$.reviewedBy.displayName`). A test asserts the count, so the size of the
+concession is a number rather than an adjective.
+
+Two of those five fields — `repositoryRef` and `defaultBranch` — are
+**customer-supplied at intake** and rendered in the report header as given. The
+mitigation "every customer-facing sentence is resolved from the frozen catalog
+and is never written by a caller" is true of sentences and **does not cover these
+fields**, which is worth stating because that mitigation was doing load-bearing
+work in an earlier version of this argument.
+
+What does stand between a claim in a path field and a customer reading it as the
+offer's assertion: the grammar itself, which refuses anything with a space or a
+control character; the credential scanner, which still runs on every guarded
+field; and the named human reviewer who must sign before delivery. A test asserts
+the residual in both directions so it cannot drift in either.
 
 **The open question, recorded as one.** The control that would actually settle it
 is checking that a cited path names a real file in the reviewed commit. That
 needs the repository at assembly time, which the pipeline does not have. It is an
-owner-visible gap in the guard's coverage, not something this pass has closed.
+owner-visible gap in the guard's coverage, not something this pass has closed —
+and with `repositoryRef` and `defaultBranch` being customer-supplied, it is a gap
+on customer-controlled values as well as executor-written ones.
+
+### The mode set is the full product of its options, not a chosen subset
+
+`TokenizerMode` is two booleans, so there are four combinations. Three shipped,
+and the missing corner was a live evasion of the one prose field the claim guard
+still reads: `Reviewed by AcmeIs.SecureLtd` was invisible to all three, because
+one added full stop defeats the case rule and the case boundary defeats the
+full-stop rule. One character.
+
+That is the cross-of-axes failure recorded two sections above, one corner over —
+the round that named the lesson tested one of the two crosses. The mode set is
+the complete product now, computed from the options rather than listed, and a
+test requires it to be.
+
+The modes also had **two independent declarations**, one for production and one
+for the test hook, and an audit showed a fourth mode added to either alone passed
+the whole suite. Production derives from the hook's map now, and a test asserts
+the consequence over a corpus rather than trusting the derivation.
+
+**And the property test that guarded all this could not fail.** It ran every
+subset of the modes and required the full union to be a superset of each — a
+set-union identity that holds for any implementation, including one that ignores
+its input entirely; an audit demonstrated exactly that and showed it killed no
+mutant. The replacement is a property that can fail: **every mode must find
+something no other mode finds**. Writing it surfaced a real fact immediately —
+the first set of payloads chosen for it were merely *sufficient* for their mode
+rather than *unique* to it, and the test said so.
 
 **The cost was measured too, and paid down rather than absorbed.** Adding token
 boundaries made `findProhibitedClaims` slower, and one property suite went from

@@ -1,4 +1,5 @@
 import { REPOSITORY_ACCESS_MODES, findProhibitedClaims } from "@/lib/release-rescue-intake";
+import { PATH_SEGMENT_CHARACTERS } from "@/lib/release-rescue-findings";
 import {
   FINDING_CONFIDENCES,
   FINDING_EXPLOITABILITIES,
@@ -518,7 +519,14 @@ const MODULE_SENTENCE: GeneratedFormat = {
  *
  * A sentence cannot satisfy it: no spaces, no control characters, bounded.
  */
-const PATH_CHARACTERS = /^[A-Za-z0-9._+@~()[\]/-]+$/;
+// DERIVED, never restated. The hand-written version of this class was ASCII-only
+// and omitted `$ , & ! ' { } # %`, so it refused `app/routes/users.$userId.edit.tsx`
+// — every Remix and React Router v7 dynamic route — and `src/日本語/page.tsx`,
+// thirteen of a forty-path corpus. Both classes were false refusals an earlier
+// audit had already found and fixed in the schema; restating the class by hand
+// reintroduced them one layer up. A test executes all three schemas over a corpus
+// and requires that anything a schema accepts, this accepts.
+const PATH_CHARACTERS = new RegExp(`^[${PATH_SEGMENT_CHARACTERS}/]+$`, "u");
 const MAX_PATH_VALUE_LENGTH = 400;
 
 /** Why a `valueIsAPath` value is not a path, or null. Never echoes the value. */

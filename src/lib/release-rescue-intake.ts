@@ -666,8 +666,22 @@ const BASELINE_MODE: TokenizerMode = { splitCaseTransitions: false, inWordFullSt
 const CASE_SPLIT_MODE: TokenizerMode = { splitCaseTransitions: true, inWordFullStopSeparates: false };
 const DOTTED_MODE: TokenizerMode = { splitCaseTransitions: false, inWordFullStopSeparates: true };
 
-/** Prose a person wrote: every mode applies. */
-const PROSE_MODES: readonly TokenizerMode[] = [BASELINE_MODE, CASE_SPLIT_MODE, DOTTED_MODE];
+/**
+ * The fourth corner: both rules at once.
+ *
+ * `TokenizerMode` is two booleans, so there are four combinations, and only
+ * three shipped. The missing one was a live evasion of the only prose field
+ * left under the claim guard: `Reviewed by AcmeIs.SecureLtd` is invisible to
+ * `baseline` (no separator), to `caseSplit` (the full stop still ends a
+ * sentence) and to `dotted` (no case boundary). One added full stop defeated
+ * all three. Catching it needs both rules in the same reading.
+ *
+ * The lesson is the shape rather than this corner: a mode set that enumerates
+ * some combinations of its own options is a test corpus composed inside its own
+ * premise, one level up. The set is the full product now, and a test asserts
+ * that it is.
+ */
+const CASE_SPLIT_DOTTED_MODE: TokenizerMode = { splitCaseTransitions: true, inWordFullStopSeparates: true };
 
 function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): ClaimToken[] {
   const tokens: ClaimToken[] = [];
@@ -938,7 +952,9 @@ function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
  * and for what checks it instead.
  */
 /**
- * The tokenizer modes, by name, so a test can exercise the union itself.
+ * The tokenizer modes, by name. The single source for what production reads.
+ *
+ * Exported so a test can exercise the union itself.
  *
  * Exported for one reason: the property "a mode can add a detection and never
  * remove one" was asserted by a test that compared two mode sets where one was
@@ -949,7 +965,19 @@ export const CLAIM_TOKENIZER_MODES = {
   baseline: BASELINE_MODE,
   caseSplit: CASE_SPLIT_MODE,
   dotted: DOTTED_MODE,
+  caseSplitDotted: CASE_SPLIT_DOTTED_MODE,
 } as const;
+
+/**
+ * Prose a person wrote: every mode applies.
+ *
+ * DERIVED from the map above, not listed again. They were two independent
+ * literals, and an audit showed both halves of the drift: adding a mode to
+ * production alone, and adding one to the test hook alone, each passed the
+ * whole suite. The hook exists to let a test see what production computes, and
+ * it could silently stop doing that.
+ */
+const PROSE_MODES: readonly TokenizerMode[] = Object.values(CLAIM_TOKENIZER_MODES);
 
 export type ClaimTokenizerModeName = keyof typeof CLAIM_TOKENIZER_MODES;
 

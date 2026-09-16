@@ -66,8 +66,11 @@ import {
   RELEASE_RESCUE_OFFER,
   findProhibitedClaims,
   findProhibitedClaimsUnderModes,
+  CLAIM_TOKENIZER_MODES,
+  type ClaimTokenizerModeName,
 } from "@/lib/release-rescue-intake";
 import { SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
+import { repositoryRefSchema } from "@/lib/release-rescue-intake";
 import { scanForSecrets } from "@/lib/release-rescue-redaction";
 import { RELEASE_RESCUE_RUBRIC_V1 } from "@/lib/release-rescue-rubric";
 import { RELEASE_VERDICTS } from "@/lib/release-rescue-report";
@@ -1847,33 +1850,137 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   });
 
-  it("records what checking a path by grammar gives up", () => {
-    // The honest other half. A path that IS a claim satisfies the grammar, so
-    // an executor could write one as a finding location and this check would not
-    // object. Recorded as a test rather than as a sentence, so it cannot quietly
-    // stop being true in either direction.
+  it("accepts everything the three schemas accept, by executing them", () => {
+    // The union claim, tested by RUNNING the schemas instead of by asserting it
+    // in a comment.
     //
-    // What stands in the way instead: the grammar (no spaces, no control
-    // characters, bounded), the credential scanner, the fact that every
-    // customer-facing sentence comes from the frozen catalog and is never
-    // written by a caller, and the named human reviewer who signs before
-    // delivery. The check that would settle it — that the path names a real file
-    // in the reviewed commit — needs the repository at assembly time, which the
-    // pipeline does not have.
-    for (const smuggled of [
-      "src/this-app-is-secure.ts",
-      "acme/we-deliver-a-penetration-test",
-      "docs/vulnerability-free.md",
-    ]) {
-      expect(
-        pathValueIsNotAPath(smuggled),
-        `${smuggled}: if the grammar starts refusing this, the documented residual is overstated`,
-      ).toBeNull();
+    // The previous version of this test hand-wrote six strings and never called
+    // `repositoryPathSchema.safeParse` once — a claim about the union of three
+    // schemas, tested without executing any of the three. Meanwhile the grammar
+    // was a hand-restated character class that was ASCII-only and omitted
+    // `$ , & ! ' { } # %`, so it refused 13 of a 40-path corpus, including every
+    // Remix and React Router v7 dynamic route and every non-ASCII filename.
+    // BOTH of those classes were false refusals an earlier audit had already
+    // found and fixed in `repositoryPathSchema` itself — restating the class by
+    // hand reintroduced them one layer up.
+    //
+    // The grammar is derived from `PATH_SEGMENT_CHARACTERS` now, and this is the
+    // property that makes the derivation hold: whatever a schema accepts, the
+    // boundary accepts.
+    const PATHS = [
+      // the dynamic-route spellings
+      "app/routes/users.$userId.edit.tsx",
+      "app/routes/posts.$postId.comments.$commentId.tsx",
+      "pages/[slug]/[...rest].tsx",
+      "app/api/orders/[id]/route.ts",
+      // non-ASCII, which a $299 review of a non-English codebase is full of
+      "src/café/resumé.ts",
+      "src/日本語/page.tsx",
+      "docs/Überblick.md",
+      "src/Ω/index.ts",
+      "src/данные/index.ts",
+      // the punctuation a real repository actually contains
+      "scripts/build&deploy.sh",
+      "data/report,2024.csv",
+      "config/don't-touch.txt",
+      "src/{shared}/index.ts",
+      "docs/100%-coverage.md",
+      "src/a#b.ts",
+      "src/hello!.ts",
+      "vendor/lib~1.2.3/index.js",
+      "docs/RFC-0001+draft.md",
+      "src/(marketing)/page.tsx",
+      "node_modules/@acme/is-secure/index.js",
+      // and the claim-word spellings the previous rounds were about
+      "src/utils/isSecure.ts",
+      "internal/net/is_secure.go",
+      "tests/test_is_secure.py",
+      "docs/pentest.md",
+    ];
+
+    const wronglyRefused: string[] = [];
+    let checked = 0;
+    for (const path of PATHS) {
+      if (!repositoryPathSchema.safeParse(path).success) continue;
+      checked += 1;
+      const wrong = pathValueIsNotAPath(path);
+      if (wrong) wronglyRefused.push(`${path} — ${wrong}`);
     }
 
-    // But it is still prose to the claim guard, which is what keeps the
-    // distinction a decision about FIELDS rather than about strings.
-    expect(findProhibitedClaims("src/this-app-is-secure.ts")).not.toEqual([]);
+    expect(checked, "no path was accepted by the schema, so this proves nothing").toBeGreaterThan(20);
+    expect(wronglyRefused, `${wronglyRefused.length} paths the schema accepts, the boundary refuses`).toEqual([]);
+
+    // The other two schemas, executed the same way.
+    for (const ref of ["harbor-labs/harbor-ledger", "acme/checkout-app", "acme/is-secure", "a.b/c.d"]) {
+      if (!repositoryRefSchema.safeParse(ref).success) continue;
+      expect(pathValueIsNotAPath(ref), `${ref} is a legal repositoryRef`).toBeNull();
+    }
+    for (const branch of ["main", "release/v2.1", "feature/fix-login", "fix/pen-test-findings", "dependabot/npm_and_yarn/lib-1.2.3"]) {
+      expect(pathValueIsNotAPath(branch), `${branch} is a legal branch name`).toBeNull();
+    }
+
+    // The length axis, which no corpus entry reaches. A mutation run showed the
+    // cap could be lowered from 400 to 60 without a single test noticing.
+    // Built from legal SEGMENTS: the schema caps a segment at 255, so a single
+    // 380-character segment was never legal and asserting on it proved nothing.
+    const long = `src/${"a".repeat(200)}/${"b".repeat(180)}.ts`;
+    expect(long.length).toBeGreaterThan(380);
+    expect(repositoryPathSchema.safeParse(long).success, "the schema accepts it").toBe(true);
+    expect(pathValueIsNotAPath(long), "so the boundary must too").toBeNull();
+  });
+
+  it("refuses what a path is not", () => {
+    const NOT_PATHS: ReadonlyArray<readonly [string, string]> = [
+      ["This app is secure and free of vulnerabilities.", "space"],
+      ["config app.env holds the value Xk92mQvn7Lz on line 14", "a sentence with a credential"],
+      ["src/a.ts\nconst password = 'x';", "control character"],
+      ["https://evil.example.com/x", "URL"],
+      ["/etc/passwd", "absolute"],
+      ["../../secrets/.env", "parent-traversal"],
+      ["", "empty"],
+      ["a".repeat(401), "over the cap"],
+    ];
+    for (const [value, why] of NOT_PATHS) {
+      expect(pathValueIsNotAPath(value), `a ${why} must be refused`).not.toBeNull();
+    }
+  });
+
+  it("measures the whole residual of not claim-guarding a path, rather than illustrating it", () => {
+    // The doc used to state this residual as ONE example. An audit measured it
+    // and it is every prohibited claim, across all five path-valued fields:
+    // dropping the claim guard from those fields took its coverage of the
+    // delivered artifact from six fields to one.
+    //
+    // Measured here, as a count, so the size of the concession is a number in
+    // the test output rather than an adjective in a comment.
+    const pathTyped = Object.entries(REPORT_FIELD_POLICY)
+      .filter(([, rule]) => rule.valueIsAPath)
+      .map(([path]) => path);
+    const guarded = Object.entries(REPORT_FIELD_POLICY)
+      .filter(([, rule]) => rule.disposition === "guarded")
+      .map(([path]) => path);
+
+    expect(pathTyped.length).toBe(5);
+    expect(guarded.length).toBe(6);
+    // One prose field is left for the claim guard to read. Stated as a number so
+    // a later change that quietly adds a sixth path field fails here.
+    expect(guarded.filter((path) => !pathTyped.includes(path))).toEqual(["$.reviewedBy.displayName"]);
+
+    // Every prohibited claim, written the way a path would carry it, is accepted
+    // by the grammar. This is the concession in full.
+    const accepted: string[] = [];
+    for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
+      const asPath = `docs/${claim.replace(/\s+/g, "-")}.md`;
+      if (pathValueIsNotAPath(asPath) === null) accepted.push(asPath);
+    }
+    expect(
+      accepted.length,
+      "if the grammar has started refusing some of these, the documented residual is overstated",
+    ).toBe(RELEASE_RESCUE_OFFER.prohibitedClaims.length);
+
+    // And they ARE claims to the guard, which is what makes this a decision
+    // about fields rather than about strings.
+    expect(findProhibitedClaims("docs/this-app-is-secure.md")).not.toEqual([]);
   });
 
   it("still delivers a report about a repository containing an isSecure helper", () => {
@@ -1934,62 +2041,172 @@ describe("9. a code field holds a code, and nothing else, on the production path
     ).toContain("certified secure");
   });
 
-  it("lets a tokenizer mode add a detection and never remove one", () => {
-    // The structural property, over the REAL modes.
+  it("ships every combination of the tokenizer options, not a chosen subset", () => {
+    // `TokenizerMode` is two booleans, so there are four combinations. Three
+    // shipped, and the missing corner was a live evasion of the only prose
+    // field the claim guard still reads: `Reviewed by AcmeIs.SecureLtd` was
+    // invisible to all three, because one added full stop defeats the case rule
+    // and the case boundary defeats the full-stop rule.
     //
-    // An earlier version of this test compared the prose reading against the
-    // path reading and asserted the first contained the second. That was true
-    // by construction — one mode set was a subset of the other — so it could not
-    // fail, and an audit said so. This drives the union machinery directly:
-    // for every subset of the modes, the full union must be a superset.
-    const NAMES = ["baseline", "caseSplit", "dotted"] as const;
-    const SUBSETS: ReadonlyArray<ReadonlyArray<(typeof NAMES)[number]>> = [
-      [],
-      ["baseline"],
-      ["caseSplit"],
-      ["dotted"],
-      ["baseline", "caseSplit"],
-      ["baseline", "dotted"],
-      ["caseSplit", "dotted"],
-      ["baseline", "caseSplit", "dotted"],
+    // A mode set that enumerates SOME combinations of its own options is a
+    // corpus composed inside its own premise, one level up. So the set is
+    // required to be the complete product, computed here rather than counted by
+    // hand — adding a third option without adding its combinations fails this.
+    const modes = Object.values(CLAIM_TOKENIZER_MODES);
+    const optionNames = [...new Set(modes.flatMap((mode) => Object.keys(mode)))].sort();
+
+    expect(modes.length, "the mode set must be the full product of its options").toBe(
+      2 ** optionNames.length,
+    );
+
+    const seen = new Set(modes.map((mode) => optionNames.map((name) => String(mode[name as keyof typeof mode])).join("/")));
+    expect(seen.size, "two modes are the same combination").toBe(modes.length);
+  });
+
+  it("gives every tokenizer mode something only it can catch", () => {
+    // This replaces a test that could not fail, twice over.
+    //
+    // The first version compared the prose reading with the path reading and
+    // asserted the first contained the second — true by construction, one mode
+    // set being a subset of the other. The second version ran every SUBSET of
+    // the modes and asserted the full union was a superset of each. An audit
+    // showed that is a set-union identity: it holds for any implementation of
+    // `claimsUnderMode`, including one that ignores its input entirely, and it
+    // killed no mutant.
+    //
+    // A property that CAN fail: every mode must find something no other mode
+    // finds. Dropping a mode, aliasing one to another, or duplicating a
+    // combination all turn this red — and it is a claim about the modes rather
+    // than about `Set.prototype.add`.
+    const NAMES = Object.keys(CLAIM_TOKENIZER_MODES) as ClaimTokenizerModeName[];
+
+    // One payload per mode, each chosen so ONLY that mode's reading finds it.
+    // Each payload needs its own mode's rule to HELP and the other rules to
+    // HURT, which is what makes the mode irreplaceable rather than merely
+    // sufficient. The first attempt at this list used payloads that were only
+    // sufficient — `"Reviewed by ThisAppIsSecure Ltd"` is caught by `caseSplit`
+    // AND by `caseSplitDotted` — and the test said so, which is the test doing
+    // its job.
+    const ONLY: ReadonlyArray<readonly [ClaimTokenizerModeName, string]> = [
+      // The word must stay whole (`secUre`) AND the full stop must end a
+      // sentence, so the denial cannot reach the claim.
+      ["baseline", "This is not a penetration test.Your application is secUre"],
+      // The case boundary must fire AND the full stop must end a sentence, so
+      // the denial before it cannot license the claim after it.
+      ["caseSplit", "Not a penetration test.ThisAppIsSecure"],
+      // The full stops must separate AND the word must stay whole (`secUre`).
+      ["dotted", "acme.is.secUre"],
+      // Both rules at once: a case boundary across an in-word full stop.
+      ["caseSplitDotted", "Reviewed by AcmeIs.SecureLtd"],
     ];
 
+    expect(ONLY.map(([name]) => name).sort()).toEqual([...NAMES].sort());
+
+    for (const [name, payload] of ONLY) {
+      expect(
+        findProhibitedClaimsUnderModes(payload, [name]),
+        `${name} must catch its own payload`,
+      ).not.toEqual([]);
+
+      const others = NAMES.filter((other) => other !== name);
+      expect(
+        findProhibitedClaimsUnderModes(payload, others),
+        `${name} is redundant: [${others.join(",")}] also catch "${payload}"`,
+      ).toEqual([]);
+
+      // And production, which is the union, must catch it.
+      expect(findProhibitedClaims(payload), `production must catch: ${payload}`).not.toEqual([]);
+    }
+  });
+
+  it("pins the claim-stem cache to the data that makes it safe", () => {
+    // N6 from audit 21. The per-mode cache is keyed by mode, and today every
+    // mode tokenises the claim LIST identically — because no prohibited claim
+    // contains an uppercase letter or a full stop, so neither mode rule fires
+    // on any of them. A deliberately collided cache key therefore survives the
+    // whole suite: the keying is correct but nothing depends on it.
+    //
+    // That is fine until a claim like `SOC 2.0 certified` is added, at which
+    // point key correctness becomes load-bearing with no test covering it. So
+    // the assertion is pinned to the DATA rather than to the shape: if a claim
+    // ever gains a capital or a full stop, this fails and points at the cache.
+    const withCapital = RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => /[A-Z]/.test(claim));
+    const withFullStop = RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => /\w\.\w/.test(claim));
+
+    expect(
+      [...withCapital, ...withFullStop],
+      "a prohibited claim now contains a capital or an in-word full stop, so the per-mode claim-stem cache is load-bearing and needs a test that the modes tokenise it differently",
+    ).toEqual([]);
+
+    // And the consequence that makes the cache safe today, asserted rather than
+    // reasoned: every mode finds the same claims in a claim.
+    const NAMES = Object.keys(CLAIM_TOKENIZER_MODES) as ClaimTokenizerModeName[];
+    for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
+      for (const name of NAMES) {
+        expect(findProhibitedClaimsUnderModes(claim, [name]), `${name} on "${claim}"`).toContain(claim);
+      }
+    }
+  });
+
+  it("records the intra-word evasions the claim guard cannot see", () => {
+    // N7 from audit 21, recorded because a much narrower residual was already
+    // written down and this one was not. Exact stem matching cannot close this
+    // class: every one of these is a different token to the matcher, and a rule
+    // that normalised them away would collapse legitimate words too.
+    //
+    // The surface is one field — `reviewedBy.displayName` — which an operator
+    // controls and a named human reviewer signs off. That bounds it; it does
+    // not close it.
+    const EVASIONS = [
+      `is\u200bsecure`,
+      `sec\u00adure`,
+      "sec'ure",
+      "sec-ure",
+      "secuure",
+      "is secu re",
+    ];
+
+    const uncaught = EVASIONS.filter((text) => findProhibitedClaims(`this application ${text}`).length === 0);
+    expect(
+      uncaught.length,
+      "if the guard has started catching some of these, this recorded residual is overstated and should be narrowed",
+    ).toBeGreaterThan(0);
+
+    // The plain spelling is caught, so this test is about the mutations and not
+    // about the matcher being broken.
+    expect(findProhibitedClaims("this application is secure")).not.toEqual([]);
+  });
+
+  it("keeps the test hook and production reading the same modes", () => {
+    // Audit 21: `PROSE_MODES` and `CLAIM_TOKENIZER_MODES` were two independent
+    // literals, and BOTH halves of the drift survived the suite — a fourth mode
+    // added to production alone, and one added to the hook alone. The hook
+    // exists so a test can see what production computes; it could silently stop
+    // doing that.
+    //
+    // `PROSE_MODES` is derived from the map now. This asserts the consequence
+    // over a corpus rather than trusting the derivation, because the derivation
+    // is exactly the sort of thing a later edit undoes.
+    const ALL = Object.keys(CLAIM_TOKENIZER_MODES) as ClaimTokenizerModeName[];
     const CORPUS = [
       "This app is secure and free of vulnerabilities.",
       "ThisAppIsSecure",
       "this.app.is.secure.and.free.of.vulnerabilities",
-      "we deliver a penetration teSt",
+      "Reviewed by AcmeIs.SecureLtd",
       "This is not a penetration test.Your application is secUre",
-      "src/utils/isSecure.ts",
-      "acme/we-deliver-a-penetration-test",
+      "we deliver a penetration teSt",
       "Ops Manager",
       "",
-      "grok-4.6",
       ...RELEASE_RESCUE_OFFER.prohibitedClaims,
       ...STANDING_DISCLAIMERS,
     ];
 
-    let checked = 0;
     for (const text of CORPUS) {
-      const all = findProhibitedClaimsUnderModes(text, NAMES);
-      expect(all, `"${text}": the named full set must equal what production computes`).toEqual(
-        findProhibitedClaims(text),
-      );
-
-      for (const subset of SUBSETS) {
-        checked += 1;
-        for (const claim of findProhibitedClaimsUnderModes(text, subset)) {
-          expect(all, `"${text}": [${subset.join(",")}] found ${claim} and the full union did not`).toContain(claim);
-        }
-      }
-
-      // And the result is ordered by the offer's list, not by which mode spoke
-      // first. Asserted against a DIFFERENT mode order, so Set insertion order
-      // and offer order cannot look the same by accident.
-      expect(findProhibitedClaimsUnderModes(text, ["dotted", "caseSplit", "baseline"])).toEqual(all);
+      expect(
+        findProhibitedClaimsUnderModes(text, ALL),
+        `"${text}": the hook's full set must equal what production computes`,
+      ).toEqual(findProhibitedClaims(text));
     }
-
-    expect(checked).toBeGreaterThan(200);
   });
 
   it("needs the baseline mode: the other two together miss a real claim", () => {
@@ -2016,8 +2233,8 @@ describe("9. a code field holds a code, and nothing else, on the production path
     for (const text of CROSS) {
       expect(findProhibitedClaims(text), `production must catch: ${text}`).not.toEqual([]);
       expect(
-        findProhibitedClaimsUnderModes(text, ["caseSplit", "dotted"]),
-        `${text}: if these two now catch it, dropping baseline really would be equivalent — and this comment is wrong`,
+        findProhibitedClaimsUnderModes(text, ["caseSplit", "dotted", "caseSplitDotted"]),
+        `${text}: if the non-baseline modes now catch it, dropping baseline really would be equivalent — and this comment is wrong`,
       ).toEqual([]);
       expect(
         findProhibitedClaimsUnderModes(text, ["baseline"]),

@@ -88,7 +88,20 @@ export type {
  * file name with a space is rarer than that attack, and an auditor whose
  * customer has one cites the directory instead.
  */
-const PATH_SEGMENT = "[\\p{L}\\p{N}._@+~()\\[\\]$,&!'{}#%-]+";
+/**
+ * The characters a path segment may hold, as a character CLASS.
+ *
+ * Exported because the field-coverage policy re-asserts the path grammar at the
+ * artifact boundary and must not invent its own. It restated this class by hand
+ * once: ASCII-only, without `$ , & ! \' { } # %`, which refused every Remix and
+ * React Router v7 dynamic route and every non-ASCII filename — thirteen of a
+ * forty-path corpus, and two classes an earlier audit had already fixed HERE.
+ * A boundary check stricter than the schema refuses reports the product
+ * considers correct. Deriving it is the only way that cannot drift.
+ */
+export const PATH_SEGMENT_CHARACTERS = "\\p{L}\\p{N}._@+~()\\[\\]$,&!'{}#%-";
+
+const PATH_SEGMENT = `[${PATH_SEGMENT_CHARACTERS}]+`;
 export const REPOSITORY_PATH_PATTERN = new RegExp(`^${PATH_SEGMENT}(/${PATH_SEGMENT})*$`, "u");
 
 /** No segment of a real repository path is longer than this. */
