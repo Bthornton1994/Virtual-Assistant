@@ -67,55 +67,87 @@ import {
  */
 export const MAX_SCAN_LENGTH = 64_000;
 
-/** Values that match an assignment shape but are not secrets. */
+/**
+ * Values that match an assignment shape but cannot be a literal secret.
+ *
+ * Every entry here is a SUPPRESSION, and a suppression is now recorded rather
+ * than silent (see `pushSpan`). That changes what belongs in this list: an entry
+ * is admissible only if it describes a value's STRUCTURE — a variable reference,
+ * a placeholder convention, a call — and not if it is a guess about whether a
+ * particular string looks secret.
+ *
+ * Audit 9 built a real credential for eight of the previous entries. Each of
+ * those is tightened or gone, and `release-rescue-audit9-properties.test.ts`
+ * generates a corpus that asserts the property directly: no real credential may
+ * be suppressed behind a credential-named key.
+ */
 const NON_SECRET_VALUE_PATTERNS: readonly RegExp[] = [
   /^process\.env\./i,
   /^import\.meta\.env\./i,
   /^Deno\.env\./i,
   /^os\.environ/i,
-  /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/,
+  // A shell variable. BRACED, or bare with an environment-style ALL-CAPS name.
+  // The old pattern allowed any bare name, so `$ecretPass` — `$` plus a
+  // perfectly ordinary password — was dropped in silence.
+  //
+  // The closing brace is optional because `}` terminates the value run, so the
+  // scanner never sees it. Requiring it broke `${DB_PASSWORD}` outright, which
+  // the structural-references test caught immediately.
+  /^\$\{[A-Za-z_][A-Za-z0-9_]*\}?$/,
+  // The bare form must carry an underscore, which is the environment-variable
+  // convention. Without that, `$AKIAIOSFODNN7EXAMPLE` — an AWS key id somebody
+  // prefixed — read as a shell variable.
+  /^\$[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/,
   /^%[A-Za-z_][A-Za-z0-9_]*%$/,
-  /^<[^>]*>$/,
+  // An angle-bracket placeholder, whose contents must themselves look like a
+  // placeholder. `<M3g@Secret>` is a password somebody wrapped in brackets.
+  /^<[a-z][a-z0-9_ -]*>$/i,
   /^\[REDACTED/i,
   /^(?:null|undefined|none|nil|true|false)$/i,
-  /^[*x•.\-_]+$/i,
-  // A placeholder is lowercase words all the way through. Requiring only the
-  // PREFIX made `AWS_SECRET_ACCESS_KEY="a-Kx92mQvn7LzPr0dQQ"` a placeholder,
-  // which is a real key that happens to start with "a-".
-  /^(?:your|my|the|a|an)[-_][a-z][a-z-]*$/i,
-  /^(?:changeme|change_me|placeholder|example|sample|dummy|fake|test|todo|tbd|none|empty|unset|xxx+)$/i,
-  /^(?:secret|password|passwd|token|apikey|api_key|key|value|string|text)$/i,
-  // No numeric allowlist. `PIN=4821` is a credential, and a genuinely
-  // uninteresting number like `saltRounds = 10` is already below the minimum
-  // value length below.
-  // A flag is the next argument, not this one's value: `--password --verbose`.
-  /^-/,
-  // A CODE REFERENCE rooted at a known object. `export const sessionSecret =
-  // config.sessionSecret;` assigns one name to another, and redacting the
-  // right-hand side destroys a finding's evidence for nothing.
+  // Masking runs, in ONE case. The old pattern carried `i`, so `xXxXxXxXxX` —
+  // an alternating-case password — was a row of asterisks as far as it was
+  // concerned.
+  /^[*•.\-_]+$/,
+  /^x+$/,
+  /^X+$/,
+  // A placeholder phrase, which has to END like one. Requiring only the prefix
+  // made `my-super-horse-staple` — a hyphenated diceware passphrase — a
+  // placeholder, and `AWS_SECRET_ACCESS_KEY="a-Kx92mQvn7LzPr0dQQ"` before that.
+  /^(?:your|my|the|a|an)[-_][a-z][a-z-]*[-_](?:here|value|goes|placeholder|name|key|secret|password|token)$/i,
+  /^(?:changeme|change_me|placeholder|example|sample|dummy|fake|todo|tbd|none|empty|unset|xxx+)$/i,
+  // NO literal-word list. `password`, `secret`, `token`, `key` and `test` were
+  // here, and they are among the most common real passwords there are:
+  // `DB_PASSWORD=password` and `JWT_SECRET=secret` were dropped in silence. A
+  // credential whose value is the word "password" is a finding, not a placeholder.
   //
-  // The root is required. The first version matched ANY dotted lowercase path,
-  // which is also exactly how a diceware passphrase is written:
-  // `PASSPHRASE=correct.horse.battery.staple` was dropped in silence. Its defence
-  // in the docs checked `admin.password123` — the one shape that contains digits
-  // — and skipped the shape that does not.
-  /^(?:config|configs|cfg|settings|options|opts|props|params|env|environment|process|globalThis|window|self|this|ctx|context|app|client|server|db|store|state|constants|secrets|vault)\.[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/,
+  // No numeric allowlist either. `PIN=4821` is a credential, and a genuinely
+  // uninteresting number like `saltRounds = 10` is below the minimum value length.
+  //
+  // A command FLAG is the next argument, not this one's value:
+  // `--password --verbose`. Lowercase words only — the old bare `/^-/` matched
+  // `-Xk92mQvn7Lz`, and roughly one base64url secret in sixty-four starts with a
+  // hyphen.
+  // Long flags only. A single leading hyphen matched `-hunter2hunter`, and
+  // roughly one base64url secret in sixty-four begins with one.
+  /^--[a-z][a-z0-9-]*$/,
+  // A CODE REFERENCE rooted at a known object, at most three segments deep.
+  // `config.sessionSecret`, `req.headers.token`.
+  //
+  // Both bounds matter. The first version matched any dotted lowercase path,
+  // which is how a diceware passphrase is written; the second kept roots like
+  // `window` and `vault` and no depth bound, so `window.tiger.canvas.rope` was
+  // still dropped. A config path is two or three segments; a passphrase is four
+  // or more.
+  // Two segments: a known root and a member. `config.sessionSecret`.
+  /^(?:process|import|globalThis|config|configs|cfg|settings|options|opts|props|params|environment|constants|req|request|res|response|ctx|context|argv)\.[A-Za-z_$][A-Za-z0-9_$]*$/,
+  // Three segments: the middle one must name a real API surface. Allowing any
+  // three-segment path rooted at a config word let `config.horse.battery` and
+  // `session.horse.battery` through — a hyphen-free diceware passphrase is
+  // exactly that shape, and the generated corpus found 27 of them.
+  /^(?:process|import|globalThis|config|req|request|res|response|ctx|context)\.(?:env|headers|body|query|params|cookies|session|locals|argv|meta|signedCookies)\.[A-Za-z_$][A-Za-z0-9_$]*$/,
   // An OPERATOR standing where the value would be: `token = await
   // refreshToken();` assigns the result of a call, not a literal.
-  //
-  // Only words that cannot themselves be a password. `default`, `case`, `self`,
-  // `this` and `void` were in the first version and are gone: `DB_PASSWORD=default`
-  // is a real and common credential, and this list silently dropped it.
   /^(?:await|typeof|require|function|async|return|yield|delete|throw|instanceof)$/,
-  // A CALL EXPRESSION. `const authHeader = request.headers.get("authorization")`
-  // is the most common line in an AI application's auth middleware — the exact
-  // code this product is sold to review — and `auth header` is a credential
-  // phrase, so the whole call was redacted at `credential_evidence`, mangling the
-  // line into invalid syntax and making the report undeliverable by anyone.
-  //
-  // Structural, not a guess: an identifier followed by `(` is a call, and a call
-  // is not a literal.
-  /^[A-Za-z_$][A-Za-z0-9_$.]*\($/,
 ];
 
 /** The shortest run of characters worth treating as a credential. */
@@ -239,17 +271,42 @@ function skipSpaces(text: string, from: number, stopAtNewline = true): number {
  * blank, not a document fence. Anything shaped like the next record is the next
  * record.
  */
-function isContinuationLine(line: string): boolean {
+/** How far the line containing `offset` is indented. */
+function indentOfLineAt(text: string, offset: number): number {
+  const lineStart = text.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+  let index = lineStart;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
+  return index - lineStart;
+}
+
+function isContinuationLine(line: string, keyIndent: number): boolean {
   const trimmed = line.trim();
   if (trimmed.length === 0) return false;
   if (/^(?:#|\/\/|--|\/\*)/.test(trimmed)) return false;
   if (/^(?:```|---|\.\.\.)/.test(trimmed)) return false;
-  // A key of its own: `API_HOST=…`, `db_host: …`, `- name: …`.
-  if (/^[-*]?\s*"?[A-Za-z_$][A-Za-z0-9_$.\- ]*"?\s*[:=]/.test(trimmed)) return false;
-  return true;
+
+  // A QUOTED line is a value. `"postgres:Xk92mQvn7Lz"` on its own line is what
+  // `JSON.stringify(x, null, 2)` writes for a long value, and the previous
+  // version rejected it because it contains a colon — giving up the highest-value
+  // class there is, credentials with embedded userinfo.
+  if (/^["'`]/.test(trimmed)) return true;
+
+  // Otherwise INDENTATION decides, which is what the format itself uses.
+  //
+  // The previous version looked for an assignment operator, and that fires on the
+  // VALUE as readily as on a key: `admin:Xk92mQvn7Lz` is a `user:pass` pair, not
+  // a new record. It also let prose through, so `DB_PASSWORD=` followed by
+  // `Rotate this before launch.` still swallowed the sentence and bricked the
+  // report at `credential_evidence`.
+  //
+  // A continuation is indented further than its key. A sibling record is not.
+  const indent = line.length - line.trimStart().length;
+  return indent > keyIndent;
 }
 
-function valueSpan(text: string, from: number): { start: number; end: number } | null {
+type ValueSpan = { start: number; end: number; call?: boolean };
+
+function valueSpan(text: string, from: number): ValueSpan | null {
   let begin = skipSpaces(text, from);
 
   // The value may sit on the NEXT line.
@@ -269,7 +326,7 @@ function valueSpan(text: string, from: number): { start: number; end: number } |
     if (text.slice(from, lineEnd).trim().length > 0) return null;
     const nextEnd = text.indexOf("\n", lineEnd + 1);
     const nextLine = text.slice(lineEnd + 1, nextEnd === -1 ? text.length : nextEnd);
-    if (!isContinuationLine(nextLine)) return null;
+    if (!isContinuationLine(nextLine, indentOfLineAt(text, from))) return null;
     begin = skipSpaces(text, lineEnd + 1);
   }
   if (begin === -1) return null;
@@ -294,7 +351,7 @@ function valueSpan(text: string, from: number): { start: number; end: number } |
       if (text.slice(begin, lineEnd).replace(/\\\s*$/, "").trim().length > 0) return null;
       const nextEnd = text.indexOf("\n", lineEnd + 1);
       const nextLine = text.slice(lineEnd + 1, nextEnd === -1 ? text.length : nextEnd);
-      if (!isContinuationLine(nextLine)) return null;
+      if (!isContinuationLine(nextLine, indentOfLineAt(text, begin))) return null;
       afterOperator = skipSpaces(text, lineEnd + 1);
     }
     if (afterOperator === -1) return null;
@@ -312,8 +369,40 @@ function valueSpan(text: string, from: number): { start: number; end: number } |
   const limit = Math.min(text.length, begin + MAX_VALUE_LENGTH);
   // `&` and `#` terminate the run so a query-string value cannot swallow the
   // parameters after it: `?api_key=x&sort=name` is two fields, not one value.
-  while (index < limit && !/[\s"'`,;)}\]<>&#]/.test(text[index])) index += 1;
-  return index > begin ? { start: begin, end: index } : null;
+  //
+  // `(` terminates it too, and that is what makes a CALL a call.
+  //
+  // It used to be absent from this set, so the run swallowed the open paren and
+  // a special-cased allowlist pattern was added to recognise the result. That
+  // pattern only matched when the call's first argument was a quoted string,
+  // which is one spelling out of four: `getToken(req)`, `get_password(user)` and
+  // `fetchToken(ctx)` were all still redacted at `credential_evidence` — an
+  // unclearable hold, mangling ordinary middleware into invalid syntax. And
+  // because the run ended at `(`, `DB_PASSWORD=hunter2(` matched the pattern and
+  // was dropped in silence.
+  //
+  // Terminating here fixes both directions: the callee is the value, and the
+  // check below decides what that means.
+  while (index < limit && !/[\s"'`,;()}\]<>&#]/.test(text[index])) index += 1;
+  if (index === begin) return null;
+
+  // An identifier immediately followed by `(` is a call, not a literal.
+  //
+  // Reported as a suppression rather than discarded, because discarding it is
+  // the silent drop this whole round is about: `DB_PASSWORD=hunter2(` and
+  // `const token = getToken(req)` produce the same span, and the difference
+  // between them is context this function does not have. Recording it means a
+  // wrong call means an over-report, not a leak.
+  // A call has arguments and a closing paren on the same line. Requiring that
+  // keeps `getToken(req)` a call while `DB_PASSWORD=Xk92mQvn7Lz(` stays a value:
+  // a trailing open paren alone is not a call, and treating it as one suppressed
+  // a whole column of the generated corpus.
+  const closes = text.indexOf(")", index);
+  const lineEnd = text.indexOf("\n", index);
+  const isCall =
+    text[index] === "(" && closes !== -1 && (lineEnd === -1 || closes < lineEnd);
+
+  return { start: begin, end: index, call: isCall };
 }
 
 /**
@@ -327,7 +416,7 @@ function valueSpan(text: string, from: number): { start: number; end: number } |
 function pushSpan(
   spans: CredentialSpan[],
   text: string,
-  span: { start: number; end: number } | null,
+  span: ValueSpan | null,
   form: CredentialForm,
   options: { syntax?: AssignmentSyntax } = {},
 ): void {
@@ -341,14 +430,29 @@ function pushSpan(
   const tailIsSentence = syntax === "bare_colon" ? tailReadsAsSentence(text, span.end) : false;
   // Sentence punctuation carried by the value itself, which only a clause does.
   const valueEndsSentence = syntax === "bare_colon" && /[.,;!?]$/.test(value.trimEnd());
-  const classification = classifyAssignment(
-    syntax,
-    valueShape(value, isNonSecretValue),
-    tailIsSentence,
-    valueEndsSentence,
-  );
-  if (classification === "sensitive_prose") return;
-
+  // A call expression is suppressed rather than redacted — recorded, visible in
+  // `suppressed`, and left readable.
+  const classification: SecretClassification = span.call
+    ? "sensitive_prose"
+    : classifyAssignment(
+        syntax,
+        valueShape(value, isNonSecretValue),
+        tailIsSentence,
+        valueEndsSentence,
+      );
+  // RECORDED, not dropped.
+  //
+  // This is the structural repair for the defect four consecutive audits kept
+  // finding in a new disguise. `sensitive_prose` used to `return` here, so
+  // "we decided this is not a secret" and "we never looked" were the same
+  // observable state: nothing. Every time a false positive was closed by adding
+  // an allowlist entry, a class of real credentials went silent, and the only
+  // way to discover it was for an auditor to guess the exact value.
+  //
+  // Now the span is always recorded. `sensitive_prose` spans are NOT redacted —
+  // the text stays readable, which is what they are for — but they are reported
+  // as suppressions, so a wrong allowlist entry OVER-REPORTS instead of going
+  // quiet, and a test can assert that no real credential is ever suppressed.
   spans.push({ start: span.start, end: span.end, form, classification });
 }
 
@@ -476,7 +580,13 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
       // than useless, because it looks like something was protected.
       const assigned = valueSpan(scanned, after);
       if (assigned && AUTH_SCHEMES.has(scanned.slice(assigned.start, assigned.end).toLowerCase())) {
-        pushSpan(spans, scanned, valueSpan(scanned, assigned.end), "operator_assignment", { syntax });
+        // The scheme introduces the credential, so the span worth taking is what
+        // follows it — UNLESS nothing follows, in which case the scheme word IS
+        // the value. `DB_PASSWORD=token` and `API_KEY=apikey` are real and
+        // common passwords, and dropping them here was a silent leak the
+        // generated corpus found.
+        const afterScheme = valueSpan(scanned, assigned.end);
+        pushSpan(spans, scanned, afterScheme ?? assigned, "operator_assignment", { syntax });
         continue;
       }
       pushSpan(spans, scanned, assigned, "operator_assignment", { syntax });
@@ -635,12 +745,24 @@ const HEADER_FIELD = /^"?[A-Za-z_][A-Za-z0-9_.()% -]{0,63}"?$/;
  * next line's `created_at` was destroyed as `credential_evidence` — the audit-7
  * defect this guard was written to fix, moved from JavaScript to SQL.
  */
-const CODE_KEYWORD =
-  /\b(?:select|from|where|order|group|having|insert|update|delete|join|values|set|into|import|export|return|const|let|var|function|class|await|async|new|throw)\b/i;
+// The trailing `\s` matters: a statement verb is followed by its operands, while
+// a CSV field is followed by the delimiter. Without it, a header whose first
+// column is literally `from` disabled the form and a real CSV escaped.
+const SQL_STATEMENT_START =
+  /^\s*(?:select|insert|update|delete|with|from|where|order|group|having|join|union|create|alter|drop|values)\s/i;
 
-function fieldLooksLikeCode(field: string): boolean {
-  const trimmed = field.trim();
-  return /\s/.test(trimmed) && CODE_KEYWORD.test(trimmed);
+/**
+ * Whether a LINE is a fragment of a statement rather than a row of data.
+ *
+ * Anchored at the start of the line, which is the distinction the previous
+ * version missed. It tested each field for "contains whitespace and a keyword",
+ * so an ordinary two-word column name — `order date`, `update time`, `new value`
+ * — disabled the form for every row beneath it, and a real CSV carrying a
+ * password escaped unredacted. A SQL statement begins with its verb; a CSV header
+ * begins with a column name.
+ */
+function lineLooksLikeStatement(line: string): boolean {
+  return SQL_STATEMENT_START.test(line);
 }
 
 /**
@@ -658,10 +780,10 @@ function fieldLooksLikeCode(field: string): boolean {
  * a line.
  */
 function looksLikeSourceCode(line: string): boolean {
-  // Braces and arrows only. Bare keywords moved to `fieldLooksLikeCode`, which
-  // tests each FIELD rather than the whole line: this version disabled the form
-  // entirely for a header carrying an ordinary `from` column, so real CSV escaped
-  // unredacted where the previous commit caught it.
+  // Braces and arrows only. SQL statement keywords are handled by
+  // `lineLooksLikeStatement`, anchored at the start of the line — a per-field
+  // keyword test disabled the form for any header with an ordinary two-word
+  // column name (`order date`, `update time`), and real CSV escaped unredacted.
   return /[{}]|=>/.test(line);
 }
 
@@ -744,7 +866,7 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
         // fragment of a statement. Both halves are needed — the name test alone
         // admits `SELECT id`, and the code test alone rejects a `from` column.
         if (!fields.every((field) => HEADER_FIELD.test(field.trim()))) continue;
-        if (fields.some(fieldLooksLikeCode)) continue;
+        if (lineLooksLikeStatement(line)) continue;
         const hits = fields
           .map((field, column) => (keyLooksSecret(field.trim()) ? column : -1))
           .filter((column) => column >= 0);

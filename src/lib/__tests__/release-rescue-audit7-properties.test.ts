@@ -24,6 +24,15 @@ import { makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fix
 
 const SECRET = "Xk92mQvn7LzPr0d";
 
+/** Indents every line, which is what a real nested block does. */
+function indent(block: string, width: number): string {
+  const pad = " ".repeat(width);
+  return block
+    .split("\n")
+    .map((line) => (line.length > 0 ? pad + line : line))
+    .join("\n");
+}
+
 describe("the lexicon, crossed against itself", () => {
   // The property that closes the run-together class instead of listing it.
   // `ACCESSTOKEN` was invisible after `PGPASSWORD` was fixed, because the fix
@@ -93,8 +102,13 @@ describe("two carriers composed, which is where the defects lived", () => {
     },
     { label: "trailing slash comment", wrap: (line) => `${line} // set by the deploy script` },
     { label: "leading comment line", wrap: (line) => `# staging only\n${line}` },
-    { label: "indented", wrap: (line) => `      ${line}` },
-    { label: "inside a block", wrap: (line) => `services:\n  db:\n    ${line}\n` },
+    // Indenting wraps EVERY line, which is what a real nested block does. The
+    // first version indented only the first line, so composing it with an inner
+    // form that carries its own newline produced YAML no writer emits — a key
+    // indented further than its own continuation — and the failure it caused was
+    // in the fixture, not the scanner.
+    { label: "indented", wrap: (line) => indent(line, 6) },
+    { label: "inside a block", wrap: (line) => `services:\n  db:\n${indent(line, 4)}\n` },
     { label: "followed by another key", wrap: (line) => `${line}\nlog_level: debug` },
     { label: "preceded by prose", wrap: (line) => `The deploy config sets this.\n${line}` },
   ];

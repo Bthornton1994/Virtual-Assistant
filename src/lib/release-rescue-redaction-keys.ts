@@ -228,13 +228,53 @@ const REFERENCE_SUFFIXES: ReadonlySet<string> = new Set([
   "mode", "type", "kind", "from", "to", "count", "length", "ttl", "expiry", "format",
 ]);
 
+/**
+ * Qualifiers that make `key` a data-structure key rather than a credential.
+ *
+ * Small and closed on purpose: everything NOT here is treated as a credential,
+ * which is the safe default for this direction.
+ */
+const STRUCTURAL_KEY_QUALIFIERS: ReadonlySet<string> = new Set([
+  "cache", "sort", "partition", "primary", "foreign", "unique", "composite",
+  "index", "map", "object", "record", "row", "group", "shard", "route", "i18n",
+  "translation", "locale", "license", "idempotency", "dedupe", "lookup", "hash",
+  "bucket", "query", "meta", "field", "column", "arrow", "react", "list", "item",
+  // `USER_KEY` is a per-record identifier far more often than a credential.
+  // `USER_SECRET` is not, and the rule below keeps that distinction.
+  // `account` is NOT here: an Azure storage "account key" is a credential, and
+  // `account` is already a credential qualifier in the product above.
+  "user", "tenant", "customer", "id",
+]);
+
 export function keyLooksSecret(key: string): boolean {
   const segments = keyNameSegments(key);
   if (segments.length === 0) return false;
 
   // A reference to a credential is not a credential.
+  //
+  // Unconditional, and the comment on REFERENCE_SUFFIXES used to claim an
+  // "unless it also ends in a carrier" exception that was never written. The two
+  // sets are disjoint, so the guard would be a no-op — an assertion below keeps
+  // them disjoint rather than leaving the claim to rot.
   const last = segments[segments.length - 1];
   if (segments.length > 1 && REFERENCE_SUFFIXES.has(last)) return false;
+
+  // `<anything>_KEY` and `<anything>_SECRET` are credentials unless the preceding
+  // segment names a STRUCTURAL key.
+  //
+  // Inverted deliberately. `key` was credential-shaped only as a whole name or
+  // after one of a hand-written qualifier list, and the product's market is
+  // exactly the vendors nobody has added to that list yet: `HMAC_KEY`,
+  // `SUPABASE_KEY`, `GROQ_KEY`, `CSRF_KEY`, `WEBHOOK_KEY` were all invisible. A
+  // hand-maintained allow-list is the wrong default for a security tool; the set
+  // of things that are a `key` WITHOUT being a secret is small, closed, and about
+  // data structures rather than vendors.
+  if (segments.length > 1 && (last === "key" || last === "keys")) {
+    return !STRUCTURAL_KEY_QUALIFIERS.has(segments[segments.length - 2]);
+  }
+  // `secret` has no structural sense. `USER_KEY` may be a map key; `USER_SECRET`
+  // is a secret.
+  if (segments.length > 1 && last === "secret") return true;
   if (segments.length === 1 && SECRET_WHOLE_KEYS.has(segments[0])) return true;
   if (segments.some((segment) => SECRET_KEY_WORDS.has(segment))) return true;
   for (let index = 0; index + 1 < segments.length; index += 1) {

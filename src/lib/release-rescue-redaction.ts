@@ -25,6 +25,7 @@ import {
   findCredentialSpans,
   isNonSecretValue,
   MAX_SCAN_LENGTH,
+  type CredentialForm,
 } from "@/lib/release-rescue-credential-scanner";
 import {
   blocksDelivery,
@@ -187,6 +188,26 @@ export type RedactionResult = {
    * surfaces can differ where their consequences differ.
    */
   holdsOpaqueToken: boolean;
+  /**
+   * Spans the scanner found, assessed, and deliberately left readable.
+   *
+   * The form and the length, never the text. This exists so that "we decided
+   * this is not a secret" is an OBSERVABLE outcome rather than an absence —
+   * four consecutive audits found a leak whose only symptom was that nothing
+   * happened, because a value allowlist and a value nobody scanned produced
+   * identical results.
+   *
+   * A test can now assert the property directly: run a corpus of real
+   * credentials through a credential-named assignment, and require that none of
+   * them is ever suppressed.
+   */
+  suppressed: SuppressedSpan[];
+};
+
+/** A span that was assessed and left readable. Never carries the text. */
+export type SuppressedSpan = {
+  form: CredentialForm;
+  length: number;
 };
 
 function placeholderFor(name: SecretDetectorName): string {
@@ -259,6 +280,7 @@ export function redactSecrets(input: string): RedactionResult {
   // would see is `[REDACTED:github_token]`, which is on the non-secret list.
   const scanned = findCredentialSpans(working);
   const scanTruncated = scanned.truncated;
+  const suppressed: SuppressedSpan[] = [];
   const holdsOpaqueToken = scanned.spans.some((span) => span.form === "opaque_token_near_noun");
   if (scanned.spans.length > 0) {
     // Assembled in ONE left-to-right pass. Replacing spans individually rebuilds
@@ -271,6 +293,16 @@ export function redactSecrets(input: string): RedactionResult {
 
     for (const span of ordered) {
       if (span.start < cursor) continue; // overlapping or nested: the first wins
+
+      // A suppressed span is reported and left readable. See `pushSpan`: the
+      // point is that "assessed and judged harmless" is now a visible outcome
+      // rather than an absence, so a wrong allowlist entry shows up here instead
+      // of silently shipping a credential.
+      if (span.classification === "sensitive_prose") {
+        suppressed.push({ form: span.form, length: span.end - span.start });
+        continue;
+      }
+
       pieces.push(working.slice(cursor, span.start), placeholderFor("assigned_secret"));
       cursor = span.end;
       assigned += 1;
@@ -290,6 +322,7 @@ export function redactSecrets(input: string): RedactionResult {
     hadSecrets: detections.length > 0,
     scanTruncated,
     holdsOpaqueToken,
+    suppressed,
   };
 }
 

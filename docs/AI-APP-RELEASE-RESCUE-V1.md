@@ -255,7 +255,7 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 
 ## Test plan
 
-**Implemented and passing** — 511 Release Rescue tests across 27 suites (1,179 in the whole repository), 257 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
+**Implemented and passing** — 518 Release Rescue tests across 28 suites (1,186 in the whole repository), 257 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
 
 These counts are re-measured each pass rather than carried forward. Three successive audits found stale numbers here, and a stale count is a false claim like any other.
 
@@ -1012,11 +1012,17 @@ a list:
 - **The false-positive direction is now a product too** — six subjects × six
   predicates of ordinary audit prose, asserted against both the classifier and
   the intake form, plus four real source excerpts asserted byte-for-byte.
-- **The `SECURITY DEFINER` class is enumerated in SQL.** The v7 proof iterates
-  `pg_proc where prosecdef` and fails on any function reading a tenant table
-  without an `organization_id` conjunct. Three rounds of fixing one trigger at a
-  time is what that replaces. It was verified against a planted violation, so it
-  is known to be capable of failing.
+- **The `SECURITY DEFINER` class is checked in SQL.** The v7 proof iterates
+  `pg_proc where prosecdef` and fails on a `from` or `join` read of a tenant table
+  with no `organization_id` in the same statement, comments stripped first. Three
+  rounds of fixing one trigger at a time is what that replaces.
+
+  Scope, stated honestly because two earlier versions of this sentence were not:
+  it is a regex over the function body, so it does **not** see a subquery, a CTE,
+  dynamic SQL, or an `UPDATE`. Audit 9 planted nine shapes it misses. Its
+  committed negative control asserts the four shapes it does catch, plus one
+  correctly-scoped read it must not fire on, so what it covers is now written down
+  in the proof rather than claimed here.
 
 Writing those products immediately found two more gaps that no list would have:
 `DBPW`, `PGPW` and `IDPW` sat one character under a floor picked by eye, and
@@ -1142,6 +1148,125 @@ cases that the proof asserts it catches, plus one correctly-scoped read it must
 not fire on. Writing that control immediately caught an error in the control
 itself: `release_rescue_retention_runs` is global accounting and carries no
 `organization_id`, so it was the wrong table to plant.
+
+## Ninth independent audit: making suppression observable
+
+Audit 9 found nine real credentials reaching a `deliverable: true` report, eight
+of them admitted by an entry in the value allowlist, and three regressions inside
+audit 8's own fixes. All nine were reproduced before anything changed.
+
+It also named the reason this keeps happening, and this round acts on that rather
+than on the instances:
+
+> `placeholder` → `sensitive_prose` → span dropped is still the only way to say
+> "not a secret". Every future false-positive fix will be made here and every one
+> will be a leak. The structural repair is a fourth outcome that suppresses
+> redaction but still **records** a span, so a wrong allowlist entry over-reports
+> instead of going silent.
+
+### The change: a suppression is now a thing that happened
+
+`pushSpan` no longer returns early on `sensitive_prose`. Every span is recorded.
+Suppressed spans are not redacted — the text stays readable, which is what they
+are for — but they are reported on `RedactionResult.suppressed`, as a form and a
+length, never the text.
+
+That converts the recurring defect from invisible to testable. Before this, "we
+assessed this and judged it harmless" and "we never looked at it" produced
+identical output: nothing. Four consecutive audits found a leak whose only symptom
+was an absence, and the only way to find one was to guess the exact value.
+
+`release-rescue-audit9-properties.test.ts` now asserts the property directly over
+a **generated** corpus — bodies crossed with the leading and trailing characters
+that real secrets carry, plus the passwords people actually choose, plus diceware
+rooted at every word the reference-path rule knows:
+
+- no generated credential may be suppressed;
+- none may survive redaction;
+- none may reach a deliverable report;
+- and every structural reference must be *reported* as a suppression rather than
+  vanish.
+
+The generator found its first class within minutes of being written: 225
+suppressions on the first run, then 27, then 18, each a different mechanism. A
+sixteen-value hand-picked list had been passing throughout.
+
+### What the allowlist lost
+
+Eight entries admitted a real credential and are gone or anchored:
+
+| was | admitted | now |
+| --- | --- | --- |
+| `/^-/` | `-Xk92mQvn7Lz` | long flags only, `--word` |
+| `/^\$\{?NAME\}?$/` | `$ecretPass` | braced, or `$WITH_UNDERSCORE` |
+| `password\|secret\|token\|key\|test` | `DB_PASSWORD=password` | **removed entirely** |
+| `/^<[^>]*>$/` | `<M3g@Secret>` | placeholder-shaped contents only |
+| `/^[*x•.\-_]+$/i` | `xXxXxXxXxX` | one case per run |
+| `your\|my\|the` prefix | `my-super-horse-staple` | must also END like a placeholder |
+| rooted dotted path | `window.tiger.canvas.rope` | known root + member, or root + real API surface + member |
+| call expression | `hunter2(` | `(` now terminates the value run, and a call needs a closing paren |
+
+A value whose whole word is `password` or `secret` is a **finding**, not a
+placeholder. That entry was the oldest and the most obviously wrong in hindsight.
+
+### The three regressions, and one rule that replaced two guesses
+
+- **`isContinuationLine` gave up every wrapped value containing a colon.** It
+  looked for an assignment operator, and that fires on `admin:Xk92mQvn7Lz` — a
+  `user:pass` pair — as readily as on a key. It also still let prose through, so
+  `DB_PASSWORD=` followed by `Rotate this before launch.` swallowed the sentence
+  and bricked the report. **Indentation** replaced both guesses: a continuation is
+  indented further than its key, or it is a quoted line. That is what the formats
+  themselves use, and it fixes both directions at once.
+- **A per-field code test let real CSV escape** through an ordinary two-word
+  column name (`order date`, `update time`). Anchoring the statement check at the
+  start of the line, and requiring whitespace after the verb, separates
+  `ORDER BY id` from an `order date` column and `FROM users` from a `from` column.
+- **The call-expression allowlist was itself a silent drop**, and it only worked
+  for one spelling out of four. `(` now terminates the value run, so
+  `getToken(req)`, `get_password(user)` and `fetchToken(ctx)` are all left alone,
+  and `DB_PASSWORD=hunter2(` is recorded rather than dropped.
+
+### `<vendor>_KEY`, inverted
+
+`key` was credential-shaped only as a whole name or after a hand-written qualifier
+list — and this product's market is precisely the vendors nobody has added to that
+list yet. `HMAC_KEY`, `SUPABASE_KEY`, `GROQ_KEY`, `CSRF_KEY` and `WEBHOOK_KEY`
+were all invisible.
+
+The rule is now inverted: `<anything>_KEY` is a credential **unless** the
+preceding segment names a data-structure key (`cacheKey`, `partitionKey`,
+`idempotencyKey`, `routeKey`). That set is small, closed, and about data
+structures rather than vendors, which is the right shape for a default in a
+security tool. `secret` takes no such exception: `USER_KEY` may be a map key,
+`USER_SECRET` is not.
+
+### The trend, stated plainly
+
+Nine audits have now run and all nine returned DO_NOT_MERGE. Four consecutive
+rounds shipped a regression inside the fix for the previous round's finding. The
+database authority model has converged — 257 live cases, and the last three audits
+found nothing in it but the two definer reads. The **detector** has not.
+
+That is worth stating as a finding rather than as a status. The scanner is being
+asked for high recall (never leak a credential) and high precision (never brick a
+paid report) over arbitrary customer source, where a precision failure is
+*permanent* because a `credential_evidence` hold cannot be cleared by any human.
+Those are hard targets for a text scanner, and each round has traded one against
+the other.
+
+Two options exist that this pass cannot take on its own authority, and both are
+recorded here for an owner decision:
+
+1. **Stop republishing customer source.** If a finding cited `path:line` and a
+   description instead of an excerpt, the entire class of defect disappears —
+   there would be no customer credential in the artifact to leak. This is a
+   product scope decision, not an engineering one.
+2. **Let a confident hold be cleared by two named people with an audit record.**
+   The unclearable invariant is correct against a *precise* detector; against this
+   one it converts every false positive into a permanently undeliverable paid
+   report. Changing what may be cleared is an authority change and belongs to the
+   owner, not to this pass.
 
 ## What this slice deliberately does not do
 
