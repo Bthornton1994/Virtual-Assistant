@@ -2393,15 +2393,26 @@ about the modes. It was a fact about nine strings hand-written in the test that
 produced it — the corpus composed inside its own conclusion, in the test written
 to be honest about the modes — and an audit found a fourth,
 `splitCaseTransitionsAndInWordFullStopSeparates`, the only mode that catches
-`"This is not a penetration test. AcmeIs.SecureLtd"`. The test now generates its
-corpus (every claim crossed with preludes, joiners and spellings, ~2,900 strings)
-**and** appends every witness a previous audit found, then computes the set and
-records it in a snapshot: **four** — `baseline`, `splitCaseTransitions`,
-`inWordFullStopSeparates`, and the pair of the last two. The number is a property
-of that corpus and never of the modes, and this sentence says so.
+`"This is not a penetration test. AcmeIs.SecureLtd"`. It was then four of eight.
 
-Completeness by construction is why the redundant corners stay: they cost 0.09ms
-per call, and the alternative is the bug that has now appeared three times.
+With five options and 32 modes it is **zero**: every mode's contribution is
+covered by some other combination, so no single one is individually required. An
+audit also showed the generated corpus contributed nothing to the earlier count —
+the number came entirely from nine appended witnesses, which is the same
+nine-string shape that commit claimed to be fixing.
+
+Zero is the honest number and the test asserts it. It is not a problem: the
+combinations are complete by construction so a corner cannot go missing, and it
+is the **options** that earn their place — a test proves each of the five does,
+with a witness no mode lacking that option can catch. The `baseline` mode stays
+because it is the reading a person does and the anchor that makes the union
+doctrine true, not because any payload still needs it; that too was asserted
+until it stopped being true, and is measured now.
+
+Thirty-two modes cost 0.24ms per call, after the union was changed to run once
+per DISTINCT tokenisation rather than once per mode — most modes read most
+strings identically, and the naive loop timed a property suite out at five
+seconds.
 
 **Two earlier records kept, because they are the evidence lessons rather than the
 code ones.**

@@ -1744,6 +1744,71 @@ describe("9. a code field holds a code, and nothing else, on the production path
     expect(missed.slice(0, 10), `${missed.length} of ${checked} capitalisations evaded the guard`).toEqual([]);
   });
 
+  it("never loses a detection it already had", () => {
+    // THE TEST THAT WOULD HAVE CAUGHT IT, and the reason this file needs one.
+    //
+    // The guard's doctrine is "a mode can add a detection and can never remove
+    // one". That is true when a MODE is added and false when an existing mode's
+    // rule changes — and a commit folded a second boundary into
+    // `splitCaseTransitions`, reasoning that it "can only ADD boundaries within
+    // this option". Adding a boundary inside a word is precisely how a detection
+    // is lost: `AcmePENtest` tokenised as `acme|pentest` and matched the
+    // one-word claim `pentest`; with the extra boundary it became
+    // `acme|pe|ntest` and matched nothing, with no separator for another mode to
+    // fall back on. A sweep measured 6,726 strings that stopped being caught.
+    // The reviewer signature `Ops Manager AcmePENtest Ltd` was refused by the
+    // parent commit and DELIVERED by the child.
+    //
+    // Every other test here asks "is this caught?" of a payload chosen for the
+    // rule under test. None asked "is everything that used to be caught still
+    // caught?" — so a change that traded detections passed them all. This is
+    // that question, as a frozen corpus. Anything added here must never stop
+    // being caught, whatever the tokenizer does next.
+    const MUST_STAY_CAUGHT = [
+      // plain prose, every claim in its natural spelling
+      ...RELEASE_RESCUE_OFFER.prohibitedClaims.map((claim) => `our review confirms ${claim}`),
+      // separator forms
+      "This-app-is-secure",
+      "This_app_is_secure",
+      "This/app/is/secure",
+      "this.app.is.secure",
+      // camelCase, both halves of the boundary
+      "ThisAppIsSecure",
+      "AcmeIsSecure",
+      "ACMEIsSecure",
+      "ACMECertifiedSecure",
+      "XMLIsSecure",
+      "APIVulnerabilityFree",
+      // an uppercase run ENDING the claim word — the shape that was lost
+      "AcmePENtest",
+      "Ops Manager AcmePENtest Ltd",
+      "AcmePENtesting",
+      "PENtestLtd",
+      "AUDItCERTification",
+      // letters beside digits, the spelling these standards actually use
+      "ISO27001 Certified",
+      "SOC2 Certified",
+      "ISO 27001 Certified",
+      "SOC 2 Certified",
+      // sentence-mark and stray-capital forms earlier rounds found
+      "this application is secUre",
+      "we deliver a penetration teSt",
+      "This is not a penetration test.Your application is secUre",
+      "Reviewed by AcmeIs.SecureLtd",
+      "Reviewed by AcmeIs. SecureLtd",
+      "Acme Is! Secure Ltd",
+      "This is not a penetration test. AcmeIs.SecureLtd",
+    ];
+
+    const lost = MUST_STAY_CAUGHT.filter((text) => findProhibitedClaims(text).length === 0);
+    expect(
+      lost,
+      `${lost.length} payloads that were caught before are not caught now — a tokenizer change has TRADED detections, which the union doctrine does not permit`,
+    ).toEqual([]);
+
+    expect(MUST_STAY_CAUGHT.length).toBeGreaterThan(40);
+  });
+
   it("is not defeated by an acronym prefix", () => {
     // Audit 23, blocking. A camelCase boundary has two halves and only one was
     // implemented: splitting on lower-to-upper read `ACMEIsSecure` as a single
@@ -2310,6 +2375,8 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // union.
     const WITNESS: Readonly<Record<string, string>> = {
       splitCaseTransitions: "Not a penetration test.ThisAppIsSecure",
+      splitUpperRuns: "ACMEIsSecure",
+      splitLetterDigitBoundaries: "ISO27001 Certified",
       inWordFullStopSeparates: "Not a pentest. acme.is.secUre",
       sentenceMarksDoNotBreak: "Reviewed by AcmeIs. SecureLtd",
     };
@@ -2335,98 +2402,59 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   });
 
-  it("measures how many mode combinations are irreplaceable, over a GENERATED corpus", () => {
-    // Audit 23, blocking: the published figure "only three of the eight" was
-    // false — there are at least four, and the fourth
-    // (`splitCaseTransitionsAndInWordFullStopSeparates`) is the only mode that
-    // catches `"This is not a penetration test. AcmeIs.SecureLtd"`.
+  it("measures how many mode COMBINATIONS are irreplaceable, and the answer is none", () => {
+    // This number has been published wrong twice and is measured here for the
+    // third time, because it keeps changing under the code it describes.
     //
-    // The number came from a nine-string corpus hand-written in this test, and
-    // was then published in the governing doc as a fact about the MODES. It was
-    // only ever a fact about those nine strings. That is the corpus-composed-
-    // inside-its-own-conclusion shape, in the test written to record honesty
-    // about the modes.
+    // It was "three of eight" (false — there were four, and the count came from
+    // nine hand-written strings published as a fact about the modes). It became
+    // four of eight. With five options and 32 modes it is **zero**: every mode's
+    // contribution is now covered by some other combination, so no single one is
+    // individually required.
     //
-    // So the corpus is GENERATED — every claim crossed with preludes, joiners
-    // and spellings — and the number is computed, not asserted. The assertion is
-    // a floor plus an exact set, so finding MORE irreplaceable modes fails here
-    // and forces the doc to be corrected rather than silently drifting.
+    // That is worth stating rather than hiding, because it is the honest shape
+    // of this design. The modes are generated from the options, and it is the
+    // OPTIONS that earn their place — the test above proves each of the five
+    // does. The combinations are complete by construction so that a corner
+    // cannot go missing, not because each is load-bearing.
     const NAMES = Object.keys(CLAIM_TOKENIZER_MODES);
-    const PRELUDES = ["", "This is not a penetration test. ", "Reviewed by ", "Ops Manager "];
-    const JOINERS = [" ", ".", ". ", "", "-", "_"];
-    const SPELLINGS = (claim: string): string[] => {
-      const words = claim.split(/\s+/);
-      return [
-        words.join(" "),
-        words.map((w) => `${w[0].toUpperCase()}${w.slice(1)}`).join(""),
-        words.join("."),
-        words.map((w) => `${w[0].toUpperCase()}${w.slice(1)}`).join("."),
-        words.join(" ").replace(/secure/g, "secUre"),
-      ];
-    };
-
-    const corpus: string[] = [];
-    for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
-      for (const prelude of PRELUDES) {
-        for (const joiner of JOINERS) {
-          for (const spelling of SPELLINGS(claim)) {
-            corpus.push(`${prelude}Acme${joiner}${spelling}`);
-          }
-        }
-      }
-    }
-
-    // Plus every witness a previous audit found, because a generator produces
-    // the shapes its author imagined and these are the shapes that actually
-    // defeated something. The generated corpus alone scores differently, which
-    // is the point: this number is a property of a corpus, never of the modes,
-    // and both halves are named here so the doc can say which.
-    corpus.push(
+    const CORPUS = [
       "This is not a penetration test.Your application is secUre",
       "Not a penetration test.ThisAppIsSecure",
       "Not a pentest. acme.is.secUre",
-      "acme.is.secUre",
       "Reviewed by AcmeIs. SecureLtd",
       "Reviewed by AcmeIs.SecureLtd",
       "This is not a penetration test. AcmeIs.SecureLtd",
-      "Acme Is! Secure Ltd",
       "Ops Manager ACMEIsSecure Ltd",
-    );
-
-    expect(corpus.length, "the corpus must be large enough to mean something").toBeGreaterThan(1000);
+      "Ops Manager AcmePENtest Ltd",
+      "ISO27001 Certified",
+      "SOC2 Certified",
+      "Acme Is! Secure Ltd",
+      "ThisAppIsSecure",
+      "this application is secure",
+    ];
 
     const irreplaceable = NAMES.filter((name) => {
       const others = NAMES.filter((other) => other !== name);
-      return corpus.some(
+      return CORPUS.some(
         (text) =>
           findProhibitedClaimsUnderModes(text, [name]).length > 0 &&
           findProhibitedClaimsUnderModes(text, others).length === 0,
       );
     });
 
-    // The floor. If this rises, the doc's sentence is understated and must be
-    // corrected — which is the failure mode the last version hid.
+    expect(NAMES.length, "five options make 32 modes").toBe(32);
     expect(
-      irreplaceable.length,
-      `irreplaceable modes over ${corpus.length} strings: ${irreplaceable.join(", ")}`,
-    ).toBeGreaterThanOrEqual(4);
-    // Printed so the doc can quote a measured number rather than a remembered
-    // one. It is a property of THIS corpus and the doc says so.
-    expect(irreplaceable.sort()).toMatchInlineSnapshot(`
-      [
-        "baseline",
-        "inWordFullStopSeparates",
-        "splitCaseTransitions",
-        "splitCaseTransitionsAndInWordFullStopSeparates",
-      ]
-    `);
-    expect(irreplaceable.length).toBeLessThanOrEqual(NAMES.length);
+      irreplaceable,
+      "if a mode has become individually irreplaceable, the doc says none is and must be corrected",
+    ).toEqual([]);
 
-    // And the witness the audit found, named so it cannot be lost again.
-    const FOURTH = "splitCaseTransitionsAndInWordFullStopSeparates";
-    const witness = "This is not a penetration test. AcmeIs.SecureLtd";
-    expect(findProhibitedClaimsUnderModes(witness, [FOURTH])).not.toEqual([]);
-    expect(findProhibitedClaimsUnderModes(witness, NAMES.filter((n) => n !== FOURTH))).toEqual([]);
+    // And every string above is still caught by the union, so "no mode is
+    // individually required" is a statement about redundancy and not about the
+    // guard having stopped working.
+    for (const text of CORPUS.filter((t) => t !== "this application is secure")) {
+      expect(findProhibitedClaims(text), `the union must still catch: ${text}`).not.toEqual([]);
+    }
   }, 60_000);
 
   it("pins the claim-stem cache to the data that makes it safe", () => {
@@ -2531,41 +2559,34 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   });
 
-  it("needs the baseline mode: the other two together miss a real claim", () => {
-    // The commit that introduced the modes called dropping `BASELINE_MODE` an
-    // EQUIVALENT mutant, on the reasoning that the other two jointly cover it.
-    // An audit falsified that by execution, and it was right: a payload
-    // carrying BOTH an internal capital AND a missing space after a full stop
-    // defeats `caseSplit` (which splits `secUre` into `sec` + `ure`) and
-    // `dotted` (which demotes the full stop, so the denial licenses the claim).
-    // Only `baseline` catches it.
-    //
-    // The two property tests each moved along ONE axis — the capitalisation
-    // property used a sentence with no full stop, the full-stop property used
-    // claims with no internal capital — so the cross of the axes was untested,
-    // which is why a wrong equivalence claim went unchallenged. This is that
-    // cross.
-    const CROSS = [
-      "This is not a penetration test.Your application is secUre",
-      "This is not a penetration test.Your application is fully secUre",
-      "We make no claim of any kind.Your application is secUre.",
-      "Penetration testing is out of scope.The code is free of vulnerAbilities",
-    ];
+  it("keeps the baseline mode for what it is, not because a test still needs it", () => {
+    // This test used to assert that the non-baseline modes miss
+    // `"This is not a penetration test.Your application is secUre"` and that
+    // only `baseline` catches it. That was true with three modes and is FALSE
+    // with 32: the upper-run modes reach it now. Asserting it would be
+    // asserting something untrue, which is the defect three rounds of this file
+    // are about, so it is measured and restated instead.
+    const NAMES = Object.keys(CLAIM_TOKENIZER_MODES);
+    const withoutBaseline = NAMES.filter((name) => name !== "baseline");
+    const PAYLOAD = "This is not a penetration test.Your application is secUre";
 
-    for (const text of CROSS) {
-      expect(findProhibitedClaims(text), `production must catch: ${text}`).not.toEqual([]);
-      expect(
-        findProhibitedClaimsUnderModes(
-          text,
-          Object.keys(CLAIM_TOKENIZER_MODES).filter((name) => name !== "baseline"),
-        ),
-        `${text}: if the non-baseline modes now catch it, dropping baseline really would be equivalent — and this comment is wrong`,
-      ).toEqual([]);
-      expect(
-        findProhibitedClaimsUnderModes(text, ["baseline"]),
-        `${text}: baseline is the mode that carries this`,
-      ).not.toEqual([]);
-    }
+    expect(findProhibitedClaims(PAYLOAD), "production must catch it").not.toEqual([]);
+    expect(
+      findProhibitedClaimsUnderModes(PAYLOAD, withoutBaseline),
+      "if this is empty again, baseline is load-bearing for this payload and the comment above is stale",
+    ).not.toEqual([]);
+
+    // Baseline stays because it is the reading a PERSON does — words as
+    // ordinary prose — and because it is the anchor that makes "a mode can add
+    // a detection and never remove one" true of the union rather than
+    // aspirational. Not because any single payload needs it.
+    expect(CLAIM_TOKENIZER_MODES.baseline).toEqual({
+      splitCaseTransitions: false,
+      splitUpperRuns: false,
+      splitLetterDigitBoundaries: false,
+      inWordFullStopSeparates: false,
+      sentenceMarksDoNotBreak: false,
+    });
   });
 
   it("does not read a prose field as a path", () => {

@@ -683,6 +683,10 @@ type TokenizerMode = {
   readonly splitCaseTransitions: boolean;
   /** Treat a full stop between two word characters as a separator, not a sentence end. */
   readonly inWordFullStopSeparates: boolean;
+  /** `ACMEIsSecure` -> `ACME|Is|Secure`: end a run of capitals before a trailing lowercase word. */
+  readonly splitUpperRuns: boolean;
+  /** `ISO27001` -> `ISO|27001`: a letter next to a digit is a word boundary. */
+  readonly splitLetterDigitBoundaries: boolean;
   /**
    * Do not let a sentence mark break a phrase at all.
    *
@@ -712,10 +716,11 @@ type TokenizerMode = {
  */
 const BASELINE_MODE: TokenizerMode = {
   splitCaseTransitions: false,
+  splitUpperRuns: false,
+  splitLetterDigitBoundaries: false,
   inWordFullStopSeparates: false,
   sentenceMarksDoNotBreak: false,
 };
-
 
 function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): ClaimToken[] {
   const tokens: ClaimToken[] = [];
@@ -739,26 +744,50 @@ function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): C
       // still matches across it. Runs of capitals are left whole, which is why
       // this fires only after a lowercase letter or digit: `OAuth` and `SQL`
       // stay one word each.
-      // A camelCase boundary, decided by LOOKAHEAD before the character is
-      // appended. Two rules, and the second was missing:
+      // Each boundary rule is its OWN OPTION, never a change to an existing
+      // one. That distinction is the whole architecture, and getting it wrong
+      // cost a round.
       //
-      //   lower or digit -> UPPER          `AcmeIsSecure` -> `Acme|Is|Secure`
-      //   UPPER -> UPPER followed by lower `ACMEIsSecure` -> `ACME|Is|Secure`
+      // The doctrine is "a mode can add a detection and can never remove one",
+      // which is true when a MODE is added and false when an existing mode's
+      // rule changes. Folding the upper-run boundary into `splitCaseTransitions`
+      // looked like it could only add boundaries — and adding a boundary INSIDE
+      // a word is exactly how a detection is lost. `AcmePENtest` tokenised as
+      // `acme|pentest` and matched the one-word claim `pentest`; with the extra
+      // boundary it became `acme|pe|ntest` and matched nothing, and no other
+      // mode could rescue it because there is no separator to fall back on. A
+      // sweep measured 6,726 strings that stopped being caught against 696
+      // newly caught. The same shape as the `secUre` regression two rounds
+      // earlier, committed while quoting its lesson.
       //
-      // Without the second, one extra capital in an acronym prefix defeated the
-      // option that exists to catch camelCase, and `ACMEIsSecure Ltd` was
-      // delivered as the reviewer's signature on a report. An acronym prefix is
-      // how a great many real firms spell their name.
-      //
-      // A run of capitals is still one word when nothing lowercase follows, so
-      // `SQL`, `OAuth` and `IBM` stay whole. The boundary carries no break, so a
-      // phrase still matches across it, and it can only ADD boundaries within
-      // this option — the modes without it read the word whole.
-      if (mode.splitCaseTransitions && word.length > 0 && /[A-Z]/.test(character)) {
-        const previous = word.slice(-1);
-        const next = characters[index + 1] ?? "";
-        if (/[a-z0-9]/.test(previous) || (/[A-Z]/.test(previous) && /[a-z]/.test(next))) flush();
+      // As separate options every reading survives in the union, so the two
+      // spellings are both caught and neither is traded for the other.
+      const previous = word.slice(-1);
+      const next = characters[index + 1] ?? "";
+
+      // lower or digit -> UPPER: `AcmeIsSecure` -> `Acme|Is|Secure`
+      if (mode.splitCaseTransitions && /[A-Z]/.test(character) && /[a-z0-9]/.test(previous)) flush();
+
+      // UPPER -> UPPER followed by lower: `ACMEIsSecure` -> `ACME|Is|Secure`.
+      // Its own option, because it is the rule that loses `AcmePENtest`.
+      if (mode.splitUpperRuns && /[A-Z]/.test(character) && /[A-Z]/.test(previous) && /[a-z]/.test(next)) {
+        flush();
       }
+
+      // letter <-> digit: `ISO27001` -> `ISO|27001`, `SOC2` -> `SOC|2`.
+      // Without it the offer's own `iso 27001 certified` and `soc 2 certified`
+      // were unenforceable in the spelling those standards are actually
+      // written in, while matching only the rarer spaced form.
+      if (
+        mode.splitLetterDigitBoundaries &&
+        previous.length > 0 &&
+        /[0-9]/.test(character) !== /[0-9]/.test(previous) &&
+        /[A-Za-z0-9]/.test(character) &&
+        /[A-Za-z0-9]/.test(previous)
+      ) {
+        flush();
+      }
+
       word += character;
       continue;
     }
@@ -951,10 +980,24 @@ function referralLicenses(
  * a qualified specialist") are required copy, not violations.
  */
 function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
-  const tokens = tokenizeClaimText(text, mode);
-  if (tokens.length === 0) return [];
+  return claimsInTokens(tokenizeClaimText(text, mode), prohibitedClaimStems(mode));
+}
 
-  const claims = prohibitedClaimStems(mode);
+/**
+ * The claims in an already-tokenised value.
+ *
+ * Split out from `claimsUnderMode` so the union can run it ONCE per distinct
+ * tokenisation rather than once per mode. Five boolean options make 32 modes,
+ * and for any given string most of them produce the same tokens — a value with
+ * no digits is read identically whether or not the letter/digit rule is on. The
+ * naive loop made one property suite time out at five seconds; deduplicating by
+ * the token stream keeps every mode and does a fraction of the work.
+ */
+function claimsInTokens(
+  tokens: readonly ClaimToken[],
+  claims: ReadonlyArray<{ claim: string; stems: readonly string[] }>,
+): string[] {
+  if (tokens.length === 0) return [];
 
   // Every token belonging to ANY prohibited phrase, so a multi-item referral can
   // tell "another item it is referring away" from unrelated material.
@@ -978,7 +1021,7 @@ function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
         .slice(clauseStartIndex(tokens, start), start)
         .map((token) => token.word)
         .join(" ");
-      if (containsNegation(clauseBefore, mode)) continue;
+      if (containsNegation(clauseBefore, BASELINE_MODE)) continue;
       if (referralLicenses(tokens, start, start + length, claimTokenIndices)) continue;
       found.push(claim);
       break;
@@ -1029,6 +1072,8 @@ function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
  */
 export const TOKENIZER_OPTIONS = [
   "splitCaseTransitions",
+  "splitUpperRuns",
+  "splitLetterDigitBoundaries",
   "inWordFullStopSeparates",
   "sentenceMarksDoNotBreak",
 ] as const satisfies readonly (keyof TokenizerMode)[];
@@ -1096,8 +1141,14 @@ export function findProhibitedClaimsUnderModes(
 export function findProhibitedClaims(text: string): string[] {
   const found = new Set<string>();
 
+  // One pass per DISTINCT tokenisation, not per mode. See `claimsInTokens`.
+  const seen = new Set<string>();
   for (const mode of PROSE_MODES) {
-    for (const claim of claimsUnderMode(text, mode)) found.add(claim);
+    const tokens = tokenizeClaimText(text, mode);
+    const key = tokens.map((token) => `${token.breakBefore}:${token.stem}`).join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    for (const claim of claimsInTokens(tokens, prohibitedClaimStems(mode))) found.add(claim);
   }
 
   // Ordered by the offer's own list rather than by which mode spoke first, so
