@@ -11,6 +11,8 @@ import {
   type FindingConfidence,
   type FindingExploitability,
   type FindingImpact,
+  FORBIDDEN_SOURCE_FIELDS,
+  findForbiddenSourceField,
 } from "@/lib/release-rescue-findings";
 import { getRubricCheck } from "@/lib/release-rescue-rubric";
 import { makeFinding } from "@/lib/__tests__/release-rescue-fixtures";
@@ -172,23 +174,53 @@ describe("finding validation", () => {
 });
 
 describe("finding schema boundary", () => {
-  it("refuses an excerpt that still holds a credential", () => {
-    const parsed = releaseRescueFindingV1Schema.safeParse(
-      makeFinding({
-        locations: [{ path: "src/pay.ts", startLine: 1, endLine: 1, excerpt: "sk_live_abcdefghijklmnopqrstuvwx" }],
-      }),
-    );
+  // A finding POINTS AT source and never carries it. These two tests replace a
+  // pair that asked whether a stored excerpt had been redacted well enough —
+  // a question with no safe answer, and the one ten audits kept re-opening.
+  it("refuses a location carrying an excerpt at all, redacted or not", () => {
+    for (const excerpt of [
+      "sk_live_abcdefghijklmnopqrstuvwx",
+      "const key = [REDACTED:stripe_key];",
+      "// a perfectly ordinary line of code",
+      "",
+    ]) {
+      const parsed = releaseRescueFindingV1Schema.safeParse(
+        makeFinding({
+          locations: [{ path: "src/pay.ts", startLine: 1, endLine: 1, excerpt } as never],
+        }),
+      );
 
-    expect(parsed.success).toBe(false);
+      expect(parsed.success, JSON.stringify(excerpt)).toBe(false);
+    }
   });
 
-  it("accepts an excerpt that was redacted", () => {
+  it("refuses every other field name a caller might smuggle source through", () => {
+    const accepted: string[] = [];
+
+    for (const field of FORBIDDEN_SOURCE_FIELDS) {
+      const parsed = releaseRescueFindingV1Schema.safeParse(
+        makeFinding({
+          locations: [
+            { path: "src/pay.ts", startLine: 1, endLine: 1, [field]: "DB_PASSWORD=hunter2" } as never,
+          ],
+        }),
+      );
+      if (parsed.success) accepted.push(field);
+    }
+
+    expect(FORBIDDEN_SOURCE_FIELDS.length).toBeGreaterThan(20);
+    expect(accepted, `${accepted.length} source-carrying field names were accepted`).toEqual([]);
+  });
+
+  it("names the offending field, so a legacy caller learns what changed", () => {
+    expect(findForbiddenSourceField({ path: "src/a.ts", excerpt: "x" })).toBe("excerpt");
+    expect(findForbiddenSourceField({ path: "src/a.ts", sourceWindow: "x" })).toBe("sourceWindow");
+    expect(findForbiddenSourceField({ path: "src/a.ts", startLine: 1, endLine: 2 })).toBeNull();
+  });
+
+  it("accepts the location shape a customer actually needs", () => {
     const parsed = releaseRescueFindingV1Schema.safeParse(
-      makeFinding({
-        locations: [
-          { path: "src/pay.ts", startLine: 1, endLine: 1, excerpt: "const key = [REDACTED:stripe_key];" },
-        ],
-      }),
+      makeFinding({ locations: [{ path: "src/pay.ts", startLine: 12, endLine: 18 }] }),
     );
 
     expect(parsed.success).toBe(true);
@@ -197,7 +229,7 @@ describe("finding schema boundary", () => {
   it("refuses paths that leave the reviewed repository", () => {
     for (const path of ["/etc/passwd", "../../secrets.env", "https://example.com/x"]) {
       const parsed = releaseRescueFindingV1Schema.safeParse(
-        makeFinding({ locations: [{ path, startLine: null, endLine: null, excerpt: null }] }),
+        makeFinding({ locations: [{ path, startLine: null, endLine: null }] }),
       );
       expect(parsed.success, path).toBe(false);
     }
@@ -205,7 +237,7 @@ describe("finding schema boundary", () => {
 
   it("refuses a line range that runs backwards", () => {
     const parsed = releaseRescueFindingV1Schema.safeParse(
-      makeFinding({ locations: [{ path: "src/a.ts", startLine: 40, endLine: 2, excerpt: null }] }),
+      makeFinding({ locations: [{ path: "src/a.ts", startLine: 40, endLine: 2 }] }),
     );
 
     expect(parsed.success).toBe(false);

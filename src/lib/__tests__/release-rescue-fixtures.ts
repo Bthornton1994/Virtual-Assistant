@@ -127,7 +127,7 @@ export function makeFinding(overrides: Partial<ReleaseRescueFindingV1> = {}): Re
     confidence: "confirmed",
     severity: "high",
     blocking: true,
-    locations: [{ path: "src/app/api/orders/[id]/route.ts", startLine: 12, endLine: 20, excerpt: null }],
+    locations: [{ path: "src/app/api/orders/[id]/route.ts", startLine: 12, endLine: 20 }],
     remediationEffort: "small",
     inRemediationSprintScope: true,
     residualUncertainty: "",

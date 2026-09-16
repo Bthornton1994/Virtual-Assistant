@@ -143,14 +143,6 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
     disposition: "guarded",
     because: "A repository path an executor writes; free text in practice, and rendered.",
   },
-  // An excerpt is null unless a finding quotes source, so a sample report may not
-  // exercise this path. It is classified anyway: the decision is about the field,
-  // not about whether today's fixture happens to populate it.
-  "$.findings[].locations[].excerpt": {
-    disposition: "redacted",
-    because:
-      "Lifted from the customer's own source. Checked for credentials; NOT checked for claims, because their source may legitimately contain the word 'secure'.",
-  },
   // --- what sanitisation removed ---
   "$.unresolvedHolds[].path": {
     disposition: "generated",

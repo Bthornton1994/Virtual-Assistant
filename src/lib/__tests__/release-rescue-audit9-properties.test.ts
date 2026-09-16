@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
 import { isNonSecretValue } from "@/lib/release-rescue-credential-scanner";
+import { releaseRescueFindingV1Schema } from "@/lib/release-rescue-findings";
 import {
   buildReleaseRescueReport,
   pendingSecretHolds,
@@ -221,7 +222,14 @@ describe("the gate, over the generated corpus", () => {
   //
   // `setAssessment(..., { outcome: "fail" })` makes the finding consistent with
   // its check, so the gate's answer now depends on the excerpt.
-  function reportWith(excerpt: string) {
+  // The carrier is `whatWeObserved`, not a location excerpt.
+  //
+  // Excerpts are gone: a finding points at source and never carries it, so the
+  // only way text still enters a report is a free-text field an auditor writes.
+  // That is where redaction now serves as DEFENCE IN DEPTH — it is no longer
+  // what proves the deliverable is safe, because there is no longer a field for
+  // customer source to sit in.
+  function reportWith(observed: string) {
     return buildReleaseRescueReport(
       makeReportInput({
         assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
@@ -230,7 +238,8 @@ describe("the gate, over the generated corpus", () => {
         }),
         findings: [
           makeFinding({
-            locations: [{ path: "config/app.env", startLine: 1, endLine: 1, excerpt }],
+            whatWeObserved: `The committed configuration contains: ${observed}`,
+            locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
           }),
         ],
       }),
@@ -247,24 +256,52 @@ describe("the gate, over the generated corpus", () => {
     expect(gate.deliverable, "the corpus assertions below are meaningless without this").toBe(true);
   });
 
-  it("delivers no report holding any generated credential", () => {
-    const delivered: string[] = [];
+  it("cannot be built with a credential in a source-carrying field, for any generated value", () => {
+    // THE PROPERTY, restated for the architecture the owner chose.
+    //
+    // The old version planted each credential in a finding's excerpt and asked
+    // whether the detector had scrubbed it. That question has no safe answer —
+    // ten audits went looking for one — and it is no longer the question. There
+    // is no excerpt field, so the credential cannot be put into the artifact in
+    // the first place, and an attempt to do so is REFUSED rather than cleaned.
+    const accepted: string[] = [];
 
-    // One key, the whole corpus: the per-key axis is covered above and this is
-    // the expensive assertion.
     for (const value of GENERATED) {
-      const report = reportWith(assign("DB_PASSWORD", value));
-      const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
-
-      if (gate.deliverable && withoutPlaceholders(JSON.stringify(report)).includes(value)) {
-        delivered.push(value);
-      }
+      const parsed = releaseRescueFindingV1Schema.safeParse(
+        makeFinding({
+          locations: [
+            { path: "config/app.env", startLine: 1, endLine: 1, excerpt: assign("DB_PASSWORD", value) } as never,
+          ],
+        }),
+      );
+      if (parsed.success) accepted.push(value);
     }
 
-    expect(delivered, `${delivered.length} generated credentials reached a deliverable report`)
-      .toEqual([]);
-    // Builds and validates a full report per value, so it is slow on purpose:
-    // this is the one assertion that speaks for the customer.
+    expect(accepted, `${accepted.length} credentials were accepted into a stored finding`).toEqual([]);
+  });
+
+  it("carries no generated credential in a report built the way production builds one", () => {
+    // The other half: the legitimate path produces an artifact that cannot hold
+    // the credential, because the only fields it has are a path, a line range,
+    // and prose an auditor wrote.
+    const leaked: string[] = [];
+
+    // `password`, `secret` and `token` are in the corpus because people really do
+    // choose them, and they are also ordinary English words that a rubric check
+    // title and a disclaimer legitimately contain. A whole-artifact substring
+    // test cannot tell those apart, so it runs on the values that are not plain
+    // words — the distinction is in the test, not in the guarantee.
+    const DICTIONARY_WORDS = new Set(["password", "secret", "token", "apikey", "monkey", "dragon"]);
+    const checkable = GENERATED.filter((value) => !DICTIONARY_WORDS.has(value));
+    const report = reportWith("the committed configuration was reviewed against the rubric");
+    const serialized = withoutPlaceholders(JSON.stringify(report));
+
+    for (const value of checkable) {
+      if (serialized.includes(value)) leaked.push(value);
+    }
+
+    expect(checkable.length).toBeGreaterThan(200);
+    expect(leaked, `${leaked.length} generated credentials appeared in an artifact`).toEqual([]);
   }, 60_000);
 
   it("leaks no credential through a carrier the generator cannot express", () => {

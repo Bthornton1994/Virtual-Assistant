@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { prepareExcerpt, redactSecrets, scanForSecrets } from "@/lib/release-rescue-redaction";
+import { redactSecrets, scanForSecrets } from "@/lib/release-rescue-redaction";
 import { blocksDelivery, requiresHumanClearance } from "@/lib/release-rescue-secret-classification";
 import type { SecretClassification } from "@/lib/release-rescue-secret-classification";
 
@@ -163,32 +163,12 @@ export function withSanitizedHolds<T>(
   >;
 }
 
-/**
- * Prepares one excerpt of customer source for storage.
- *
- * Redacts first and truncates second, for storing one excerpt of customer source.
- *
- * HONEST STATUS: this still has no production caller. An audit checked the claim
- * that used to sit here ("the production entry point for `prepareExcerpt`") and
- * found it was the same defect as the blocker it was written to close, one
- * function further out. Report strings reach the sanitiser through
- * `sanitizeReportInput`'s generic walk, which redacts but does not truncate, so
- * a stored excerpt is currently bounded by the schema's own length caps rather
- * than by this. Wiring it in is a change to the excerpt path that wants its own
- * proof, not a late edit in this pass.
- * Redacts first and truncates second, so a truncated credential cannot leave a
- * fragment that no detector recognises but that still narrows the secret.
- */
-export function prepareStoredExcerpt(raw: string): { excerpt: string; classification: SecretClassification | null } {
-  const prepared = prepareExcerpt(raw);
-  const { classification, scanTruncated } = redactSecrets(raw);
-  // Past the scan limit the tail is unexamined. Storing it as "nothing found"
-  // is the fail-open this pipeline exists to prevent, so it is held instead.
-  if (scanTruncated) {
-    return { excerpt: prepared.excerpt, classification: "ambiguous_secret_candidate" };
-  }
-  return { excerpt: prepared.excerpt, classification };
-}
+// `prepareStoredExcerpt` is GONE, along with `prepareExcerpt` behind it.
+//
+// It prepared one excerpt of customer source for storage. Nothing stores customer
+// source now, so there is nothing for it to prepare. An audit had already found
+// it had no production caller; rather than wire it in, the thing it was for was
+// removed.
 
 /**
  * Last-line assertion that a value carries no credential material.

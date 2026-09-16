@@ -187,7 +187,7 @@ describe("ordinary content, as a product rather than a list", () => {
     expect(refused, `${refused.length} ordinary descriptions refused a customer`).toEqual([]);
   });
 
-  it("leaves ordinary source excerpts intact and deliverable", () => {
+  it("leaves ordinary source intact when the scanner inspects it transiently", () => {
     // A statement list is not a CSV. `;` was in the delimiter table, so three
     // lines of route code whose first mentioned `getToken` were read as a header
     // plus two rows, and every line was redacted into an unclearable hold.
@@ -203,25 +203,24 @@ describe("ordinary content, as a product rather than a list", () => {
     }
   });
 
-  it("keeps a report built from such an excerpt deliverable", () => {
+  it("keeps a report about such source deliverable, citing it by path and line", () => {
+    // The finding still tells the customer exactly where to look. It just does
+    // not carry a copy of what is there — they open it in their own checkout.
     const report = buildReleaseRescueReport(
       makeReportInput({
         findings: [
           makeFinding({
-            locations: [
-              {
-                path: "src/app/api/users/route.ts",
-                startLine: 1,
-                endLine: 3,
-                excerpt: 'import { getToken } from "./auth";\nconst user = await getUser(request.params.id);',
-              },
-            ],
+            whatWeObserved:
+              "The route reads a session token and then loads the record by id without an ownership check.",
+            locations: [{ path: "src/app/api/users/route.ts", startLine: 1, endLine: 3 }],
           }),
         ],
       }),
     );
 
-    expect(report.findings[0].locations[0].excerpt).toContain("getToken");
+    expect(report.findings[0].locations[0].path).toBe("src/app/api/users/route.ts");
+    expect(report.findings[0].locations[0].startLine).toBe(1);
+    expect(report.findings[0].locations[0].endLine).toBe(3);
     expect(pendingSecretHolds(report)).toEqual([]);
   });
 });
@@ -243,9 +242,8 @@ describe("the outcome the whole workstream exists to prevent", () => {
             makeReportInput({
               findings: [
                 makeFinding({
-                  locations: [
-                    { path: "config/app.env", startLine: 1, endLine: 1, excerpt: `${key}=${SECRET}` },
-                  ],
+                  whatWeObserved: `The committed configuration sets ${key}.`,
+                  locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
                 }),
               ],
             }),

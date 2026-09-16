@@ -215,14 +215,9 @@ function FindingCard({ finding }: { finding: CustomerFindingView }) {
       {finding.locations.length > 0 ? (
         <ul className="mt-3 space-y-1">
           {finding.locations.map((location) => (
-            <li key={`${location.path}-${location.lines ?? "all"}`} className="font-mono text-xs text-muted">
+            <li key={`${location.path}-${location.lineRange ?? "all"}`} className="font-mono text-xs text-muted">
               {location.path}
-              {location.lines ? ` · ${location.lines}` : ""}
-              {location.excerpt ? (
-                <pre className="mt-1 overflow-x-auto rounded-md border border-line bg-bg-elevated p-2">
-                  <code>{location.excerpt}</code>
-                </pre>
-              ) : null}
+              {location.lineRange ? ` · ${location.lineRange}` : ""}
             </li>
           ))}
         </ul>

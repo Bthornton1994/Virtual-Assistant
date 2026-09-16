@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAX_EXCERPT_LENGTH,
   containsLikelySecret,
   isForbiddenEvidenceFilename,
-  prepareExcerpt,
   redactSecrets,
   scanForSecrets,
 } from "@/lib/release-rescue-redaction";
@@ -116,35 +114,24 @@ describe("release rescue secret redaction", () => {
     expect(first.detections.find((d) => d.detector === "aws_access_key_id")?.count).toBe(2);
   });
 
-  it("redacts before truncating so no credential fragment survives", () => {
-    const secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
-    const raw = `${"x".repeat(MAX_EXCERPT_LENGTH - 10)}${secret}`;
-    const prepared = prepareExcerpt(raw);
-
-    expect(prepared.truncated).toBe(true);
-    expect(prepared.excerpt.length).toBeLessThanOrEqual(MAX_EXCERPT_LENGTH);
-    // Neither the whole token nor a leading fragment of it may appear.
-    expect(prepared.excerpt).not.toContain(secret);
-    expect(prepared.excerpt).not.toContain(secret.slice(0, 20));
-  });
-
-  it("caps excerpt length", () => {
-    const prepared = prepareExcerpt("y".repeat(MAX_EXCERPT_LENGTH * 3));
-
-    expect(prepared.excerpt.length).toBeLessThanOrEqual(MAX_EXCERPT_LENGTH);
-    expect(prepared.truncated).toBe(true);
-  });
+  // Two tests are gone with `prepareExcerpt` and `MAX_EXCERPT_LENGTH`: that it
+  // redacted before truncating, and that it capped an excerpt's length. Both
+  // described preparing customer source for storage, and no customer source is
+  // stored — a finding cites `path:line` and the customer reads their own code.
+  //
+  // What they were protecting against, a truncated credential leaving a usable
+  // fragment, cannot arise when nothing is truncated for storage.
 
   it("finds secrets nested anywhere in a JSON structure", () => {
     const hits = scanForSecrets({
       findings: [
-        { title: "fine", locations: [{ excerpt: "const ok = 1;" }] },
-        { title: "leaky", locations: [{ excerpt: "AKIAIOSFODNN7EXAMPLE" }] },
+        { title: "fine", whatWeObserved: "The handler validates the caller." },
+        { title: "leaky", whatWeObserved: "AKIAIOSFODNN7EXAMPLE" },
       ],
     });
 
     expect(hits).toHaveLength(1);
-    expect(hits[0].path).toBe("$.findings[1].locations[0].excerpt");
+    expect(hits[0].path).toBe("$.findings[1].whatWeObserved");
     expect(hits[0].detectors).toContain("aws_access_key_id");
   });
 

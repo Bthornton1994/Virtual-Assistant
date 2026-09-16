@@ -82,8 +82,19 @@ export type ReleaseVerdict = (typeof RELEASE_VERDICTS)[number];
 export const assessmentEvidenceSchema = z
   .object({
     kind: rubricEvidenceKindSchema,
-    /** Where to look: a repository path, a policy name, a manifest entry, a test id. */
-    reference: nonEmptyString.max(500),
+    /**
+     * Where to look: a repository path, a policy name, a manifest entry, a test id.
+     *
+     * A POINTER, structurally. It was 500 characters of unconstrained free text,
+     * which is enough room to paste the thing it is supposed to point at — and
+     * with source excerpts removed from findings, this was the widest remaining
+     * field shaped like a place to put source. A reference is one line: the
+     * newline refusal is what makes that true rather than merely intended.
+     */
+    reference: nonEmptyString
+      .max(300)
+      .refine((value) => !/[\r\n]/.test(value), "an evidence reference is a pointer, not a quotation")
+      .refine((value) => !/[\u0000-\u0008\u000b-\u001f]/.test(value), "must not carry control characters"),
   })
   .strict();
 

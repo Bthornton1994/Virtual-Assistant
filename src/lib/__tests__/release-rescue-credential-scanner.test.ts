@@ -230,12 +230,15 @@ describe("the storage and delivery paths, not just the detector's return value",
   }
 
   it("finds one nested anywhere in a stored structure", () => {
+    // `scanForSecrets` walks whatever it is given. It is defence in depth over
+    // free text now rather than the excerpt check it began as, so the path here
+    // is a field an auditor writes.
     const hits = scanForSecrets({
-      findings: [{ locations: [{ excerpt: "ENV DB_PASSWORD S3cretP4ssw0rdHere" }] }],
+      findings: [{ whatWeObserved: "ENV DB_PASSWORD S3cretP4ssw0rdHere" }],
     });
 
     expect(hits).toHaveLength(1);
-    expect(hits[0].path).toBe("$.findings[0].locations[0].excerpt");
+    expect(hits[0].path).toBe("$.findings[0].whatWeObserved");
     expect(hits[0].classification).toBe("credential_evidence");
   });
 
@@ -244,9 +247,8 @@ describe("the storage and delivery paths, not just the detector's return value",
       makeReportInput({
         findings: [
           makeFinding({
-            locations: [
-              { path: "docker-compose.yml", startLine: 4, endLine: 4, excerpt: "ENV DB_PASSWORD S3cretP4ssw0rdHere" },
-            ],
+            whatWeObserved: "The compose file sets ENV DB_PASSWORD S3cretP4ssw0rdHere in the image.",
+            locations: [{ path: "docker-compose.yml", startLine: 4, endLine: 4 }],
           }),
         ],
       }),
@@ -255,7 +257,7 @@ describe("the storage and delivery paths, not just the detector's return value",
     expect(JSON.stringify(report)).not.toContain("S3cretP4ssw0rdHere");
   });
 
-  it("is still idempotent, so a stored excerpt's hash is reproducible", () => {
+  it("is still idempotent, so a redacted string's hash is reproducible", () => {
     for (const text of PLANTED) {
       const once = redactSecrets(text).redacted;
       expect(redactSecrets(once).redacted).toBe(once);

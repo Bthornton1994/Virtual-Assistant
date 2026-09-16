@@ -5,8 +5,9 @@ import {
   redactSecrets,
 } from "@/lib/release-rescue-redaction";
 import { keyLooksSecret } from "@/lib/release-rescue-redaction-keys";
+import { releaseRescueFindingV1Schema } from "@/lib/release-rescue-findings";
 import { MAX_SCAN_LENGTH } from "@/lib/release-rescue-credential-scanner";
-import { prepareStoredExcerpt, sanitizeReportInput } from "@/lib/release-rescue-pipeline";
+import { sanitizeReportInput } from "@/lib/release-rescue-pipeline";
 import {
   buildReleaseRescueReport,
   pendingSecretHolds,
@@ -83,25 +84,23 @@ describe("a credential key with no separator and no camel-case boundary", () => 
     expect(gate.deliverable).toBe(false);
   });
 
-  it("covers the finding excerpt, which is where a real one would sit", () => {
-    const report = buildReleaseRescueReport(
-      makeReportInput({
-        findings: [
-          makeFinding({
-            locations: [
-              {
-                path: "ci/deploy.sh",
-                startLine: 3,
-                endLine: 3,
-                excerpt: "export PGPASSWORD=pr0dXk92mQvn7Lz",
-              },
-            ],
-          }),
+  it("cannot be put into a finding at all, which is where one used to sit", () => {
+    // This was a test that the excerpt had been scrubbed. The excerpt is gone,
+    // so the assertion is now that the field is refused rather than cleaned.
+    const parsed = releaseRescueFindingV1Schema.safeParse(
+      makeFinding({
+        locations: [
+          {
+            path: "ci/deploy.sh",
+            startLine: 3,
+            endLine: 3,
+            excerpt: "export PGPASSWORD=pr0dXk92mQvn7Lz",
+          } as never,
         ],
       }),
     );
 
-    expect(JSON.stringify(report)).not.toContain("pr0dXk92mQvn7Lz");
+    expect(parsed.success).toBe(false);
   });
 });
 
@@ -226,8 +225,11 @@ describe("text past the scan limit is unexamined, not clean", () => {
     expect(containsLikelySecret(OVERSIZED)).toBe(true);
   });
 
-  it("holds a truncated excerpt rather than storing it as clean", () => {
-    expect(prepareStoredExcerpt(OVERSIZED).classification).toBe("ambiguous_secret_candidate");
+  // `prepareStoredExcerpt` is gone with the excerpt itself. What it guarded — an
+  // unexamined tail must not read as clean — still holds at the scanner, which is
+  // where the transient inspection happens.
+  it("reports the truncation rather than reporting nothing found", () => {
+    expect(redactSecrets(OVERSIZED).scanTruncated).toBe(true);
   });
 
   it("leaves ordinary text alone", () => {

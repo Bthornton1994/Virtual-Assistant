@@ -197,12 +197,20 @@ describe("the gate, asserted directly, in both directions", () => {
   // matters to a customer is the gate, and it matters in both directions: a
   // credential must never be deliverable, and an ordinary report must never be
   // undeliverable.
-  function reportWith(excerpt: string) {
+  // The carrier is `whatWeObserved`, not a location excerpt.
+  //
+  // Excerpts are gone: a finding points at source and never carries it, so the
+  // only way text still enters a report is a free-text field an auditor writes.
+  // That is where redaction now serves as DEFENCE IN DEPTH — it is no longer
+  // what proves the deliverable is safe, because there is no longer a field for
+  // customer source to sit in.
+  function reportWith(observed: string) {
     return buildReleaseRescueReport(
       makeReportInput({
         findings: [
           makeFinding({
-            locations: [{ path: "config/app.env", startLine: 1, endLine: 3, excerpt }],
+            whatWeObserved: `The committed configuration contains: ${observed}`,
+            locations: [{ path: "config/app.env", startLine: 1, endLine: 3 }],
           }),
         ],
       }),

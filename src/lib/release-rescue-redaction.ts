@@ -38,7 +38,9 @@ export { keyLooksSecret, keyNameSegments, MAX_SCAN_LENGTH };
 export { blocksDelivery, requiresHumanClearance, type SecretClassification };
 
 /** Excerpts are proof of a finding, not a copy of the file. */
-export const MAX_EXCERPT_LENGTH = 480;
+// `MAX_EXCERPT_LENGTH` is GONE. It bounded a stored excerpt, and no excerpt is
+// stored. The free-text fields a finding does carry are bounded by their own
+// schema caps in `release-rescue-findings.ts`.
 
 export type SecretDetectorName =
   | "pem_private_key"
@@ -362,32 +364,16 @@ export function holdsCredentialEvidence(text: string): boolean {
   return classification !== null && blocksDelivery(classification);
 }
 
-export type PreparedExcerpt = {
-  excerpt: string;
-  detections: SecretDetection[];
-  truncated: boolean;
-};
-
-/**
- * Turns raw source text into an excerpt safe to persist: redacted first, then
- * truncated.
- *
- * Order matters. Truncating first could cut a credential in half and leave a
- * fragment that no detector recognises but that still narrows the key for anyone
- * holding the rest. Redacting first means the placeholder is what gets truncated.
- */
-export function prepareExcerpt(raw: string, maxLength: number = MAX_EXCERPT_LENGTH): PreparedExcerpt {
-  const { redacted, detections } = redactSecrets(raw);
-  if (redacted.length <= maxLength) {
-    return { excerpt: redacted, detections, truncated: false };
-  }
-  const ellipsis = "…";
-  return {
-    excerpt: redacted.slice(0, Math.max(0, maxLength - ellipsis.length)) + ellipsis,
-    detections,
-    truncated: true,
-  };
-}
+// `prepareExcerpt` and `PreparedExcerpt` are GONE.
+//
+// Their job was to turn raw customer source into an excerpt safe to persist. No
+// excerpt is persisted any more — a finding carries `path`, `startLine` and
+// `endLine`, and the customer reads the source in their own checkout — so a
+// function whose purpose is preparing source for storage has no purpose.
+//
+// Removed rather than deprecated. Ten audits' worth of defects lived in the gap
+// between "we redacted this excerpt" and "this excerpt is safe", and leaving a
+// ready-made helper here is an invitation to reopen it.
 
 export type ExcerptRejection = {
   path: string;
@@ -399,11 +385,12 @@ export type ExcerptRejection = {
 /**
  * Walks a JSON-shaped value and reports every string still holding a secret.
  *
- * The report validator runs this over the entire assembled report rather than
- * trusting that each excerpt went through `prepareExcerpt`. A finding's excerpt
- * is not the only place raw source reaches a report — a recommendation or a
- * rationale can quote a line just as easily — so the check is applied to the
- * artifact as a whole, at the last moment before it is frozen.
+ * DEFENCE IN DEPTH, not the safety argument.
+ *
+ * The artifact carries no source excerpt at all now, so this is no longer what
+ * proves a deliverable is safe — the absence of the field is. This stays because
+ * a free-text field (a recommendation, a rationale) can still quote a line, and
+ * a second check at the last moment before the artifact is frozen costs nothing.
  */
 export function scanForSecrets(value: unknown, path = "$"): ExcerptRejection[] {
   if (typeof value === "string") {

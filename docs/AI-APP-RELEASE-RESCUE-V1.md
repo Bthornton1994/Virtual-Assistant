@@ -48,7 +48,7 @@ Eight application modules, all pure and deterministic, and the migration chain t
 | --- | --- |
 | `src/lib/release-rescue-rubric.ts` | The frozen, content-hashed rubric: 32 checks across 12 dimensions, 12 of them release-gating |
 | `src/lib/release-rescue-intake.ts` | Offer terms, scope ceiling, service refusals, attestations, retention election |
-| `src/lib/release-rescue-redaction.ts` | Secret detection and fail-closed redaction of evidence excerpts |
+| `src/lib/release-rescue-redaction.ts` | Secret detection, applied to the source the scanner reads transiently and to a report's free text as defence in depth. It no longer prepares excerpts, because none are stored |
 | `src/lib/release-rescue-findings.ts` | The finding contract and the derived severity model |
 | `src/lib/release-rescue-report.ts` | Report schema, deterministic assembly, validation, delivery gate |
 | `src/lib/release-rescue-presentation.ts` | The customer-facing view, built by construction so internal identity cannot leak into it |
@@ -163,7 +163,7 @@ Most validation triggers run `security definer`. The two that make a privilege d
 
 **What the purge removes, and what survives.** The sweep deletes the Release Rescue evidence artifacts, clears the engagement's scope content and attestations, and revokes any live grant. The `release_rescue_reports` **accounting row survives** with its hashes, verdict, and counts. After a purge we can still prove an engagement happened and what verdict was issued while holding none of the customer's source-derived content.
 
-Evidence artifacts are otherwise immutable, which is right for evidence and wrong for a customer's source excerpts after their retention window closes. The migration adds one narrow carve-out to `enforce_evidence_artifact_invariants`: a `DELETE` is permitted only when a transaction-local GUC is set **and** the artifact's `schemaVersion` starts with `release-rescue-`. Both conditions are required, the flag is set only inside the purge function, and `authenticated` holds no `DELETE` grant on that table at all. The proof fixture verifies that a caller who forges the flag still cannot touch another workstream's evidence.
+Evidence artifacts are otherwise immutable, which is right for evidence and wrong for a customer's report body after their retention window closes. The migration adds one narrow carve-out to `enforce_evidence_artifact_invariants`: a `DELETE` is permitted only when a transaction-local GUC is set **and** the artifact's `schemaVersion` starts with `release-rescue-`. Both conditions are required, the flag is set only inside the purge function, and `authenticated` holds no `DELETE` grant on that table at all. The proof fixture verifies that a caller who forges the flag still cannot touch another workstream's evidence.
 
 ## Report schema
 
@@ -228,7 +228,7 @@ Four things carry the security weight, and all four are enforced rather than doc
 
 The posture is conservative: over-redacting costs a reader some context, under-redacting copies a production key into three new places. An allowlist keeps correct patterns readable, because a finding that recommends `process.env.API_KEY` has to be able to show it. Redaction is idempotent and order-independent — a fresh `RegExp` per call, since the module-level `/g` literals carry `lastIndex` that would otherwise leak between calls and make a later redaction miss a match.
 
-Defence in depth: the excerpt schema re-runs detection rather than trusting a flag, and `validateReleaseRescueReport` scans the **entire assembled report** at freeze time. An excerpt is not the only place raw source can reach a report — a recommendation or a rationale can quote a line just as easily.
+Defence in depth: `validateReleaseRescueReport` scans the **entire assembled report** at freeze time. This is no longer what proves a deliverable is safe — the absence of any source-carrying field is — but a recommendation or a rationale is written by a person, and a second look before the artifact is frozen costs nothing.
 
 **2. Deterministic computation.** Coverage, severity counts, blocking count, and verdict are recomputed from the findings in `deriveReportMetrics` and compared against the stored values. Stored values that disagree are hard failures. An executor's self-report is evidence, never truth.
 
@@ -251,15 +251,17 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 | T9 | **Claim inflation in the report or on the marketing surface** | `findProhibitedClaims` enforced in the report validator and exported for the marketing surface, so one list governs both; four literal-true disclaimers | Cursor must actually use the exported list. Called out in the handoff |
 | T10 | **Retention drift** — keeping source longer than the customer agreed | Retention derived from the elected policy; monotonically shortening only; 60-day backstop; idempotent sweep, scheduled by pg_cron where available and by a bearer-authorized route where not | Both schedulers must actually be configured in the deployed environment; the route fails closed (503) when `CRON_SECRET` is unset, which is visible rather than silent |
 | T11 | **Executor output used as authority** | Deterministic code owns every count and the verdict; the Delegation Spec remains the authority ceiling; human signature required for delivery | — |
-| T12 | **Hostile repository content** — zip bombs, enormous files, symlink escapes in uploaded archives | Fail-closed limits on file count, file size, total bytes, archive size, expansion ratio, path depth and path length, applied before anything is read (`release-rescue-snapshot-limits.ts`); excerpt caps bound what reaches a report | The limits are enforced in application code, so they bind the ingestion path this service owns and not a future one that bypasses it |
+| T12 | **Hostile repository content** — zip bombs, enormous files, symlink escapes in uploaded archives | Fail-closed limits on file count, file size, total bytes, archive size, expansion ratio, path depth and path length, applied before anything is read (`release-rescue-snapshot-limits.ts`); no file content reaches a report at all, so hostile content cannot travel through one | The limits are enforced in application code, so they bind the ingestion path this service owns and not a future one that bypasses it |
 
 ## Test plan
 
 **Implemented and passing** — 521 Release Rescue tests across 28 suites (1,189 in the whole repository), 257 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
 
-> **Read the audit-10 section before treating any of this as shippable.** Ten
-> independent audits have run and all ten returned DO_NOT_MERGE. The database
-> authority model has converged; the credential detector has not.
+> **Read *The excerpt decision* before treating any of this as shippable.** Ten
+> independent audits have run and all ten returned DO_NOT_MERGE. The owner has
+> since taken a structural decision that retires the class of defect they kept
+> finding: customer source excerpts are removed from every persisted artifact.
+> Independent QA has not yet audited the result.
 
 These counts are re-measured each pass rather than carried forward. Three successive audits found stale numbers here, and a stale count is a false claim like any other.
 
@@ -267,7 +269,7 @@ These counts are re-measured each pass rather than carried forward. Three succes
 | --- | --- | --- |
 | **Authentication** | The session boundary itself is the existing platform's (`rls.test.ts`, `auth-redirect.test.ts`). This workstream adds identity checks at the authority boundary: the named report reviewer must hold manager authority, verified against `operators` rather than accepted as a user id | QA fixture §4; migration suite |
 | **Authorization** | A customer admin may open an engagement only for their own organization; an ops manager cannot mint an access grant on a customer's behalf; a plain operator cannot issue a report; only a manager may issue or update one; the customer may revoke their own access | QA fixture §1, §3, §4; migration suite |
-| **Secrets** | 15 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; redact-before-truncate so no fragment survives; nested JSON scanning; schema refusal of unredacted excerpts; whole-report scan | `release-rescue-redaction.test.ts` (28), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
+| **Secrets** | Structural first: a finding carries no source, and every source-carrying field name is refused in TypeScript and in PostgreSQL. Then, as defence in depth over free text: 15 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; nested JSON scanning; whole-report scan | `release-rescue-redaction.test.ts` (28), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
 | **Data access** | Organization B reads none of A's engagements or reports; credential-named keys, credential-shaped values, credentialed URLs, over-long windows, and write access all refused; grants are revoke-only and one-way; retention cannot be extended; the purge clears content, keeps accounting, revokes grants, is idempotent, does not reach past its own workstream, and does not leak its flag | `release_rescue_v1_isolation_proof.sql` (45 cases), migration suite (28) |
 | **Report integrity** | Edited severity counts, verdict, coverage, rubric hash, and scope hash all rejected; missing or duplicated assessments and findings rejected; blocking pass on argument alone rejected; finding/assessment contradictions rejected; prohibited claims rejected; non-zero authority rejected; deterministic hashing; delivery gate refuses unsigned or invalid reports | `release-rescue-report.test.ts`, `release-rescue-findings.test.ts`, `demo-fixtures.test.ts` |
 
@@ -1369,6 +1371,104 @@ class, because there is no customer credential in the artifact to leak or to
 redact wrongly. Everything else here is an attempt to make an unbounded text
 scanner precise enough to be safe in both directions at once, and ten audits say
 that is not converging.
+
+## The excerpt decision
+
+**Owner decision, after ten independent audits: a finding POINTS AT source and
+never carries it.** Raw customer source excerpts are removed from every persisted
+artifact and every customer-facing surface.
+
+### What a finding carries now
+
+| Kept | Removed |
+| --- | --- |
+| `path` — the repository-relative file | `excerpt` |
+| `startLine`, `endLine` | any source window |
+| `rubricCheckId` | any raw source text |
+| `severity` (derived, not chosen) | any scanner span exposing source |
+| `whatWeObserved` — the observation | |
+| `recommendation` — what to do about it | |
+
+The customer opens `src/app/api/orders/route.ts:18–27` in their own checkout,
+where the source already is. Nothing diagnostic is lost; the copy is.
+
+### Why this and not another detector round
+
+Ten audits attacked the credential detector whose entire job was making a copied
+excerpt safe to ship. Five consecutive rounds shipped a regression inside the fix
+for the previous round's finding, and the tenth reported the detector **both
+leaking credentials and permanently bricking correct reports in the same commit**
+— a password containing `#`, `&`, `(` or a space reached a `deliverable: true`
+report, while an ordinary two-line auth snippet produced an unclearable hold.
+
+That is not a tuning problem. A text scanner asked for high recall (never leak)
+and high precision (never brick a paid report) over arbitrary customer source,
+where a precision failure is permanent, has no setting that satisfies both. The
+decision removes the requirement rather than the symptom: **there is no customer
+source in the artifact to redact wrongly or to leak.**
+
+### Where it is enforced
+
+Not in one place, and not by blanking a field after assembly.
+
+| Boundary | Mechanism |
+| --- | --- |
+| TypeScript types | `findingLocationSchema` is `{ path, startLine, endLine }`, `.strict()`. Every excerpt site in the repository became a compile error. |
+| Report builders | The assembler passes findings straight through; a location carrying source cannot be constructed. |
+| Schema rejection | `FORBIDDEN_SOURCE_FIELDS` — 22 names, not just `excerpt` — so a legacy caller is refused **by name**, not with "unrecognized key". |
+| Report JSON | The field does not exist to serialize. |
+| Report HTML | The `<pre><code>` block is gone; a test reads `report-view.tsx` and fails if any `location.<forbidden>` reappears. |
+| Database | `20260916050000_..._v8.sql` installs a trigger on `evidence_artifacts` refusing any Release Rescue payload whose findings or locations carry a forbidden key. |
+| Logs and errors | The refusal names the FIELD, never its contents; a test plants a secret and asserts the rejection message does not carry it. |
+| Field policy | No disposition classifies a source-carrying path, asserted rather than assumed. |
+
+The TypeScript list and the SQL list are bound together: a test fails if a name
+refused in one is not refused in the other, because two lists in two languages
+drift apart silently.
+
+### What the scanner still does
+
+It still reads source — transiently, in memory, to find the finding in the first
+place. That was never the problem. What changed is that the text does not travel:
+no excerpt is persisted, returned, logged, or included in a customer artifact.
+
+**Redaction remains defence in depth, and is no longer the safety argument.** It
+runs over a report's free-text fields, which a person writes. If it is wrong there
+the cost is a held report, not a leaked credential, because the field a credential
+would have arrived in no longer exists.
+
+### One field tightened on the way
+
+With the excerpt gone, the widest remaining field shaped like somewhere to put
+source was an assessment's evidence `reference` — 500 characters of unconstrained
+free text for what is meant to be a path or a test id. It is now a single-line
+pointer: no newlines, no control characters, 300 characters. A reference points;
+it does not quote.
+
+`CustomerFindingView.locations[].lines` was renamed to `lineRange` for the same
+reason — `lines` is on the forbidden list, because a `lines` array is how source
+is carried, and a name forbidden in one place should not be legitimate in another.
+
+### Proof
+
+`supabase/qa/release_rescue_excerpt_removal_v8_proof.sql` — **18 live PostgreSQL
+cases**: every forbidden field name refused in a location, a finding-level field
+refused, the refusal carrying the field name and none of the planted content, a
+well-formed report accepted with path, line range, check id, severity, observation
+and remediation all surviving, another workstream's artifacts untouched, and the
+guard confirmed `SECURITY INVOKER`.
+
+`src/lib/__tests__/release-rescue-excerpt-removal.test.ts` — 16 property-shaped
+tests over a generated credential corpus: values carrying punctuation, whitespace,
+quotes, delimiters, comments, multiline carriers, URLs and common-word passwords,
+crossed with all 22 forbidden field names and with real source-file carriers.
+
+### What this does not authorize
+
+Nothing about payment activation, production access, customer intake, deployment,
+or executor authority changes. The engagement remains prepare-only, read-only,
+tenant-isolated, retention-bound, and undeliverable without a named human
+reviewer — all of which this pass re-asserts in tests rather than assuming.
 
 ## What this slice deliberately does not do
 

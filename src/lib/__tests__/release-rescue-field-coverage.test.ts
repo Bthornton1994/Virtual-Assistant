@@ -170,37 +170,22 @@ describe("the gap the audit actually found", () => {
 });
 
 describe("the dispositions mean what they say", () => {
-  it("does not apply the claim guard to quoted customer source", () => {
-    // A finding that quotes `const isSecure = true;` is quoting THEIR code. The
-    // excerpt is checked for credentials and not for claims, because otherwise a
-    // truthful finding about their source would be unreportable.
-    const finding = makeFinding({
-      locations: [
-        {
-          path: "src/auth.ts",
-          startLine: 1,
-          endLine: 1,
-          excerpt: "// this endpoint is secure, do not change",
-        },
-      ],
-    });
-    const report = buildReleaseRescueReport(makeReportInput({ findings: [finding] }));
+  it("no longer has a quoted-customer-source disposition, because there is none", () => {
+    // Two tests lived here: one asserting a finding could quote the customer's
+    // code without the claim guard firing on their words, and one asserting a
+    // credential was scrubbed out of that quote. Both described a field that no
+    // longer exists. A finding cites `path:line`; the customer reads their own
+    // code in their own checkout.
+    const excerptPaths = Object.keys(REPORT_FIELD_POLICY).filter((path) => path.includes("excerpt"));
 
-    expect(checkReportFieldCoverage(report)).toEqual([]);
+    expect(excerptPaths, "REPORT_FIELD_POLICY still classifies an excerpt path").toEqual([]);
   });
 
-  it("still removes a credential from that excerpt", () => {
-    const finding = makeFinding({
-      locations: [
-        { path: "src/auth.ts", startLine: 1, endLine: 1, excerpt: "AKIAIOSFODNN7EXAMPLE" },
-      ],
-    });
-    const report = buildReleaseRescueReport(makeReportInput({ findings: [finding] }));
+  it("keeps the claim guard off a customer's own words where they genuinely appear", () => {
+    // The customer's application description is still theirs and still quoted
+    // verbatim, so the disposition that matters is still exercised.
+    const report = buildReleaseRescueReport(makeReportInput());
 
-    // Redacted at build, so coverage has nothing left to complain about — and
-    // that is the stronger outcome than a coverage failure would have been.
-    expect(JSON.stringify(report)).not.toContain("AKIAIOSFODNN7EXAMPLE");
-    expect(report.unresolvedHolds.length).toBeGreaterThan(0);
     expect(checkReportFieldCoverage(report)).toEqual([]);
   });
 });

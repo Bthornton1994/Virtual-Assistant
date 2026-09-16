@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { identifierString, nonEmptyString } from "@/lib/catalog-evidence-shared";
 import { getRubricCheck, rubricDimensionSchema, type RubricCheck } from "@/lib/release-rescue-rubric";
-import { containsLikelySecret, MAX_EXCERPT_LENGTH } from "@/lib/release-rescue-redaction";
 
 // The finding contract and the severity model.
 //
@@ -154,29 +153,78 @@ export const repositoryPathSchema = identifierString
   .refine((value) => !value.includes("://"), "must be a path, not a URL");
 
 /**
- * An excerpt that has already been through `prepareExcerpt`.
+ * Field names that used to carry customer source, or that an executor might
+ * reach for to smuggle it back in.
  *
- * The refinement re-runs detection rather than trusting a flag: this is the
- * schema boundary where raw customer source would enter our database, so it
- * verifies rather than assumes.
+ * A finding POINTS AT source; it does not carry it. Ten independent audits
+ * turned on a credential detector trying to make a copied source excerpt safe to
+ * ship, and the last of them reported the detector both leaking credentials and
+ * permanently bricking correct reports in the same commit. The excerpt is gone,
+ * so the property is now structural rather than probabilistic: there is no
+ * customer source in the artifact to redact wrongly or to leak.
+ *
+ * `.strict()` below already rejects an unknown key. This list exists so the
+ * refusal NAMES the field, because a legacy caller sending `excerpt` deserves to
+ * be told what changed rather than getting "unrecognized key".
  */
-export const redactedExcerptSchema = z
-  .string()
-  .max(MAX_EXCERPT_LENGTH)
-  .refine((value) => !containsLikelySecret(value), "must be redacted before storage");
+export const FORBIDDEN_SOURCE_FIELDS: readonly string[] = [
+  "excerpt",
+  "excerpts",
+  "snippet",
+  "snippets",
+  "code",
+  "codeSnippet",
+  "source",
+  "sourceText",
+  "sourceWindow",
+  "window",
+  "context",
+  "contextLines",
+  "lines",
+  "content",
+  "body",
+  "raw",
+  "rawSource",
+  "text",
+  "span",
+  "spans",
+  "match",
+  "matchedText",
+];
 
+/**
+ * A finding location: where to look, never what is there.
+ *
+ * `path`, `startLine` and `endLine` are everything a customer needs to open the
+ * file and see the finding for themselves, in their own checkout, where the
+ * source already is. Nothing here is derived from the CONTENT of that file.
+ */
 export const findingLocationSchema = z
   .object({
     path: repositoryPathSchema,
     startLine: z.number().int().min(1).nullable(),
     endLine: z.number().int().min(1).nullable(),
-    excerpt: redactedExcerptSchema.nullable(),
   })
   .strict()
   .refine(
     (location) => location.startLine === null || location.endLine === null || location.endLine >= location.startLine,
     { message: "endLine must not precede startLine", path: ["endLine"] },
   );
+
+/**
+ * Names a forbidden source-carrying field on an object, or null.
+ *
+ * Used at the assembly boundary as well as by the schema, so a caller building a
+ * report through the typed path and a caller arriving through `any` get the same
+ * refusal with the same wording.
+ */
+export function findForbiddenSourceField(value: unknown): string | null {
+  if (value === null || typeof value !== "object") return null;
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    if (FORBIDDEN_SOURCE_FIELDS.includes(key)) return key;
+  }
+  return null;
+}
 
 export const releaseRescueFindingV1Schema = z
   .object({

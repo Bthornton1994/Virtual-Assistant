@@ -86,7 +86,19 @@ export type CustomerFindingView = {
   whatWeObserved: string;
   whyItMatters: string;
   recommendation: string;
-  locations: Array<{ path: string; lines: string | null; excerpt: string | null }>;
+  /**
+   * Where to look, never what is there. A customer opens these in their own
+   * checkout, where the source already is; the artifact does not carry a copy.
+   */
+  /**
+   * `lineRange` rather than `lines`, deliberately.
+   *
+   * `lines` is on the forbidden source-field list — a `lines` array is how source
+   * text is carried — and a field whose name is forbidden elsewhere should not
+   * also be a legitimate field here. This one holds a formatted range like
+   * "18–27", never file content.
+   */
+  locations: Array<{ path: string; lineRange: string | null }>;
   effort: string;
   inRemediationSprintScope: boolean;
   residualUncertainty: string | null;
@@ -223,8 +235,7 @@ export function toCustomerReportView(report: ReleaseRescueReportV1): CustomerRep
       recommendation: finding.recommendation,
       locations: finding.locations.map((location) => ({
         path: location.path,
-        lines: formatLines(location.startLine, location.endLine),
-        excerpt: location.excerpt,
+        lineRange: formatLines(location.startLine, location.endLine),
       })),
       effort: finding.remediationEffort,
       inRemediationSprintScope: finding.inRemediationSprintScope,

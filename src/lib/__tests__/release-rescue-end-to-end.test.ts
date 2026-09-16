@@ -8,7 +8,9 @@ import {
   releaseRescueDeliveryGate,
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
-import { prepareStoredExcerpt, sanitizeReportInput } from "@/lib/release-rescue-pipeline";
+import { releaseRescueFindingV1Schema } from "@/lib/release-rescue-findings";
+import { redactSecrets } from "@/lib/release-rescue-redaction";
+import { sanitizeReportInput } from "@/lib/release-rescue-pipeline";
 import { toCustomerReportView } from "@/lib/release-rescue-presentation";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 import {
@@ -73,8 +75,8 @@ describe("a report built from source containing credentials", () => {
           whyItMatters: `Anyone with repository access has the production database password (${SECRETS.compose}).`,
           recommendation: `Rotate ${SECRETS.compose} and move it to a secret store.`,
           locations: [
-            { path: "docker-compose.yml", startLine: 4, endLine: 6, excerpt: COMPOSE },
-            { path: ".pgpass", startLine: 1, endLine: 1, excerpt: PGPASS },
+            { path: "docker-compose.yml", startLine: 4, endLine: 6 },
+            { path: ".pgpass", startLine: 1, endLine: 1 },
           ],
         }),
       ],
@@ -86,10 +88,13 @@ describe("a report built from source containing credentials", () => {
     assertNothingLeaked(report, "the assembled report");
   });
 
-  it("carries none of them in the stored excerpts specifically", () => {
+  it("carries a usable citation and nothing from the file itself", () => {
+    // The finding points at the file. It does not carry a copy of it, so there
+    // is no per-location text left to check for a leak — which is the change.
     for (const finding of report.findings) {
       for (const location of finding.locations) {
-        assertNothingLeaked(location.excerpt, `excerpt at ${location.path}`);
+        expect(location.path.length, "a finding must still say where to look").toBeGreaterThan(0);
+        expect(Object.keys(location).sort()).toEqual(["endLine", "path", "startLine"]);
       }
     }
   });
@@ -162,19 +167,27 @@ describe("no secret reaches logs or error output", () => {
   });
 });
 
-describe("the excerpt preparation entry point", () => {
-  it("redacts before truncating, so no fragment survives", () => {
-    const { excerpt, classification } = prepareStoredExcerpt(`${"x".repeat(470)}DB_PASSWORD=${SECRETS.compose}`);
+describe("source is inspected transiently and never stored", () => {
+  it("refuses a finding that tries to carry the source it cites", () => {
+    // The whole file above plants five real secrets in a report's free text and
+    // asserts none survives. This asserts the stronger, structural half: the
+    // source those secrets came from cannot enter the artifact at all.
+    for (const raw of [COMPOSE, PGPASS, ENVFILE]) {
+      const parsed = releaseRescueFindingV1Schema.safeParse(
+        makeFinding({
+          locations: [{ path: "docker-compose.yml", startLine: 1, endLine: 6, excerpt: raw } as never],
+        }),
+      );
 
-    expect(excerpt).not.toContain(SECRETS.compose);
-    expect(excerpt).not.toContain(SECRETS.compose.slice(0, 8));
-    expect(classification).toBe("credential_evidence");
+      expect(parsed.success, raw.slice(0, 32)).toBe(false);
+    }
   });
 
-  it("is idempotent", () => {
-    const once = prepareStoredExcerpt(COMPOSE).excerpt;
-
-    expect(prepareStoredExcerpt(once).excerpt).toBe(once);
+  it("still lets the scanner read that source in memory", () => {
+    // Transient inspection is untouched by the decision — the scanner reads the
+    // file to find the finding. What changed is that its text does not travel.
+    expect(redactSecrets(COMPOSE).redacted).not.toContain(SECRETS.compose);
+    expect(redactSecrets(COMPOSE).hadSecrets).toBe(true);
   });
 });
 

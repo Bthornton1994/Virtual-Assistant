@@ -184,6 +184,20 @@ test.describe("AI App Release Rescue offer", () => {
     await expect(page.locator("body")).not.toContainText("demo-operator");
   });
 
+  test("sample report renders no block of customer source", async ({ page }) => {
+    // The owner decision, checked in the browser rather than only in the unit
+    // suite: a finding cites `path:line` and the customer reads their own code in
+    // their own checkout. The report page must not render a source block at all.
+    await page.goto("/ai-app-release-rescue/demo/report");
+
+    // The finding citations are present and useful.
+    await expect(page.getByText("src/app/expenses/[id]/page.tsx").first()).toBeVisible();
+
+    // And no <pre><code> block appears in the readable view. The JSON view has
+    // one by design, which is why this asserts on the readable view only.
+    await expect(page.locator("pre code")).toHaveCount(0);
+  });
+
   test("sample report offers its JSON without internal identity", async ({ page }) => {
     await page.goto("/ai-app-release-rescue/demo/report?view=json");
     const json = page.locator("pre code");
