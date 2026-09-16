@@ -15,7 +15,12 @@ import {
   RELEASE_RESCUE_OFFER_VERSION,
   type ReleaseRescueScope,
 } from "@/lib/release-rescue-intake";
-import { checkReportFieldCoverage } from "@/lib/release-rescue-field-policy";
+import {
+  REPORT_FIELD_POLICY,
+  checkReportFieldCoverage,
+  enumerateStringFields,
+  generatedValueLooksLikeProse,
+} from "@/lib/release-rescue-field-policy";
 import {
   assertNoCredentialMaterial,
   sanitizeReportInput,
@@ -724,7 +729,7 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
   ];
   const reportScope = toReportScope(input.scope);
 
-  return {
+  const assembled: ReleaseRescueReportV1 = {
     schemaVersion: RELEASE_RESCUE_REPORT_SCHEMA_VERSION,
     reportId: input.reportId,
     engagementId: input.engagementId,
@@ -761,6 +766,62 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
     reviewedBy: input.reviewedBy,
     generatedAt: input.generatedAt,
   };
+
+  // THE GENERAL CHECK, on the finished artifact rather than on a list of fields.
+  //
+  // Four audits in a row found this defect by finding the next `generated` field
+  // along — the six catalog codes, then `rubricCheckId`, then four more, then
+  // `engagementId`, which is TOP-LEVEL and which every previous fix's field list
+  // and path filter excluded. It rendered "This app is secure and free of
+  // vulnerabilities." as the customer report's header with the gate wide open.
+  //
+  // Enumerating fields has now failed four times, so this does not enumerate
+  // them. It walks the assembled report and checks every string the policy calls
+  // `generated`, which is the same set the policy EXEMPTS from the
+  // prohibited-claim guard and the credential check. A field is covered because
+  // of what it contains, not because someone remembered it.
+  assertGeneratedFieldsAreNotProse(assembled);
+
+  return assembled;
+}
+
+/**
+ * Refuses a report whose `generated` fields contain prose.
+ *
+ * `generated` is the policy's largest disposition and its strongest claim: the
+ * value is produced by our own deterministic code — an id, a hash, a count, an
+ * enum value, a catalog code or a timestamp — so it is neither attacker-
+ * influenced nor worth guarding. On the strength of that, all 50 of those paths
+ * skip both `findProhibitedClaims` and the credential check.
+ *
+ * None of those value kinds contains whitespace. A sentence cannot avoid it. So
+ * whitespace is a complete test for "this is not what the policy says it is",
+ * and it needs no list of field names to apply.
+ *
+ * `GENERATED_PROSE_PATHS` holds the one justified exception.
+ */
+export function assertGeneratedFieldsAreNotProse(report: ReleaseRescueReportV1): void {
+  const offenders: string[] = [];
+
+  for (const leaf of enumerateStringFields(report)) {
+    const rule = REPORT_FIELD_POLICY[leaf.normalized];
+    if (!rule) {
+      // An unclassified field. The coverage contract calls this a hard failure
+      // and it is one here too: an unknown field is guarded by nobody.
+      offenders.push(`${leaf.path} (unclassified)`);
+      continue;
+    }
+    if (rule.disposition !== "generated") continue;
+    if (generatedValueLooksLikeProse(leaf.normalized, leaf.value)) {
+      offenders.push(leaf.path);
+    }
+  }
+
+  if (offenders.length > 0) {
+    throw new Error(
+      `Release Rescue report assembly: these fields are classified "generated" — an id, hash, count, enum value, code or timestamp — but hold text: ${offenders.join(", ")}. A generated field is exempt from the prohibited-claim guard and the credential check, so it may not contain prose. The offending values are withheld from this message deliberately.`,
+    );
+  }
 }
 
 // `assertProseDescribesWithoutQuoting` is GONE, and so is the module behind it.

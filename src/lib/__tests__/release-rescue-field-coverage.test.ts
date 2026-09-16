@@ -81,6 +81,41 @@ describe("an unclassified field is a hard failure, not a pass", () => {
     expect(failures[0].reason).toContain("No field-coverage decision is recorded");
   });
 
+  it("refuses an unclassified field INSIDE an array, not only at the top level", () => {
+    // An audit mutated `enumerateStringFields` to stop walking arrays entirely —
+    // `return []` in the array branch — and every one of the 635 Release Rescue
+    // tests stayed green. That silently removes `findings[]`, `assessments[]`,
+    // `unresolvedHolds[]`, `clearedSecretHolds[]` and `limitationCodes[]` from
+    // the coverage contract, including its headline fail-closed property, and
+    // the only test of that property planted its field at the TOP LEVEL.
+    const report = {
+      ...SAMPLE_REPORT,
+      findings: SAMPLE_REPORT.findings.map((finding, index) =>
+        index === 0 ? { ...finding, marketingTagline: "Your application is secure." } : finding,
+      ),
+    } as unknown;
+
+    const failures = checkReportFieldCoverage(report);
+
+    expect(failures.map((failure) => failure.path)).toContain("$.findings[0].marketingTagline");
+    expect(failures[0].reason).toContain("No field-coverage decision is recorded");
+  });
+
+  it("walks nested arrays too, so a field two levels down is not invisible", () => {
+    const report = {
+      ...SAMPLE_REPORT,
+      findings: SAMPLE_REPORT.findings.map((finding, index) =>
+        index === 0
+          ? { ...finding, locations: finding.locations.map((l) => ({ ...l, sourceWindow: "const k = 1;" })) }
+          : finding,
+      ),
+    } as unknown;
+
+    expect(checkReportFieldCoverage(report).map((f) => f.path)).toContain(
+      "$.findings[0].locations[0].sourceWindow",
+    );
+  });
+
   it("refuses an unclassified field even when its text is harmless", () => {
     // Coverage is about the DECISION, not about whether today's value happens to
     // be benign. A field that is fine today is guarded tomorrow by nobody.

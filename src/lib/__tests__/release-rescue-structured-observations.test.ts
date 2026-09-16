@@ -32,6 +32,7 @@ import {
   validateFinding,
 } from "@/lib/release-rescue-findings";
 import {
+  assertGeneratedFieldsAreNotProse,
   buildReleaseRescueReport,
   deriveReportMetrics,
   hashReleaseRescueReport,
@@ -41,8 +42,11 @@ import {
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
 import {
+  GENERATED_PROSE_PATHS,
   REPORT_FIELD_POLICY,
   checkReportFieldCoverage,
+  generatedValueLooksLikeProse,
+  normalizeFieldPath,
   enumerateSchemaStringPaths,
   enumerateStringFields,
 } from "@/lib/release-rescue-field-policy";
@@ -1165,62 +1169,181 @@ describe("9. a code field holds a code, and nothing else, on the production path
     expect(JSON.stringify(view)).not.toContain("free of vulnerabilities");
   });
 
-  it("lets no `generated` field carry a sentence to the customer, whatever the field", () => {
-    // The GENERAL form of the defect, so the next field cannot repeat it.
+  it("lets no `generated` field hold prose, at ANY path, driven by the artifact", () => {
+    // Four audits found this defect four times by finding the next `generated`
+    // field along, and each fix enumerated fields:
     //
-    // Three rounds running, a fix was applied to a named list of fields and an
-    // audit found the next field over. First it was the prose fields; then the
-    // six catalog codes; then `rubricCheckId`, which sat three lines from the
-    // lines the previous fix rewrote. Enumerating fields by hand has now failed
-    // three times, so this enumerates them from the POLICY.
+    //   14. the six catalog codes were unconstrained
+    //   15. `findings[].rubricCheckId` was not on the list that fixed them
+    //    -   four more found by writing a general check instead of extending it
+    //   16. `$.engagementId` — TOP-LEVEL, which the "general" check's path filter
+    //       `/^\$\.(findings|assessments)\[\]\.[A-Za-z]+$/` excluded along with 34
+    //       other generated paths. It rendered "This app is secure and free of
+    //       vulnerabilities." as the customer report's header line with
+    //       `hardGatePass` true and the delivery gate open.
     //
-    // `generated` means "exempt from the prohibited-claim guard and the
-    // credential check". The property that exemption needs is not that some
-    // particular function refuses the value — it is that the value cannot reach
-    // the customer. So that is what this asserts, for every `generated` string
-    // field, by planting a sentence and looking at the rendered view.
-    const SENTENCE = "The production admin password is Xk92mQvn7Lz and this app is secure.";
+    // That filter was itself a hand-written list, which is why it failed the
+    // same way. This test has no path filter. It takes EVERY generated path the
+    // policy declares, plants a sentence at it in a real report, and asserts the
+    // assembler refuses it.
+    const SENTENCE = "This app is secure and free of vulnerabilities.";
 
-    // Every `generated` path that is a string leaf of a finding or an assessment,
-    // read off the policy rather than listed here.
     const GENERATED = Object.entries(REPORT_FIELD_POLICY)
       .filter(([, rule]) => rule.disposition === "generated")
-      .map(([path]) => path)
-      .filter((path) => /^\$\.(findings|assessments)\[\]\.[A-Za-z]+$/.test(path));
+      .map(([path]) => path);
 
-    expect(GENERATED.length, "the policy walk found nothing, so this proves nothing").toBeGreaterThan(8);
+    expect(GENERATED.length, "the policy walk found nothing, so this proves nothing").toBeGreaterThan(40);
 
-    const leaked: string[] = [];
-
-    for (const path of GENERATED) {
-      const key = path.split(".").pop()!;
-      const onFinding = path.startsWith("$.findings");
-      const input = onFinding
-        ? { ...makeReportInput(), findings: [{ ...makeFinding(), [key]: SENTENCE }] }
-        : {
-            ...makeReportInput(),
-            assessments: makeReportInput().assessments.map((assessment, index) =>
-              index === 0 ? { ...assessment, [key]: SENTENCE } : assessment,
-            ),
-          };
-
-      let report: ReturnType<typeof buildReleaseRescueReport> | null = null;
-      try {
-        report = buildReleaseRescueReport(input as never);
-      } catch {
-        continue; // refused before an artifact existed, which is the best outcome
+    // Plant at a path by walking the artifact to the matching leaf. Works for
+    // any depth, so there is nothing to keep in step with the policy.
+    function plant(value: unknown, path: string, target: string): boolean {
+      if (Array.isArray(value)) {
+        // An array of bare strings — `limitationCodes[]` — is a leaf itself, so
+        // it needs handling here rather than in the object branch below. Missing
+        // this is how a path filter starts: the check quietly stops covering a
+        // shape, and nothing says so.
+        for (let index = 0; index < value.length; index += 1) {
+          const here = `${path}[${index}]`;
+          if (typeof value[index] === "string" && normalizeFieldPath(here) === target) {
+            value[index] = SENTENCE;
+            return true;
+          }
+          if (plant(value[index], here, target)) return true;
+        }
+        return false;
       }
-
-      // It built. Then the sentence must not be anywhere a customer can see it.
-      if (JSON.stringify(toCustomerReportView(report)).includes("Xk92mQvn7Lz")) {
-        leaked.push(`${path} (rendered)`);
+      if (value === null || typeof value !== "object") return false;
+      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        const here = `${path}.${key}`;
+        if (typeof entry === "string" && normalizeFieldPath(here) === target) {
+          (value as Record<string, unknown>)[key] = SENTENCE;
+          return true;
+        }
+        if (plant(entry, here, target)) return true;
       }
+      return false;
     }
 
-    expect(
-      leaked,
-      `${leaked.length} generated fields carried a sentence into the customer view`,
-    ).toEqual([]);
+    // A report rich enough to contain every path the policy declares: a finding
+    // with a residual uncertainty, a raised hold, a clearance, an engagement
+    // limitation, and executor provenance. The `unreached` assertion below is
+    // what keeps this fixture honest — a policy path this report cannot produce
+    // means the fixture is too thin or the policy describes a field that does
+    // not exist, and either way the test would silently stop covering it.
+    function richReport() {
+      return JSON.parse(
+        JSON.stringify(
+          buildReleaseRescueReport(
+            makeReportInput({
+              // A credential here raises an `unresolvedHolds[]` entry, which is
+              // the only way those paths appear in an artifact at all.
+              reviewedBy: {
+                operatorUserId: "op-1",
+                displayName: "Ops Manager DB_PASSWORD=Xk92mQvn7Lz",
+                reviewedAt: "2026-09-16T10:00:00.000Z",
+              },
+              preparedBy: {
+                executorKey: "sf-implementer",
+                executorKind: "agent",
+                provider: "cursor",
+                protocolVersion: "software-factory/v1",
+                modelId: "grok-4.6",
+              },
+              findings: [
+                makeFinding({
+                  confidence: "likely",
+                  uncertaintyCode: "static_read_only_no_runtime_confirmation",
+                }),
+              ],
+              assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+                outcome: "fail",
+                rationaleCode: "control_missing_on_a_reachable_path",
+              }),
+              limitationCodes: ["customer_excluded_part_of_the_repository"],
+              clearedSecretHolds: [
+                {
+                  path: "$.reviewedBy.displayName",
+                  clearedContentHash: "a".repeat(64),
+                  clearedBy: "ops-1",
+                  clearedAt: "2026-09-16T09:00:00.000Z",
+                  reasonCode: "value_is_a_placeholder_not_a_credential",
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+    }
+
+    const unreached: string[] = [];
+    const accepted: string[] = [];
+
+    for (const path of GENERATED) {
+      // The one justified exception: a fixed sentence this codebase owns, which
+      // a caller cannot supply because the sanitiser overwrites the holds array.
+      if (path in GENERATED_PROSE_PATHS) continue;
+
+      const tampered = richReport();
+      if (!plant(tampered, "$", path)) {
+        unreached.push(path);
+        continue;
+      }
+
+      // `assertGeneratedFieldsAreNotProse` runs on the ASSEMBLED artifact, so
+      // this is the check the production path actually performs.
+      let refused = false;
+      try {
+        assertGeneratedFieldsAreNotProse(tampered);
+      } catch {
+        refused = true;
+      }
+      if (!refused) accepted.push(path);
+    }
+
+    expect(accepted, `${accepted.length} generated paths accepted a sentence`).toEqual([]);
+    // Every path the policy declares must be reachable in a real report, or the
+    // policy has an entry for a field that does not exist.
+    expect(unreached, `${unreached.length} generated paths could not be reached in a real report`).toEqual([]);
+  });
+
+  it("refuses the audit's own payload through buildReleaseRescueReport", () => {
+    // The end-to-end form of the same thing, on the exact field and value that
+    // audit 16 delivered: `engagementId` carrying the prohibited claim, through
+    // the supported entry point.
+    let message = "(no refusal)";
+    try {
+      buildReleaseRescueReport(
+        makeReportInput({ engagementId: "This app is secure and free of vulnerabilities." }) as never,
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).not.toBe("(no refusal)");
+    expect(message).toContain("$.engagementId");
+    expect(message).not.toContain("free of vulnerabilities");
+
+    // And the credential form, which the scanner does not detect in prose.
+    expect(() =>
+      buildReleaseRescueReport(
+        makeReportInput({ engagementId: "The production admin password is Xk92mQvn7Lz" }) as never,
+      ),
+    ).toThrow(/\$\.engagementId/);
+  });
+
+  it("still accepts every identifier production actually mints", () => {
+    // The other direction. A rule that refuses real ids is worse than the hole.
+    for (const id of [
+      `rescue_${"0123abcd-1234-5678-9abc-def012345678"}`,
+      "rep-001",
+      "eng-001",
+      "run-001",
+      "org-acme",
+      "2026-09-16T09:00:00.000Z",
+      "a".repeat(64),
+    ]) {
+      expect(generatedValueLooksLikeProse("$.engagementId", id), id).toBe(false);
+    }
   });
 
   it("keeps the field-coverage exemption honest", () => {
@@ -1252,6 +1375,89 @@ describe("9. a code field holds a code, and nothing else, on the production path
         limitationCodes: ["not_a_real_limitation_code"],
       } as never),
     ).toThrow(/must hold a code from their catalog/);
+  });
+
+  it("refuses a registry miss that has NO whitespace, so the general check cannot shadow it", () => {
+    // Why this test exists, and why it is separate from the ones above.
+    //
+    // `assertGeneratedFieldsAreNotProse` catches any generated value containing
+    // whitespace, which is a strong general property — and it made four of the
+    // specific checks untested overnight. A mutation run measured it: removing
+    // the `rubricCheckId`, `assessments[].checkId`, `findingId` or `confidence`
+    // check killed ZERO tests, because every test's payload was a sentence and
+    // the general check caught it first.
+    //
+    // That is exactly the trap this suite fell into once before, when adding a
+    // runtime guard made the schema enums untested. Defence in depth must not
+    // become the only defence by accident.
+    //
+    // So each payload here is SPACE-FREE and therefore invisible to the general
+    // check. Only the specific registry or shape check can refuse it.
+    const CASES: ReadonlyArray<
+      readonly [string, string, (input: ReturnType<typeof makeReportInput>, value: string) => unknown]
+    > = [
+      ["findings[0].rubricCheckId", "authz.not_a_real_check", (input, value) => ({
+        ...input,
+        findings: [{ ...makeFinding(), rubricCheckId: value }],
+      })],
+      ["assessments[0].checkId", "authz.not_a_real_check", (input, value) => ({
+        ...input,
+        assessments: input.assessments.map((a, i) => (i === 0 ? { ...a, checkId: value } : a)),
+      })],
+      ["findings[0].findingId", "-starts-with-punctuation", (input, value) => ({
+        ...input,
+        findings: [{ ...makeFinding(), findingId: value }],
+      })],
+      ["findings[0].confidence", "veryconfident", (input, value) => ({
+        ...input,
+        findings: [{ ...makeFinding(), confidence: value }],
+      })],
+      ["findings[0].remediationEffort", "enormous", (input, value) => ({
+        ...input,
+        findings: [{ ...makeFinding(), remediationEffort: value }],
+      })],
+      ["findings[0].dimension", "invented_dimension", (input, value) => ({
+        ...input,
+        findings: [{ ...makeFinding(), dimension: value }],
+      })],
+      ["findings[0].observationCode", "authz.a_plausible_code_that_does_not_exist", (input, value) => ({
+        ...input,
+        findings: [{ ...makeFinding(), observationCode: value }],
+      })],
+      ["findings[0].remediationCode", "do_something_plausible", (input, value) => ({
+        ...input,
+        findings: [{ ...makeFinding(), remediationCode: value }],
+      })],
+      ["limitationCodes[0]", "not_a_real_limitation_code", (input, value) => ({
+        ...input,
+        limitationCodes: [value],
+      })],
+    ];
+
+    for (const [field, value, mutate] of CASES) {
+      // The guard on the guard: a planted value containing whitespace would be
+      // caught by the general prose check, and this test would prove nothing
+      // about the specific one. Asserted on the planted VALUE, not on the whole
+      // serialised payload — an earlier version checked the payload and matched
+      // unrelated fixture text, which is the same mistake one level down.
+      expect(/\s/.test(value), `${field}: the planted value must be space-free`).toBe(false);
+
+      const payload = mutate(makeReportInput(), value);
+      let message = "(no refusal)";
+      try {
+        buildReleaseRescueReport(payload as never);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message, field).not.toBe("(no refusal)");
+      expect(message, field).toContain(field);
+      // And it is the SPECIFIC check that spoke, not the prose check — which is
+      // the whole point of this test.
+      expect(message, `${field} must be refused by its registry check, not the prose check`).not.toContain(
+        "but hold text",
+      );
+    }
   });
 
   it("refuses a code-shaped string that is simply not in the catalog", () => {

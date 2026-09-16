@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 635 Release Rescue tests across 30 suites (1,311 in the whole repository, of which 8 fail for an environmental reason recorded below), 356 live database cases across twelve proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 640 Release Rescue tests across 30 suites (1,316 in the whole repository, of which 8 fail for an environmental reason recorded below), 361 live database cases across twelve proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -1913,9 +1913,11 @@ cheapest:
   sentence cannot be code-shaped, which is the property that was missing.
 
 **And the tests that should have caught it now do.** The audit ran six mutations
-that delete the mechanism outright and killed **zero** of 623 tests. An
-eleven-mutation harness now runs against the fix; the baseline is 0 failures and
-**every one of the eleven goes red**, including each of the original six. Two of
+that delete the mechanism outright and killed **zero** of 623 tests. A mutation
+harness now runs against the fix — 18 mutations at the time of writing, since
+grown — with a baseline of 0 failures; every one goes red in vitest except the
+type-layer reverts, which fail `tsc` instead, and that includes each of the
+original six. Two of
 those assertions exist *only* because the first fix made them pass for the wrong
 reason: widening the schema enum killed nothing once the runtime guard was added,
 so defence in depth had quietly become the only defence. The schema is now
@@ -1966,6 +1968,82 @@ across three specs). `excerpt-removal` was recorded as 30 tests and is 37. And
 the type layer was asserted with `as never`, which compiles whether or not the
 type refuses the value — it is `@ts-expect-error` now, so reverting `FindingFacts`
 to `string` fails the build.
+
+### What the sixteenth audit found: the level above the fix
+
+The fifteenth audit's findings were closed and the sixteenth verified them. It
+then found the same defect at the level **above** `findings[]` and
+`assessments[]`.
+
+`$.engagementId` is `identifierString.max(100)`, which forbids only leading and
+trailing whitespace. Internal spaces and a full sentence are type-legal with no
+cast. It is classified `generated` — *"An identifier this codebase mints"* — and
+nothing minted it or checked it. It is rendered as **the line directly under the
+report's heading**, and carried into the JSON download.
+
+Reproduced, through the supported entry point:
+
+```
+engagementId = "This app is secure and free of vulnerabilities."
+  checkReportFieldCoverage  -> []
+  hardGatePass              -> true
+  deliverable               -> true
+  customer view header      -> "This app is secure and free of vulnerabilities."
+```
+
+That is the sentence `findProhibitedClaims` exists to forbid, on a $299
+deliverable, with the delivery gate open. The same field carried a credential in
+prose form, which the scanner does not classify. Nine more fields of the same
+class — `reportId`, `runId`, `organizationId`, all of `preparedBy.*`,
+`reviewedBy.operatorUserId`, `clearedSecretHolds[].clearedBy` — accepted a
+sentence and reached storage.
+
+**The check that was supposed to end this pattern was itself a hand-written
+list.** The fifteenth round replaced a field list with what the documentation
+called a general check driven by the policy. It was driven by the policy through
+a path filter:
+
+```ts
+.filter((path) => /^\$\.(findings|assessments)\[\]\.[A-Za-z]+$/.test(path))
+```
+
+Measured: **15 of 50** `generated` paths selected, **35 excluded** — every
+top-level field, all of `preparedBy`, all of the holds, `limitationCodes[]`, the
+nested evidence kinds. `engagementId` was one of the 35. A regex over path shapes
+is a hand-written list with extra steps, and it failed the same way.
+
+**What replaced it is a property of the value, not a list of names.**
+
+`generated` means the value is produced by our own deterministic code: an id, a
+hash, a count, an enum value, a catalog code or a timestamp. **None of those
+contains whitespace, and a sentence cannot avoid it.** So
+`assertGeneratedFieldsAreNotProse` walks the assembled artifact and refuses any
+`generated` string containing whitespace — no field list, no path filter, and it
+covers a field the day someone classifies it because it never looks at names at
+all. One exception exists, `$.unresolvedHolds[].reason`, a fixed sentence this
+module owns that no caller can supply; it is named in `GENERATED_PROSE_PATHS`
+with its justification.
+
+The test that pins it plants a sentence at **every** generated path the policy
+declares, by walking the artifact to the matching leaf, and additionally asserts
+that every declared path is *reachable* in a real report — so a fixture too thin
+to exercise a path is a failure rather than a silent gap.
+
+**A trap this created, and how it is closed.** Adding a strong general check made
+four specific checks untested overnight: removing the `rubricCheckId`,
+`assessments[].checkId`, `findingId` or `confidence` check killed zero tests,
+because every existing payload was a sentence and the general check caught it
+first. That is the same shape as the earlier round where a runtime guard made the
+schema enums untested. A separate test now plants **space-free** registry misses
+(`authz.not_a_real_check`, `veryconfident`, `enormous`) which the general check
+cannot see, and asserts the specific check is what refuses them.
+
+**Also fixed from that audit**: `enumerateStringFields` could stop walking arrays
+entirely with all 640 tests green — the only fail-closed test planted its field
+at the top level, so two tests now plant inside an array and inside a nested
+array. The v11 proof never exercised the two fields v11 was extended for; it has
+five new cases and is 29. And the doc said "eleven-mutation harness" while the PR
+said 18.
 
 ### The database half
 

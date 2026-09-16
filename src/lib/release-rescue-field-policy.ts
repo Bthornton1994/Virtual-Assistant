@@ -234,6 +234,46 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
   "$.reviewedBy.reviewedAt": { disposition: "generated", because: "A timestamp this codebase writes." },
 } as const;
 
+/**
+ * The `generated` paths whose value is legitimately a SENTENCE.
+ *
+ * `generated` means "produced by our own deterministic code: ids, hashes,
+ * counts, enum values, timestamps" — and none of those contains a space. That
+ * turns out to be a complete and checkable property, which is worth far more
+ * than it sounds, because four audits in a row found the same defect by finding
+ * the next `generated` field along:
+ *
+ *   14. the six catalog codes were unconstrained
+ *   15. `findings[].rubricCheckId` was not on the list that fixed them
+ *    -   `findingId`, `dimension`, `confidence`, `remediationEffort` — found by
+ *        writing a general check rather than extending the list
+ *   16. `$.engagementId` — a TOP-LEVEL field, which the "general" check's path
+ *        filter excluded along with 34 others. It rendered "This app is secure
+ *        and free of vulnerabilities." as the customer report's header line,
+ *        with `hardGatePass` true and the delivery gate open.
+ *
+ * Each round enumerated fields. This does not: `assertGeneratedFieldsAreNotProse`
+ * walks the assembled artifact and checks every `generated` string it finds, so
+ * a field is covered because of what it CONTAINS rather than because someone
+ * remembered to list it.
+ *
+ * This set is the exception list, and it is deliberately tiny and justified.
+ * Adding to it is how the property would rot, so each entry says why.
+ */
+export const GENERATED_PROSE_PATHS: Readonly<Record<string, string>> = {
+  // One of two fixed sentences this module owns, written by `sanitizeReportInput`
+  // and stored so the customer can be told why their report is held. A caller
+  // cannot supply it: `withSanitizedHolds` overwrites whatever a caller passed.
+  "$.unresolvedHolds[].reason":
+    "A fixed sentence this codebase owns, written by the sanitiser and not by any caller.",
+};
+
+/** Whether a `generated` value is prose where prose is not expected. */
+export function generatedValueLooksLikeProse(normalizedPath: string, value: string): boolean {
+  if (normalizedPath in GENERATED_PROSE_PATHS) return false;
+  return /\s/.test(value);
+}
+
 export type FieldLeaf = { path: string; normalized: string; value: string };
 
 /**
@@ -308,6 +348,21 @@ export function checkReportFieldCoverage(report: unknown): CoverageFailure[] {
         }
         break;
       case "generated":
+        // A `generated` value is an id, a hash, a count, an enum value, a code
+        // or a timestamp. None of those contains whitespace, and a sentence
+        // cannot avoid it. See `GENERATED_PROSE_PATHS` for why this check is
+        // here rather than a longer list of field names.
+        //
+        // This runs in the coverage contract as defence in depth. The check that
+        // matters is `assertGeneratedFieldsAreNotProse` at the assembly
+        // boundary, because this function has no production call site.
+        if (generatedValueLooksLikeProse(leaf.normalized, leaf.value)) {
+          failures.push({
+            path: leaf.path,
+            reason: `"${leaf.normalized}" is classified generated — an id, hash, count, enum value, code or timestamp — but its value contains whitespace, so it is text. A generated field is exempt from the prohibited-claim guard and the credential check, and that exemption is only sound while the value really is generated.`,
+          });
+        }
+        break;
       case "verbatim_approved":
         break;
     }

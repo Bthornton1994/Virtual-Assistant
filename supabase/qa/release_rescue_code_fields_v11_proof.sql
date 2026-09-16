@@ -171,6 +171,49 @@ select rrv11.expect_refusal(
             '["This review is a penetration test and certifies the application is secure and vulnerability free."]'::jsonb));
 $q$);
 
+-- The two IDENTIFIER fields v11 was extended for. An audit measured that
+-- deleting either from `release_rescue_payload_bad_codes` left this proof AND
+-- all 635 unit tests green — only the migration's own inline assertion caught
+-- it. A guard with no proof case is a guard nobody is watching.
+
+select rrv11.expect_refusal(
+  'a sentence in findings[].rubricCheckId is refused',
+  'must hold a catalog code',
+  $q$
+  insert into public.evidence_artifacts (organization_id, run_id, kind, summary, content_hash, payload)
+  values ('bb000000-0000-0000-0000-0000000000b1', 'be000000-0000-0000-0000-0000000000b1',
+          'observation', 'audit16 rubricCheckId', repeat('c', 64),
+          jsonb_set(rrv11.report(), array['findings', '0', 'rubricCheckId'],
+            '"The production admin password is Xk92mQvn7Lz and this app is secure."'::jsonb));
+$q$);
+
+select rrv11.expect_refusal(
+  'a prohibited claim in assessments[].checkId is refused',
+  'must hold a catalog code',
+  $q$
+  insert into public.evidence_artifacts (organization_id, run_id, kind, summary, content_hash, payload)
+  values ('bb000000-0000-0000-0000-0000000000b1', 'be000000-0000-0000-0000-0000000000b1',
+          'observation', 'audit16 checkId', repeat('d', 64),
+          jsonb_set(rrv11.report(), array['assessments', '0', 'checkId'],
+            '"This review is a penetration test and certifies the app is secure."'::jsonb));
+$q$);
+
+do $$
+begin
+  perform rrv11.assert('a real rubric id is still accepted, so the rule is not over-strict',
+    cardinality(public.release_rescue_payload_bad_codes(
+      jsonb_set(rrv11.report(), array['findings', '0', 'rubricCheckId'],
+                '"authz.object_level_authorization"'::jsonb))) = 0);
+  perform rrv11.assert('a missing rubricCheckId is refused',
+    cardinality(public.release_rescue_payload_bad_codes(
+      jsonb_set(rrv11.report(), array['findings', '0'],
+                (rrv11.report()->'findings'->0) - 'rubricCheckId'))) > 0);
+  perform rrv11.assert('a missing assessments[].checkId is refused',
+    cardinality(public.release_rescue_payload_bad_codes(
+      jsonb_set(rrv11.report(), array['assessments', '0'],
+                (rrv11.report()->'assessments'->0) - 'checkId'))) > 0);
+end $$;
+
 select rrv11.expect_refusal(
   'a sentence in clearedSecretHolds[].reasonCode is refused',
   'must hold a catalog code',
@@ -232,7 +275,7 @@ declare
     'x'
   ];
   v_field text;
-  v_fields text[] := array['observationCode', 'remediationCode', 'uncertaintyCode'];
+  v_fields text[] := array['observationCode', 'remediationCode', 'uncertaintyCode', 'rubricCheckId'];
   v_checked integer := 0;
   v_accepted text[] := '{}';
   v_payload jsonb;
