@@ -14,19 +14,33 @@ import {
   SOFTWARE_FACTORY_CONNECTORS,
   SOFTWARE_FACTORY_CURSOR_EXECUTION_SCHEMA_VERSION,
   SOFTWARE_FACTORY_EVIDENCE_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_FORBIDDEN_ACTIONS,
   SOFTWARE_FACTORY_INTAKE_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_LIFECYCLE_STATUSES,
+  SOFTWARE_FACTORY_OWNER_DECISION_SCHEMA_VERSION,
   SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION,
   SOFTWARE_FACTORY_RECEIPT_SCHEMA_VERSION,
   SOFTWARE_FACTORY_RUN_INPUT,
+  canIssueSoftwareFactoryReceipt,
+  canOperateSoftwareFactory,
+  canProvisionSoftwareFactory,
+  canSubmitSoftwareFactoryIntake,
   canTransitionSoftwareFactory,
   evaluateAcceptance,
+  forbiddenActionBlockedMessage,
   freezeEvidenceRecord,
   hashSoftwareFactoryPacket,
+  isReservedSoftwareFactoryEvidenceSchema,
   isSoftwareFactorySpec,
+  mapFactoryStatusToWorkstreamRun,
   packetClaimsSelfAuthorization,
+  rejectSecrets,
+  secretLikePaths,
   softwareFactoryConnectorCatalog,
   softwareFactoryStaffControlsOpen,
+  validateSoftwareFactoryIntake,
   validateSoftwareFactoryPacket,
+  type SoftwareFactoryLifecycleStatus,
 } from "@/lib/software-factory-run-manager";
 import {
   attachSoftwareFactoryEvidence,
@@ -1014,5 +1028,92 @@ describe("Software Factory reserved-writer accept gates", () => {
         now: NOW,
       }).failures.join(" "),
     ).toMatch(/packet hash/);
+  });
+});
+
+describe("Software Factory authority and intake fail-closed", () => {
+  it("rejects intake that omits owner_acceptance", () => {
+    const parsed = validateSoftwareFactoryIntake(intake({ approvalRequirements: ["merge_pr"] }));
+    expect(parsed.ok).toBe(false);
+    expect(parsed.ok ? "" : parsed.failures.join(" ")).toMatch(/owner_acceptance/);
+  });
+
+  it("maps every factory lifecycle status onto a workstream run status", () => {
+    const expected = {
+      intake: "planned",
+      discovery: "planned",
+      planned: "planned",
+      ready: "running",
+      in_progress: "running",
+      blocked: "running",
+      pr_open: "running",
+      verification: "awaiting_verification",
+      awaiting_owner: "awaiting_verification",
+      accepted: "verified",
+      rejected: "failed",
+      deferred: "cancelled",
+      cancelled: "cancelled",
+    } as const satisfies Record<SoftwareFactoryLifecycleStatus, string>;
+    for (const status of SOFTWARE_FACTORY_LIFECYCLE_STATUSES) {
+      expect(mapFactoryStatusToWorkstreamRun(status)).toBe(expected[status]);
+    }
+  });
+
+  it("keeps Software Factory write roles off ordinary operators and owners", () => {
+    expect(canSubmitSoftwareFactoryIntake(owner)).toBe(true);
+    expect(canSubmitSoftwareFactoryIntake(member)).toBe(true);
+    expect(canSubmitSoftwareFactoryIntake(operator)).toBe(false);
+    expect(canProvisionSoftwareFactory(manager)).toBe(true);
+    expect(canProvisionSoftwareFactory(owner)).toBe(false);
+    expect(canOperateSoftwareFactory(operator)).toBe(true);
+    expect(canOperateSoftwareFactory(owner)).toBe(false);
+    expect(canIssueSoftwareFactoryReceipt(manager)).toBe(true);
+    expect(canIssueSoftwareFactoryReceipt(operator)).toBe(false);
+    expect(canIssueSoftwareFactoryReceipt(owner)).toBe(false);
+
+    const store = createSoftwareFactoryStore();
+    const operatorIntake = submitSoftwareWorkRequest(
+      store,
+      operator,
+      intake({ taskId: "SF-OP-001" }),
+      "evt-op-intake",
+      NOW,
+    );
+    expect(operatorIntake.ok).toBe(false);
+    expect(operatorIntake.ok ? "" : operatorIntake.failures.join(" ")).toMatch(/cannot submit/);
+
+    const submitted = submitSoftwareWorkRequest(store, owner, intake({ taskId: "SF-OWN-001" }), "evt-own-intake", NOW);
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) throw new Error(submitted.failures.join(" "));
+    const ownerProvision = provisionSoftwareFactoryRun(store, owner, submitted.value.id, "evt-own-provision", NOW);
+    expect(ownerProvision.ok).toBe(false);
+    expect(ownerProvision.ok ? "" : ownerProvision.failures.join(" ")).toMatch(/operations managers/);
+
+    const opened = openRun(store);
+    const ownerReceipt = issueSoftwareFactoryOutcomeReceipt(store, owner, opened.run.id, "evt-own-receipt", NOW);
+    expect(ownerReceipt.ok).toBe(false);
+    expect(ownerReceipt.ok ? "" : ownerReceipt.failures.join(" ")).toMatch(/operations managers/);
+    const operatorReceipt = issueSoftwareFactoryOutcomeReceipt(store, operator, opened.run.id, "evt-op-receipt", NOW);
+    expect(operatorReceipt.ok).toBe(false);
+    expect(operatorReceipt.ok ? "" : operatorReceipt.failures.join(" ")).toMatch(/operations managers/);
+  });
+
+  it("treats secret-shaped keys and reserved schemas as forbidden artifacts", () => {
+    expect(secretLikePaths({ notes: "safe", api_key: "nested" }, "payload")).toEqual(["payload.api_key"]);
+    expect(secretLikePaths({ notes: ["plain", "sk-abcdefghijklmnopqrstuvwxyz"] }, "payload")).toEqual(["payload.notes[1]"]);
+    expect(rejectSecrets({ password: "x" }, "intake").join(" ")).toMatch(/credential/);
+    expect(isReservedSoftwareFactoryEvidenceSchema(SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION)).toBe(true);
+    expect(isReservedSoftwareFactoryEvidenceSchema(SOFTWARE_FACTORY_OWNER_DECISION_SCHEMA_VERSION)).toBe(true);
+    expect(isReservedSoftwareFactoryEvidenceSchema(SOFTWARE_FACTORY_EVIDENCE_SCHEMA_VERSION)).toBe(false);
+  });
+
+  it("keeps every forbidden action behind an explicit blocked message", () => {
+    const messages = SOFTWARE_FACTORY_FORBIDDEN_ACTIONS.map((action) => forbiddenActionBlockedMessage(action));
+    expect(messages).toHaveLength(SOFTWARE_FACTORY_FORBIDDEN_ACTIONS.length);
+    expect(new Set(messages).size).toBe(messages.length);
+    expect(forbiddenActionBlockedMessage("merge_pr")).toMatch(/does not merge/i);
+    expect(forbiddenActionBlockedMessage("purchase")).toMatch(/blocked/i);
+    expect(forbiddenActionBlockedMessage("send_external_message")).toMatch(/blocked/i);
+    expect(forbiddenActionBlockedMessage("expand_scope")).toMatch(/owner approval/i);
   });
 });
