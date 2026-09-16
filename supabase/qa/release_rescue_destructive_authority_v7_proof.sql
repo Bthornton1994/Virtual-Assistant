@@ -438,6 +438,54 @@ select rrv7.expect_refusal(
           32, 32, 'auditor', '7a000000-0000-0000-0000-00000000cc01', now());
 $q$);
 
+-- The clearance trigger is `security definer`, so its reads bypass RLS. An audit
+-- pointed it at another tenant's artifact and had the refusal quote that
+-- artifact's payload back. The pre-existing org-match guard exists, but triggers
+-- fire in NAME order and the clearance trigger sorts ahead of it, so it ran first
+-- on content it should never have been able to read.
+insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
+values ('7f000000-0000-0000-0000-00000000bb09', '7b000000-0000-0000-0000-00000000bb01',
+        '7e000000-0000-0000-0000-00000000bb01', 'observation', 'victim body', repeat('c', 64),
+        jsonb_build_object(
+          'schemaVersion', 'release-rescue-report/v1',
+          'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
+            'path', '$.limitations[0]',
+            'clearedBy', 'VICTIM-CONFIDENTIAL-STRING-abc123',
+            'clearedContentHash', repeat('b', 64),
+            'clearedAt', '2026-09-16T00:00:00Z', 'rationale', 'Victim tenant.'))));
+
+do $$
+declare v_message text; v_state text;
+begin
+  begin
+    insert into public.release_rescue_reports
+      (id, organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+       rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+       coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+    values ('7cc00000-0000-0000-0000-0000000000f9', '7b000000-0000-0000-0000-00000000aa01',
+            '7aa00000-0000-0000-0000-000000000033', '7e000000-0000-0000-0000-00000000aa01',
+            '7f000000-0000-0000-0000-00000000bb09', 'release-rescue-report/v1', repeat('9', 64),
+            'release-rescue-rubric/v1', repeat('2', 64), repeat('4', 64), 'conditional_release', 0,
+            32, 32, 'auditor', '7a000000-0000-0000-0000-00000000cc01');
+    v_message := '(accepted)';
+  exception when others then
+    v_message := sqlerrm;
+    v_state := sqlstate;
+  end;
+
+  -- Refused, and the refusal must come from the ISOLATION rule, not from the
+  -- clearance rule -- and must not carry the victim's content in its text.
+  perform rrv7.assert(
+    format('a cross-tenant report artifact is refused (%s)', left(v_message, 60)),
+    v_message <> '(accepted)');
+  perform rrv7.assert(
+    'and the refusal does not echo the other tenant''s payload',
+    position('VICTIM-CONFIDENTIAL-STRING-abc123' in v_message) = 0);
+  perform rrv7.assert(
+    'and it is the organization rule that answers, not the clearance rule',
+    v_message like '%organization%');
+end $$;
+
 -- The positive control. Everything above proves the column is refused; this proves
 -- the refusals did not simply break retention, which is the failure mode that would
 -- look identical from the outside. Engagement `...0033` is not due (7-day policy,

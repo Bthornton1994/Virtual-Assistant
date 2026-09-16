@@ -122,7 +122,19 @@ declare
 begin
   if new.report_artifact_id is null then return new; end if;
 
-  select payload into v_payload from public.evidence_artifacts where id = new.report_artifact_id;
+  -- Scoped to the report's own organization, and NOT only by id.
+  --
+  -- This function is `security definer`, so the select runs with the owner's
+  -- reach and RLS does not apply to it. Reading by id alone therefore read any
+  -- tenant's artifact: an audit pointed this trigger at another organization's
+  -- `evidence_artifacts` row and had the refusal below quote its payload back.
+  -- The pre-existing org-match guard would have caught the insert, but triggers
+  -- fire in name order and `trg_release_rescue_clearance_authority` sorts ahead
+  -- of `trg_release_rescue_report_invariants`, so this ran first.
+  select payload into v_payload
+    from public.evidence_artifacts
+   where id = new.report_artifact_id
+     and organization_id = new.organization_id;
   if v_payload is null then return new; end if;
 
   for v_hold in select * from jsonb_array_elements(coalesce(v_payload->'clearedSecretHolds', '[]'::jsonb))
@@ -130,7 +142,9 @@ begin
     begin
       v_cleared_by := (v_hold->>'clearedBy')::uuid;
     exception when others then
-      raise exception 'Secret-hold clearance must name an operator by id, not "%"', v_hold->>'clearedBy';
+      -- The offending value is NOT echoed. An exception message reaches logs, and
+      -- this one is raised while reading a stored artifact payload.
+      raise exception 'Secret-hold clearance must name an operator by id';
     end;
 
     if not public.release_rescue_user_holds_manager_authority(v_cleared_by) then
@@ -176,20 +190,57 @@ declare
     'ownership_confirmation_note',  -- customer content; cleared by the purge (v1)
     'updated_at'                    -- bookkeeping; decides nothing destructive
   ];
+  -- The report and grant tables, which this migration also guards. The first
+  -- version of this block filtered `table_name = 'release_rescue_engagements'`
+  -- alone while the comment above it said "these tables" -- so the mechanism
+  -- installed to stop an unowned column appearing covered one of the three it
+  -- claimed. Nothing was actually unguarded; the assertion just could not have
+  -- told us.
+  v_known_reports text[] := array[
+    'purged_at',          -- sweep only (this migration, both arms)
+    'created_at',         -- server-written (v6)
+    'delivered_at',       -- the one permitted update, then immutable (v2)
+    'reviewed_at', 'reviewed_by',                   -- manager authority (v1)
+    'reviewed_commit_sha', 'reviewed_commit_pinned_at', -- pinned to the engagement (v4)
+    'scope_hash',         -- immutable, bound to the frozen scope (v3)
+    'organization_id', 'run_id', 'engagement_id',   -- immutable identity (v5)
+    'report_artifact_id', -- cleared by the purge, never repointed (v2)
+    'status'
+  ];
+  v_known_grants text[] := array[
+    'created_at',         -- server-written
+    'expires_at',         -- the time box; never edited, only revoked (v1)
+    'revoked_at',         -- write-once; a revoked grant cannot be reopened (v1)
+    'granted_at',
+    'organization_id', 'engagement_id',             -- immutable identity
+    'updated_at'          -- bookkeeping; decides nothing destructive
+  ];
   v_unowned text;
+  v_table record;
 begin
-  select string_agg(column_name, ', ') into v_unowned
-    from information_schema.columns
-   where table_schema = 'public'
-     and table_name = 'release_rescue_engagements'
-     and (column_name like '%_at' or column_name like '%purge%' or column_name like '%retention%'
-          or column_name like '%ownership%' or column_name like 'scope%' or column_name = 'status')
-     and not (column_name = any (v_known));
+  for v_table in
+    select * from (values
+      ('release_rescue_engagements', v_known),
+      ('release_rescue_reports', v_known_reports),
+      ('release_rescue_repository_grants', v_known_grants)
+    ) as t(name, known)
+  loop
+    select string_agg(column_name, ', ') into v_unowned
+      from information_schema.columns
+     where table_schema = 'public'
+       and table_name = v_table.name
+       and (column_name like '%_at' or column_name like '%purge%' or column_name like '%retention%'
+            or column_name like '%ownership%' or column_name like 'scope%'
+            or column_name like 'reviewed%' or column_name like '%revok%'
+            or column_name = 'status')
+       and not (column_name = any (v_table.known));
 
-  if v_unowned is not null then
-    raise exception
-      'These destructive or approval-sensitive columns have no recorded control: %', v_unowned;
-  end if;
+    if v_unowned is not null then
+      raise exception
+        'These destructive or approval-sensitive columns on % have no recorded control: %',
+        v_table.name, v_unowned;
+    end if;
+  end loop;
 
   -- The purge-stamp guard must be invoker, or `release_rescue_in_retention_purge`
   -- answers for the function owner and every caller looks like the sweep.

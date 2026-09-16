@@ -57,8 +57,13 @@ import {
  *
  * Callers must bound their input BEFORE calling, and the intake parser now does.
  * This is the backstop for the ones that forget: past the limit the scanner
- * stops reading and reports `truncated`, and every caller treats that as unsafe
- * rather than as "no credentials found".
+ * stops reading and reports `truncated`. `redactSecrets` propagates it as
+ * `scanTruncated`, and the two functions that answer "is this text safe" —
+ * `holdsCredentialEvidence` and `containsLikelySecret` — return true on it.
+ *
+ * That sentence used to say every caller treated it as unsafe. No caller read it
+ * at all: a credential past this limit came back as "nothing found" from the one
+ * function the whole pipeline depends on.
  */
 export const MAX_SCAN_LENGTH = 64_000;
 
@@ -482,6 +487,7 @@ function collectOpaqueTokensNearCredentialNouns(
     if (!/[0-9]/.test(token) || !/[A-Za-z]/.test(token)) continue;
     if (isNonSecretValue(token)) continue;
     if (CREDENTIAL_NOUNS.has(token.toLowerCase()) || keyLooksSecret(token)) continue;
+    if (!hasContiguousEntropyRun(token)) continue;
     // Already covered by a stronger, more specific form.
     if (spans.some((span) => word.start >= span.start && word.end <= span.end)) continue;
 
@@ -489,9 +495,47 @@ function collectOpaqueTokensNearCredentialNouns(
       start: word.start,
       end: word.end,
       form: "opaque_token_near_noun",
-      classification: "credential_evidence",
+      // NOT `credential_evidence`. There is no assignment here — no `=`, no key,
+      // nothing but a long token on a line that says "token" somewhere. That is
+      // the definition of `ambiguous_secret_candidate`, and the first version of
+      // this form claimed the top confidence level anyway, bypassing
+      // `classifyAssignment` entirely.
+      //
+      // The cost of that was not over-redaction. `pendingSecretHolds` refuses to
+      // clear a `credential_evidence` hold at all — correctly, because clearing
+      // is for uncertainty and not an override — so this form made a $299 report
+      // PERMANENTLY undeliverable, with no route out for any human, over a
+      // sentence like "the session token is created in src/lib/auth-v2-helpers.ts".
+      // Ambiguous redacts, holds, and can be cleared by a named manager.
+      classification: "ambiguous_secret_candidate",
     });
   }
+}
+
+/**
+ * Whether a token carries its entropy in one contiguous blob.
+ *
+ * A generated secret is a run of characters with no word structure:
+ * `Xk92mQvn7Lz`. A versioned code path spreads the same character classes across
+ * word-joined English segments: `auth-v2-helpers.ts`, `stripe-client-v2.ts`,
+ * `deploy-2024-prod-runner`, `ADR-2024-011-authentication`, `app-2024-config`.
+ * Both have letters, digits and length; only the first has a blob.
+ *
+ * Without this the form fired on every one of those, and a release-readiness
+ * report is made almost entirely of sentences that name a credential noun and a
+ * versioned code path in the same breath.
+ */
+function hasContiguousEntropyRun(token: string): boolean {
+  // A path is a path. No credential is written with a directory separator in it,
+  // and a path near the word "token" is the single most common shape in this
+  // product's own prose.
+  if (token.includes("/") || token.includes("\\")) return false;
+
+  for (const run of token.split(/[^A-Za-z0-9]+/)) {
+    if (run.length < 10) continue;
+    if (/[0-9]/.test(run) && /[A-Za-z]/.test(run)) return true;
+  }
+  return false;
 }
 
 /**

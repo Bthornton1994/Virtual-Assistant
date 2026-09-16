@@ -192,6 +192,37 @@ export function keyLooksSecret(key: string): boolean {
   for (let index = 0; index + 1 < segments.length; index += 1) {
     if (SECRET_KEY_PHRASES.has(`${segments[index]} ${segments[index + 1]}`)) return true;
   }
-  return false;
+  return segments.some(containsRunTogetherSecretWord);
+}
+
+/**
+ * Words long enough to be recognised INSIDE a run-together name.
+ *
+ * `keyNameSegments` splits on separators and on camel-case boundaries, so a name
+ * with neither reduces to one segment that no lexicon lookup can match.
+ * `PGPASSWORD` — libpq's own variable, and what psql, pg_dump, Docker entrypoints
+ * and CI migration steps read — segmented to `["pgpassword"]` and was invisible,
+ * while `PG_PASSWORD` was credential evidence. So were `DBPASSWORD`,
+ * `MYSQLPASSWORD`, `ROOTPASSWORD`, `SMTPPASSWORD` and `APPSECRET`.
+ *
+ * The audit that found this named the axis both scanner test tables pin: every
+ * key they use is already a lexicon word or already splits correctly.
+ *
+ * Only words of six characters or more, and only ones whose letters do not
+ * ordinarily occur inside other English words. `pass` is excluded and stays out:
+ * it would make `bypass`, `passage` and `compass` credential names.
+ */
+const RUN_TOGETHER_SECRET_WORDS: readonly string[] = [
+  "password", "passwd", "passphrase", "secret", "apikey", "authtoken", "accesskey",
+  "privatekey", "secretkey", "credential", "passcode", "bearertoken", "clientsecret",
+];
+
+function containsRunTogetherSecretWord(segment: string): boolean {
+  // Only for segments the lexicon did not already recognise on its own, and only
+  // for run-together names: a segment that IS one of these words is handled above.
+  if (segment.length < 8) return false;
+  return RUN_TOGETHER_SECRET_WORDS.some(
+    (word) => segment.length > word.length && segment.includes(word),
+  );
 }
 

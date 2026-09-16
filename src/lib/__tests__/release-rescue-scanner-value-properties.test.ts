@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
+import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 import { findCredentialSpans } from "@/lib/release-rescue-credential-scanner";
 import { classifyAssignment, valueShape } from "@/lib/release-rescue-secret-classification";
 import { isNonSecretValue } from "@/lib/release-rescue-credential-scanner";
@@ -272,7 +273,6 @@ describe("the rule that the last regression broke, stated directly", () => {
 describe("ordinary security prose survives, because holding a report costs the customer", () => {
   const PROSE = [
     "Password rotation policy is weak: the last rotation was 14 months ago.",
-    "Auth: Clerk. Payments: Stripe.",
     "Secrets: managed via environment variables in the deploy pipeline.",
     "The API key is stored in the platform secret store and is not in the repository.",
     "Token expiry: not configured, so sessions do not end.",
@@ -338,5 +338,37 @@ describe("the scan stays bounded as the input grows", () => {
     const oversized = `DB_PASSWORD=Xk92mQvn7LzPr0dQ\n${"# padding\n".repeat(8_000)}`;
     const result = findCredentialSpans(oversized);
     expect(result.truncated).toBe(true);
+  });
+});
+
+describe("the one prose line this deliberately does not preserve", () => {
+  // `Auth: Clerk. Payments: Stripe.` IS redacted in a report body, and this
+  // records that rather than hiding it.
+  //
+  // An earlier version of this file asserted the string survived byte-for-byte,
+  // and the rule written to satisfy it — a bare-colon value carrying trailing
+  // sentence punctuation is prose — was a one-keystroke bypass: `pushSpan` drops
+  // a prose span entirely, so `password: swordfish.` produced no span at all
+  // while `password: swordfish` was caught. That assertion bought a leaked
+  // password, so it is gone.
+  //
+  // The cost is bounded to something a human can undo, and these assert the
+  // bound.
+  const LINE = "Auth: Clerk. Payments: Stripe.";
+
+  it("is held as clearable uncertainty, never as confident evidence", () => {
+    // `ambiguous_secret_candidate` redacts and holds. `credential_evidence`
+    // would make the report undeliverable with no route out, because
+    // `pendingSecretHolds` refuses to clear a confident detection.
+    expect(redactSecrets(LINE).classification).toBe("ambiguous_secret_candidate");
+  });
+
+  it("does not refuse a customer who writes it on the public intake form", () => {
+    // The surface where the cost would be turning a prospect away. Intake
+    // refuses only confident evidence, so an ambiguous hold never reaches it.
+    const result = parseRescueIntake({ evidenceNotes: LINE });
+    const message = result.ok ? "" : JSON.stringify(result.errors);
+
+    expect(message).not.toContain("looks like a credential");
   });
 });

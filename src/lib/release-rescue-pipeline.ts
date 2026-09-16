@@ -87,7 +87,15 @@ function sanitizeValue(
   redactedPaths: string[],
   depth: number,
 ): unknown {
-  if (depth > MAX_DEPTH) return value;
+  // Refused, not returned. Returning the value handed the caller UNSANITISED
+  // data from the function whose whole job is that it cannot. Nothing in the
+  // report schema nests this deep, so reaching here means the input is not a
+  // report — and the safe answer to that is to stop.
+  if (depth > MAX_DEPTH) {
+    throw new Error(
+      `Release Rescue sanitisation refused input nested deeper than ${MAX_DEPTH} at ${path}.`,
+    );
+  }
 
   if (typeof value === "string") {
     const result = redactSecrets(value);
@@ -158,13 +166,28 @@ export function withSanitizedHolds<T>(
 /**
  * Prepares one excerpt of customer source for storage.
  *
- * The production entry point for `prepareExcerpt`, which previously had none.
+ * Redacts first and truncates second, for storing one excerpt of customer source.
+ *
+ * HONEST STATUS: this still has no production caller. An audit checked the claim
+ * that used to sit here ("the production entry point for `prepareExcerpt`") and
+ * found it was the same defect as the blocker it was written to close, one
+ * function further out. Report strings reach the sanitiser through
+ * `sanitizeReportInput`'s generic walk, which redacts but does not truncate, so
+ * a stored excerpt is currently bounded by the schema's own length caps rather
+ * than by this. Wiring it in is a change to the excerpt path that wants its own
+ * proof, not a late edit in this pass.
  * Redacts first and truncates second, so a truncated credential cannot leave a
  * fragment that no detector recognises but that still narrows the secret.
  */
 export function prepareStoredExcerpt(raw: string): { excerpt: string; classification: SecretClassification | null } {
   const prepared = prepareExcerpt(raw);
-  return { excerpt: prepared.excerpt, classification: redactSecrets(raw).classification };
+  const { classification, scanTruncated } = redactSecrets(raw);
+  // Past the scan limit the tail is unexamined. Storing it as "nothing found"
+  // is the fail-open this pipeline exists to prevent, so it is held instead.
+  if (scanTruncated) {
+    return { excerpt: prepared.excerpt, classification: "ambiguous_secret_candidate" };
+  }
+  return { excerpt: prepared.excerpt, classification };
 }
 
 /**

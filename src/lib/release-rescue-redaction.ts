@@ -160,6 +160,19 @@ export type RedactionResult = {
   detections: SecretDetection[];
   /** True when anything was replaced. */
   hadSecrets: boolean;
+  /**
+   * True when the input was longer than the scanner will read.
+   *
+   * Past `MAX_SCAN_LENGTH` the scanner stops, and everything after that point is
+   * UNEXAMINED — which is not the same as clean. The scanner had reported this
+   * from the beginning and nothing read it, so a credential at byte 64,001 came
+   * back as `classification: null` and `hadSecrets: false`: a silent fail-open on
+   * the one function the whole pipeline depends on.
+   *
+   * Callers deciding whether text is safe must treat this as unsafe. The two
+   * that do are below.
+   */
+  scanTruncated: boolean;
 };
 
 function placeholderFor(name: SecretDetectorName): string {
@@ -231,6 +244,7 @@ export function redactSecrets(input: string): RedactionResult {
   // Running it second is safe because placeholders are inert to it: the value it
   // would see is `[REDACTED:github_token]`, which is on the non-secret list.
   const scanned = findCredentialSpans(working);
+  const scanTruncated = scanned.truncated;
   if (scanned.spans.length > 0) {
     // Assembled in ONE left-to-right pass. Replacing spans individually rebuilds
     // the whole string each time, which is quadratic in the number of spans, and
@@ -259,6 +273,7 @@ export function redactSecrets(input: string): RedactionResult {
     detections,
     classification,
     hadSecrets: detections.length > 0,
+    scanTruncated,
   };
 }
 
@@ -269,7 +284,10 @@ export function redactSecrets(input: string): RedactionResult {
  * certainty. NOT for refusing a customer's input — see `holdsCredentialEvidence`.
  */
 export function containsLikelySecret(text: string): boolean {
-  return redactSecrets(text).hadSecrets;
+  const { hadSecrets, scanTruncated } = redactSecrets(text);
+  // Same reason as `holdsCredentialEvidence`: an unexamined tail is not a clean
+  // one, and this answers "is it safe to pass this along".
+  return hadSecrets || scanTruncated;
 }
 
 /**
@@ -283,7 +301,12 @@ export function containsLikelySecret(text: string): boolean {
  * is where uncertainty is handled properly.
  */
 export function holdsCredentialEvidence(text: string): boolean {
-  const { classification } = redactSecrets(text);
+  const { classification, scanTruncated } = redactSecrets(text);
+  // Unexamined is not clean. Text past the scan limit is refused rather than
+  // accepted, because this is the function that decides whether a person is
+  // turned away — and turning someone away over an oversized field is a worse
+  // outcome than accepting a credential only in the sense that it is visible.
+  if (scanTruncated) return true;
   return classification !== null && blocksDelivery(classification);
 }
 

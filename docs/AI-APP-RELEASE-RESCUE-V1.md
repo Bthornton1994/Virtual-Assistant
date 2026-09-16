@@ -590,9 +590,9 @@ name appears on the line) and `opaque_token_near_noun`, which requires a
 credential noun on the same line **and** a token of at least 12 characters
 carrying both a digit and a letter.
 
-Measured on this branch: **twelve adversarial shapes** near-linear at 20, 40 and
-80KB across the two scanner test files, and **eleven safe strings** returned
-unchanged. Timings, best of five on this machine: the repeated-colon shape
+Measured on this branch: **twelve adversarial shapes** (seven plus five) near-linear
+at 20, 40 and 80KB across the two scanner test files, and **15 safe strings**
+returned unchanged. Timings, best of five on this machine: the repeated-colon shape
 **332ms** at 80KB, the identifier-run shape **4ms** at 80KB, and the
 unauthenticated intake path **under 1ms** at 160KB. The colon shape is the
 expensive one because `:` is legitimately part of a value and so cannot terminate
@@ -670,7 +670,7 @@ where no key name appears on the line at all, so the FORMAT is the evidence).
 
 Measured on this branch, along the axis each audit varied:
 
-- **22 assignment forms × 14 key shapes**, value held fixed
+- **21 assignment forms × 14 key shapes**, value held fixed
   (`release-rescue-credential-scanner.test.ts`).
 - **27 carriers × 21 values = 550 combinations**, key held fixed at `DB_PASSWORD`
   (`release-rescue-scanner-value-properties.test.ts`). 14 of the values must be
@@ -757,7 +757,8 @@ up for callers arriving through `any`. That assertion names the **path and the
 classification only, never the text**, because exception messages reach logs.
 
 A test walks the whole `src` tree and fails if the brand is minted outside
-`release-rescue-pipeline.ts`, or if that module gains a third producer. Writing
+`release-rescue-pipeline.ts`, or if that module's **two** producers
+(`sanitizeReportInput` and `withSanitizedHolds`) become three. Writing
 it found that the earlier version of this test read one file and passed while a
 second producer sat in `release-rescue-report.ts` — it proved the brand had one
 producer in the only file where that was true. That second cast is now a named
@@ -787,15 +788,22 @@ server-owned on both `release_rescue_engagements` and `release_rescue_reports`:
 
 The purge-stamp triggers are `SECURITY INVOKER` — inside a definer function
 `current_user` is the owner, so a privilege check written there answers for the
-wrong role. The clearance trigger is `SECURITY DEFINER` with `set search_path =
-public`, because it must read `operators` regardless of the caller's own reach.
+wrong role. The clearance trigger is `SECURITY DEFINER` with `set search_path = public`
+because it reads the report's `evidence_artifacts` payload, which the caller may
+not hold. It does **not** need definer rights to check manager authority — that
+goes through `release_rescue_user_holds_manager_authority`, which is itself
+definer and granted to `authenticated`. The stated reason used to be the wrong
+one, and the reason it was wrong is a finding below.
 
 The migration ends with a `do $$` block listing every destructive or
-approval-sensitive column in these tables; an unlisted one **fails the migration**.
-That assertion caught two columns this pass (`updated_at` and
-`ownership_confirmation_note`) that had no stated control.
+approval-sensitive column across **all three** tables — engagements, reports and
+repository grants; an unlisted one **fails the migration**. That assertion caught
+three columns across this pass (`updated_at` and `ownership_confirmation_note` on
+engagements, `updated_at` on grants). Its first version filtered on the
+engagements table alone while its own comment said "these tables", so the
+mechanism covered one of the three it claimed.
 
-`supabase/qa/release_rescue_destructive_authority_v7_proof.sql` runs **32 cases**
+`supabase/qa/release_rescue_destructive_authority_v7_proof.sql` runs **35 cases**
 on live PostgreSQL, attempting the stamp as every caller class that exists —
 anonymous, customer admin, other tenant, plain operator, ops manager, service
 role, direct SQL with RLS out of the picture, a forged retention GUC — plus the
@@ -825,6 +833,103 @@ empty database:
 The proof base applies 49 of 53 migrations (the two above, plus two that need the
 `http` extension this sandbox does not have). None of the four touch Release
 Rescue tables, and all eight Release Rescue proofs run against the result.
+
+## Sixth independent audit: the axis was the key, and the fix was the regression
+
+The sixth audit named the axis both new test files pinned: **every key in both
+tables is already a lexicon word that already splits correctly, and every key sits
+adjacent to its value on one short line.** Four of its five blocking findings live
+there. The fifth was a detector added in the same commit that claimed to fix the
+false-positive problem, and which made it considerably worse.
+
+### 1. A run-together key name was invisible
+
+`keyNameSegments` splits on separators and on camel-case boundaries. An ALL-CAPS
+run-together name has neither, so `PGPASSWORD` reduced to one segment no lexicon
+lookup matched — while `PG_PASSWORD`, one underscore apart, was credential
+evidence. `PGPASSWORD` is libpq's own variable: it is what `psql`, `pg_dump`,
+Docker entrypoints and CI migration steps read. `DBPASSWORD`, `MYSQLPASSWORD`,
+`ROOTPASSWORD`, `SMTPPASSWORD` and `APPSECRET` behaved identically, and
+`PGPASSWORD=…` reached a `deliverable: true` report with the credential intact.
+
+Segments of eight characters or more are now searched for the credential words
+that cannot occur inside ordinary English. `pass` is deliberately excluded and
+stays excluded: it would make `bypass`, `passage` and `compass` credential names,
+and a test asserts it does not.
+
+### 2. The new opaque-token rule shredded ordinary findings — unclearably
+
+`opaque_token_near_noun` fired on any 12-character token with a digit and a
+letter, on any line carrying a credential noun. That is every versioned code path
+in this product's own prose: `"The session token is created in
+src/lib/auth-v2-helpers.ts"` had the file path — the useful part of the finding —
+replaced with a placeholder.
+
+The severity came from the classification. The form hardcoded
+`credential_evidence`, bypassing `classifyAssignment` entirely, and
+`pendingSecretHolds` refuses to clear a confident detection — correctly, because
+clearing is for uncertainty and not an override. So one ordinary sentence of
+engineering prose made a $299 report **permanently undeliverable, by any human**.
+
+Two changes. The form now classifies as `ambiguous_secret_candidate`, which is
+what a heuristic with no assignment syntax actually warrants. And it requires the
+token's entropy to sit in one **contiguous** run of ten or more characters mixing
+digits and letters: a generated secret is a blob (`Xk92mQvn7Lz`), while a
+versioned path spreads the same character classes across word-joined English
+(`auth-v2-helpers.ts`, `deploy-2024-prod-runner`, `ADR-2024-011-authentication`).
+Anything containing a path separator is excluded outright.
+
+### 3. One full stop switched the detector off
+
+The rule the fifth round added to stop `Auth: Clerk. Payments: Stripe.` being
+redacted was a bypass. `pushSpan` **drops** a `sensitive_prose` span entirely, so
+`password: swordfish.` produced no span at all — not redacted, not held, not
+reported — while `password: swordfish` was caught. The same worked with `!` and
+`?`.
+
+Reverted. `Auth: Clerk. Payments: Stripe.` is now redacted in a report body and
+held as `ambiguous_secret_candidate`: a named manager can clear it, and the public
+intake form does not refuse it, because intake refuses only confident evidence.
+That is a cost a human can undo. A leaked password is not. The test that asserted
+the string survived byte-for-byte is gone, because that assertion is what bought
+the bypass.
+
+### 4. `truncated` had no reader
+
+The scanner reported truncation past `MAX_SCAN_LENGTH` from the beginning and
+nothing consumed it, so a credential at byte 64,001 returned
+`classification: null` and `hadSecrets: false`. `redactSecrets` now carries
+`scanTruncated`, and `holdsCredentialEvidence`, `containsLikelySecret` and
+`prepareStoredExcerpt` all fail closed on it. The test that appeared to cover this
+asserted only that the flag was set — a proof case passing for the wrong reason.
+
+### 5. The clearance trigger read across tenants
+
+`enforce_release_rescue_clearance_authority` is `SECURITY DEFINER`, so its reads
+bypass RLS, and it selected the report artifact **by id alone**. An auditor
+pointed it at another organization's `evidence_artifacts` row and had the refusal
+quote that row's payload back. The pre-existing org-match guard would have caught
+the insert — but triggers fire in **name order**, and
+`trg_release_rescue_clearance_authority` sorts ahead of
+`trg_release_rescue_report_invariants`.
+
+The select is now scoped by `organization_id`, and the refusal no longer echoes
+the offending value at all, because an exception message reaches logs. A proof
+case asserts the refusal comes from the isolation rule and carries none of the
+victim's content.
+
+### What the audit also corrected in this document
+
+Six measured claims here were wrong or stale: 22 forms where the table has 21,
+eleven safe strings where it has 15, "exactly one `as Sanitized<`" where the test
+asserts two, a stated reason for the clearance trigger's definer rights that was
+not the reason it needed them, "these tables" for an assertion covering one, and
+32 proof cases where there are now 35. Two in-code comments claimed safety
+properties the code did not implement — the `truncated` contract above, and
+`prepareStoredExcerpt`'s "production entry point", which **still has no production
+caller**. That one is recorded rather than fixed: report strings reach the
+sanitiser through the generic walk, and wiring the truncating path in is a change
+to the excerpt path that wants its own proof.
 
 ## What this slice deliberately does not do
 

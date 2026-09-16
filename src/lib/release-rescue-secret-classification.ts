@@ -183,6 +183,22 @@ export type AssignmentSyntax = "structured" | "bare_colon";
  * credential-named key never produces `sensitive_prose` under `structured`
  * syntax, whatever the value is and whatever follows it.
  */
+/**
+ * @param valueEndsSentence Recorded, never acted on. An earlier version of this
+ * function returned `sensitive_prose` when the bare-colon value carried trailing
+ * sentence punctuation, to stop `Auth: Clerk. Payments: Stripe.` being redacted
+ * out of a customer's own description of their stack.
+ *
+ * It was a bypass. `pushSpan` DROPS a `sensitive_prose` span entirely, so
+ * `password: swordfish.` produced no span at all — not redacted, not held, not
+ * reported — while `password: swordfish` was caught. One full stop, and a compose
+ * file's password shipped. The same trick worked with `!` and `?`.
+ *
+ * The parameter stays so the reasoning stays attached to the code rather than
+ * only to a commit message. `Auth: Clerk.` now lands on
+ * `ambiguous_secret_candidate`, which redacts it, holds it, and lets a named
+ * manager clear it — a cost the customer can undo, unlike a leaked password.
+ */
 export function classifyAssignment(
   syntax: AssignmentSyntax,
   shape: ValueShape,
@@ -202,17 +218,9 @@ export function classifyAssignment(
   // Bare colon. An opaque value settles it on its own.
   if (shape === "opaque") return "credential_evidence";
 
-  // `Auth: Clerk. Payments: Stripe.` — the customer's own description of their
-  // stack, which this rejected at intake and redacted out of report bodies. The
-  // tail test could not see it: "Payments: Stripe." is two words, below the
-  // three it needs, so the line read as a config file.
-  //
-  // What separates it from `password: swordfish` is not the key and not the
-  // value, but the punctuation ATTACHED to the value. A config value does not
-  // end in a full stop; a sentence clause does. Checked only here, and only
-  // once the value has already failed to look opaque, so it can never reach a
-  // real credential.
-  if (valueEndsSentence) return "sensitive_prose";
+  // `valueEndsSentence` is accepted and deliberately IGNORED. See the parameter's
+  // doc comment: routing it to `sensitive_prose` was a one-keystroke bypass.
+  void valueEndsSentence;
 
   if (tailIsSentence) return "sensitive_prose";
   return "ambiguous_secret_candidate";
