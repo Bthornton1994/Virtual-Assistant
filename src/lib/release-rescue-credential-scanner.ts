@@ -90,6 +90,23 @@ const NON_SECRET_VALUE_PATTERNS: readonly RegExp[] = [
   // value length below.
   // A flag is the next argument, not this one's value: `--password --verbose`.
   /^-/,
+  // A QUANTITY. `Tokens: 30-day lifetime with no rotation.` and
+  // `Passwords: 8-character minimum is all we enforce.` both scored as opaque —
+  // a digit and letters, six characters — so the bare-colon branch called them
+  // confident evidence before the prose check could run. That refused the
+  // customer's own stack description at intake and produced an unclearable hold
+  // in a report. No generated secret is `30-day`.
+  /^[0-9]+[-_]?[a-z]+$/i,
+  // A CODE REFERENCE, not a literal. `export const sessionSecret =
+  // config.sessionSecret;` assigns one name to another, and redacting the
+  // right-hand side destroys a finding's evidence for nothing. Digits are
+  // excluded from the path deliberately: `admin.password123` is not this, and
+  // stays detected.
+  /^[A-Za-z_$][A-Za-z_$]*(?:\.[A-Za-z_$][A-Za-z_$]*)+$/,
+  // A language keyword standing where the value would be: `token = await
+  // refreshToken();` assigns the result of a call, not a literal. Whole-word
+  // only, so a password that merely starts with one is unaffected.
+  /^(?:await|new|this|self|typeof|require|import|function|async|return|yield|delete|void|throw|case|default)$/i,
 ];
 
 /** The shortest run of characters worth treating as a credential. */
@@ -194,6 +211,24 @@ function skipSpaces(text: string, from: number, stopAtNewline = true): number {
  */
 function valueSpan(text: string, from: number): { start: number; end: number } | null {
   let begin = skipSpaces(text, from);
+
+  // The value may sit on the NEXT line.
+  //
+  // `skipSpaces` stops at a newline, so `"password":` followed by its value on
+  // the following line produced no span at all. That is not an evasion: it is
+  // what `JSON.stringify(x, null, 2)`, every YAML writer and every code
+  // formatter produce once the line gets long. Both scanner test tables place
+  // key and value adjacent on one line, which is how it went unnoticed.
+  //
+  // Exactly one line is crossed, and only when nothing else follows the operator
+  // on its own line, so a key with an empty value cannot reach forward and
+  // swallow an unrelated line further down.
+  if (begin === -1) {
+    const lineEnd = text.indexOf("\n", from);
+    if (lineEnd === -1) return null;
+    if (text.slice(from, lineEnd).trim().length > 0) return null;
+    begin = skipSpaces(text, lineEnd + 1);
+  }
   if (begin === -1) return null;
 
   // Step over an assignment operator sitting at the start of the run.
@@ -208,7 +243,14 @@ function valueSpan(text: string, from: number): { start: number; end: number } |
   if (text[begin] === "=" || text[begin] === ":") {
     begin += 1;
     if (text[begin] === "=" || text[begin] === ">") begin += 1;
-    const afterOperator = skipSpaces(text, begin);
+    let afterOperator = skipSpaces(text, begin);
+    if (afterOperator === -1) {
+      // Same one-line reach as above: `mysql --password=\` then the value.
+      const lineEnd = text.indexOf("\n", begin);
+      if (lineEnd === -1) return null;
+      if (text.slice(begin, lineEnd).replace(/\\\s*$/, "").trim().length > 0) return null;
+      afterOperator = skipSpaces(text, lineEnd + 1);
+    }
     if (afterOperator === -1) return null;
     begin = afterOperator;
   }
@@ -513,6 +555,33 @@ function collectOpaqueTokensNearCredentialNouns(
 }
 
 /**
+ * A column name: one short identifier, nothing else.
+ *
+ * `import { getToken } from "./auth"` is not one, and that is the point.
+ */
+const HEADER_FIELD = /^"?[A-Za-z_][A-Za-z0-9_. -]{0,40}"?$/;
+
+/**
+ * Whether a line is source code rather than delimited data.
+ *
+ * `;` was in the delimiter list, and `;` is a statement terminator in every
+ * language this product reviews. So three lines of routine route code — where
+ * the first happened to contain `getToken`, which camel-splits to a credential
+ * name — were read as a CSV header plus two rows, and every line's text before
+ * its first `;` was redacted as `credential_evidence`. That destroyed the
+ * finding's evidence AND made the report permanently undeliverable, because a
+ * confident hold cannot be cleared by any human.
+ *
+ * A review of an AI application's auth code is close to certain to contain such
+ * a line.
+ */
+function looksLikeSourceCode(line: string): boolean {
+  return /[{}()]|=>|\b(?:import|export|return|const|let|var|function|class|await|async|from)\b/.test(
+    line,
+  );
+}
+
+/**
  * Whether a token carries its entropy in one contiguous blob.
  *
  * A generated secret is a run of characters with no word structure:
@@ -583,10 +652,13 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
         }
         cursor += field.length + delimiter.length;
       }
-    } else {
+    } else if (!looksLikeSourceCode(line)) {
       for (const candidate of [",", "\t", ";"]) {
         const fields = line.split(candidate);
         if (fields.length < 2) continue;
+        // Every field of a real header is a short column NAME. Requiring that is
+        // what keeps a line of code from being read as one.
+        if (!fields.every((field) => HEADER_FIELD.test(field.trim()))) continue;
         const hits = fields
           .map((field, column) => (keyLooksSecret(field.trim()) ? column : -1))
           .filter((column) => column >= 0);

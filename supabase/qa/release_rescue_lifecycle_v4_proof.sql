@@ -345,7 +345,7 @@ $q$);
 
 select rrl4.expect_refusal(
   'a report whose BODY names another commit is refused too',
-  'the report body names commit',
+  'names a different commit from the one its engagement pinned',
   $q$
   insert into public.release_rescue_reports
     (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,

@@ -116,15 +116,22 @@ const SECRET_WHOLE_KEYS: ReadonlySet<string> = new Set(["key", "keys", "auth", "
  * Adding a qualifier covers it against every carrier at once, and the generated
  * tests exercise the whole product.
  */
-const CREDENTIAL_QUALIFIERS = [
+export const CREDENTIAL_QUALIFIERS = [
   "auth", "authorization", "api", "access", "private", "client", "session", "signing",
   "encryption", "master", "shared", "account", "security", "refresh", "bearer", "oauth",
   "service", "app", "admin", "root", "db", "database", "smtp", "mail", "ftp", "ssh", "registry",
+  // Vendor and product qualifiers. These are what real credential variables are
+  // named after, and leaving them out is what made `PGPASSWORD` — libpq's own —
+  // invisible while `PG_PASSWORD` was evidence.
+  "pg", "postgres", "postgresql", "mysql", "mariadb", "mongo", "mongodb", "redis", "rabbit",
+  "npm", "github", "gitlab", "bitbucket", "slack", "stripe", "twilio", "sendgrid", "aws",
+  "azure", "gcp", "docker", "vault", "jwt", "bot", "user", "id", "bind", "ldap", "sso", "saml",
 ] as const;
 
-const CREDENTIAL_CARRIERS = [
+export const CREDENTIAL_CARRIERS = [
   "key", "keys", "token", "tokens", "secret", "secrets", "header", "credential", "credentials",
   "password", "passwords", "passphrase", "pass", "pw", "signature",
+  "pwd", "pwds", "psw", "pword", "passcode", "auth",
 ] as const;
 
 const SECRET_KEY_PHRASES: ReadonlySet<string> = new Set([
@@ -192,37 +199,65 @@ export function keyLooksSecret(key: string): boolean {
   for (let index = 0; index + 1 < segments.length; index += 1) {
     if (SECRET_KEY_PHRASES.has(`${segments[index]} ${segments[index + 1]}`)) return true;
   }
-  return segments.some(containsRunTogetherSecretWord);
+  return segments.some(runTogetherLooksSecret);
 }
 
 /**
- * Words long enough to be recognised INSIDE a run-together name.
+ * Whether a run-together segment names a credential.
  *
- * `keyNameSegments` splits on separators and on camel-case boundaries, so a name
- * with neither reduces to one segment that no lexicon lookup can match.
- * `PGPASSWORD` — libpq's own variable, and what psql, pg_dump, Docker entrypoints
- * and CI migration steps read — segmented to `["pgpassword"]` and was invisible,
- * while `PG_PASSWORD` was credential evidence. So were `DBPASSWORD`,
- * `MYSQLPASSWORD`, `ROOTPASSWORD`, `SMTPPASSWORD` and `APPSECRET`.
+ * `keyNameSegments` splits on separators and camel-case boundaries, so a name
+ * with neither arrives as one segment no lexicon lookup can match. `PGPASSWORD`
+ * was invisible while `PG_PASSWORD` was credential evidence.
  *
- * The audit that found this named the axis both scanner test tables pin: every
- * key they use is already a lexicon word or already splits correctly.
+ * The first attempt at this was a hand-written list of words to look for as
+ * SUBSTRINGS, and it was wrong in both directions at once. It missed the entire
+ * token family — `ACCESSTOKEN`, `GITHUBTOKEN`, `SESSIONTOKEN`, `MYSQLPWD` —
+ * because nobody had typed those words into it. And because `secret` is a
+ * substring of `secretary`, it made `SECRETARY_EMAIL`, `PASSWORDLESS_LOGIN` and
+ * `CREDENTIALING_VENDOR` into confident credential evidence, which is an
+ * unclearable hold on a plausible line of auth code.
  *
- * Only words of six characters or more, and only ones whose letters do not
- * ordinarily occur inside other English words. `pass` is excluded and stays out:
- * it would make `bypass`, `passage` and `compass` credential names.
+ * So this derives from the lexicon that already exists rather than adding a
+ * second one beside it. Two rules, both anchored at the END of the segment,
+ * which is what makes `secretary` and `passwordless` fail: a credential name
+ * ends with what it holds.
  */
-const RUN_TOGETHER_SECRET_WORDS: readonly string[] = [
-  "password", "passwd", "passphrase", "secret", "apikey", "authtoken", "accesskey",
-  "privatekey", "secretkey", "credential", "passcode", "bearertoken", "clientsecret",
-];
+function runTogetherLooksSecret(segment: string): boolean {
+  // A segment that the ordinary lookups already handle is not this function's.
+  // Four, not five: `DBPW`, `PGPW` and `IDPW` are four characters and are all
+  // real. Found by the qualifier x carrier product below, which is what that
+  // product is for — a floor picked by eye excludes whatever sits just under it.
+  if (segment.length < 4 || SECRET_KEY_WORDS.has(segment)) return false;
 
-function containsRunTogetherSecretWord(segment: string): boolean {
-  // Only for segments the lexicon did not already recognise on its own, and only
-  // for run-together names: a segment that IS one of these words is handled above.
-  if (segment.length < 8) return false;
-  return RUN_TOGETHER_SECRET_WORDS.some(
-    (word) => segment.length > word.length && segment.includes(word),
+  // 1. `<qualifier><carrier>`: the same product that generates the separated
+  //    phrases, concatenated. `access` + `token`, `mysql` + `pwd`, `bind` + `pw`.
+  //    `bypass` does not match, because `by` is not a qualifier — which is the
+  //    whole reason the split is anchored rather than free.
+  for (const carrier of CREDENTIAL_CARRIERS) {
+    if (!segment.endsWith(carrier)) continue;
+    const prefix = segment.slice(0, -carrier.length);
+    if (prefix.length > 0 && (CREDENTIAL_QUALIFIERS as readonly string[]).includes(prefix)) {
+      return true;
+    }
+  }
+
+  // 2. A long carrier word at the end, with any prefix at all. Six characters is
+  //    the floor because the short ones (`pw`, `key`, `pass`) are exactly the
+  //    ones that end ordinary English words, and rule 1 already covers those
+  //    with a known qualifier in front.
+  return LONG_CARRIER_WORDS.some(
+    (word) => segment.length > word.length && segment.endsWith(word),
   );
 }
+
+/**
+ * Carrier words long enough that a name ending in one is a credential whatever
+ * precedes it. Short carriers are deliberately absent: see rule 2 above.
+ */
+const LONG_CARRIER_WORDS: readonly string[] = [
+  "password", "passwords", "passwd", "passphrase", "passcode", "secret", "secrets",
+  "credential", "credentials", "apikey", "accesskey", "secretkey", "privatekey",
+  "authtoken", "clientsecret", "connectionstring",
+];
+
 

@@ -173,6 +173,20 @@ export type RedactionResult = {
    * that do are below.
    */
   scanTruncated: boolean;
+  /**
+   * True when an opaque, high-entropy token was found next to a credential noun.
+   *
+   * That form carries no assignment syntax, so it classifies as
+   * `ambiguous_secret_candidate` — right for the report pipeline, which redacts
+   * and holds it for a named human. But the public intake form cannot redact:
+   * it stores what the customer typed, verbatim, or refuses it. Downgrading the
+   * form therefore silently re-opened intake to a live key pasted into
+   * "evidence notes", which the previous version refused.
+   *
+   * Intake refuses on this in addition to confident evidence, so the two
+   * surfaces can differ where their consequences differ.
+   */
+  holdsOpaqueToken: boolean;
 };
 
 function placeholderFor(name: SecretDetectorName): string {
@@ -245,6 +259,7 @@ export function redactSecrets(input: string): RedactionResult {
   // would see is `[REDACTED:github_token]`, which is on the non-secret list.
   const scanned = findCredentialSpans(working);
   const scanTruncated = scanned.truncated;
+  const holdsOpaqueToken = scanned.spans.some((span) => span.form === "opaque_token_near_noun");
   if (scanned.spans.length > 0) {
     // Assembled in ONE left-to-right pass. Replacing spans individually rebuilds
     // the whole string each time, which is quadratic in the number of spans, and
@@ -274,6 +289,7 @@ export function redactSecrets(input: string): RedactionResult {
     classification,
     hadSecrets: detections.length > 0,
     scanTruncated,
+    holdsOpaqueToken,
   };
 }
 
@@ -301,7 +317,10 @@ export function containsLikelySecret(text: string): boolean {
  * is where uncertainty is handled properly.
  */
 export function holdsCredentialEvidence(text: string): boolean {
-  const { classification, scanTruncated } = redactSecrets(text);
+  const { classification, scanTruncated, holdsOpaqueToken } = redactSecrets(text);
+  // See `holdsOpaqueToken`: a form the report pipeline can hold and redact is one
+  // this form can only store or refuse.
+  if (holdsOpaqueToken) return true;
   // Unexamined is not clean. Text past the scan limit is refused rather than
   // accepted, because this is the function that decides whether a person is
   // turned away — and turning someone away over an oversized field is a worse

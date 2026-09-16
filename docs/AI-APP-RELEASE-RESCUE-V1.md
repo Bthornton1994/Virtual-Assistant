@@ -255,14 +255,16 @@ Defence in depth: the excerpt schema re-runs detection rather than trusting a fl
 
 ## Test plan
 
-**Implemented and passing** — 226 tests across fourteen suites, 42 live database cases for isolation and 24 for hardening, and 8 browser tests in real Chromium against the production build.
+**Implemented and passing** — 499 Release Rescue tests across 26 suites (1,167 in the whole repository), 255 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
+
+These counts are re-measured each pass rather than carried forward. Three successive audits found stale numbers here, and a stale count is a false claim like any other.
 
 | Area | Coverage | Where |
 | --- | --- | --- |
 | **Authentication** | The session boundary itself is the existing platform's (`rls.test.ts`, `auth-redirect.test.ts`). This workstream adds identity checks at the authority boundary: the named report reviewer must hold manager authority, verified against `operators` rather than accepted as a user id | QA fixture §4; migration suite |
 | **Authorization** | A customer admin may open an engagement only for their own organization; an ops manager cannot mint an access grant on a customer's behalf; a plain operator cannot issue a report; only a manager may issue or update one; the customer may revoke their own access | QA fixture §1, §3, §4; migration suite |
-| **Secrets** | 15 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; redact-before-truncate so no fragment survives; nested JSON scanning; schema refusal of unredacted excerpts; whole-report scan | `release-rescue-redaction.test.ts` (22), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
-| **Data access** | Organization B reads none of A's engagements or reports; credential-named keys, credential-shaped values, credentialed URLs, over-long windows, and write access all refused; grants are revoke-only and one-way; retention cannot be extended; the purge clears content, keeps accounting, revokes grants, is idempotent, does not reach past its own workstream, and does not leak its flag | `release_rescue_v1_isolation_proof.sql` (42 cases), migration suite (27) |
+| **Secrets** | 15 detector families; setting names preserved while values are removed; correct `process.env` usage stays readable; idempotence; call-order independence; redact-before-truncate so no fragment survives; nested JSON scanning; schema refusal of unredacted excerpts; whole-report scan | `release-rescue-redaction.test.ts` (28), `release-rescue-findings.test.ts`, `release-rescue-report.test.ts` |
+| **Data access** | Organization B reads none of A's engagements or reports; credential-named keys, credential-shaped values, credentialed URLs, over-long windows, and write access all refused; grants are revoke-only and one-way; retention cannot be extended; the purge clears content, keeps accounting, revokes grants, is idempotent, does not reach past its own workstream, and does not leak its flag | `release_rescue_v1_isolation_proof.sql` (45 cases), migration suite (28) |
 | **Report integrity** | Edited severity counts, verdict, coverage, rubric hash, and scope hash all rejected; missing or duplicated assessments and findings rejected; blocking pass on argument alone rejected; finding/assessment contradictions rejected; prohibited claims rejected; non-zero authority rejected; deterministic hashing; delivery gate refuses unsigned or invalid reports | `release-rescue-report.test.ts`, `release-rescue-findings.test.ts`, `demo-fixtures.test.ts` |
 
 **How the database cases were verified.** `supabase/qa/release_rescue_v1_isolation_proof.sql` runs against the real migration chain on a disposable Postgres and asserts live behaviour — each case either performs an action that must succeed or attempts one that must be refused, and the script aborts if an expected refusal does not occur. This is how the `security definer` defect was found: the reviewer-authority check could not read `operators` as the calling user, so no report could ever have been issued.
@@ -672,12 +674,12 @@ Measured on this branch, along the axis each audit varied:
 
 - **21 assignment forms × 14 key shapes**, value held fixed
   (`release-rescue-credential-scanner.test.ts`).
-- **27 carriers × 21 values = 550 combinations**, key held fixed at `DB_PASSWORD`
+- **27 carriers × 21 values, 550 combinations executed** (the product is 567; space-bearing values are skipped in unquoted carriers), key held fixed at `DB_PASSWORD`
   (`release-rescue-scanner-value-properties.test.ts`). 14 of the values must be
   redacted and 7 are placeholders that must survive, so a detector that redacts
   everything fails as surely as one that redacts nothing.
 - **11 URL and auth-header carriers** crossed with the same values.
-- **7 lines of ordinary audit prose** returned byte-for-byte unchanged.
+- **6 lines of ordinary audit prose** returned byte-for-byte unchanged.
 
 The value axis is the one audit 5 attacked, and writing it found four defects that
 the form × key matrix could not see: `export K=V` spans included the `=`, so the
@@ -747,9 +749,9 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
 
 `assembleReleaseRescueReport` accepts only a `Sanitized<T>`, and
 `sanitizeReportInput` is the only function that produces one. Assembling a report
-from raw input does not fail a test — it **fails to typecheck**. A test asserts
-there is exactly one `as Sanitized<` in the codebase, so the escape hatch cannot
-quietly become two.
+from raw input does not fail a test — it **fails to typecheck**. A test walks the whole
+tree and fails if the brand is minted outside the pipeline module, or if that
+module's two producers become three.
 
 `buildReleaseRescueReport` is the production front door: it sanitizes, records
 what it held, and assembles. A runtime `assertNoCredentialMaterial` backs the type
@@ -803,7 +805,7 @@ engagements, `updated_at` on grants). Its first version filtered on the
 engagements table alone while its own comment said "these tables", so the
 mechanism covered one of the three it claimed.
 
-`supabase/qa/release_rescue_destructive_authority_v7_proof.sql` runs **35 cases**
+`supabase/qa/release_rescue_destructive_authority_v7_proof.sql` runs **39 cases**
 on live PostgreSQL, attempting the stamp as every caller class that exists —
 anonymous, customer admin, other tenant, plain operator, ops manager, service
 role, direct SQL with RLS out of the picture, a forged retention GUC — plus the
@@ -852,10 +854,20 @@ Docker entrypoints and CI migration steps read. `DBPASSWORD`, `MYSQLPASSWORD`,
 `ROOTPASSWORD`, `SMTPPASSWORD` and `APPSECRET` behaved identically, and
 `PGPASSWORD=…` reached a `deliverable: true` report with the credential intact.
 
-Segments of eight characters or more are now searched for the credential words
-that cannot occur inside ordinary English. `pass` is deliberately excluded and
-stays excluded: it would make `bypass`, `passage` and `compass` credential names,
-and a test asserts it does not.
+That first fix was a hand-written list of words matched as SUBSTRINGS, and audit 7
+found it wrong in both directions: it missed the entire token family
+(`ACCESSTOKEN`, `GITHUBTOKEN`, `MYSQLPWD` — nobody had typed `token` into it),
+and because `secret` is a substring of `secretary` it made `SECRETARY_EMAIL`,
+`PASSWORDLESS_LOGIN` and `CREDENTIALING_VENDOR` confident evidence, which is an
+unclearable hold on a plausible line of auth code.
+
+It is now derived from the lexicon that already exists rather than a second list
+beside it, and anchored at the END of the segment, which is what makes
+`secretary` and `passwordless` fail: a credential name ends with what it holds.
+Either the segment is `<qualifier><carrier>` from the same product that generates
+the separated phrases, or it ends with a carrier word of six characters or more.
+`bypass` fails both — `by` is not a qualifier — and a test asserts that it,
+`compass`, `passage` and twenty other ordinary words stay out.
 
 ### 2. The new opaque-token rule shredded ordinary findings — unclearably
 
@@ -930,6 +942,106 @@ properties the code did not implement — the `truncated` contract above, and
 caller**. That one is recorded rather than fixed: report strings reach the
 sanitiser through the generic walk, and wiring the truncating path in is a change
 to the excerpt path that wants its own proof.
+
+## Seventh independent audit: fixing the class instead of the instance
+
+Audit 7 returned six blocking findings and two regressions from audit 6's own
+fixes. Its diagnosis is the one this section is organised around:
+
+> Every cross product in the suite crosses ONE carrier with a key or a value. The
+> defects live where two carriers meet. And the false-positive direction is tested
+> with hand-picked lists while the credential direction uses products — which is
+> how a detector that destroys ordinary findings passed every test.
+
+Both halves were right, and both were reproduced before anything was changed.
+
+### What it found
+
+1. **`ACCESSTOKEN=<live token>` reached a `deliverable: true` report.** Audit 6's
+   run-together fix was a hand-written list of password words matched as
+   substrings. The entire token family — `ACCESSTOKEN`, `GITHUBTOKEN`,
+   `SESSIONTOKEN`, `MYSQLPWD`, `bindpw` — was invisible because nobody had typed
+   `token` into it.
+2. **The same list made ordinary words into unclearable holds.** `secret` is a
+   substring of `secretary`, so `SECRETARY_EMAIL=`, `PASSWORDLESS_LOGIN=` and
+   `CREDENTIALING_VENDOR=` were confident evidence.
+3. **A YAML comment dropped a credential span entirely.** `DB_PASSWORD: swordfish
+   # this is the value we use in the staging config` read as prose, and prose
+   drops the span. The same bypass as the reverted `valueEndsSentence` rule, one
+   comment marker instead of one full stop.
+4. **Three lines of routine route code became an undeliverable report.** `;` was
+   in the delimited-data delimiter table, and `;` terminates a statement in every
+   language this product reviews. An excerpt whose first line mentioned `getToken`
+   was read as a CSV header plus two rows.
+5. **`Tokens: 30-day lifetime with no rotation.`** scored as opaque — a digit and
+   letters, six characters — so it was confident evidence, refusing the customer
+   at intake and bricking the report. Audit 5's defect, reached by varying the
+   value shape instead of the wording.
+6. **A second `SECURITY DEFINER` trigger read across tenants.** Audit 6's fix
+   scoped `enforce_release_rescue_clearance_authority`;
+   `enforce_release_rescue_report_commit` sat four lines away doing the same
+   thing, and quoted the victim tenant's private commit SHA back in its refusal.
+7. **Key and value on separate lines were never associated** — which is what
+   `JSON.stringify(x, null, 2)` and every YAML writer produce once a line gets
+   long.
+8. **The opaque-token downgrade re-opened the public intake form.** Intake refuses
+   only confident evidence and cannot redact, so downgrading that form to
+   ambiguous meant a live key pasted into "evidence notes" was accepted and
+   stored in the clear, where the previous version refused it.
+
+### The rule this round followed: derive, do not enumerate
+
+Every fix above is a property, and each one is asserted as a product rather than
+a list:
+
+- **Run-together names** come from the qualifier × carrier product that already
+  generates the separated phrases, anchored at the end of the segment. A test
+  asserts `keyLooksSecret` for **every** pair in both spellings — over 500 of
+  them — so the token family is covered by construction rather than by having
+  been thought of. The anchoring is what fixes the over-reach in the same stroke.
+- **Composed carriers** get their own product: nine outer contexts (trailing hash
+  comment, slash comment, leading comment, indentation, nesting, following key,
+  preceding prose) × eight inner forms, asserting the composition is never weaker
+  than either carrier alone.
+- **The false-positive direction is now a product too** — six subjects × six
+  predicates of ordinary audit prose, asserted against both the classifier and
+  the intake form, plus four real source excerpts asserted byte-for-byte.
+- **The `SECURITY DEFINER` class is enumerated in SQL.** The v7 proof iterates
+  `pg_proc where prosecdef` and fails on any function reading a tenant table
+  without an `organization_id` conjunct. Three rounds of fixing one trigger at a
+  time is what that replaces. It was verified against a planted violation, so it
+  is known to be capable of failing.
+
+Writing those products immediately found two more gaps that no list would have:
+`DBPW`, `PGPW` and `IDPW` sat one character under a floor picked by eye, and
+`export const sessionSecret = config.sessionSecret;` was redacting a code
+reference. Both are fixed; a dotted identifier path without digits is a
+reference, and `admin.password123` still is not.
+
+### Where intake and the report pipeline now differ, deliberately
+
+The two surfaces have different powers, so they get different thresholds. The
+report pipeline can redact and hold, so an `ambiguous_secret_candidate` is
+redacted and held for a named manager. The intake form can only store what the
+customer typed or refuse it, so it refuses confident evidence **and** the
+opaque-token form, while still accepting every line of ordinary prose in the
+product test above. One boolean for both surfaces is what produced audit 5's
+false refusals and audit 7's silent acceptance, in turn.
+
+### Non-blocking findings recorded rather than fixed
+
+- `hasContiguousEntropyRun` excludes tokens containing `/`, so base64 and
+  AWS-shaped secrets are invisible **to the near-noun prose form**. The assignment
+  forms still catch them; the cost of including `/` is every file path in every
+  finding.
+- `sanitizeValue`, `scanForSecrets` and `prepareExcerpt` ignore `scanTruncated`.
+  Unreachable today only because the report schema caps every string at 4,000
+  characters — so a future field added without a `.max()` re-opens it silently.
+  Worth closing, and it is a change to the walk that wants its own proof.
+- The v7 column-class assertion selects by **name pattern**. A destructive column
+  named `deleted` or `anonymized` matches none of the patterns and would pass. The
+  document previously called this "enumerating the class"; it enumerates a naming
+  convention, and that is now what it says.
 
 ## What this slice deliberately does not do
 

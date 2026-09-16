@@ -98,6 +98,73 @@ create trigger trg_release_rescue_report_purge_stamp
   for each row execute function public.enforce_release_rescue_report_purge_stamp();
 
 -- --------------------------------------------------------------------------------
+-- 1b. The same tenant scope, on the other definer trigger that reads the artifact
+-- --------------------------------------------------------------------------------
+--
+-- `enforce_release_rescue_report_commit` is also SECURITY DEFINER, also sorts
+-- ahead of the org-match guard, and also read `evidence_artifacts` by id alone --
+-- then quoted the row's `reviewedCommitSha` back in its refusal. An auditor
+-- pointed a report at another tenant's artifact and read that tenant's private
+-- commit SHA out of the error message.
+--
+-- The previous round scoped the clearance trigger and stopped there, which fixed
+-- the instance and left the class. This scopes the other one, and the proof below
+-- now asserts the property across every definer function rather than naming them.
+--
+-- Redefined in full rather than patched, because a trigger function is replaced
+-- whole. The only changes are the organization_id conjunct and the refusal text.
+
+create or replace function public.enforce_release_rescue_report_commit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_engagement_commit text;
+  v_payload_commit text;
+begin
+  if tg_op = 'INSERT' then
+    select reviewed_commit_sha into v_engagement_commit
+      from public.release_rescue_engagements
+     where id = new.engagement_id
+       and organization_id = new.organization_id;
+
+    if v_engagement_commit is null then
+      raise exception 'A report cannot be issued for an engagement whose reviewed commit was never pinned';
+    end if;
+
+    if new.reviewed_commit_sha is null then
+      new.reviewed_commit_sha := v_engagement_commit;
+    elsif new.reviewed_commit_sha is distinct from v_engagement_commit then
+      raise exception 'Report reviewed commit does not match the commit pinned on its engagement';
+    end if;
+
+    if new.report_artifact_id is not null then
+      select payload->>'reviewedCommitSha' into v_payload_commit
+        from public.evidence_artifacts
+       where id = new.report_artifact_id
+         and organization_id = new.organization_id;
+
+      if v_payload_commit is not null and v_payload_commit is distinct from v_engagement_commit then
+        -- Neither value is echoed. Both are another party's data the moment this
+        -- function is pointed somewhere it should not reach.
+        raise exception 'The report body names a different commit from the one its engagement pinned';
+      end if;
+    end if;
+
+    return new;
+  end if;
+
+  if new.reviewed_commit_sha is distinct from old.reviewed_commit_sha then
+    raise exception 'A report cannot be repointed at a different commit after it is issued';
+  end if;
+
+  return new;
+end;
+$$;
+
+-- --------------------------------------------------------------------------------
 -- 2. A secret-hold clearance names an accountable operator
 -- --------------------------------------------------------------------------------
 --

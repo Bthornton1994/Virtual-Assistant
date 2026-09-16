@@ -1,0 +1,251 @@
+import { describe, expect, it } from "vitest";
+import { redactSecrets } from "@/lib/release-rescue-redaction";
+import {
+  CREDENTIAL_CARRIERS,
+  CREDENTIAL_QUALIFIERS,
+  keyLooksSecret,
+} from "@/lib/release-rescue-redaction-keys";
+import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
+import {
+  buildReleaseRescueReport,
+  pendingSecretHolds,
+  releaseRescueDeliveryGate,
+  validateReleaseRescueReport,
+} from "@/lib/release-rescue-report";
+import { makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
+
+// The seventh audit's diagnosis, as tests.
+//
+// Six rounds each closed the examples the previous audit used. The audit's point
+// was that every table in this suite crosses ONE carrier with a key or a value,
+// while the defects live where two dimensions meet — and that the false-positive
+// direction is tested with hand-picked lists while the credential direction uses
+// cross products. So these are products in both directions.
+
+const SECRET = "Xk92mQvn7LzPr0d";
+
+describe("the lexicon, crossed against itself", () => {
+  // The property that closes the run-together class instead of listing it.
+  // `ACCESSTOKEN` was invisible after `PGPASSWORD` was fixed, because the fix
+  // was a hand-written list of password words and nobody had typed `token` into
+  // it. A separated name and its concatenation are the same name.
+  it("recognises every qualifier+carrier concatenation it recognises separated", () => {
+    const missed: string[] = [];
+    let checked = 0;
+
+    for (const qualifier of CREDENTIAL_QUALIFIERS) {
+      for (const carrier of CREDENTIAL_CARRIERS) {
+        checked += 1;
+        const separated = `${qualifier}_${carrier}`.toUpperCase();
+        const runTogether = `${qualifier}${carrier}`.toUpperCase();
+
+        if (!keyLooksSecret(separated)) missed.push(`separated: ${separated}`);
+        if (!keyLooksSecret(runTogether)) missed.push(`run-together: ${runTogether}`);
+      }
+    }
+
+    expect(checked).toBeGreaterThan(500);
+    expect(missed, `${missed.length} lexicon pairs not recognised`).toEqual([]);
+  });
+
+  it("redacts the value behind every one of them", () => {
+    const leaked: string[] = [];
+
+    for (const qualifier of CREDENTIAL_QUALIFIERS) {
+      for (const carrier of CREDENTIAL_CARRIERS) {
+        for (const key of [
+          `${qualifier}_${carrier}`.toUpperCase(),
+          `${qualifier}${carrier}`.toUpperCase(),
+        ]) {
+          if (redactSecrets(`${key}=${SECRET}`).redacted.includes(SECRET)) leaked.push(key);
+        }
+      }
+    }
+
+    expect(leaked, `${leaked.length} lexicon key names leaked their value`).toEqual([]);
+  });
+
+  it("does not make ordinary English words into credential names", () => {
+    // The other direction of the same fix. A substring rule made `secretary`,
+    // `passwordless` and `credentialing` confident evidence — which is an
+    // UNCLEARABLE hold on a plausible line of auth code.
+    const ordinary = [
+      "secretary", "secretariat", "secretarial", "passwordless", "passwordlessLogin",
+      "credentialing", "apikeyless", "bypass", "compass", "surpass", "encompass",
+      "passage", "passenger", "passive", "tokenizer", "tokenize", "keyboard",
+      "keynote", "monkey", "turnkey", "spin", "pinned", "seeded", "certain",
+    ];
+    const wrong = ordinary.filter((word) => keyLooksSecret(word));
+
+    expect(wrong, `${wrong.length} ordinary words treated as credential names`).toEqual([]);
+  });
+});
+
+describe("two carriers composed, which is where the defects lived", () => {
+  // Every existing table crosses one carrier with a key or a value. A YAML line
+  // WITH a trailing comment was neither, and it dropped the span entirely.
+  const OUTER: ReadonlyArray<{ label: string; wrap: (line: string) => string }> = [
+    { label: "alone", wrap: (line) => line },
+    { label: "trailing hash comment", wrap: (line) => `${line} # rotate this quarterly` },
+    {
+      label: "trailing comment that reads as a sentence",
+      wrap: (line) => `${line} # this is the value we use in the staging config for now`,
+    },
+    { label: "trailing slash comment", wrap: (line) => `${line} // set by the deploy script` },
+    { label: "leading comment line", wrap: (line) => `# staging only\n${line}` },
+    { label: "indented", wrap: (line) => `      ${line}` },
+    { label: "inside a block", wrap: (line) => `services:\n  db:\n    ${line}\n` },
+    { label: "followed by another key", wrap: (line) => `${line}\nlog_level: debug` },
+    { label: "preceded by prose", wrap: (line) => `The deploy config sets this.\n${line}` },
+  ];
+
+  const INNER: ReadonlyArray<{ label: string; render: (value: string) => string }> = [
+    { label: "yaml colon", render: (v) => `DB_PASSWORD: ${v}` },
+    { label: "yaml colon, quoted", render: (v) => `DB_PASSWORD: "${v}"` },
+    { label: "env equals", render: (v) => `DB_PASSWORD=${v}` },
+    { label: "env equals, quoted", render: (v) => `DB_PASSWORD="${v}"` },
+    { label: "export", render: (v) => `export DB_PASSWORD=${v}` },
+    { label: "run-together key", render: (v) => `PGPASSWORD=${v}` },
+    { label: "run-together token key", render: (v) => `ACCESSTOKEN=${v}` },
+    { label: "value on the next line", render: (v) => `DB_PASSWORD:\n  ${v}` },
+  ];
+
+  it("is never weaker composed than either carrier alone", () => {
+    const leaked: string[] = [];
+    let checked = 0;
+
+    for (const outer of OUTER) {
+      for (const inner of INNER) {
+        checked += 1;
+        const text = outer.wrap(inner.render(SECRET));
+        if (redactSecrets(text).redacted.includes(SECRET)) {
+          leaked.push(`${outer.label} × ${inner.label}`);
+        }
+      }
+    }
+
+    expect(checked).toBeGreaterThan(60);
+    expect(leaked, `${leaked.length} composed carriers leaked the value`).toEqual([]);
+  });
+});
+
+describe("ordinary content, as a product rather than a list", () => {
+  // The asymmetry the audit named: the credential direction used 567- and
+  // 294-element products while the safe direction used 15 hand-picked strings.
+  // Three separate defects lived in that gap, and all three produced UNCLEARABLE
+  // holds — a paid report no human can deliver.
+  const SUBJECTS = ["Tokens", "Passwords", "Secrets", "Credentials", "API keys", "Session keys"];
+  const PREDICATES = [
+    "30-day lifetime with no rotation.",
+    "8-character minimum is all we enforce.",
+    "rotated quarterly and the rotation is logged.",
+    "managed via environment variables in the deploy pipeline.",
+    "stored in the platform secret store, not in the repository.",
+    "not configured, so sessions do not end.",
+  ];
+
+  it("never calls a heading with a quantity a credential", () => {
+    const wrong: string[] = [];
+
+    for (const subject of SUBJECTS) {
+      for (const predicate of PREDICATES) {
+        const line = `${subject}: ${predicate}`;
+        const { classification } = redactSecrets(line);
+        if (classification === "credential_evidence") wrong.push(line);
+      }
+    }
+
+    expect(wrong, `${wrong.length} ordinary headings classified as confident evidence`).toEqual([]);
+  });
+
+  it("does not refuse any of them at the public intake form", () => {
+    const refused: string[] = [];
+
+    for (const subject of SUBJECTS) {
+      for (const predicate of PREDICATES) {
+        const notes = `${subject}: ${predicate}`;
+        const result = parseRescueIntake({ evidenceNotes: notes });
+        const message = result.ok ? "" : JSON.stringify(result.errors);
+        if (message.includes("looks like a credential")) refused.push(notes);
+      }
+    }
+
+    expect(refused, `${refused.length} ordinary descriptions refused a customer`).toEqual([]);
+  });
+
+  it("leaves ordinary source excerpts intact and deliverable", () => {
+    // A statement list is not a CSV. `;` was in the delimiter table, so three
+    // lines of route code whose first mentioned `getToken` were read as a header
+    // plus two rows, and every line was redacted into an unclearable hold.
+    const EXCERPTS = [
+      'import { getToken } from "./auth";\nconst user = await getUser(request.params.id);\nreturn NextResponse.json(user);',
+      'const apiKey = process.env.API_KEY;\nif (!apiKey) throw new Error("missing");',
+      'export const sessionSecret = config.sessionSecret;\nreturn sign(payload, sessionSecret);',
+      'let token;\ntoken = await refreshToken();\nreturn token;',
+    ];
+
+    for (const excerpt of EXCERPTS) {
+      expect(redactSecrets(excerpt).redacted, excerpt.slice(0, 40)).toBe(excerpt);
+    }
+  });
+
+  it("keeps a report built from such an excerpt deliverable", () => {
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        findings: [
+          makeFinding({
+            locations: [
+              {
+                path: "src/app/api/users/route.ts",
+                startLine: 1,
+                endLine: 3,
+                excerpt: 'import { getToken } from "./auth";\nconst user = await getUser(request.params.id);',
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    expect(report.findings[0].locations[0].excerpt).toContain("getToken");
+    expect(pendingSecretHolds(report)).toEqual([]);
+  });
+});
+
+describe("the outcome the whole workstream exists to prevent", () => {
+  // One assertion, stated plainly: a real credential never reaches a deliverable
+  // report. Driven from the same lexicon product, so a key nobody thought of is
+  // covered by construction.
+  it("never delivers a report carrying a credential from any lexicon key", () => {
+    const delivered: string[] = [];
+
+    for (const qualifier of ["access", "pg", "mysql", "github", "session", "client"]) {
+      for (const carrier of ["token", "password", "secret", "pwd", "apikey"]) {
+        for (const key of [
+          `${qualifier}_${carrier}`.toUpperCase(),
+          `${qualifier}${carrier}`.toUpperCase(),
+        ]) {
+          const report = buildReleaseRescueReport(
+            makeReportInput({
+              findings: [
+                makeFinding({
+                  locations: [
+                    { path: "config/app.env", startLine: 1, endLine: 1, excerpt: `${key}=${SECRET}` },
+                  ],
+                }),
+              ],
+            }),
+          );
+          const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
+
+          if (gate.deliverable && JSON.stringify(report).includes(SECRET)) {
+            delivered.push(key);
+          }
+        }
+      }
+    }
+
+    expect(delivered, `${delivered.length} keys produced a deliverable report holding a credential`)
+      .toEqual([]);
+  });
+});

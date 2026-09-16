@@ -486,6 +486,97 @@ begin
     v_message like '%organization%');
 end $$;
 
+-- --------------------------------------------------------------------------------
+-- The SECURITY DEFINER class, enumerated rather than named
+-- --------------------------------------------------------------------------------
+--
+-- Two rounds fixed one definer trigger each. Audit 6 found the clearance trigger
+-- reading `evidence_artifacts` past RLS; it was scoped, and audit 7 found
+-- `enforce_release_rescue_report_commit` doing the same thing four lines away.
+-- Naming the next one would invite an eighth.
+--
+-- So this asserts the PROPERTY over every definer function in the schema: a
+-- definer function runs with the owner's reach, so any read of a tenant-owned
+-- table inside one must carry an `organization_id` conjunct. A new function
+-- without one fails this proof on the day it is written.
+do $$
+declare
+  v_fn record;
+  v_body text;
+  v_offenders text[] := '{}';
+  v_tenant_tables text[] := array[
+    'evidence_artifacts', 'release_rescue_engagements', 'release_rescue_reports',
+    'release_rescue_repository_grants', 'workstream_runs', 'delegation_specs'
+  ];
+  v_table text;
+  v_checked integer := 0;
+begin
+  for v_fn in
+    select p.proname, p.prosrc
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.prosecdef
+       and p.proname like '%release_rescue%'
+  loop
+    v_checked := v_checked + 1;
+    v_body := lower(v_fn.prosrc);
+
+    foreach v_table in array v_tenant_tables loop
+      -- A read of the table that is not followed, within the same statement, by
+      -- an organization_id comparison. Crude on purpose: a false alarm costs
+      -- somebody a comment, and a miss costs a tenant their data.
+      if v_body ~ ('from\s+(public\.)?' || v_table || '\M')
+         and not (
+           -- the organization conjunct appears somewhere after that table name
+           substring(v_body from position(v_table in v_body)) ~ 'organization_id'
+         ) then
+        v_offenders := array_append(v_offenders, v_fn.proname || ' -> ' || v_table);
+      end if;
+    end loop;
+  end loop;
+
+  perform rrv7.assert(
+    format('every definer function was examined (%s of them)', v_checked),
+    v_checked >= 3);
+  perform rrv7.assert(
+    format('no definer function reads a tenant table unscoped (%s)', v_offenders),
+    cardinality(v_offenders) = 0);
+end $$;
+
+-- And the instance audit 7 reproduced, kept as a case in its own right: a report
+-- pointed at another tenant's artifact must be refused WITHOUT the refusal
+-- carrying that tenant's commit SHA.
+insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
+values ('7f000000-0000-0000-0000-00000000bb0a', '7b000000-0000-0000-0000-00000000bb01',
+        '7e000000-0000-0000-0000-00000000bb01', 'observation', 'victim commit', repeat('7', 64),
+        jsonb_build_object('schemaVersion', 'release-rescue-report/v1',
+                           'reviewedCommitSha', repeat('f', 40)));
+
+do $$
+declare v_message text;
+begin
+  begin
+    insert into public.release_rescue_reports
+      (id, organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+       rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+       coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+    values ('7cc00000-0000-0000-0000-0000000000fa', '7b000000-0000-0000-0000-00000000aa01',
+            '7aa00000-0000-0000-0000-000000000033', '7e000000-0000-0000-0000-00000000aa01',
+            '7f000000-0000-0000-0000-00000000bb0a', 'release-rescue-report/v1', repeat('a', 64),
+            'release-rescue-rubric/v1', repeat('2', 64), repeat('4', 64), 'conditional_release', 0,
+            32, 32, 'auditor', '7a000000-0000-0000-0000-00000000cc01');
+    v_message := '(accepted)';
+  exception when others then
+    v_message := sqlerrm;
+  end;
+
+  perform rrv7.assert('a report naming another tenant''s artifact is refused',
+                      v_message <> '(accepted)');
+  perform rrv7.assert('and the refusal does not carry the other tenant''s commit sha',
+                      position(repeat('f', 40) in v_message) = 0);
+end $$;
+
 -- The positive control. Everything above proves the column is refused; this proves
 -- the refusals did not simply break retention, which is the failure mode that would
 -- look identical from the outside. Engagement `...0033` is not due (7-day policy,

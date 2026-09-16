@@ -152,6 +152,18 @@ export function tailReadsAsSentence(text: string, from: number): boolean {
   const window = text.slice(from, Math.min(text.length, from + TAIL_LOOKAHEAD));
   const lineEnd = window.indexOf("\n");
   const tail = lineEnd === -1 ? window : window.slice(0, lineEnd);
+
+  // A COMMENT is not a sentence, whatever it says.
+  //
+  // `DB_PASSWORD: swordfish # this is the value we use in the staging config`
+  // read as prose here, and prose DROPS the span entirely, so the password
+  // shipped. English does not write `#` or `//`; a config file does, and a
+  // config file is exactly what a `#` on the line proves this is.
+  //
+  // This is the same bypass as the `valueEndsSentence` rule reverted above, one
+  // comment marker instead of one full stop. Both existed because a route to
+  // `sensitive_prose` is a route to silence.
+  if (/^\s*(?:#|\/\/|;)/.test(tail)) return false;
   const words = tail.toLowerCase().match(/[a-z']+/g) ?? [];
   if (words.length < 3) return false;
 
