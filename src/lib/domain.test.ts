@@ -1,12 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACTION_CLASSES,
   APPROVAL_KINDS,
   ROLES,
   REQUEST_STATUSES,
   blocksWithoutApproval,
+  canDecideApproval,
   canDeliverRequest,
+  canManageTeam,
+  canMutateOpsQueue,
+  canRequestCustomerApproval,
   canTransition,
+  computeNextRunAt,
   identifyMissingContext,
   inferApprovalKind,
   requiresExplicitApproval,
@@ -95,6 +100,19 @@ describe("domain contracts", () => {
     expect(inferApprovalKind("CRM overwrite of closed deals")).toBe("crm_destructive_change");
   });
 
+  it("authorizes approvals to customers and queue mutations to ops", () => {
+    expect(canDecideApproval(actor({ role: "client_admin" }))).toBe(true);
+    expect(canDecideApproval(actor({ role: "client_member" }))).toBe(true);
+    expect(canDecideApproval(actor({ role: "operator", operatorId: "op_maya" }))).toBe(false);
+    expect(canDecideApproval(actor({ role: "ops_manager" }))).toBe(false);
+    expect(canRequestCustomerApproval(actor({ role: "ops_manager" }))).toBe(true);
+    expect(canRequestCustomerApproval(actor({ role: "client_admin" }))).toBe(false);
+    expect(canMutateOpsQueue(actor({ role: "operator", operatorId: "op_maya" }))).toBe(true);
+    expect(canMutateOpsQueue(actor({ role: "client_admin" }))).toBe(false);
+    expect(canManageTeam(actor({ role: "client_admin" }))).toBe(true);
+    expect(canManageTeam(actor({ role: "client_member" }))).toBe(false);
+  });
+
   it("authorizes delivery only for managers, platform admins, and the assigned operator", () => {
     const assigned = { assignedOperatorId: "op_maya" };
     const unassigned = { assignedOperatorId: null };
@@ -107,5 +125,41 @@ describe("domain contracts", () => {
     expect(canDeliverRequest(actor({ role: "operator", operatorId: null }), assigned)).toBe(false);
     expect(canDeliverRequest(actor({ role: "client_admin", organizationId: "org_northline" }), assigned)).toBe(false);
     expect(canDeliverRequest(actor({ role: "client_member", organizationId: "org_northline" }), assigned)).toBe(false);
+  });
+});
+
+describe("workstream schedule math", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function localDate(year: number, month: number, day: number, hour: number, minute = 0) {
+    return new Date(year, month - 1, day, hour, minute, 0, 0);
+  }
+
+  it("returns null when cadence is none or the schedule is missing", () => {
+    expect(computeNextRunAt(null)).toBeNull();
+    expect(computeNextRunAt({ cadence: "none", time: "08:00", tasks: [] })).toBeNull();
+  });
+
+  it("rolls a past weekday time to the next weekday, not Saturday", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(localDate(2026, 9, 18, 18, 0));
+    const next = computeNextRunAt({ cadence: "weekdays", time: "08:00", tasks: ["Inspect CRM"] });
+    expect(next).toBe(localDate(2026, 9, 21, 8, 0).toISOString());
+  });
+
+  it("keeps a later weekday time on the same day", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(localDate(2026, 9, 18, 7, 0));
+    const next = computeNextRunAt({ cadence: "weekdays", time: "08:00", tasks: ["Inspect CRM"] });
+    expect(next).toBe(localDate(2026, 9, 18, 8, 0).toISOString());
+  });
+
+  it("lets a weekly cadence land on Saturday after a Friday rollover", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(localDate(2026, 9, 18, 18, 0));
+    const next = computeNextRunAt({ cadence: "weekly", time: "08:00", tasks: ["Weekly pack"] });
+    expect(next).toBe(localDate(2026, 9, 19, 8, 0).toISOString());
   });
 });

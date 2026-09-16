@@ -171,6 +171,45 @@ describe("approval requirements", () => {
     const { operator } = actors(store);
     expect(() => store.decideApproval(operator, "ap_wire", "approved", "no")).toThrow(AuthzError);
   });
+
+  it("blocks the request when the customer rejects a sensitive or outbound approval", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate } = actors(store);
+    const sensitive = store.decideApproval(founder, "ap_wire", "rejected", "Do not prepare payment.");
+    expect(sensitive.status).toBe("rejected");
+    expect(store.getRequest(founder, "req_wire").status).toBe("blocked");
+
+    const outbound = store.decideApproval(teammate, "ap_mail", "rejected", "Do not send.");
+    expect(outbound.status).toBe("rejected");
+    expect(store.getRequest(founder, "req_outreach").status).toBe("blocked");
+  });
+
+  it("cancels the request when the customer rejects an execution plan", () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    store.decideApproval(founder, "ap_conference", "rejected", "Stop. Do not follow up.");
+    expect(store.getRequest(founder, "req_conference").status).toBe("cancelled");
+    expect(store.listApprovals(founder).find((a) => a.id === "ap_conference")?.status).toBe("rejected");
+  });
+
+  it("refuses a second decision and hides another tenant's approval", () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    store.decideApproval(founder, "ap_wire", "approved", "Pack only.");
+    expect(() => store.decideApproval(founder, "ap_wire", "rejected", "changed my mind")).toThrow(DomainError);
+
+    const harborAdmin = {
+      id: "usr_harbor_admin",
+      email: "owner@harbor.demo",
+      name: "Harbor Owner",
+      role: "client_admin" as const,
+      organizationId: "org_harbor",
+      operatorId: null,
+      source: "demo" as const,
+    };
+    expect(() => store.decideApproval(harborAdmin, "ap_mail", "approved", "cross-tenant")).toThrow(AuthzError);
+    expect(store.listApprovals(founder).find((a) => a.id === "ap_mail")?.status).toBe("pending");
+  });
 });
 
 describe("operator assignment", () => {
@@ -630,5 +669,58 @@ describe("organization settings", () => {
     store.updateOrganization(founder, "org_northline", { name: "Northline Advisory LLP" });
     expect(store.getOrganization(founder, "org_northline").name).toBe("Northline Advisory LLP");
     expect(() => store.updateOrganization(teammate, "org_northline", { name: "Hijack" })).toThrow(AuthzError);
+  });
+});
+
+describe("QA fail-closed", () => {
+  it("moves a failed QA review to revision_required and refuses reviews outside QA", () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    const review = store.createQaReview(manager, "req_proposal", {
+      passed: false,
+      score: 41,
+      notes: "Rate card is missing. Do not send.",
+      defects: ["Rate card not applied"],
+    });
+    expect(review.passed).toBe(false);
+    expect(store.getRequest(manager, "req_proposal").status).toBe("revision_required");
+    expect(() =>
+      store.createQaReview(manager, "req_inbox", { passed: true, score: 90, notes: "too early" }),
+    ).toThrow(/QA stage/i);
+  });
+});
+
+describe("customer and ops permission edges", () => {
+  it("blocks client members from ops mutations and plan changes after approval", async () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate, manager } = actors(store);
+
+    expect(() =>
+      store.setWorkstreamSchedule(teammate, "ws_sales", { cadence: "weekdays", time: "09:00", tasks: ["Inspect CRM"] }),
+    ).toThrow(AuthzError);
+    expect(() => store.addTimeEntry(teammate, "req_inbox", 1, "padding hours")).toThrow(AuthzError);
+    expect(() => store.addInternalNote(teammate, "req_inbox", "internal only")).toThrow(AuthzError);
+    expect(() => store.askClarification(founder, "req_inbox", "Which VIP list?")).toThrow(AuthzError);
+    expect(() => store.requestIntegrationAccess(teammate, "in_3")).toThrow(AuthzError);
+    expect(() => store.updateRequestScope(teammate, "req_brief", { title: "Hijack brief" })).toThrow(AuthzError);
+    expect(() => store.modifyPlan(founder, "req_inbox", ["Ignore the approved plan"])).toThrow(/before it is approved/i);
+    expect(() => store.assignOperator(manager, "req_inbox", "op_missing")).toThrow(/Operator not found/i);
+    await expect(store.runWorkstreamSchedule(manager, "ws_exec")).rejects.toThrow(/No recurring schedule/i);
+
+    store.transitionRequest(founder, "req_inbox", "cancelled");
+    expect(store.getRequest(founder, "req_inbox").status).toBe("cancelled");
+  });
+
+  it("lets the client admin set a schedule and computes the next run", () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    const ws = store.setWorkstreamSchedule(founder, "ws_inbox", {
+      cadence: "weekdays",
+      time: "08:00",
+      tasks: ["Triage unread"],
+    });
+    expect(ws.schedule?.cadence).toBe("weekdays");
+    expect(ws.nextRunAt).toBeTruthy();
+    expect(new Date(ws.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
   });
 });
