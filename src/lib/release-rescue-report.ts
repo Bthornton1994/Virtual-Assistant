@@ -19,7 +19,7 @@ import {
   REPORT_FIELD_POLICY,
   checkReportFieldCoverage,
   enumerateStringFields,
-  generatedValueLooksLikeProse,
+  generatedValueIsNotWhatItClaims,
 } from "@/lib/release-rescue-field-policy";
 import {
   assertNoCredentialMaterial,
@@ -630,6 +630,8 @@ export function buildReleaseRescueReport(raw: AssembleReportInput): ReleaseRescu
  */
 const IDENTIFIER_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
+export { assertEveryCodeIsInItsCatalog as assertEveryCodeIsInItsCatalogForTest };
+
 function assertEveryCodeIsInItsCatalog(input: AssembleReportInput): void {
   const bad: string[] = [];
 
@@ -780,13 +782,13 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
   // `generated`, which is the same set the policy EXEMPTS from the
   // prohibited-claim guard and the credential check. A field is covered because
   // of what it contains, not because someone remembered it.
-  assertGeneratedFieldsAreNotProse(assembled);
+  assertGeneratedFieldsMatchTheirFormat(assembled);
 
   return assembled;
 }
 
 /**
- * Refuses a report whose `generated` fields contain prose.
+ * Refuses a report whose `generated` fields are not what the policy says.
  *
  * `generated` is the policy's largest disposition and its strongest claim: the
  * value is produced by our own deterministic code — an id, a hash, a count, an
@@ -794,13 +796,19 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
  * influenced nor worth guarding. On the strength of that, all 50 of those paths
  * skip both `findProhibitedClaims` and the credential check.
  *
- * None of those value kinds contains whitespace. A sentence cannot avoid it. So
- * whitespace is a complete test for "this is not what the policy says it is",
- * and it needs no list of field names to apply.
+ * Five audits walked through that exemption in a row, each time through a field
+ * the previous fix's rule did not describe. The rule this replaces refused
+ * `generated` values containing whitespace, on the reasoning that ids and hashes
+ * never contain any and a sentence cannot avoid it. Audit 17 replaced the spaces
+ * with hyphens: 49 of 50 paths accepted the claim and it rendered as the report's
+ * header line.
  *
- * `GENERATED_PROSE_PATHS` holds the one justified exception.
+ * Every one of those five rules was NEGATIVE — a description of what a value
+ * must not be — and a negative rule over an open set of strings has no complete
+ * form. So this one is positive: each path declares the format its value must
+ * MATCH, in `GENERATED_FORMATS`, and anything else is refused whatever it says.
  */
-export function assertGeneratedFieldsAreNotProse(report: ReleaseRescueReportV1): void {
+export function assertGeneratedFieldsMatchTheirFormat(report: ReleaseRescueReportV1): void {
   const offenders: string[] = [];
 
   for (const leaf of enumerateStringFields(report)) {
@@ -812,14 +820,15 @@ export function assertGeneratedFieldsAreNotProse(report: ReleaseRescueReportV1):
       continue;
     }
     if (rule.disposition !== "generated") continue;
-    if (generatedValueLooksLikeProse(leaf.normalized, leaf.value)) {
-      offenders.push(leaf.path);
-    }
+    const wrong = generatedValueIsNotWhatItClaims(leaf.normalized, leaf.value);
+    // The REASON is carried, never the value: these messages reach logs, and a
+    // value that is not what it claims to be is the one under suspicion.
+    if (wrong) offenders.push(`${leaf.path} (${wrong})`);
   }
 
   if (offenders.length > 0) {
     throw new Error(
-      `Release Rescue report assembly: these fields are classified "generated" — an id, hash, count, enum value, code or timestamp — but hold text: ${offenders.join(", ")}. A generated field is exempt from the prohibited-claim guard and the credential check, so it may not contain prose. The offending values are withheld from this message deliberately.`,
+      `Release Rescue report assembly: these fields are classified "generated" — produced by this codebase, and therefore exempt from the prohibited-claim guard and the credential check — but do not match the format that classification declares: ${offenders.join("; ")}. The offending values are withheld from this message deliberately.`,
     );
   }
 }

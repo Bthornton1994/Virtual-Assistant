@@ -12,7 +12,6 @@ import {
   type RubricAssessment,
 } from "@/lib/release-rescue-report";
 import { toCustomerReportView, type CustomerReportView } from "@/lib/release-rescue-presentation";
-import { getRubricCheck } from "@/lib/release-rescue-rubric";
 import { DEMO_SAMPLE_REPORT_ID } from "@/lib/ai-app-release-rescue/constants";
 
 // The sample report shown on the demo page.

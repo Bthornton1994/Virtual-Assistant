@@ -2045,6 +2045,93 @@ array. The v11 proof never exercised the two fields v11 was extended for; it has
 five new cases and is 29. And the doc said "eleven-mutation harness" while the PR
 said 18.
 
+### What the seventeenth audit found: a negative rule has no complete form
+
+The sixteenth audit's finding was closed and the seventeenth verified it. Then it
+did the obvious thing to the rule that closed it.
+
+That rule refused `generated` values containing whitespace, reasoning that ids,
+hashes, codes, enums and timestamps never contain any, and that a sentence cannot
+avoid it. The second half is false:
+
+```
+engagementId = "This-app-is-secure-and-free-of-vulnerabilities."
+  findProhibitedClaims -> ["free of vulnerabilities", "is secure"]
+  checkReportFieldCoverage -> []
+  hardGatePass -> true
+  deliverable  -> true
+  customer view header -> the claim, verbatim
+```
+
+Running the repository's own new policy-driven test with that payload instead:
+**49 of 50 generated paths accepted it.** Worse, the dotted
+(`this.app.is.secure...`) and camelCase (`ThisAppIsSecure...`) forms defeat
+`findProhibitedClaims` as well, so adding the claim guard to those fields was
+necessary and not sufficient.
+
+**And the test could not have found it.** It planted one whitespace-separated
+sentence against a rule that refused whitespace. The payload satisfied the rule's
+own premise, so the test could only ever re-confirm the rule it was derived from.
+That is worth more attention than the rule being wrong: a test whose fixture is
+drawn from the implementation's assumption cannot falsify that assumption.
+
+**The pattern, now visible.** Five rounds, five rules, all NEGATIVE — each a
+description of what a value must not be:
+
+| Round | The rule | Defeated by |
+| --- | --- | --- |
+| 13 | prose must not quote a credential | prose with no construct to key on |
+| 14 | codes must not be unconstrained | the field not on the list |
+| 15 | `findings[]`/`assessments[]` fields must not hold prose | the field one level up |
+| 16 | `generated` fields matching a path filter must not hold prose | the 35 paths the filter excluded |
+| 17 | `generated` fields must not contain whitespace | a hyphen |
+
+A negative rule over an open set of strings has no complete form. Every one of
+these was defeated by an instance of the set the rule did not describe, and the
+next one would have been too.
+
+**So the rule is positive now.** Each `generated` path declares in
+`GENERATED_FORMATS` the format its value must **match** — a 64-hex digest, an ISO
+instant, a version pin, a minted id, a JSON path, or membership in a named closed
+set. The policy already claims these values are "produced by our own
+deterministic code"; this is that claim written where the assembler can check it.
+A value that does not match is refused whatever it happens to say, so there is no
+payload to be clever with.
+
+Two details are load-bearing and were found by the test, not by reasoning:
+
+- **The minted-id format bounds segment count AND segment length.** Four
+  hyphen-separated segments excludes the hyphenated sentence; 24 characters per
+  segment excludes the same sentence in camelCase, which is one segment and which
+  the first version accepted.
+- **A closed set beats a shape, wherever a set exists.**
+  `this.app.is.secure.and.free.of.vulnerabilities` satisfies the lowercase-dotted
+  code *shape* exactly. Fourteen paths now name their actual value set — the
+  rubric dimensions, the severities, the verdicts — rather than describing what
+  such a value looks like.
+
+**What this does not solve, stated because five rounds each claimed more than they
+had.** Three formats are genuinely loose: `preparedBy.executorKey`, `.provider`
+and `.modelId` are vendor strings whose shape this codebase does not own. A
+camelCase claim fits them. The mitigation is that they never reach a customer
+surface — and that opt-out is declared on the format itself
+(`notCustomerVisible`), not kept in a list inside a test, with a dedicated test
+asserting the property holds. It is a bound, not a proof.
+
+**The test was rewritten to be capable of failing.** It plants nine payloads per
+path — space, hyphen, underscore, dot, camelCase, slash, two Unicode separators
+outside `\s`, and a credential — and it runs both assembly checks rather than one
+function, after an earlier version reported catalog-code paths as accepting a
+claim that production actually refuses. Testing one function in isolation and
+calling the result a property of the system is how a test comes to disagree with
+production.
+
+**One over-strictness bug, caught by the existing suite.** The first
+control-plane pattern required at least one character, and a human-prepared
+report has `preparedBy.provider = ""`. It refused every human-prepared report.
+That is the reason a tightening pass runs the whole suite and not only its own
+tests, and the empty string is now pinned by a test.
+
 ### The database half
 
 `supabase/migrations/20260916140000_release_rescue_structured_observations_v10.sql`

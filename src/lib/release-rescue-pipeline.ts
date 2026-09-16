@@ -68,10 +68,27 @@ function hashOf(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+/**
+ * The two sentences a hold may carry, exported so the field-coverage policy can
+ * name them as a closed set rather than describing their shape.
+ *
+ * `$.unresolvedHolds[].reason` is the one `generated` path whose value is
+ * legitimately a sentence, which made it the one path a shape rule could not
+ * constrain. An audit demonstrated that: a camelCase claim and a hyphenated
+ * credential both satisfied the "looks like a sentence" pattern it had. A closed
+ * set of two has no such gap.
+ */
+export const HOLD_REASONS = {
+  credential_evidence:
+    "Credential material was found here and removed. An authorised operator must confirm the finding can be delivered without it.",
+  ambiguous:
+    "This could not be told apart from ordinary security prose with confidence. It has been removed pending a human decision.",
+} as const;
+
+export const HOLD_REASON_VALUES: readonly string[] = Object.values(HOLD_REASONS);
+
 function reasonFor(classification: SecretClassification): string {
-  return classification === "credential_evidence"
-    ? "Credential material was found here and removed. An authorised operator must confirm the finding can be delivered without it."
-    : "This could not be told apart from ordinary security prose with confidence. It has been removed pending a human decision.";
+  return classification === "credential_evidence" ? HOLD_REASONS.credential_evidence : HOLD_REASONS.ambiguous;
 }
 
 /**

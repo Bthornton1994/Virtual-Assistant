@@ -50,10 +50,6 @@ const COMPOSE = `services:
 
 const PGPASS = `db.acme.com:5432:prod:app:${SECRETS.pgpass}`;
 const ENVFILE = `AWS_SECRET_ACCESS_KEY="${SECRETS.aws}"\nDEBUG=true\n`;
-// The same file in the shape the prose contract does not refuse, so the
-// defence-in-depth path below still has something to hold. An assignment quoted
-// into a limitation is refused outright now — asserted separately.
-const ENVFILE_AS_YAML = `AWS_SECRET_ACCESS_KEY: "${SECRETS.aws}"\nDEBUG: true\n`;
 
 const ALL_SECRETS = Object.values(SECRETS);
 

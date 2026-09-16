@@ -1,6 +1,20 @@
-import { findProhibitedClaims } from "@/lib/release-rescue-intake";
+import { REPOSITORY_ACCESS_MODES, findProhibitedClaims } from "@/lib/release-rescue-intake";
+import {
+  FINDING_CONFIDENCES,
+  FINDING_EXPLOITABILITIES,
+  FINDING_IMPACTS,
+  FINDING_SEVERITIES,
+  REMEDIATION_EFFORTS,
+} from "@/lib/release-rescue-findings-model";
+import {
+  RUBRIC_CHECK_OUTCOMES,
+  RUBRIC_DIMENSIONS,
+  RUBRIC_EVIDENCE_KINDS,
+} from "@/lib/release-rescue-rubric";
+import { EXECUTOR_KINDS } from "@/lib/executor-envelope";
+import { HOLD_REASON_VALUES } from "@/lib/release-rescue-pipeline";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
-import { blocksDelivery } from "@/lib/release-rescue-secret-classification";
+import { SECRET_CLASSIFICATIONS, blocksDelivery } from "@/lib/release-rescue-secret-classification";
 
 // Which report fields are protected, decided by enumeration rather than by an
 // allowlist someone has to remember to extend.
@@ -235,43 +249,257 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
 } as const;
 
 /**
- * The `generated` paths whose value is legitimately a SENTENCE.
+ * What each `generated` path's value must LOOK LIKE.
  *
- * `generated` means "produced by our own deterministic code: ids, hashes,
- * counts, enum values, timestamps" — and none of those contains a space. That
- * turns out to be a complete and checkable property, which is worth far more
- * than it sounds, because four audits in a row found the same defect by finding
- * the next `generated` field along:
+ * This replaced a rule that asked whether a value looked like prose, and the
+ * replacement is an inversion rather than a repair. The history is the argument:
  *
  *   14. the six catalog codes were unconstrained
- *   15. `findings[].rubricCheckId` was not on the list that fixed them
- *    -   `findingId`, `dimension`, `confidence`, `remediationEffort` — found by
- *        writing a general check rather than extending the list
- *   16. `$.engagementId` — a TOP-LEVEL field, which the "general" check's path
- *        filter excluded along with 34 others. It rendered "This app is secure
- *        and free of vulnerabilities." as the customer report's header line,
- *        with `hardGatePass` true and the delivery gate open.
+ *   15. `findings[].rubricCheckId` was not on the list that fixed them, plus
+ *       four more found by generalising
+ *   16. `$.engagementId` — TOP-LEVEL, excluded by a "general" check that was a
+ *       regex over path shapes covering 15 of 50 generated paths
+ *   17. the whitespace rule that replaced it. `generated` values are ids,
+ *       hashes, codes, enums and timestamps, none of which contains whitespace
+ *       — so whitespace looked like a complete test for "this is not what the
+ *       policy says it is". It is not. Replace the spaces with hyphens and
+ *       "This-app-is-secure-and-free-of-vulnerabilities." passed 49 of 50
+ *       generated paths and rendered as the report's header line. The dotted and
+ *       camelCase forms defeat `findProhibitedClaims` as well.
  *
- * Each round enumerated fields. This does not: `assertGeneratedFieldsAreNotProse`
- * walks the assembled artifact and checks every `generated` string it finds, so
- * a field is covered because of what it CONTAINS rather than because someone
- * remembered to list it.
+ * Every one of those five was a NEGATIVE rule: some description of what a value
+ * must not be. A negative rule over an open set of strings has no complete form,
+ * which is the same wall the prose contract hit before Option 1 — and the answer
+ * is the same one. Stop describing what the value must not be. Say what it IS.
  *
- * This set is the exception list, and it is deliberately tiny and justified.
- * Adding to it is how the property would rot, so each entry says why.
+ * So each `generated` path declares the format its value must MATCH. The policy
+ * already claims these are "produced by our own deterministic code"; this is
+ * that claim written down in a form the assembler can check. A value that does
+ * not match is refused, whatever it happens to say.
+ *
+ * WHAT THIS DOES NOT SOLVE, stated plainly because the last five rounds each
+ * claimed more than they had. Two of these formats are genuinely loose:
+ * `preparedBy.executorKey` and `.modelId` are vendor and control-plane strings
+ * whose shape this codebase does not own. A compressed claim in camelCase
+ * (`ThisAppIsSecure`) fits an identifier format and defeats the claim guard's
+ * tokenizer. Those two fields do not reach the customer view — asserted by a
+ * test — and that is the whole of the mitigation. It is a bound, not a proof.
  */
-export const GENERATED_PROSE_PATHS: Readonly<Record<string, string>> = {
-  // One of two fixed sentences this module owns, written by `sanitizeReportInput`
-  // and stored so the customer can be told why their report is held. A caller
-  // cannot supply it: `withSanitizedHolds` overwrites whatever a caller passed.
-  "$.unresolvedHolds[].reason":
-    "A fixed sentence this codebase owns, written by the sanitiser and not by any caller.",
+export type GeneratedFormat = {
+  readonly pattern: RegExp;
+  /**
+   * The closed set of values, where one exists.
+   *
+   * Shape alone is not enough for an enum or a catalog code, and the test that
+   * drove this found out why: `this.app.is.secure.and.free.of.vulnerabilities`
+   * satisfies the lowercase-dotted-code SHAPE exactly. For a value drawn from a
+   * known set, the set itself is the format — anything else is shape-checking a
+   * thing whose membership we already know.
+   */
+  readonly allowed?: readonly string[];
+  /**
+   * True when this format is too loose to exclude a compressed claim, and the
+   * mitigation is that the value never reaches a customer surface instead.
+   *
+   * Declared on the FORMAT rather than kept as a list in a test, because a list
+   * in a test is the pattern that failed five times running. A path opting out
+   * of the format guarantee has to say so here, next to the reason, and a
+   * separate test asserts every such path is absent from the customer view.
+   */
+  readonly notCustomerVisible?: true;
+  /** Why this format, and what it excludes. */
+  readonly because: string;
 };
 
-/** Whether a `generated` value is prose where prose is not expected. */
-export function generatedValueLooksLikeProse(normalizedPath: string, value: string): boolean {
-  if (normalizedPath in GENERATED_PROSE_PATHS) return false;
-  return /\s/.test(value);
+const HASH_64: GeneratedFormat = {
+  pattern: /^[0-9a-f]{64}$/,
+  because: "A SHA-256 digest this codebase computes. Nothing else is 64 lowercase hex characters.",
+};
+const SHA_40: GeneratedFormat = {
+  pattern: /^[0-9a-f]{40}$/,
+  because: "A git commit SHA, already parsed by `commitShaSchema` at assembly.",
+};
+const ISO_TIMESTAMP: GeneratedFormat = {
+  pattern: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/,
+  because: "An ISO 8601 instant this codebase writes.",
+};
+const VERSION_PIN: GeneratedFormat = {
+  pattern: /^(?:[a-z0-9]+(?:-[a-z0-9]+)*\/)?v\d+(?:\.\d+)*$/,
+  because: "A literal version constant such as `release-rescue-report/v1`, owned by a module in this repository.",
+};
+const CODE_SHAPE = /^[a-z0-9]+(?:[._][a-z0-9]+)*$/;
+
+/**
+ * A value drawn from a closed set this repository owns.
+ *
+ * The set is the format. A shape-only rule is not enough here and the test that
+ * drove this measured why: `this.app.is.secure.and.free.of.vulnerabilities`
+ * satisfies the lowercase-dotted-code shape exactly, and was accepted by every
+ * shape-checked path.
+ */
+/**
+ * Two sets that are inlined rather than imported, and why.
+ *
+ * `RELEASE_VERDICTS` lives in `release-rescue-report.ts`, which imports THIS
+ * module — importing it back is a cycle. The repository provider list is a
+ * `z.enum` literal inside an intake schema with no exported constant.
+ *
+ * A copy is a thing that drifts, so a test asserts each of these equals its
+ * source. That is the trade taken deliberately: a cycle is a runtime hazard, a
+ * drifting copy is a test failure.
+ */
+const VERDICTS_INLINE: readonly string[] = [
+  "release_blocked",
+  "conditional_release",
+  "release_with_tracked_findings",
+  "no_blocking_findings_identified",
+];
+const REPOSITORY_PROVIDERS_INLINE: readonly string[] = ["github", "gitlab", "bitbucket", "uploaded_archive"];
+
+function oneOf(values: readonly string[], because: string): GeneratedFormat {
+  return { pattern: CODE_SHAPE, allowed: values, because };
+}
+
+/**
+ * A code whose membership is verified elsewhere at assembly.
+ *
+ * `assertEveryCodeIsInItsCatalog` already checks these against their catalogs
+ * and produces a better message naming the registry, so repeating the set here
+ * would be a second copy to keep in step. The shape check still runs.
+ */
+const CATALOG_CODE: GeneratedFormat = {
+  pattern: CODE_SHAPE,
+  because:
+    "A lowercase catalog code. Membership is verified against the catalog itself by `assertEveryCodeIsInItsCatalog` at the same boundary, which is why the set is not duplicated here; this is the shape half of the same check.",
+};
+const JSON_PATH: GeneratedFormat = {
+  pattern: /^\$(?:\.[A-Za-z0-9_]+|\[\d+\])*$/,
+  because: "A JSON path this codebase produced when it recorded a hold.",
+};
+/**
+ * Identifiers this codebase MINTS, so the format is what we actually produce
+ * rather than a generic identifier grammar.
+ *
+ * `rescue_${randomUUID()}` in `ai-app-release-rescue/engagement.ts` is the
+ * production form; the short dashed forms are the demo and fixture ids. The
+ * tightness is the point: audit 17's payload, 47 characters of eight
+ * hyphen-separated words, does not fit, and a generic
+ * `[A-Za-z0-9][A-Za-z0-9._-]*` grammar would have accepted it.
+ */
+const MINTED_ID: GeneratedFormat = {
+  pattern:
+    /^(?:rescue_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z0-9]{1,24}(?:[-_][A-Za-z0-9]{1,24}){0,3})$/,
+  because:
+    "An identifier this codebase mints: `rescue_<uuid>` in production, or a short dashed id in demos and fixtures. At most four segments of at most 24 characters each. BOTH bounds are load-bearing: the segment count excludes a sentence written with hyphens for spaces, and the segment length excludes the same sentence written in camelCase, which is one segment and which the first version of this pattern accepted.",
+};
+/**
+ * The two loose ones, kept loose on purpose and bounded by where they can go.
+ *
+ * A model id or an executor key is a vendor string — `grok-4.6`,
+ * `claude-fable-5-1`, `software-factory/v1`. This codebase does not own their
+ * shape and should not invent one. They are excluded from the customer view
+ * instead, which a test asserts.
+ */
+const CONTROL_PLANE_PIN: GeneratedFormat = {
+  // The empty string is legal and load-bearing: a HUMAN-prepared report has no
+  // vendor and no model, and `preparedBy.provider` is `""` for it. The first
+  // version of this pattern required at least one character and refused every
+  // human-prepared report — caught by the existing suite, which is the reason a
+  // tightening pass runs the whole suite rather than only its own tests.
+  pattern: /^(?:|[A-Za-z0-9][A-Za-z0-9._/-]{0,199})$/,
+  notCustomerVisible: true,
+  because:
+    "A vendor or control-plane identifier whose shape this codebase does not own — `grok-4.6`, `claude-fable-5-1`, a provider name. Loose by necessity, and therefore NOT relied on to exclude a compressed claim: the mitigation is that these values never reach a customer surface, which `findInternalIdentityLeaks` and a dedicated test enforce. This is a bound, not a proof, and it is written here rather than in a test because a list kept in a test is the pattern that failed five audits running.",
+};
+/** The one path whose value is legitimately a sentence. */
+const MODULE_SENTENCE: GeneratedFormat = {
+  pattern: /^[A-Z][^\n]{10,300}$/,
+  allowed: HOLD_REASON_VALUES,
+  because:
+    "One of exactly two fixed sentences this codebase owns, written by `sanitizeReportInput` to explain a hold. It is the one generated path whose value is legitimately prose, which is exactly why it is pinned to the SET rather than to a shape: an audit put a camelCase claim and a hyphenated credential through the shape rule that used to guard it.",
+};
+
+export const GENERATED_FORMATS: Readonly<Record<string, GeneratedFormat>> = {
+  "$.schemaVersion": VERSION_PIN,
+  "$.reportId": MINTED_ID,
+  "$.engagementId": MINTED_ID,
+  "$.runId": MINTED_ID,
+  "$.organizationId": MINTED_ID,
+  "$.rubricVersion": VERSION_PIN,
+  "$.rubricHash": HASH_64,
+  "$.scopeHash": HASH_64,
+  "$.observationCatalogVersion": VERSION_PIN,
+  "$.observationCatalogHash": HASH_64,
+  "$.reviewedCommitSha": SHA_40,
+  "$.verdict": oneOf(VERDICTS_INLINE, "The four verdicts, in strict precedence. Derived from the findings and the coverage, never chosen."),
+  "$.generatedAt": ISO_TIMESTAMP,
+  "$.scope.offerVersion": VERSION_PIN,
+  "$.scope.repository.provider": oneOf(REPOSITORY_PROVIDERS_INLINE, "The repository providers intake accepts. Pinned against the intake schema by a test, since there is no exported constant to import."),
+  "$.scope.repository.accessMode": oneOf(REPOSITORY_ACCESS_MODES, "The read-only access modes intake accepts. Every one of them is revocable by the customer."),
+  "$.assessments[].checkId": CATALOG_CODE,
+  "$.assessments[].outcome": oneOf(RUBRIC_CHECK_OUTCOMES, "The rubric check outcomes the rubric module defines."),
+  "$.assessments[].rationaleCode": CATALOG_CODE,
+  "$.assessments[].evidence[].kind": oneOf(RUBRIC_EVIDENCE_KINDS, "The evidence kinds the frozen rubric defines as acceptable for a check."),
+  "$.findings[].schemaVersion": VERSION_PIN,
+  "$.findings[].findingId": MINTED_ID,
+  "$.findings[].rubricCheckId": CATALOG_CODE,
+  "$.findings[].dimension": oneOf(RUBRIC_DIMENSIONS, "The nine rubric dimensions the frozen rubric defines."),
+  "$.findings[].observationCode": CATALOG_CODE,
+  "$.findings[].remediationCode": CATALOG_CODE,
+  "$.findings[].uncertaintyCode": CATALOG_CODE,
+  "$.findings[].severity": oneOf(FINDING_SEVERITIES, "The five derived severities. Severity is computed from impact, exploitability and confidence, never chosen, so a value outside this set means the artifact was edited."),
+  "$.findings[].impact": oneOf(FINDING_IMPACTS, "The impact levels. Fixed per observation by the observation catalog and verified against it, so an executor cannot set one."),
+  "$.findings[].exploitability": oneOf(FINDING_EXPLOITABILITIES, "The exploitability levels. Fixed per observation by the observation catalog and verified against it, so an executor cannot set one."),
+  "$.findings[].confidence": oneOf(FINDING_CONFIDENCES, "The three confidence levels an executor may state. Confidence can lower a derived severity and never raise one."),
+  "$.findings[].remediationEffort": oneOf(REMEDIATION_EFFORTS, "The remediation effort levels, fixed per remediation by the catalog rather than estimated per finding."),
+  "$.findings[].evidence[].kind": oneOf(RUBRIC_EVIDENCE_KINDS, "The evidence kinds the frozen rubric defines as acceptable for a check."),
+  "$.limitationCodes[]": CATALOG_CODE,
+  "$.unresolvedHolds[].path": JSON_PATH,
+  "$.unresolvedHolds[].classification": oneOf(SECRET_CLASSIFICATIONS, "The secret classifications the redaction module assigns when it raises a hold."),
+  "$.unresolvedHolds[].originalHash": HASH_64,
+  "$.unresolvedHolds[].reason": MODULE_SENTENCE,
+  "$.clearedSecretHolds[].path": JSON_PATH,
+  "$.clearedSecretHolds[].clearedContentHash": HASH_64,
+  "$.clearedSecretHolds[].clearedBy": MINTED_ID,
+  "$.clearedSecretHolds[].clearedAt": ISO_TIMESTAMP,
+  "$.clearedSecretHolds[].reasonCode": CATALOG_CODE,
+  "$.preparedBy.executorKey": CONTROL_PLANE_PIN,
+  "$.preparedBy.executorKind": oneOf(EXECUTOR_KINDS, "The executor kinds the executor envelope defines: agent, deterministic or human."),
+  "$.preparedBy.provider": CONTROL_PLANE_PIN,
+  "$.preparedBy.protocolVersion": VERSION_PIN,
+  "$.preparedBy.modelId": CONTROL_PLANE_PIN,
+  "$.reviewedBy.operatorUserId": MINTED_ID,
+  "$.reviewedBy.reviewedAt": ISO_TIMESTAMP,
+};
+
+/**
+ * Why a `generated` value is not what its policy entry says it is, or null.
+ *
+ * Two independent reasons, because neither alone was enough:
+ *
+ *   1. it does not match the declared format — the positive test, which is what
+ *      catches a sentence in an id field however it is punctuated;
+ *   2. it carries a prohibited claim — the claim guard, run on `generated`
+ *      values as defence in depth. The policy exempts them from it on the
+ *      grounds that they are machine-produced, and that exemption is precisely
+ *      what five audits walked through.
+ */
+export function generatedValueIsNotWhatItClaims(normalizedPath: string, value: string): string | null {
+  const format = GENERATED_FORMATS[normalizedPath];
+  if (!format) {
+    return `no format is declared for "${normalizedPath}", so its "generated" classification asserts nothing checkable`;
+  }
+  if (!format.pattern.test(value)) {
+    return `does not match the declared format for "${normalizedPath}" (${format.because})`;
+  }
+  if (format.allowed && !format.allowed.includes(value)) {
+    return `is not one of the ${format.allowed.length} values "${normalizedPath}" may hold (${format.because})`;
+  }
+  const claims = findProhibitedClaims(value);
+  if (claims.length > 0) {
+    return `carries a prohibited claim ("${claims[0]}")`;
+  }
+  return null;
 }
 
 export type FieldLeaf = { path: string; normalized: string; value: string };
@@ -347,22 +575,24 @@ export function checkReportFieldCoverage(report: unknown): CoverageFailure[] {
           failures.push({ path: leaf.path, reason: "Holds an unredacted credential." });
         }
         break;
-      case "generated":
-        // A `generated` value is an id, a hash, a count, an enum value, a code
-        // or a timestamp. None of those contains whitespace, and a sentence
-        // cannot avoid it. See `GENERATED_PROSE_PATHS` for why this check is
-        // here rather than a longer list of field names.
+      case "generated": {
+        // A `generated` value must MATCH the format its policy entry declares.
+        // See `GENERATED_FORMATS` for why this is a positive test rather than a
+        // description of what the value must not be.
         //
         // This runs in the coverage contract as defence in depth. The check that
-        // matters is `assertGeneratedFieldsAreNotProse` at the assembly
-        // boundary, because this function has no production call site.
-        if (generatedValueLooksLikeProse(leaf.normalized, leaf.value)) {
+        // matters is `assertGeneratedFieldsMatchTheirFormat` at the assembly
+        // boundary, because `validateReleaseRescueReport`, which calls this
+        // function, has no production call site.
+        const wrong = generatedValueIsNotWhatItClaims(leaf.normalized, leaf.value);
+        if (wrong) {
           failures.push({
             path: leaf.path,
-            reason: `"${leaf.normalized}" is classified generated — an id, hash, count, enum value, code or timestamp — but its value contains whitespace, so it is text. A generated field is exempt from the prohibited-claim guard and the credential check, and that exemption is only sound while the value really is generated.`,
+            reason: `"${leaf.normalized}" is classified generated, which exempts it from the prohibited-claim guard and the credential check, but its value ${wrong}.`,
           });
         }
         break;
+      }
       case "verbatim_approved":
         break;
     }
