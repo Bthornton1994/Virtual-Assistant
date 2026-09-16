@@ -11,6 +11,7 @@ import {
   RUBRIC_DIMENSIONS,
   RUBRIC_EVIDENCE_KINDS,
 } from "@/lib/release-rescue-rubric";
+import { DEMO_IDENTIFIERS } from "@/lib/release-rescue-demo-identity";
 import { EXECUTOR_KINDS } from "@/lib/executor-envelope";
 import { HOLD_REASON_VALUES } from "@/lib/release-rescue-pipeline";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
@@ -386,19 +387,63 @@ const JSON_PATH: GeneratedFormat = {
  * hyphen-separated words, does not fit, and a generic
  * `[A-Za-z0-9][A-Za-z0-9._-]*` grammar would have accepted it.
  */
-const MINTED_ID: GeneratedFormat = {
-  pattern:
-    /^(?:rescue_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z0-9]{1,24}(?:[-_][A-Za-z0-9]{1,24}){0,3})$/,
-  because:
-    "An identifier this codebase mints: `rescue_<uuid>` in production, or a short dashed id in demos and fixtures. At most four segments of at most 24 characters each. BOTH bounds are load-bearing: the segment count excludes a sentence written with hyphens for spaces, and the segment length excludes the same sentence written in camelCase, which is one segment and which the first version of this pattern accepted.",
-};
+const UUID_SHAPE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
+function escapeForPattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * The two loose ones, kept loose on purpose and bounded by where they can go.
+ * An identifier: a UUID, or one of the five demo identifiers this codebase declares.
+ *
+ * This is the format that used to be a BOUND — "at most four segments of at most
+ * twenty-four characters" — and an audit walked a claim through it:
+ * `ThisAppIsSecureAnd-FreeOfVulnerabilities-NoIssuesFound-Certified` is four
+ * segments, each under twenty-four, so it assembled, passed the delivery gate,
+ * and rendered in the report header as the engagement id. Both bounds held. The
+ * value was still a sentence.
+ *
+ * That is the same lesson six audits taught in six other places, arriving one
+ * last time: a bound says what a value may not exceed, and a sentence can be
+ * written inside any bound. What closes it is saying what the value IS.
+ *
+ * A UUID is what the database columns are — `organization_id uuid`,
+ * `engagement_id uuid`, `run_id uuid`, `reviewed_by uuid references
+ * auth.users(id)`. The old bound refused every one of them, because a UUID is
+ * five segments and the bound allowed four: the pattern that was too loose for a
+ * claim was at the same moment too tight for the product's own identifiers, and
+ * neither fact was visible while the fixtures used `org-acme` and `rep-001`.
+ * They are UUIDs now, for that reason.
+ */
+const MINTED_ID: GeneratedFormat = {
+  pattern: new RegExp(
+    `^(?:${UUID_SHAPE}|${DEMO_IDENTIFIERS.map(escapeForPattern).join("|")})$`,
+  ),
+  because:
+    "A UUID, which is what every identifier column in the Release Rescue schema is, or one of the five identifiers `release-rescue-demo-identity.ts` declares for the demo report. A closed set and a canonical shape, with no room between them for a sentence.",
+};
+
+/**
+ * A finding's label within its report: `RR-001`.
+ *
+ * Findings are numbered in the report that carries them rather than minted
+ * globally, so this is a sequence label, not an id. Three digits, because a
+ * fixed-price review of one repository does not produce a thousand findings —
+ * and if it ever did, the refusal is the correct outcome.
+ */
+const FINDING_LABEL: GeneratedFormat = {
+  pattern: /^RR-\d{3}$/,
+  because:
+    "A finding's sequence label within its report: `RR-` and three digits. Findings are numbered per report, not minted globally.",
+};
+
+/**
+ * The loose ones, kept loose on purpose and bounded by where they can go.
  *
  * A model id or an executor key is a vendor string — `grok-4.6`,
  * `claude-fable-5-1`, `software-factory/v1`. This codebase does not own their
  * shape and should not invent one. They are excluded from the customer view
- * instead, which a test asserts.
+ * instead, which a test asserts, and the claim guard reads them on the way past.
  */
 const CONTROL_PLANE_PIN: GeneratedFormat = {
   // The empty string is legal and load-bearing: a HUMAN-prepared report has no
@@ -409,7 +454,7 @@ const CONTROL_PLANE_PIN: GeneratedFormat = {
   pattern: /^(?:|[A-Za-z0-9][A-Za-z0-9._/-]{0,199})$/,
   notCustomerVisible: true,
   because:
-    "A vendor or control-plane identifier whose shape this codebase does not own — `grok-4.6`, `claude-fable-5-1`, a provider name. Loose by necessity, and therefore NOT relied on to exclude a compressed claim: the mitigation is that these values never reach a customer surface, which `findInternalIdentityLeaks` and a dedicated test enforce. This is a bound, not a proof, and it is written here rather than in a test because a list kept in a test is the pattern that failed five audits running.",
+    "A vendor or control-plane identifier whose shape this codebase does not own — `grok-4.6`, `claude-fable-5-1`, a provider name. Loose by necessity, so the format itself excludes nothing but control characters and length. Two things cover it instead: the claim guard, which reads these values and now catches every separated and camelCase form (a test measures exactly which forms, in both directions); and non-visibility, which is what covers a vendor string that makes no claim at all. The second is a bound rather than a proof, and it is written here rather than in a test because a list kept in a test is the pattern that failed five audits running.",
 };
 /** The one path whose value is legitimately a sentence. */
 const MODULE_SENTENCE: GeneratedFormat = {
@@ -441,7 +486,7 @@ export const GENERATED_FORMATS: Readonly<Record<string, GeneratedFormat>> = {
   "$.assessments[].rationaleCode": CATALOG_CODE,
   "$.assessments[].evidence[].kind": oneOf(RUBRIC_EVIDENCE_KINDS, "The evidence kinds the frozen rubric defines as acceptable for a check."),
   "$.findings[].schemaVersion": VERSION_PIN,
-  "$.findings[].findingId": MINTED_ID,
+  "$.findings[].findingId": FINDING_LABEL,
   "$.findings[].rubricCheckId": CATALOG_CODE,
   "$.findings[].dimension": oneOf(RUBRIC_DIMENSIONS, "The nine rubric dimensions the frozen rubric defines."),
   "$.findings[].observationCode": CATALOG_CODE,

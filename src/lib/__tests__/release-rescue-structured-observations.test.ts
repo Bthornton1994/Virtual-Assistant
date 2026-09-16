@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -67,12 +67,16 @@ import { RELEASE_RESCUE_RUBRIC_V1 } from "@/lib/release-rescue-rubric";
 import { RELEASE_VERDICTS } from "@/lib/release-rescue-report";
 import { releaseRescueIntakeV1Schema } from "@/lib/release-rescue-intake";
 import {
+  FIXTURE_ORGANIZATION_ID,
+  FIXTURE_OPERATOR_ID,
+  FIXTURE_RUN_ID,
   ZERO_AUTHORITY,
   makeFinding,
   makeReportInput,
   passingAssessments,
   setAssessment,
 } from "@/lib/__tests__/release-rescue-fixtures";
+import { DEMO_IDENTIFIERS } from "@/lib/release-rescue-demo-identity";
 
 // Option 1, as properties: customer observations composed from structured facts.
 //
@@ -415,7 +419,7 @@ describe("4. arbitrary narrative is rejected or excluded, wherever it is aimed",
         {
           path: "$.reviewedBy.displayName",
           clearedContentHash: "a".repeat(64),
-          clearedBy: "ops-1",
+          clearedBy: FIXTURE_OPERATOR_ID,
           clearedAt: "2026-09-16T09:00:00.000Z",
           rationale: "I looked at it and it is fine, the value was DB_PASSWORD=Xk92mQvn7Lz",
         },
@@ -570,7 +574,7 @@ describe("6. severity, counts, verdict, coverage and delivery stay deterministic
     for (const code of OBSERVATION_CODES) {
       const observation = OBSERVATION_CATALOG[code];
       const finding = composeFinding({
-        findingId: "f-1",
+        findingId: "RR-001",
         observationCode: code,
         confidence: "confirmed",
         remediationCode: observation.remediationCodes[0],
@@ -646,7 +650,7 @@ describe("7. tenant isolation, authority, binding, retention and human review st
     const signed = buildReleaseRescueReport(
       makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: "Ops Manager DB_PASSWORD=Xk92mQvn7Lz",
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -670,8 +674,8 @@ describe("7. tenant isolation, authority, binding, retention and human review st
   it("still binds the report to one organization, one run and one reviewed commit", () => {
     const report = cleanReport();
 
-    expect(report.organizationId).toBe("org-acme");
-    expect(report.runId).toBe("run-001");
+    expect(report.organizationId).toBe(FIXTURE_ORGANIZATION_ID);
+    expect(report.runId).toBe(FIXTURE_RUN_ID);
     expect(report.reviewedCommitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(report.scopeHash).toMatch(/^[0-9a-f]{64}$/);
     expect(report.rubricHash).toMatch(/^[0-9a-f]{64}$/);
@@ -719,7 +723,7 @@ describe("8. an ordinary, safe report is still deliverable", () => {
         makeReportInput({
           findings: [
             composeFinding({
-              findingId: "f-1",
+              findingId: "RR-001",
               observationCode: code,
               confidence: "confirmed",
               remediationCode: observation.remediationCodes[0],
@@ -751,7 +755,7 @@ describe("8. an ordinary, safe report is still deliverable", () => {
           makeReportInput({
             findings: [
               composeFinding({
-                findingId: "f-1",
+                findingId: "RR-001",
                 observationCode: code,
                 confidence: "confirmed",
                 remediationCode,
@@ -880,7 +884,7 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // There is no runtime assertion in this test on purpose. Its subject is the
     // build, and it passes by compiling.
     const facts = {
-      findingId: "f-001",
+      findingId: "RR-001",
       confidence: "likely",
       locations: [{ path: "src/a.ts", startLine: 1, endLine: 1 }],
       evidence: [{ kind: "code_reference", path: "src/a.ts", startLine: 1, endLine: 1 }],
@@ -921,7 +925,7 @@ describe("9. a code field holds a code, and nothing else, on the production path
       expect(
         () =>
           composeFinding({
-            findingId: "f-001",
+            findingId: "RR-001",
             observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
             confidence: "likely",
             remediationCode: "scope_query_by_authenticated_principal",
@@ -977,7 +981,7 @@ describe("9. a code field holds a code, and nothing else, on the production path
           {
             path: "$.reviewedBy.displayName",
             clearedContentHash: "a".repeat(64),
-            clearedBy: "ops-1",
+            clearedBy: FIXTURE_OPERATOR_ID,
             clearedAt: "2026-09-16T09:00:00.000Z",
             reasonCode: SENTENCES[0],
           },
@@ -1090,7 +1094,7 @@ describe("9. a code field holds a code, and nothing else, on the production path
           {
             path: "$.reviewedBy.displayName",
             clearedContentHash: "a".repeat(64),
-            clearedBy: "ops-1",
+            clearedBy: FIXTURE_OPERATOR_ID,
             clearedAt: "2026-09-16T09:00:00.000Z",
             reasonCode: SENTENCE,
           },
@@ -1197,6 +1201,20 @@ describe("9. a code field holds a code, and nothing else, on the production path
       `This${String.fromCharCode(0x2060)}app${String.fromCharCode(0x2060)}is${String.fromCharCode(0x2060)}secure`,
       // And a credential, which no separator rule and no claim guard sees.
       "The-production-admin-password-is-Xk92mQvn7Lz",
+      // The three below are here because of what audit 18 measured about the
+      // nine above: every one of them was refused by a bound the rule under test
+      // had itself chosen — too long, too many segments, contains a space. A
+      // payload set drawn from the rule's premise cannot falsify the rule.
+      //
+      // These are composed the other way round, INSIDE the allowance. The first
+      // is four segments of under twenty-four characters each, which is what the
+      // identifier format used to permit; it assembled, passed the delivery
+      // gate, and rendered in the report header as the engagement id. The second
+      // is fifteen characters and one segment. The third is the same shape
+      // carrying a credential.
+      "ThisAppIsSecureAnd-FreeOfVulnerabilities-NoIssuesFound-Certified",
+      "ThisAppIsSecure",
+      "AdminPasswordIs-Xk92mQvn7Lz",
     ];
 
     const GENERATED = Object.entries(REPORT_FIELD_POLICY)
@@ -1235,7 +1253,7 @@ describe("9. a code field holds a code, and nothing else, on the production path
           buildReleaseRescueReport(
             makeReportInput({
               reviewedBy: {
-                operatorUserId: "op-1",
+                operatorUserId: FIXTURE_OPERATOR_ID,
                 displayName: "Ops Manager DB_PASSWORD=Xk92mQvn7Lz",
                 reviewedAt: "2026-09-16T10:00:00.000Z",
               },
@@ -1261,7 +1279,7 @@ describe("9. a code field holds a code, and nothing else, on the production path
                 {
                   path: "$.reviewedBy.displayName",
                   clearedContentHash: "a".repeat(64),
-                  clearedBy: "ops-1",
+                  clearedBy: FIXTURE_OPERATOR_ID,
                   clearedAt: "2026-09-16T09:00:00.000Z",
                   reasonCode: "value_is_a_placeholder_not_a_credential",
                 },
@@ -1379,24 +1397,69 @@ describe("9. a code field holds a code, and nothing else, on the production path
       expect(generatedValueIsNotWhatItClaims(path, ""), `${path} must accept the empty string`).toBeNull();
     }
 
-    // And the production mint format specifically, which no fixture uses.
-    expect(
-      generatedValueIsNotWhatItClaims("$.engagementId", "rescue_0123abcd-1234-5678-9abc-def012345678"),
-      "the production engagement id format must be accepted",
-    ).toBeNull();
+    // Every identifier path must accept a real UUID, because every identifier
+    // column in the schema IS a uuid — `organization_id`, `engagement_id`,
+    // `run_id`, `reviewed_by`. This assertion is here because its absence was a
+    // blocking finding: the identifier format refused every UUID for a whole
+    // commit, and the fixtures were `org-acme` and `rep-001`, so nothing failed.
+    // `randomUUID()` rather than a literal, so it is the shape being proven and
+    // not one string that happens to pass.
+    const ID_PATHS = [
+      "$.reportId",
+      "$.engagementId",
+      "$.runId",
+      "$.organizationId",
+      "$.reviewedBy.operatorUserId",
+      "$.clearedSecretHolds[].clearedBy",
+    ];
+    for (const path of ID_PATHS) {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        expect(
+          generatedValueIsNotWhatItClaims(path, randomUUID()),
+          `${path} must accept a UUID, which is what the column is`,
+        ).toBeNull();
+      }
+    }
+
+    // And the demo identifiers, which are the only non-UUID values any of those
+    // paths may hold. Driven from the declaration rather than re-listed, so
+    // adding one there without widening the format here fails.
+    for (const identifier of DEMO_IDENTIFIERS) {
+      expect(
+        generatedValueIsNotWhatItClaims("$.engagementId", identifier),
+        `the declared demo identifier ${identifier} must be accepted`,
+      ).toBeNull();
+    }
+
+    // Finding labels are numbered per report, so the whole range must pass.
+    for (let n = 1; n <= 999; n += 1) {
+      const label = `RR-${String(n).padStart(3, "0")}`;
+      expect(
+        generatedValueIsNotWhatItClaims("$.findings[].findingId", label),
+        `${label} must be accepted`,
+      ).toBeNull();
+    }
   });
 
   it("keeps EVERY deliberately loose format away from the customer", () => {
-    // The compensating assertion for the paths the test above skips. Driven from
-    // the formats' own `notCustomerVisible` declaration, so a path that opts out
-    // of the format guarantee cannot also quietly become customer-visible.
+    // The compensating assertion for the paths the format walk above skips.
+    // Driven from the formats' own `notCustomerVisible` declaration, so a path
+    // that opts out of the format guarantee cannot also quietly become
+    // customer-visible.
+    //
+    // This used to plant a camelCase claim and assert it did not reach the
+    // customer. It cannot any more: the claim guard splits camelCase now, so
+    // assembly refuses that value outright and the report never exists. The
+    // property this test is for survives the change — a vendor string must not
+    // reach a customer surface WHETHER OR NOT it says anything prohibited — so
+    // the payload is an ordinary vendor string, which is the case the
+    // non-visibility bound actually has to carry.
     const loose = Object.entries(GENERATED_FORMATS)
       .filter(([, format]) => format.notCustomerVisible)
       .map(([path]) => path);
 
     expect(loose.length, "at least one format should be declaring itself loose").toBeGreaterThan(0);
 
-    const CLAIM = "ThisAppIsSecureAndFreeOfVulnerabilities";
     for (const path of loose) {
       // Every loose path is under `preparedBy`, which the presenter reduces to
       // `preparedByKind`. Asserted rather than assumed.
@@ -1406,39 +1469,46 @@ describe("9. a code field holds a code, and nothing else, on the production path
     const report = buildReleaseRescueReport(
       makeReportInput({
         preparedBy: {
-          executorKey: CLAIM,
-          executorKind: "agent",
-          provider: CLAIM,
-          protocolVersion: "software-factory/v1",
-          modelId: CLAIM,
-        },
-      }),
-    );
-
-    expect(JSON.stringify(toCustomerReportView(report))).not.toContain("ThisAppIsSecure");
-    expect(findInternalIdentityLeaks(toCustomerReportView(report), report)).toEqual([]);
-  });
-
-  it("keeps the two deliberately loose formats away from the customer", () => {
-    // `executorKey` and `modelId` are vendor strings whose shape this codebase
-    // does not own, so their format is loose and a camelCase claim would fit it.
-    // The mitigation is that they never reach a customer surface — stated as a
-    // bound rather than a proof, and asserted here so it stays true.
-    const report = buildReleaseRescueReport(
-      makeReportInput({
-        preparedBy: {
-          executorKey: "ThisAppIsSecureAndFreeOfVulnerabilities",
+          executorKey: "sf-implementer",
           executorKind: "agent",
           provider: "cursor",
           protocolVersion: "software-factory/v1",
-          modelId: "ThisAppIsSecureAndFreeOfVulnerabilities",
+          modelId: "grok-4.6",
         },
       }),
     );
 
     const view = JSON.stringify(toCustomerReportView(report));
-    expect(view).not.toContain("ThisAppIsSecure");
+    for (const vendor of ["sf-implementer", "cursor", "grok-4.6"]) {
+      expect(view, `${vendor} reached the customer view`).not.toContain(vendor);
+    }
     expect(findInternalIdentityLeaks(toCustomerReportView(report), report)).toEqual([]);
+  });
+
+  it("refuses a claim on a loose path outright, rather than relying on non-visibility", () => {
+    // The other half, and the stronger one. Non-visibility was the ONLY control
+    // on these three paths while the claim guard read `ThisAppIsSecure` as a
+    // single token. It no longer is: the value is refused at assembly, so the
+    // report carrying it is never built and non-visibility never has to hold.
+    //
+    // Both are asserted, because non-visibility is still what covers a vendor
+    // string that makes no claim at all, and a later change that loosens the
+    // guard must fail here rather than fall back silently.
+    for (const claim of ["ThisAppIsSecureAndFreeOfVulnerabilities", "ThisAppIsSecure"]) {
+      expect(() =>
+        buildReleaseRescueReport(
+          makeReportInput({
+            preparedBy: {
+              executorKey: claim,
+              executorKind: "agent",
+              provider: "cursor",
+              protocolVersion: "software-factory/v1",
+              modelId: "grok-4.6",
+            },
+          }),
+        ),
+      ).toThrow(/\$\.preparedBy\.executorKey/);
+    }
   });
 
   it("refuses the audit's own payload through buildReleaseRescueReport", () => {
@@ -1482,18 +1552,27 @@ describe("9. a code field holds a code, and nothing else, on the production path
 
   it("runs the claim guard on the loose control-plane fields too", () => {
     // M24: removing `findProhibitedClaims` from the generated check killed zero
-    // tests, because the format check already refuses everything the main test
-    // plants — and that test SKIPS the `notCustomerVisible` paths.
+    // tests, because the format check already refuses everything the main walk
+    // plants — and that walk SKIPS the `notCustomerVisible` paths.
     //
-    // Those are the paths where the claim guard is the only thing left, and it
-    // does more than the documentation credited it with: the hyphen, underscore
-    // and slash forms are all caught, because the guard's tokenizer is
-    // separator-agnostic. Only the dotted and camelCase forms get through, and
-    // those are covered by the never-reaches-the-customer property instead.
+    // Those are the paths where the claim guard is the only thing standing, so
+    // this measures exactly what it catches there. Every separated form, and
+    // now the camelCase form too: the tokenizer treats a lower-to-upper
+    // transition as a word boundary, which it did not when audit 18 found
+    // `ThisAppIsSecure` sitting in a reviewer's display name on a delivered
+    // report. The dotted form is caught for the same reason — a full stop
+    // between two words with no space is a separator, not the end of a
+    // sentence.
+    // Every payload here is SPACE-FREE, so the format check cannot refuse it
+    // first and take the credit. Only the claim guard can speak.
     const CAUGHT = [
       "This-app-is-secure-and-free-of-vulnerabilities",
       "This_app_is_secure_and_free_of_vulnerabilities",
       "This/app/is/secure/and/free/of/vulnerabilities",
+      "this.app.is.secure.and.free.of.vulnerabilities",
+      "ThisAppIsSecureAndFreeOfVulnerabilities",
+      "ThisAppIsSecure",
+      "ThisAppIsSecureAnd-FreeOfVulnerabilities-NoIssuesFound-Certified",
     ];
     const loose = Object.entries(GENERATED_FORMATS)
       .filter(([, format]) => format.notCustomerVisible)
@@ -1508,16 +1587,116 @@ describe("9. a code field holds a code, and nothing else, on the production path
       }
     }
 
-    // And the honest other half: these two forms are NOT caught here. The
-    // documentation says so, and this is the measurement behind that sentence.
+    // And the honest other half. These two have no word boundary of ANY kind —
+    // no separator, no case transition — so the guard cannot see words in them
+    // without searching for claim text inside longer words, which would flag
+    // ordinary values. This is the measurement behind the bound the
+    // documentation states, and it fails if the bound ever becomes wrong in
+    // either direction.
+    const NOT_CAUGHT = ["thisappissecureandfreeofvulnerabilities", "THISAPPISSECURE"];
     for (const path of loose) {
-      for (const uncaught of ["this.app.is.secure.and.free.of.vulnerabilities", "ThisAppIsSecure"]) {
+      for (const uncaught of NOT_CAUGHT) {
         expect(
           generatedValueIsNotWhatItClaims(path, uncaught),
           `${path} <- ${uncaught}: if this starts being caught, the doc's bound is understated and should be corrected`,
         ).toBeNull();
       }
     }
+  });
+
+  it("still reads ordinary report copy as ordinary, after the tokenizer change", () => {
+    // The guard on the guard. Splitting camelCase and re-reading an in-word full
+    // stop both ADD token boundaries, and a boundary that should not be there
+    // turns required copy into a prohibited claim — which would make the offer's
+    // own disclaimers undeliverable.
+    //
+    // So: the disclaimers the product must carry, the referral and negation
+    // shapes the guard exists to permit, and the machine-ish strings a report
+    // legitimately contains.
+    const MUST_STAY_CLEAN = [
+      ...STANDING_DISCLAIMERS,
+      "This is not a penetration test.",
+      "We do not certify compliance.",
+      "Customers who need penetration testing should engage a qualified specialist.",
+      "Ongoing monitoring and compliance certification are out of scope.",
+      "We reviewed the OAuth flow and the SQL queries in src/app/api/orders/[id]/route.ts.",
+      "The review is prepare-only. Security decisions remain with your team.",
+      "Version 1.2.3 of the app was reviewed at commit 4f1c2a9.",
+    ];
+
+    for (const copy of MUST_STAY_CLEAN) {
+      expect(findProhibitedClaims(copy), `required copy read as a claim: ${copy}`).toEqual([]);
+    }
+  });
+
+  it("reports an internal identifier that DOES reach the customer view", () => {
+    // N1 from audit 18: every test using `findInternalIdentityLeaks` asserted it
+    // returned nothing, so a version of it that always returned nothing passed
+    // all of them. A detector is only evidence if something makes it speak.
+    const report = buildReleaseRescueReport(makeReportInput());
+    const view = toCustomerReportView(report);
+
+    expect(findInternalIdentityLeaks(view, report), "the honest view must be clean").toEqual([]);
+
+    // Now plant each internal identifier in the view and require it be named.
+    const PLANTED: ReadonlyArray<readonly [string, string]> = [
+      ["organizationId", report.organizationId],
+      ["runId", report.runId],
+      ["reportId", report.reportId],
+      ["operatorUserId", report.reviewedBy?.operatorUserId ?? ""],
+    ];
+
+    for (const [label, value] of PLANTED) {
+      expect(value.length, `${label} must be non-empty for this to prove anything`).toBeGreaterThan(0);
+      const leaked = JSON.parse(JSON.stringify(view)) as Record<string, unknown>;
+      leaked.engagementSummary = `Prepared under ${value}.`;
+      const found = findInternalIdentityLeaks(leaked as typeof view, report);
+      expect(found.join(" | "), `${label} leaked into the view and was not reported`).toContain(label);
+    }
+  });
+
+  it("refuses a field the policy does not classify at all", () => {
+    // N2 from audit 18: the `(unclassified)` branch of the assembly check had no
+    // test, so a version that skipped unknown fields instead of refusing them
+    // passed. That branch is what a NEW field lands on before anyone classifies
+    // it, which is exactly when nothing else is guarding it.
+    const report = buildReleaseRescueReport(makeReportInput());
+    const withUnknown = { ...report, somethingNobodyClassified: "This app is secure." };
+
+    let message = "(no refusal)";
+    try {
+      assertGeneratedFieldsMatchTheirFormat(withUnknown as unknown as typeof report);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).not.toBe("(no refusal)");
+    expect(message).toContain("somethingNobodyClassified");
+    expect(message).toContain("unclassified");
+    // And the value itself is withheld, like every other refusal message.
+    expect(message).not.toContain("is secure");
+  });
+
+  it("keeps the catalog-code shape half honest rather than dead", () => {
+    // N3 from audit 18: `CATALOG_CODE`'s shape check can never fire in
+    // production, because membership is checked first at the same boundary and
+    // every code in the catalog is code-shaped. That makes it defence in depth,
+    // not a defect — but the sentence "every code in the catalog is code-shaped"
+    // is the load-bearing part, and it was unasserted. It is asserted here, so
+    // the shape half stays true of the set it guards.
+    const shape = GENERATED_FORMATS["$.findings[].observationCode"].pattern;
+    const every = [
+      ...OBSERVATION_CODES,
+      ...REMEDIATION_CODES,
+      ...UNCERTAINTY_CODES,
+      ...ASSESSMENT_RATIONALE_CODES,
+      ...STANDING_LIMITATION_CODES,
+      ...ENGAGEMENT_LIMITATION_CODES,
+      ...CLEARANCE_REASON_CODES,
+    ];
+
+    expect(every.length).toBeGreaterThan(100);
+    expect(every.filter((code) => !shape.test(code))).toEqual([]);
   });
 
   it("pins the two value sets that are inlined to avoid an import cycle", () => {
@@ -1670,6 +1849,41 @@ describe("9. a code field holds a code, and nothing else, on the production path
         findings: [{ ...makeFinding(), observationCode: "authz.a_plausible_code_that_does_not_exist" }],
       } as never),
     ).toThrow(/findings\[0\].observationCode/);
+  });
+
+  it("mirrors the identifier rule into the database guard", () => {
+    // Both implementations, one rule. v12 is the row-boundary half of the
+    // identifier format, and the demo identifiers are the part that can drift:
+    // they are five literal strings in TypeScript and five literal strings in
+    // SQL, and a sixth added to one and not the other is either a report the
+    // application accepts and the database refuses, or the reverse.
+    //
+    // Driven from `DEMO_IDENTIFIERS`, so adding one there and not to the
+    // migration fails here.
+    const migration = readFileSync(
+      resolve(process.cwd(), "supabase/migrations/20260916180000_release_rescue_identifier_shape_v12.sql"),
+      "utf8",
+    );
+
+    const listed = [...migration.matchAll(/^\s*'(demo-[a-z-]+)',?$/gm)].map((match) => match[1]);
+    expect([...new Set(listed)].sort()).toEqual([...DEMO_IDENTIFIERS].sort());
+
+    // And the two shapes, asserted as behaviour rather than as string equality
+    // between a JavaScript regex and a Postgres one.
+    const sqlUuid = /\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{12\}\$/;
+    expect(migration, "the SQL UUID pattern could not be located").toMatch(sqlUuid);
+    expect(migration, "the SQL finding-label pattern could not be located").toContain("'^RR-[0-9]{3}$'");
+
+    // The application and the database must agree on the same values. Run
+    // through the application's own check, which is the side a test can execute.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      expect(generatedValueIsNotWhatItClaims("$.engagementId", randomUUID())).toBeNull();
+    }
+    for (const identifier of DEMO_IDENTIFIERS) {
+      expect(generatedValueIsNotWhatItClaims("$.engagementId", identifier)).toBeNull();
+    }
+    expect(generatedValueIsNotWhatItClaims("$.findings[].findingId", "RR-001")).toBeNull();
+    expect(generatedValueIsNotWhatItClaims("$.findings[].findingId", "RR-1")).not.toBeNull();
   });
 
   it("mirrors the code-shape rule into the database guard", () => {

@@ -6,6 +6,7 @@ import {
   type RepositoryAccessMode,
 } from "@/lib/release-rescue-intake";
 import { RUBRIC_DIMENSIONS, type RubricDimension } from "@/lib/release-rescue-rubric";
+import { DEMO_REPORT_ID } from "@/lib/release-rescue-demo-identity";
 import { DIMENSION_TITLES } from "@/lib/release-rescue-presentation";
 
 // Presentation copy for the Release Rescue customer surface.
@@ -192,7 +193,7 @@ export const FORBIDDEN_INTAKE_FIELD_NAMES = [
   "ssh_key",
 ] as const;
 
-export const DEMO_SAMPLE_REPORT_ID = "demo-harbor-ledger";
+export const DEMO_SAMPLE_REPORT_ID = DEMO_REPORT_ID;
 /**
  * Authorizes the in-memory demo engagement page. Set with httpOnly, SameSite=Lax,
  * and Secure on HTTPS. Local HTTP demo cannot set a Secure cookie; that is a

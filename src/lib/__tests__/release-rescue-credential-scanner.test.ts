@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { containsLikelySecret, redactSecrets, scanForSecrets } from "@/lib/release-rescue-redaction";
 import { findCredentialSpans, MAX_SCAN_LENGTH } from "@/lib/release-rescue-credential-scanner";
 import { buildReleaseRescueReport, releaseRescueDeliveryGate, validateReleaseRescueReport } from "@/lib/release-rescue-report";
-import { makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
+import {
+  FIXTURE_OPERATOR_ID, makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 
 // The credential scanner, tested as a scanner rather than as a list of examples.
@@ -224,7 +225,7 @@ describe("the storage and delivery paths, not just the detector's return value",
           // `whatWeObserved`, and before that a location excerpt; both are gone,
           // so this is where the scanner still has work to do.
           reviewedBy: {
-            operatorUserId: "op-1",
+            operatorUserId: FIXTURE_OPERATOR_ID,
             displayName: `Ops Manager ${planted}`.slice(0, 180),
             reviewedAt: "2026-09-16T10:00:00.000Z",
           },

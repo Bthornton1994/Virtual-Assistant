@@ -31,6 +31,25 @@ export const ZERO_AUTHORITY = {
 
 export const COMMIT_SHA = "a".repeat(40);
 
+/**
+ * Fixture identifiers, as UUIDs, because that is what the columns are.
+ *
+ * They used to be `org-acme`, `rep-001`, `run-001`, `op-1`. That was not a
+ * cosmetic choice: while the fixtures were toy strings, the one test that claims
+ * to prove "assembly accepts every value a real report legitimately produces"
+ * was proving it about values a real report never produces. The identifier
+ * format refused every actual UUID for a whole commit, and no test noticed,
+ * because no test passed one. A fixture that does not resemble production tests
+ * the fixture.
+ */
+export const FIXTURE_ORGANIZATION_ID = "6d1f6f6e-9f5d-4a63-9a6a-52a1b9c0d7e1";
+export const FIXTURE_REPORT_ID = "0b7c2f14-3a4d-4b91-8c26-11f0a9d4e5b2";
+export const FIXTURE_ENGAGEMENT_ID = "c3e8a5d0-7b62-4f19-9d84-2a6e1c5f30ab";
+export const FIXTURE_RUN_ID = "9a41d7b8-5c03-4e2f-8b17-6d9e0f2a3c45";
+export const FIXTURE_OPERATOR_ID = "e57b0c92-1d48-4a36-b5e0-8f27c4d13a69";
+/** A second report id, for the tests that assert two reports differ. */
+export const FIXTURE_SECOND_REPORT_ID = "4f82b1a7-6c95-4d30-ae18-73b2e9f01c64";
+
 export function makeScope(overrides: Partial<ReleaseRescueScope> = {}): ReleaseRescueScope {
   return {
     offerVersion: RELEASE_RESCUE_OFFER_VERSION,
@@ -63,7 +82,7 @@ export function makeIntake(overrides: Record<string, unknown> = {}) {
   return {
     schemaVersion: RELEASE_RESCUE_INTAKE_SCHEMA_VERSION,
     offerVersion: RELEASE_RESCUE_OFFER_VERSION,
-    organizationId: "org-acme",
+    organizationId: FIXTURE_ORGANIZATION_ID,
     repository: {
       provider: "github",
       repositoryRef: "acme/checkout-app",
@@ -129,7 +148,7 @@ export function setAssessment(
  */
 export function makeFinding(overrides: Partial<FindingFacts> = {}): ReleaseRescueFindingV1 {
   return composeFinding({
-    findingId: "f-001",
+    findingId: "RR-001",
     observationCode: "authz.record_lookup_is_not_scoped_to_the_caller",
     confidence: "confirmed",
     remediationCode: "scope_query_by_authenticated_principal",
@@ -148,10 +167,10 @@ export function makeFinding(overrides: Partial<FindingFacts> = {}): ReleaseRescu
 
 export function makeReportInput(overrides: Partial<AssembleReportInput> = {}): AssembleReportInput {
   return {
-    reportId: "rep-001",
-    engagementId: "eng-001",
-    runId: "run-001",
-    organizationId: "org-acme",
+    reportId: FIXTURE_REPORT_ID,
+    engagementId: FIXTURE_ENGAGEMENT_ID,
+    runId: FIXTURE_RUN_ID,
+    organizationId: FIXTURE_ORGANIZATION_ID,
     scope: makeScope(),
     reviewedCommitSha: COMMIT_SHA,
     assessments: passingAssessments(),
@@ -166,7 +185,7 @@ export function makeReportInput(overrides: Partial<AssembleReportInput> = {}): A
       protocolVersion: "v1",
     },
     reviewedBy: {
-      operatorUserId: "op-1",
+      operatorUserId: FIXTURE_OPERATOR_ID,
       displayName: "Ops Manager",
       reviewedAt: "2026-09-16T10:00:00.000Z",
     },

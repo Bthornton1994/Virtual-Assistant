@@ -17,6 +17,7 @@ import {
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
 import {
+  FIXTURE_OPERATOR_ID,
   makeFinding,
   makeReportInput,
   passingAssessments,
@@ -243,7 +244,7 @@ describe("the gate, over the generated corpus", () => {
           }),
           findings: [makeFinding({ locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }] })],
           reviewedBy: {
-            operatorUserId: "op-1",
+            operatorUserId: FIXTURE_OPERATOR_ID,
             displayName: text.slice(0, 180),
             reviewedAt: "2026-09-16T10:00:00.000Z",
           },

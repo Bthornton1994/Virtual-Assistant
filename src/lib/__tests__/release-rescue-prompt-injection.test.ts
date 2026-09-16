@@ -12,6 +12,7 @@ import {
 import { findProhibitedClaims } from "@/lib/release-rescue-intake";
 import { scanForSecrets } from "@/lib/release-rescue-redaction";
 import {
+  FIXTURE_OPERATOR_ID,
   ZERO_AUTHORITY,
   makeFinding,
   makeReportInput,
@@ -75,7 +76,7 @@ function reportWithInjectedText(text: string) {
       findings: [makeFinding()],
       limitationCodes: ["customer_excluded_part_of_the_repository"],
       reviewedBy: {
-        operatorUserId: "op-1",
+        operatorUserId: FIXTURE_OPERATOR_ID,
         displayName: text === "" ? "Ops Manager" : `Ops Manager ${text}`.slice(0, 180),
         reviewedAt: "2026-09-16T10:00:00.000Z",
       },

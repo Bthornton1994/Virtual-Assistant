@@ -243,35 +243,34 @@ update public.release_rescue_engagements set reviewed_commit_sha = repeat('a', 4
  where id = '7aa00000-0000-0000-0000-000000000033';
 
 -- A report body whose clearance names a non-operator.
-insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
-values ('7f000000-0000-0000-0000-00000000aa01', '7b000000-0000-0000-0000-00000000aa01',
-        '7e000000-0000-0000-0000-00000000aa01', 'observation', 'forged clearance', repeat('a', 64),
-        jsonb_build_object(
-          'schemaVersion', 'release-rescue-report/v1',
-          'observationCatalogVersion', 'release-rescue-observations/v1',
-          'observationCatalogHash', repeat('a', 64),
-          'reviewedCommitSha', repeat('a', 40),
-          'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
-            -- v10: a clearance records a reason CODE from a closed set, not a
-            -- note. A written reason is free text on the one path that exists
-            -- to RELEASE withheld material, which is the worst place for it.
-            'path', '$.reviewedBy.displayName', 'clearedContentHash', repeat('b', 64),
-            'clearedBy', 'x', 'clearedAt', '2026-09-16T00:00:00Z',
-            'reasonCode', 'value_is_a_placeholder_not_a_credential'))));
+--
+-- CHANGED BY v12. This used to store the artifact and then assert that v7's
+-- clearance trigger refused the REPORT row with "must name an operator by id".
+-- v12 refuses the ARTIFACT, one table earlier: `clearedBy` is an identifier
+-- field, and `'x'` is not an identifier. v7's branch is still there and still
+-- correct; it is simply no longer reachable from stored data, because the data
+-- that reached it can no longer be stored.
+--
+-- So the case is asserted where the refusal now happens. The property is
+-- unchanged and slightly stronger: a clearance naming an arbitrary string never
+-- becomes a row at all.
 
 select rrv7.expect_refusal(
-  'a clearance naming an arbitrary string is refused',
-  'name an operator by id',
+  'a clearance naming an arbitrary string is refused, now at the artifact boundary',
+  'must hold a UUID or a declared demo identifier',
   $q$
-  insert into public.release_rescue_reports
-    (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
-     rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
-     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
-  values ('7b000000-0000-0000-0000-00000000aa01', '7aa00000-0000-0000-0000-000000000033',
-          '7e000000-0000-0000-0000-00000000aa01', '7f000000-0000-0000-0000-00000000aa01',
-          'release-rescue-report/v1', repeat('1', 64), 'release-rescue-rubric/v1', repeat('2', 64),
-          repeat('4', 64), 'conditional_release', 0, 32, 32, 'auditor',
-          '7a000000-0000-0000-0000-00000000cc01');
+  insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
+  values ('7f000000-0000-0000-0000-00000000aa01', '7b000000-0000-0000-0000-00000000aa01',
+          '7e000000-0000-0000-0000-00000000aa01', 'observation', 'forged clearance', repeat('a', 64),
+          jsonb_build_object(
+            'schemaVersion', 'release-rescue-report/v1',
+            'observationCatalogVersion', 'release-rescue-observations/v1',
+            'observationCatalogHash', repeat('a', 64),
+            'reviewedCommitSha', repeat('a', 40),
+            'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
+              'path', '$.reviewedBy.displayName', 'clearedContentHash', repeat('b', 64),
+              'clearedBy', 'x', 'clearedAt', '2026-09-16T00:00:00Z',
+              'reasonCode', 'value_is_a_placeholder_not_a_credential'))));
 $q$);
 
 insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
@@ -463,9 +462,22 @@ values ('7f000000-0000-0000-0000-00000000bb09', '7b000000-0000-0000-0000-0000000
           'observationCatalogHash', repeat('a', 64),
           'clearedSecretHolds', jsonb_build_array(jsonb_build_object(
             'path', '$.reviewedBy.displayName',
-            'clearedBy', 'VICTIM-CONFIDENTIAL-STRING-abc123',
+            -- The marker moved off `clearedBy` when v12 made that field an
+            -- identifier: an artifact carrying a sentence there cannot be
+            -- stored, so the victim body could not be set up at all. It sits on
+            -- `displayName` instead, which is guarded rather than closed and is
+            -- therefore still a real place a tenant's content lives. What is
+            -- being proven is unchanged — a refusal must not read another
+            -- tenant's payload back — and `clearedBy` now names a real user who
+            -- simply is not a manager, so v7's authority branch is the one with
+            -- something to say.
+            'clearedBy', '7a000000-0000-0000-0000-00000000dd01',
             'clearedContentHash', repeat('b', 64),
-            'clearedAt', '2026-09-16T00:00:00Z', 'reasonCode', 'value_is_a_documented_example'))));
+            'clearedAt', '2026-09-16T00:00:00Z', 'reasonCode', 'value_is_a_documented_example')),
+          'reviewedBy', jsonb_build_object(
+            'operatorUserId', '7a000000-0000-0000-0000-00000000dd01',
+            'displayName', 'VICTIM-CONFIDENTIAL-STRING-abc123',
+            'reviewedAt', '2026-09-16T00:00:00Z')));
 
 do $$
 declare v_message text; v_state text;

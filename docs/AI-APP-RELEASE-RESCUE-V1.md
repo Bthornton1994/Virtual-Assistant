@@ -2098,17 +2098,55 @@ deterministic code"; this is that claim written where the assembler can check it
 A value that does not match is refused whatever it happens to say, so there is no
 payload to be clever with.
 
-Two details are load-bearing and were found by the test, not by reasoning:
+One detail is load-bearing and was found by the test, not by reasoning:
 
-- **The minted-id format bounds segment count AND segment length.** Four
-  hyphen-separated segments excludes the hyphenated sentence; 24 characters per
-  segment excludes the same sentence in camelCase, which is one segment and which
-  the first version accepted.
 - **A closed set beats a shape, wherever a set exists.**
   `this.app.is.secure.and.free.of.vulnerabilities` satisfies the lowercase-dotted
   code *shape* exactly. Fourteen paths now name their actual value set — the
   rubric dimensions, the severities, the verdicts — rather than describing what
   such a value looks like.
+
+**A sixth round, and the last bound.** The first version of the positive rule
+kept one format that was still a bound rather than a set: an identifier was "at
+most four segments of at most twenty-four characters", with both halves argued to
+be load-bearing — four segments excluding a hyphenated sentence, twenty-four
+characters excluding a camelCase one. An audit composed a value inside both:
+
+```
+engagementId: "ThisAppIsSecureAnd-FreeOfVulnerabilities-NoIssuesFound-Certified"
+```
+
+Four segments, each under twenty-four. It assembled, it passed the delivery gate,
+and it rendered in the header of the customer's report. Both halves of the bound
+held; the value was still a sentence. A bound says what a value may not exceed,
+and a sentence can be written inside any bound.
+
+The same audit found the other edge of that rule, which is the more instructive
+half: it **refused every plain UUID**, because a UUID is five segments and the
+bound allowed four — while `organization_id`, `engagement_id`, `run_id` and
+`reviewed_by` are all `uuid` columns in this schema. The rule that was too loose
+for a claim was at the same moment too tight for the product's own identifiers,
+and neither fact was visible, because the fixtures were `org-acme`, `rep-001`,
+`run-001` and `op-1`. **A fixture that does not resemble production tests the
+fixture.** They are UUIDs now, and a test drives every identifier path from
+`randomUUID()` rather than from a literal.
+
+So the identifier format is a set and a canonical shape, with nothing between
+them: a UUID, or one of the five strings `src/lib/release-rescue-demo-identity.ts`
+declares for the demo report. A finding's label is `RR-` and three digits, because
+findings are numbered within the report that carries them rather than minted.
+
+| Round | The rule | Defeated by |
+| --- | --- | --- |
+| 18 | an identifier is at most four segments of at most 24 characters | four segments of under 24 characters each |
+
+**And the test that could not have found it, again.** The nine payloads the
+policy walk plants were every one of them refused by a bound the rule had itself
+chosen — too long, too many segments, contains a space. None was composed *inside*
+the allowance. Three payloads that are now plant on every path; against the old
+bound they are accepted at **18 path/payload pairs** across the six identifier
+paths, where the original nine found zero. That measurement is how the change was
+verified, not the reasoning above it.
 
 **What this does not solve, stated because five rounds each claimed more than they
 had.** Three formats are genuinely loose: `preparedBy.executorKey`, `.provider`
@@ -2118,24 +2156,46 @@ declared on the format itself (`notCustomerVisible`), not kept in a list inside 
 test, with a dedicated test asserting the property holds. It is a bound, not a
 proof.
 
-An earlier draft of this paragraph said "a camelCase claim fits them" and left it
-there. A mutation run then showed the sentence was **understated in one direction
-and exactly right in the other**, and both halves are now measured rather than
-asserted:
+This table has been measured twice and corrected twice, which is the point of
+keeping it. The first draft said "a camelCase claim fits them" and left it there;
+a mutation run showed that sentence was understated, because the separated forms
+were already caught. The dotted and camelCase forms genuinely were not — and the
+same audit that found the identifier bound found that hole where it mattered
+more: a **reviewer's display name**, which is a guarded field that a customer
+reads, carrying `ThisAppIsSecureAndFreeOfVulnerabilities` through to the
+delivered report.
+
+Non-visibility could not cover that one, so the guard itself was fixed rather
+than the fields around it. `tokenizeClaimText` now treats a **lower-to-upper
+transition as a word boundary**, and a **full stop between two words with no
+space as a separator rather than the end of a sentence**. Runs of capitals are
+left whole, so `OAuth` and `SQL` are still one word each.
 
 | Form in a loose field | Caught? | By what |
 | --- | --- | --- |
 | `This-app-is-secure-and-free-of-vulnerabilities` | yes | the claim guard, whose tokenizer is separator-agnostic |
 | `This_app_is_secure_and_free_of_vulnerabilities` | yes | same |
 | `This/app/is/secure/and/free/of/vulnerabilities` | yes | same |
-| `this.app.is.secure.and.free.of.vulnerabilities` | **no** | — |
-| `ThisAppIsSecure` | **no** | — |
+| `this.app.is.secure.and.free.of.vulnerabilities` | yes | an in-word full stop is a separator, not a sentence end |
+| `ThisAppIsSecureAndFreeOfVulnerabilities` | yes | the lower-to-upper word boundary |
+| `ThisAppIsSecure` | yes | same |
+| `ThisAppIsSecureAnd-FreeOfVulnerabilities-NoIssuesFound-Certified` | yes | same |
+| `thisappissecureandfreeofvulnerabilities` | **no** | — |
+| `THISAPPISSECURE` | **no** | — |
 
-So the residual is narrower than "a camelCase claim fits them" implied: it is the
-dotted and camelCase forms specifically, in three fields that do not reach the
-customer. A test asserts both rows — including the two that are NOT caught, so
-that if a later change starts catching them, this table is flagged as understated
-rather than quietly becoming stale in the safe direction.
+The residual is now the two run-together forms, which carry no word boundary of
+any kind — no separator, no case transition. Catching them would mean searching
+for claim text inside longer words, which flags ordinary values. A test asserts
+every row, including the two that are NOT caught, so a later change that starts
+catching them flags this table as understated rather than letting it go stale in
+the safe direction.
+
+**The cost was measured too, and paid down rather than absorbed.** Adding token
+boundaries made `findProhibitedClaims` slower, and one property suite went from
+passing to a 5-second timeout. The cause was not the new boundaries: the guard
+re-tokenised the whole prohibited-claim list on every call, three times over. The
+list is a constant, so it is tokenised once now. That suite runs in 1.3s, faster
+than before the tokenizer changed at all.
 
 **The test was rewritten to be capable of failing.** It plants nine payloads per
 path — space, hyphen, underscore, dot, camelCase, slash, two Unicode separators
@@ -2167,12 +2227,36 @@ gap could not exist; it was wrong, and the comment is corrected in v11's header
 rather than left to be rediscovered.
 
 `supabase/qa/release_rescue_structured_observations_v10_proof.sql` proves v10 live
-in **30 labelled cases**, and `release_rescue_code_fields_v11_proof.sql` proves
-v11 in **24**, every one of them the audit's own payload refused, including the whole narrative list crossed with all four
+in **31 labelled cases**, and `release_rescue_code_fields_v11_proof.sql` proves
+v11 in **30**, every one of them the audit's own payload refused, including the whole narrative list crossed with all four
 levels of the payload (100+ insert attempts), and — asserted first, deliberately —
 that the report the product actually produces is still storable. Three audits in
 this workstream have found a guard that refused everything; a $299 artifact nobody
 can store is a worse outcome than the one the guard exists to prevent.
+
+Migration `20260916180000_release_rescue_identifier_shape_v12.sql` is the same
+move one field over. v11 made a code field hold a code; v12 makes an identifier
+field hold an identifier — a UUID, or one of the five declared demo identifiers,
+and `RR-` plus three digits for a finding's label. It covers the seven identifier
+paths, checks a field only when that field is PRESENT (absence is a different
+question, and answering it here would make the guard stricter than the
+application), and folds into the same single guard function for the same reason.
+`release_rescue_identifier_shape_v12_proof.sql` proves it live in **18 labelled
+cases**, including the audit's own payload at all six reachable identifier paths,
+nine punctuation forms crossed with four fields, and — in the other direction —
+40 generated UUIDs and all 999 finding labels accepted. A test pins the five demo
+identifiers in the migration against `DEMO_IDENTIFIERS` in TypeScript, because
+five literal strings in two languages is exactly the thing that drifts.
+
+v12 also made two cases in the v7 proof unreachable, and both are recorded rather
+than deleted. v7 refuses a clearance whose `clearedBy` is not a uuid, on the
+report row; v12 refuses the artifact that carries it, one table earlier. v7's
+branch is still correct and is simply no longer reachable from stored data, so
+the case now asserts the refusal where it actually happens. The second was a
+cross-tenant leak test whose marker sat in `clearedBy`; the marker moved to
+`reviewedBy.displayName`, which is guarded rather than closed and is therefore
+still a real place a tenant's content lives, and `clearedBy` now names a real
+non-manager so v7's authority branch is the one with something to say.
 
 One of those cases changed what it claims after measurement. The obvious assertion
 was that the guard refuses an UPDATE planting a narrative field. It does not:

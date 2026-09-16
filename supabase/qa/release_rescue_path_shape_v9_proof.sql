@@ -58,7 +58,7 @@ returns jsonb language sql immutable as $$
     'observationCatalogVersion', 'release-rescue-observations/v1',
     'observationCatalogHash', repeat('a', 64),
     'findings', jsonb_build_array(jsonb_build_object(
-      'findingId', 'f-001',
+      'findingId', 'RR-001',
       'rubricCheckId', 'secrets.no_secrets_in_version_control',
       -- v10 requires these: a stored report names the catalog its wording came
       -- from, and a finding names the observation it is an instance of.
@@ -217,7 +217,7 @@ begin
             'observationCatalogVersion', 'release-rescue-observations/v1',
             'observationCatalogHash', repeat('a', 64),
             'findings', jsonb_build_array(jsonb_build_object(
-              'findingId', 'f-001',
+              'findingId', 'RR-001',
               'rubricCheckId', 'authz.object_level_authorization',
               'severity', 'high',
               -- v10: codes, not sentences.

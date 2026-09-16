@@ -13,6 +13,7 @@ import {
   type AccessGrantMethod,
   type AppType,
 } from "@/lib/ai-app-release-rescue/constants";
+import { DEMO_ORGANIZATION_ID } from "@/lib/release-rescue-demo-identity";
 
 // The intake FORM layer.
 //
@@ -26,7 +27,7 @@ import {
 // the authority. Keeping validation here would mean a second, weaker copy of the
 // offer's rules living next to the HTML.
 
-export const RESCUE_DEMO_ORGANIZATION_ID = "demo-organization";
+export const RESCUE_DEMO_ORGANIZATION_ID = DEMO_ORGANIZATION_ID;
 
 export type IntakeFieldName =
   | "contactName"

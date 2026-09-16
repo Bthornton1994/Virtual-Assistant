@@ -13,6 +13,12 @@ import {
 } from "@/lib/release-rescue-report";
 import { toCustomerReportView, type CustomerReportView } from "@/lib/release-rescue-presentation";
 import { DEMO_SAMPLE_REPORT_ID } from "@/lib/ai-app-release-rescue/constants";
+import {
+  DEMO_ENGAGEMENT_ID,
+  DEMO_OPERATOR_ID,
+  DEMO_ORGANIZATION_ID,
+  DEMO_RUN_ID,
+} from "@/lib/release-rescue-demo-identity";
 
 // The sample report shown on the demo page.
 //
@@ -27,7 +33,7 @@ const DEMO_COMMIT = "4f1c2a9e7b83d05e61af2c48d7be9013a5c6f27b";
 const DEMO_INTAKE = releaseRescueIntakeV1Schema.parse({
   schemaVersion: "release-rescue-intake/v1",
   offerVersion: "release-rescue-offer/v1",
-  organizationId: "demo-organization",
+  organizationId: DEMO_ORGANIZATION_ID,
   repository: {
     provider: "github",
     repositoryRef: "harbor-labs/harbor-ledger",
@@ -174,9 +180,9 @@ const FINDINGS: ReleaseRescueFindingV1[] = [
 
 export const SAMPLE_REPORT: ReleaseRescueReportV1 = buildReleaseRescueReport({
   reportId: DEMO_SAMPLE_REPORT_ID,
-  engagementId: "demo-engagement",
-  runId: "demo-run",
-  organizationId: "demo-organization",
+  engagementId: DEMO_ENGAGEMENT_ID,
+  runId: DEMO_RUN_ID,
+  organizationId: DEMO_ORGANIZATION_ID,
   scope: SAMPLE_SCOPE,
   reviewedCommitSha: DEMO_COMMIT,
   assessments: assessments(),
@@ -204,7 +210,7 @@ export const SAMPLE_REPORT: ReleaseRescueReportV1 = buildReleaseRescueReport({
     protocolVersion: "v1",
   },
   reviewedBy: {
-    operatorUserId: "demo-operator",
+    operatorUserId: DEMO_OPERATOR_ID,
     displayName: "Sam Okafor, operations manager",
     reviewedAt: "2026-09-12T16:30:00.000Z",
   },

@@ -110,7 +110,7 @@ select rrv8.expect_refusal(
             'observationCatalogVersion', 'release-rescue-observations/v1',
             'observationCatalogHash', repeat('a', 64),
             'findings', jsonb_build_array(jsonb_build_object(
-              'findingId', 'f-001', 'excerpt', 'const key = "sk_live_x";'))));
+              'findingId', 'RR-001', 'excerpt', 'const key = "sk_live_x";'))));
 $q$);
 
 select rrv8.expect_refusal(
@@ -166,7 +166,7 @@ begin
             'observationCatalogHash', repeat('a', 64),
             'reviewedCommitSha', repeat('a', 40),
             'findings', jsonb_build_array(jsonb_build_object(
-              'findingId', 'f-001',
+              'findingId', 'RR-001',
               'rubricCheckId', 'authz.object_level_authorization',
               'severity', 'high',
               -- v10: codes, not sentences. The words the customer reads come

@@ -14,6 +14,8 @@ import {
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
 import {
+  FIXTURE_SECOND_REPORT_ID,
+  FIXTURE_OPERATOR_ID,
   ZERO_AUTHORITY,
   makeFinding,
   makeReportInput,
@@ -64,7 +66,7 @@ describe("report assembly", () => {
     expect(hashReleaseRescueReport(first)).toBe(hashReleaseRescueReport(second));
     expect(hashReleaseRescueReport(first)).toMatch(/^[0-9a-f]{64}$/);
 
-    const changed = buildReleaseRescueReport(makeReportInput({ reportId: "rep-002" }));
+    const changed = buildReleaseRescueReport(makeReportInput({ reportId: FIXTURE_SECOND_REPORT_ID }));
     expect(hashReleaseRescueReport(changed)).not.toBe(hashReleaseRescueReport(first));
   });
 });
@@ -305,7 +307,7 @@ describe("report integrity", () => {
     const report = buildReleaseRescueReport(
       makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: "Ops Manager AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -344,7 +346,7 @@ describe("report integrity", () => {
     const report = buildReleaseRescueReport(
       makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: "Ops Manager, who certifies this application is secure",
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },

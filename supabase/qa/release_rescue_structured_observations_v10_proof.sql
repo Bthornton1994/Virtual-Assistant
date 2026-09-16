@@ -73,7 +73,7 @@ returns jsonb language sql immutable as $$
         'kind', 'configuration_reference', 'path', 'docker-compose.yml',
         'startLine', 4, 'endLine', 6)))),
     'findings', jsonb_build_array(jsonb_build_object(
-      'findingId', 'f-001',
+      'findingId', 'RR-001',
       'rubricCheckId', 'secrets.no_secrets_in_version_control',
       'observationCode', 'secrets.literal_credential_in_repository',
       'remediationCode', 'rotate_and_move_to_secret_store',
@@ -318,14 +318,19 @@ select rrv10.expect_refusal(
   insert into public.evidence_artifacts (organization_id, run_id, kind, summary, content_hash, payload)
   values ('ab000000-0000-0000-0000-0000000000a1', 'ae000000-0000-0000-0000-0000000000a1',
           'observation', 'oversized', repeat('7', 64),
-          jsonb_set(rrv10.report(), array['findings', '0', 'findingId'], to_jsonb(repeat('x', 401))));
+          -- `rubricVersion` rather than `findingId`: v12 checks identifier
+          -- fields BEFORE the string-shape rule, so an oversized findingId is
+          -- now refused as a bad identifier and this case would be measuring
+          -- the wrong guard. This field is neither a code nor an identifier, so
+          -- the length rule is the only one that can speak.
+          jsonb_set(rrv10.report(), array['rubricVersion'], to_jsonb(repeat('x', 401))));
 $q$);
 
 do $$
 begin
   perform rrv10.assert('a 400-character value is accepted, so the bound is the stated one',
     cardinality(public.release_rescue_payload_string_shape(
-      jsonb_set(rrv10.report(), array['findings', '0', 'findingId'], to_jsonb(repeat('x', 400))))) = 0);
+      jsonb_set(rrv10.report(), array['rubricVersion'], to_jsonb(repeat('x', 400))))) = 0);
 end $$;
 
 \echo ''

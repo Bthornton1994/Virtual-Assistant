@@ -629,9 +629,29 @@ function stemWord(word: string): string {
  *
  * Hyphens, underscores and slashes are separators with NO break, which is what
  * makes "penetration-test" and "pen/test" read as the phrases they are.
+ *
+ * Two further rules, both added because a claim written without spaces got past
+ * the guard and into a customer-visible field:
+ *
+ *   A LOWER-TO-UPPER TRANSITION IS A WORD BOUNDARY. `ThisAppIsSecure` is four
+ *   words in every sense that matters here, and reading it as one token is how
+ *   it reached the reviewer's display name on a delivered report. The boundary
+ *   carries no break, so the phrase still matches across it. Runs of capitals
+ *   are left alone — `OAuth` and `SQL` stay whole, because the transition rule
+ *   only fires where a lowercase letter or digit is followed by a capital.
+ *
+ *   A FULL STOP ENDS A SENTENCE ONLY WHEN SOMETHING SEPARATES IT FROM THE NEXT
+ *   WORD. `this.app.is.secure` is not four sentences, and treating it as four
+ *   was what let a dotted claim through: a sentence break between every pair of
+ *   words means no phrase can ever match. Between two words with no space, a
+ *   full stop now reads as a separator, the same as a hyphen. A real sentence
+ *   ending — a full stop followed by a space, a newline, or the end of the text
+ *   — still breaks, which is what keeps a claim from being assembled out of the
+ *   end of one sentence and the start of the next.
  */
 function tokenizeClaimText(text: string): ClaimToken[] {
   const tokens: ClaimToken[] = [];
+  const characters = [...text];
   let word = "";
   let pending: ClaimToken["breakBefore"] = "none";
 
@@ -643,12 +663,27 @@ function tokenizeClaimText(text: string): ClaimToken[] {
     pending = "none";
   };
 
-  for (const character of text) {
+  for (let index = 0; index < characters.length; index += 1) {
+    const character = characters[index];
+
     if (/[a-z0-9']/i.test(character)) {
+      if (/[A-Z]/.test(character) && /[a-z0-9]/.test(word.slice(-1))) flush();
       word += character;
       continue;
     }
+
     flush();
+
+    // A full stop between two word characters is punctuation inside a token,
+    // not the end of a sentence.
+    const joinsTwoWords =
+      character === "." &&
+      index > 0 &&
+      /[a-z0-9]/i.test(characters[index - 1]) &&
+      index + 1 < characters.length &&
+      /[a-z0-9]/i.test(characters[index + 1]);
+    if (joinsTwoWords) continue;
+
     if (SENTENCE_MARKS.has(character)) pending = "sentence";
     else if (CLAUSE_MARKS.has(character) && pending !== "sentence") pending = "clause";
   }
@@ -668,8 +703,27 @@ function tokenize(text: string): string[] {
  * break inside the phrase disqualifies it, so a claim cannot be assembled from
  * the end of one sentence and the start of the next.
  */
-function claimOccurrences(tokens: readonly ClaimToken[], claim: string): number[] {
-  const wanted = tokenizeClaimText(claim).map((token) => token.stem);
+/**
+ * The prohibited claims, tokenised once.
+ *
+ * `findProhibitedClaims` used to tokenise every claim in the list three times
+ * per call — once to match, once for its length, once for its length again in
+ * the reporting loop. The list is a constant, so that was the same work
+ * repeated on every string in every report. Memoised lazily rather than at
+ * module scope, because `RELEASE_RESCUE_OFFER` is defined in this file and
+ * evaluation order would otherwise matter.
+ */
+let claimStemsCache: ReadonlyArray<{ claim: string; stems: readonly string[] }> | null = null;
+
+function prohibitedClaimStems(): ReadonlyArray<{ claim: string; stems: readonly string[] }> {
+  claimStemsCache ??= RELEASE_RESCUE_OFFER.prohibitedClaims.map((claim) => ({
+    claim,
+    stems: tokenizeClaimText(claim).map((token) => token.stem),
+  }));
+  return claimStemsCache;
+}
+
+function claimOccurrences(tokens: readonly ClaimToken[], wanted: readonly string[]): number[] {
   if (wanted.length === 0) return [];
   const hits: number[] = [];
 
@@ -802,24 +856,25 @@ export function findProhibitedClaims(text: string): string[] {
   const tokens = tokenizeClaimText(text);
   if (tokens.length === 0) return [];
 
+  const claims = prohibitedClaimStems();
+
   // Every token belonging to ANY prohibited phrase, so a multi-item referral can
   // tell "another item it is referring away" from unrelated material.
   const claimTokenIndices = new Set<number>();
   const occurrences = new Map<string, number[]>();
 
-  for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
-    const hits = claimOccurrences(tokens, claim);
+  for (const { claim, stems } of claims) {
+    const hits = claimOccurrences(tokens, stems);
     occurrences.set(claim, hits);
-    const length = tokenizeClaimText(claim).length;
     for (const hit of hits) {
-      for (let offset = 0; offset < length; offset += 1) claimTokenIndices.add(hit + offset);
+      for (let offset = 0; offset < stems.length; offset += 1) claimTokenIndices.add(hit + offset);
     }
   }
 
   const found: string[] = [];
 
-  for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
-    const length = tokenizeClaimText(claim).length;
+  for (const { claim, stems } of claims) {
+    const length = stems.length;
     for (const start of occurrences.get(claim) ?? []) {
       const clauseBefore = tokens
         .slice(clauseStartIndex(tokens, start), start)

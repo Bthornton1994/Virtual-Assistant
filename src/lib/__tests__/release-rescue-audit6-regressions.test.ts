@@ -16,6 +16,7 @@ import {
 } from "@/lib/release-rescue-report";
 import { LIMITATION_CATALOG, type LimitationCode } from "@/lib/release-rescue-observation-catalog";
 import {
+  FIXTURE_OPERATOR_ID,
   makeFinding,
   makeReportInput,
   passingAssessments,
@@ -107,7 +108,7 @@ describe("a credential key with no separator and no camel-case boundary", () => 
     const report = buildReleaseRescueReport(
       makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: "Ops Manager PGPASSWORD: pr0dXk92mQvn7Lz",
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -163,7 +164,7 @@ describe("one character of punctuation cannot switch the detector off", () => {
     const report = buildReleaseRescueReport(
       makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: "Ops Manager password: swordfish.",
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },

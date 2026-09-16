@@ -10,6 +10,7 @@ import {
 } from "@/lib/release-rescue-report";
 import { releaseRescueFindingV1Schema } from "@/lib/release-rescue-findings";
 import {
+  FIXTURE_OPERATOR_ID,
   makeFinding,
   makeReportInput,
   passingAssessments,
@@ -225,7 +226,7 @@ describe("the gate, asserted directly, in both directions", () => {
             rationaleCode: "control_missing_on_a_reachable_path",
           }),
           reviewedBy: {
-            operatorUserId: "op-1",
+            operatorUserId: FIXTURE_OPERATOR_ID,
             displayName: text.slice(0, 180),
             reviewedAt: "2026-09-16T10:00:00.000Z",
           },

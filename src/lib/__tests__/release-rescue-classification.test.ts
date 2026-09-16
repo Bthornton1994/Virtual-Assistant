@@ -14,7 +14,8 @@ import {
   releaseRescueDeliveryGate,
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
-import { makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
+import {
+  FIXTURE_OPERATOR_ID, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 
 // Detection and prose sensitivity, as three outcomes rather than one boolean.
@@ -147,7 +148,7 @@ describe("ordinary audit prose stays readable and does not hold anything", () =>
       const report = buildReleaseRescueReport(
         makeReportInput({
           reviewedBy: {
-            operatorUserId: "op-1",
+            operatorUserId: FIXTURE_OPERATOR_ID,
             displayName: `Ops Manager — ${text}`.slice(0, 180),
             reviewedAt: "2026-09-16T10:00:00.000Z",
           },
@@ -229,7 +230,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   it("records what it removed, as a hash rather than a copy", () => {
     const report = buildReleaseRescueReport(makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: `Ops Manager ${AMBIGUOUS}`,
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -244,7 +245,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   it("refuses delivery while the hold stands", () => {
     const report = buildReleaseRescueReport(makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: `Ops Manager ${AMBIGUOUS}`,
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -259,7 +260,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
   it("delivers once the exact content is cleared", () => {
     const base = buildReleaseRescueReport(makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: `Ops Manager ${AMBIGUOUS}`,
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -272,7 +273,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
           {
             path: hold.path,
             clearedContentHash: hold.originalHash,
-            clearedBy: "ops-manager-1",
+            clearedBy: FIXTURE_OPERATOR_ID,
             clearedAt: "2026-09-16T09:00:00.000Z",
             reasonCode: "value_is_a_placeholder_not_a_credential",
           },
@@ -289,7 +290,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
     // switch the mechanism off before the content existed.
     const base = buildReleaseRescueReport(makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: `Ops Manager ${AMBIGUOUS}`,
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -298,7 +299,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
     const report = buildReleaseRescueReport(
       makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: `Ops Manager ${AMBIGUOUS}`,
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -306,7 +307,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
           {
             path: hold.path,
             clearedContentHash: "b".repeat(64),
-            clearedBy: "ops-manager-1",
+            clearedBy: FIXTURE_OPERATOR_ID,
             clearedAt: "2026-09-16T09:00:00.000Z",
             reasonCode: "value_is_a_placeholder_not_a_credential",
           },
@@ -324,7 +325,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
     const CONFIDENT = "DB_PASSWORD=Zephyrbolt";
     const base = buildReleaseRescueReport(makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: `Ops Manager ${CONFIDENT}`,
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -333,7 +334,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
     const report = buildReleaseRescueReport(
       makeReportInput({
         reviewedBy: {
-          operatorUserId: "op-1",
+          operatorUserId: FIXTURE_OPERATOR_ID,
           displayName: `Ops Manager ${CONFIDENT}`,
           reviewedAt: "2026-09-16T10:00:00.000Z",
         },
@@ -341,7 +342,7 @@ describe("a hold is recorded on the report and cleared by content, not by path",
           {
             path: hold.path,
             clearedContentHash: hold.originalHash,
-            clearedBy: "ops-manager-1",
+            clearedBy: FIXTURE_OPERATOR_ID,
             clearedAt: "2026-09-16T09:00:00.000Z",
             reasonCode: "value_is_a_placeholder_not_a_credential",
           },
