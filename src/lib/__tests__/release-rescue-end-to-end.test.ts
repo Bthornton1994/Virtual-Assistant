@@ -59,6 +59,60 @@ function assertNothingLeaked(subject: unknown, where: string): void {
   }
 }
 
+describe("an executor that quotes the credential instead of describing it", () => {
+  // The most likely finding this product will ever produce is "a credential is
+  // hardcoded here", and the most likely way an executor writes it is by pasting
+  // the line. That is refused before an artifact exists — not redacted, not
+  // held, refused — because the detector that would have had to judge the value
+  // safe is the thing ten audits took apart.
+  function quotingReport() {
+    return buildReleaseRescueReport(
+      makeReportInput({
+        assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+          outcome: "fail",
+          rationale: "The committed database password is reachable by anyone with repository access.",
+        }),
+        findings: [
+          makeFinding({
+            whatWeObserved: `docker-compose.yml sets DB_PASSWORD=${SECRETS.compose} and SMTP_PASS=${SECRETS.smtp}.`,
+            locations: [{ path: "docker-compose.yml", startLine: 4, endLine: 6 }],
+          }),
+        ],
+      }),
+    );
+  }
+
+  it("is refused at assembly, naming the construct and not the value", () => {
+    let message = "(no refusal)";
+    try {
+      quotingReport();
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).not.toBe("(no refusal)");
+    expect(message).toContain("findings[0].whatWeObserved");
+    expect(message).toContain("DB_PASSWORD");
+    for (const secret of ALL_SECRETS) {
+      expect(message, "a refusal reaches logs; it must not carry the value").not.toContain(secret);
+    }
+  });
+
+  it("is refused the same way through the schema, for input that reaches one", () => {
+    const parsed = releaseRescueFindingV1Schema.safeParse(
+      makeFinding({
+        whatWeObserved: `docker-compose.yml sets DB_PASSWORD=${SECRETS.compose}.`,
+        locations: [{ path: "docker-compose.yml", startLine: 4, endLine: 6 }],
+      }),
+    );
+
+    expect(parsed.success).toBe(false);
+    const message = parsed.success ? "" : JSON.stringify(parsed.error.issues);
+    expect(message).toContain("DB_PASSWORD");
+    expect(message).not.toContain(SECRETS.compose);
+  });
+});
+
 describe("a report built from source containing credentials", () => {
   const report = buildReleaseRescueReport(
     makeReportInput({
@@ -69,17 +123,25 @@ describe("a report built from source containing credentials", () => {
         rationale: "The committed database password is reachable by anyone with repository access.",
       }),
       findings: [
+        // The same finding, written the way the contract requires: it names the
+        // settings and cites the lines. The customer opens their own checkout.
         makeFinding({
-          title: `Database password committed as ${SECRETS.compose}`,
-          whatWeObserved: `docker-compose.yml sets DB_PASSWORD=${SECRETS.compose} and SMTP_PASS=${SECRETS.smtp}.`,
-          whyItMatters: `Anyone with repository access has the production database password (${SECRETS.compose}).`,
-          recommendation: `Rotate ${SECRETS.compose} and move it to a secret store.`,
+          title: "Database password committed to the repository",
+          whatWeObserved:
+            "docker-compose.yml assigns literal values to the DB_PASSWORD and SMTP_PASS settings rather than reading them from the environment.",
+          whyItMatters:
+            "Anyone with repository access has the production database password, including every past and future collaborator.",
+          recommendation:
+            "Rotate both values, read them from the platform secret store, and add a scanner to the pipeline so a committed credential fails the build.",
           locations: [
             { path: "docker-compose.yml", startLine: 4, endLine: 6 },
             { path: ".pgpass", startLine: 1, endLine: 1 },
           ],
         }),
       ],
+      // Our own field, not an auditor's observation, and still the place a
+      // pasted `.env` would land. The scanner runs on it as defence in depth:
+      // the value is removed, a hold is raised, and delivery stops.
       limitations: [`The customer excluded the admin console. Its .env holds ${ENVFILE}`],
     }),
   );
@@ -123,10 +185,13 @@ describe("a report built from source containing credentials", () => {
   it("keeps the finding readable — the point is the finding, not the secret", () => {
     const finding = report.findings[0];
 
+    // The setting is named, the file is named, the lines are cited. Nothing
+    // needed redacting in the observation, because nothing was quoted into it.
     expect(finding.whatWeObserved).toContain("docker-compose.yml");
     expect(finding.whatWeObserved).toContain("DB_PASSWORD");
-    expect(finding.whatWeObserved).toContain("[REDACTED");
+    expect(finding.whatWeObserved).not.toContain("[REDACTED");
     expect(finding.locations[0].path).toBe("docker-compose.yml");
+    expect(finding.locations[0].startLine).toBe(4);
   });
 
   it("still passes deterministic validation, because a clean artifact is valid", () => {

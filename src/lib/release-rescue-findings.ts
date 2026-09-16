@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { identifierString, nonEmptyString } from "@/lib/catalog-evidence-shared";
+import {
+  describeQuotedCredentialConstructs,
+  findQuotedCredentialConstructs,
+} from "@/lib/release-rescue-prose";
 import { getRubricCheck, rubricDimensionSchema, type RubricCheck } from "@/lib/release-rescue-rubric";
 
 // The finding contract and the severity model.
@@ -140,17 +144,59 @@ export function severityRank(severity: FindingSeverity): number {
 // --- Schemas ------------------------------------------------------------------------
 
 /**
+ * The shape of one path segment, and of a whole path.
+ *
+ * A segment is one or more space-separated words drawn from the characters that
+ * occur in repository file names: letters, digits, and `. _ - + @ ~ ( ) [ ]`.
+ * Brackets are in the set because this product's own routes are named
+ * `src/app/api/orders/[id]/route.ts`, and a grammar that refuses a customer's
+ * real file name is a grammar nobody can ship behind.
+ *
+ * Written without lookahead so the same language can be checked in Postgres,
+ * and built from one word pattern so the two halves cannot drift.
+ */
+const PATH_WORD = "[A-Za-z0-9._@+~()\\[\\]-]+";
+const PATH_SEGMENT = `${PATH_WORD}( ${PATH_WORD})*`;
+export const REPOSITORY_PATH_PATTERN = new RegExp(`^${PATH_SEGMENT}(/${PATH_SEGMENT})*$`);
+
+/** No segment of a real repository path is longer than this. */
+const MAX_PATH_SEGMENT_LENGTH = 255;
+
+/**
  * A repository-relative path inside the reviewed snapshot.
  *
  * Refuses absolute paths, parent traversal, and URLs. A finding points inside
  * the one repository in scope; anything else is either a mistake or an auditor
  * wandering outside the engagement, and both are worth failing on.
+ *
+ * It also refuses anything that is not SHAPED like a path, and that part is a
+ * security boundary rather than hygiene. With the excerpt field gone, `path` is
+ * the only remaining place in a finding whose value comes from the customer's
+ * repository, and without a grammar it was `identifierString.max(400)` — four
+ * hundred characters of anything, newlines included. A source window pasted into
+ * `locations[].path` would have validated, stored, and rendered. The grammar
+ * closes that: no control characters, no quotes, no assignment or statement
+ * punctuation, no empty segments, one space between words at most.
+ *
+ * What a grammar cannot do is make a path-shaped string harmless — `AKIA...` is
+ * a legal file name — so this is not the only control on the field. Every string
+ * in a report, this one included, goes through `sanitizeReportInput` before
+ * assembly, which redacts credential material and raises a hold. The grammar
+ * removes the channel; the scanner covers what still fits through it.
  */
 export const repositoryPathSchema = identifierString
   .max(400)
   .refine((value) => !value.startsWith("/"), "must be repository-relative, not absolute")
   .refine((value) => !value.includes(".."), "must not contain parent traversal")
-  .refine((value) => !value.includes("://"), "must be a path, not a URL");
+  .refine((value) => !value.includes("://"), "must be a path, not a URL")
+  .refine(
+    (value) => REPOSITORY_PATH_PATTERN.test(value),
+    "must be a repository path, not source text: only letters, digits, `. _ - + @ ~ ( ) [ ]`, single spaces, and `/` between non-empty segments",
+  )
+  .refine(
+    (value) => value.split("/").every((segment) => segment.length <= MAX_PATH_SEGMENT_LENGTH),
+    `each path segment must be at most ${MAX_PATH_SEGMENT_LENGTH} characters`,
+  );
 
 /**
  * Field names that used to carry customer source, or that an executor might
@@ -197,7 +243,13 @@ export const FORBIDDEN_SOURCE_FIELDS: readonly string[] = [
  *
  * `path`, `startLine` and `endLine` are everything a customer needs to open the
  * file and see the finding for themselves, in their own checkout, where the
- * source already is. Nothing here is derived from the CONTENT of that file.
+ * source already is.
+ *
+ * The line numbers are not derived from the file's content. The PATH is — it is
+ * a name taken from the customer's repository — which an audit pointed out after
+ * an earlier version of this comment claimed otherwise. That is why
+ * `repositoryPathSchema` has a grammar: a path-shaped value is all this field
+ * can hold, so it cannot become the source window the excerpt used to be.
  */
 export const findingLocationSchema = z
   .object({
@@ -213,10 +265,6 @@ export const findingLocationSchema = z
 
 /**
  * Names a forbidden source-carrying field on an object, or null.
- *
- * Used at the assembly boundary as well as by the schema, so a caller building a
- * report through the typed path and a caller arriving through `any` get the same
- * refusal with the same wording.
  */
 export function findForbiddenSourceField(value: unknown): string | null {
   if (value === null || typeof value !== "object") return null;
@@ -224,6 +272,102 @@ export function findForbiddenSourceField(value: unknown): string | null {
     if (FORBIDDEN_SOURCE_FIELDS.includes(key)) return key;
   }
   return null;
+}
+
+/** Where a forbidden field was seen. The VALUE is never carried out of here. */
+export type SourceFieldSighting = {
+  /** A JSON path such as `findings[2].locations[0]`. */
+  at: string;
+  field: string;
+};
+
+/**
+ * Finds forbidden source-carrying fields on findings and their locations.
+ *
+ * Scoped to exactly what the database guard walks — a finding object and its
+ * location objects — so the two enforcement points answer the same question. A
+ * wider walk would start refusing report internals that legitimately have a
+ * `reason` or a `context`, and a narrower one would leave a hole under
+ * `locations[]`.
+ *
+ * `.strict()` on the schemas already refuses an unknown key, but only for input
+ * that reaches a schema, and only as "unrecognized key". This runs at the
+ * assembly boundary, where input arrives through `Sanitized<T>` without a parse,
+ * and on a stored artifact read back as `unknown` — and it names the field, so a
+ * caller still sending `excerpt` is told what changed rather than being told
+ * their key is unrecognised.
+ */
+export function findSourceFieldsInFindings(findings: unknown): SourceFieldSighting[] {
+  if (!Array.isArray(findings)) return [];
+
+  const sightings: SourceFieldSighting[] = [];
+  findings.forEach((finding, index) => {
+    const onFinding = findForbiddenSourceField(finding);
+    if (onFinding) sightings.push({ at: `findings[${index}]`, field: onFinding });
+
+    const locations = (finding as { locations?: unknown } | null)?.locations;
+    if (!Array.isArray(locations)) return;
+    locations.forEach((location, locationIndex) => {
+      const onLocation = findForbiddenSourceField(location);
+      if (onLocation) {
+        sightings.push({ at: `findings[${index}].locations[${locationIndex}]`, field: onLocation });
+      }
+    });
+  });
+
+  return sightings;
+}
+
+/** One sentence naming every sighting, or null when there are none. */
+export function describeSourceFieldSightings(sightings: readonly SourceFieldSighting[]): string | null {
+  if (sightings.length === 0) return null;
+  return `A Release Rescue finding carries source-bearing fields that were removed from this contract: ${sightings
+    .map((sighting) => `${sighting.at}.${sighting.field}`)
+    .join(", ")}. A finding cites path and line; it does not carry the source. The offending values are withheld from this message deliberately.`;
+}
+
+/**
+ * Refuses findings that carry source-bearing fields.
+ *
+ * Throws rather than blanking the field. Blanking after assembly would mean the
+ * value existed in this process, in this object, and in whatever logged it on
+ * the way here; refusing means the report is never built.
+ */
+export function assertNoSourceFieldsInFindings(findings: unknown, context: string): void {
+  const message = describeSourceFieldSightings(findSourceFieldsInFindings(findings));
+  if (message) throw new Error(`${context}: ${message}`);
+}
+
+/**
+ * A prose field an auditor authors, which may describe but may not quote.
+ *
+ * The refusal is a REFUSAL, not a scrub: blanking after assembly would mean the
+ * value existed in this process and in whatever logged it on the way here. See
+ * `release-rescue-prose.ts` for why this is about the construct and never about
+ * the value.
+ */
+export function observationField(maxLength: number) {
+  return nonEmptyString.max(maxLength).superRefine((value, ctx) => {
+    const message = describeQuotedCredentialConstructs(
+      findQuotedCredentialConstructs(value),
+      "This field",
+    );
+    if (message) ctx.addIssue({ code: "custom", message });
+  });
+}
+
+/** The same rule for a field that is allowed to be empty. */
+export function optionalObservationField(maxLength: number) {
+  return z
+    .string()
+    .max(maxLength)
+    .superRefine((value, ctx) => {
+      const message = describeQuotedCredentialConstructs(
+        findQuotedCredentialConstructs(value),
+        "This field",
+      );
+      if (message) ctx.addIssue({ code: "custom", message });
+    });
 }
 
 export const releaseRescueFindingV1Schema = z
@@ -234,11 +378,11 @@ export const releaseRescueFindingV1Schema = z
     dimension: rubricDimensionSchema,
     title: nonEmptyString.max(200),
     /** What the auditor saw. Observation, not inference. */
-    whatWeObserved: nonEmptyString.max(4000),
+    whatWeObserved: observationField(4000),
     /** Why it matters for THIS release, not in general. */
-    whyItMatters: nonEmptyString.max(4000),
+    whyItMatters: observationField(4000),
     /** What the customer should do. Actionable, specific to the code. */
-    recommendation: nonEmptyString.max(4000),
+    recommendation: observationField(4000),
     impact: z.enum(FINDING_IMPACTS),
     exploitability: z.enum(FINDING_EXPLOITABILITIES),
     confidence: z.enum(FINDING_CONFIDENCES),
@@ -251,7 +395,7 @@ export const releaseRescueFindingV1Schema = z
     /** Whether the remediation sprint would cover this. Commercial, not technical. */
     inRemediationSprintScope: z.boolean(),
     /** What the auditor could not establish. Non-empty when confidence is not `confirmed`. */
-    residualUncertainty: z.string().max(2000),
+    residualUncertainty: optionalObservationField(2000),
   })
   .strict();
 

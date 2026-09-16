@@ -37,9 +37,14 @@ export type FieldDisposition =
    */
   | "guarded"
   /**
-   * Text lifted from the reviewed repository. Must already have been through
-   * `prepareExcerpt`, so it is checked for credentials but not for claims — a
-   * customer's own source is allowed to contain the word "secure".
+   * Text lifted from the reviewed repository, checked for credentials but not
+   * for claims — a customer's own source is allowed to contain the word "secure".
+   *
+   * No field carries this disposition any more. `prepareExcerpt`, which used to
+   * be its precondition, was deleted with the excerpt field: a finding points at
+   * source and never carries it. The disposition stays so the contract can still
+   * express the category, and so that re-adding a field in it is a deliberate
+   * act rather than a default.
    */
   | "redacted"
   /**

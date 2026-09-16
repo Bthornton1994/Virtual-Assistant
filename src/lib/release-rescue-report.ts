@@ -26,9 +26,17 @@ import {
 } from "@/lib/release-rescue-pipeline";
 import { blocksDelivery, type SecretClassification } from "@/lib/release-rescue-secret-classification";
 import {
+  describeQuotedCredentialConstructs,
+  findQuotedCredentialConstructs,
+} from "@/lib/release-rescue-prose";
+import {
   FINDING_SEVERITIES,
+  assertNoSourceFieldsInFindings,
   computeFindingBlocking,
   computeFindingSeverity,
+  describeSourceFieldSightings,
+  findSourceFieldsInFindings,
+  observationField,
   releaseRescueFindingV1Schema,
   severityRank,
   validateFinding,
@@ -102,8 +110,13 @@ export const rubricAssessmentSchema = z
   .object({
     checkId: identifierString.max(200),
     outcome: rubricCheckOutcomeSchema,
-    /** Why this outcome. Required even for `not_assessed`, where it states why not. */
-    rationale: nonEmptyString.max(2000),
+    /**
+     * Why this outcome. Required even for `not_assessed`, where it states why not.
+     *
+     * Same prose contract as a finding's observation: an assessment describes
+     * what the check found, and does not reproduce a credential construct to do it.
+     */
+    rationale: observationField(2000),
     evidence: z.array(assessmentEvidenceSchema).max(10),
   })
   .strict();
@@ -487,6 +500,14 @@ export function buildReleaseRescueReport(raw: AssembleReportInput): ReleaseRescu
  */
 export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput>): ReleaseRescueReportV1 {
   assertNoCredentialMaterial(input, "Release Rescue report assembly");
+  // The brand proves the input was scanned. It does not prove the input has the
+  // shape this contract now has, because assembly takes its findings as typed
+  // values and never parses them — a caller holding `AssembleReportInput` as
+  // `any`, or deserialising an old stored payload, reaches here with an
+  // `excerpt` intact and `.strict()` never sees it. So the named refusal runs
+  // here, on the same scope the database trigger walks.
+  assertNoSourceFieldsInFindings(input.findings, "Release Rescue report assembly");
+  assertProseDescribesWithoutQuoting(input, "Release Rescue report assembly");
 
   const metrics = deriveReportMetrics(input.assessments, input.findings, input.authorityReport);
   const limitations = [...STANDING_LIMITATIONS, ...input.limitations];
@@ -522,6 +543,40 @@ export function assembleReleaseRescueReport(input: Sanitized<AssembleReportInput
     reviewedBy: input.reviewedBy,
     generatedAt: input.generatedAt,
   };
+}
+
+/**
+ * Refuses an input whose prose reproduces a credential construct.
+ *
+ * The schema refuses the same thing, but the schema only sees input that reaches
+ * it — and assembly never parses. This covers every field the prose contract
+ * governs, named individually rather than by walking every string, because
+ * `unresolvedHolds[].reason` and the standing limitations are OUR prose and are
+ * allowed to talk about what a credential assignment looks like.
+ */
+export function assertProseDescribesWithoutQuoting(input: AssembleReportInput, context: string): void {
+  const fields: Array<{ at: string; value: string }> = [];
+
+  input.findings.forEach((finding, index) => {
+    fields.push(
+      { at: `findings[${index}].whatWeObserved`, value: finding.whatWeObserved },
+      { at: `findings[${index}].whyItMatters`, value: finding.whyItMatters },
+      { at: `findings[${index}].recommendation`, value: finding.recommendation },
+      { at: `findings[${index}].residualUncertainty`, value: finding.residualUncertainty },
+    );
+  });
+  input.assessments.forEach((assessment, index) => {
+    fields.push({ at: `assessments[${index}].rationale`, value: assessment.rationale });
+  });
+
+  for (const field of fields) {
+    if (typeof field.value !== "string") continue;
+    const message = describeQuotedCredentialConstructs(
+      findQuotedCredentialConstructs(field.value),
+      field.at,
+    );
+    if (message) throw new Error(`${context}: ${message}`);
+  }
 }
 
 /** Canonical content hash used to bind a stored report row to its payload. */
@@ -564,13 +619,28 @@ const ZERO_METRICS: ReleaseRescueReportMetrics = {
  * could answer differently on a second run.
  */
 export function validateReleaseRescueReport(candidate: unknown): ValidationResult<ReleaseRescueReportMetrics> {
+  // Read before the parse, because the parse cannot say this. A stored artifact
+  // written by an older build, or hand-edited in the database, carries `excerpt`
+  // as an unknown key, and `.strict()` answers "Unrecognized key" — true, and
+  // useless to the operator holding an undeliverable report. Name the field.
+  const sourceFields = describeSourceFieldSightings(
+    findSourceFieldsInFindings(
+      candidate !== null && typeof candidate === "object"
+        ? (candidate as { findings?: unknown }).findings
+        : undefined,
+    ),
+  );
+
   const parsed = releaseRescueReportV1Schema.safeParse(candidate);
   if (!parsed.success) {
     return {
       hardGatePass: false,
-      hardFailures: parsed.error.issues.map(
-        (issue) => `Schema violation at ${issue.path.join(".") || "(root)"}: ${issue.message}`,
-      ),
+      hardFailures: [
+        ...(sourceFields ? [sourceFields] : []),
+        ...parsed.error.issues.map(
+          (issue) => `Schema violation at ${issue.path.join(".") || "(root)"}: ${issue.message}`,
+        ),
+      ],
       warnings: [],
       metrics: ZERO_METRICS,
     };

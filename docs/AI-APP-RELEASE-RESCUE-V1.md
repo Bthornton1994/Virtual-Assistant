@@ -255,13 +255,16 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 521 Release Rescue tests across 28 suites (1,189 in the whole repository), 257 live database cases across eight proofs, and 12 browser tests in real Chromium against the production build.
+**Implemented and passing** — 569 Release Rescue tests across 30 suites (1,245 in the whole repository, of which 8 fail for an environmental reason recorded below), 306 live database cases across ten proofs, and 13 browser tests in real Chromium against the production build.
 
-> **Read *The excerpt decision* before treating any of this as shippable.** Ten
-> independent audits have run and all ten returned DO_NOT_MERGE. The owner has
-> since taken a structural decision that retires the class of defect they kept
-> finding: customer source excerpts are removed from every persisted artifact.
-> Independent QA has not yet audited the result.
+> **Read *The excerpt decision* before treating any of this as shippable.**
+> Eleven independent audits have run and all eleven returned DO_NOT_MERGE. The
+> owner has taken a structural decision that retires the class of defect they
+> kept finding: customer source excerpts are removed from every persisted
+> artifact, and an observation may not reproduce a credential construct. The
+> eleventh audit found the first half shipped with the channel reopened in two
+> places — `locations[].path` and the free-text observation fields — and both are
+> now closed. Independent QA has not yet audited that result.
 
 These counts are re-measured each pass rather than carried forward. Three successive audits found stale numbers here, and a stale count is a false claim like any other.
 
@@ -774,9 +777,11 @@ helper, `withSanitizedHolds`, which takes the sanitiser's own two outputs, so
 nothing unsanitised can reach the brand through it.
 
 The end-to-end test plants five distinct secrets in real `docker-compose.yml`,
-`.pgpass` and `.env` content and asserts none of them reaches the artifact, the
-stored excerpts, the customer view, the holds, or console output — and that the
-delivery gate refuses while a `credential_evidence` hold is unresolved.
+`.pgpass` and `.env` content. It asserts first that an observation quoting one of
+them is REFUSED at assembly, so no artifact exists; then that the same finding,
+written to describe rather than quote, reaches the artifact, the customer view,
+the holds and console output carrying none of the five — and that the delivery
+gate still refuses while a `credential_evidence` hold is unresolved.
 
 ### Destructive authority: `purged_at`
 
@@ -840,7 +845,7 @@ empty database:
 
 The proof base applies 49 of 53 migrations (the two above, plus two that need the
 `http` extension this sandbox does not have). None of the four touch Release
-Rescue tables, and all eight Release Rescue proofs run against the result.
+Rescue tables, and all ten Release Rescue proofs run against the result.
 
 ## Sixth independent audit: the axis was the key, and the fix was the regression
 
@@ -944,10 +949,13 @@ asserts two, a stated reason for the clearance trigger's definer rights that was
 not the reason it needed them, "these tables" for an assertion covering one, and
 32 proof cases where there are now 35. Two in-code comments claimed safety
 properties the code did not implement — the `truncated` contract above, and
-`prepareStoredExcerpt`'s "production entry point", which **still has no production
-caller**. That one is recorded rather than fixed: report strings reach the
-sanitiser through the generic walk, and wiring the truncating path in is a change
-to the excerpt path that wants its own proof.
+`prepareStoredExcerpt`'s "production entry point", which had no production caller
+at all. That one was recorded rather than fixed at the time. It is now moot:
+*The excerpt decision* below deleted `prepareStoredExcerpt` and `prepareExcerpt`
+along with the field they prepared, so there is no truncating path left to wire
+in. An eleventh audit found the same class once more, in
+`findForbiddenSourceField`, and that one was wired into report assembly and
+validation rather than recorded.
 
 ## Seventh independent audit: fixing the class instead of the instance
 
@@ -1386,8 +1394,8 @@ artifact and every customer-facing surface.
 | `startLine`, `endLine` | any source window |
 | `rubricCheckId` | any raw source text |
 | `severity` (derived, not chosen) | any scanner span exposing source |
-| `whatWeObserved` — the observation | |
-| `recommendation` — what to do about it | |
+| `whatWeObserved` — the observation | a quoted credential assignment in any prose field |
+| `recommendation` — what to do about it | a credentialed URL or private-key block in prose |
 
 The customer opens `src/app/api/orders/route.ts:18–27` in their own checkout,
 where the source already is. Nothing diagnostic is lost; the copy is.
@@ -1423,8 +1431,9 @@ Not in one place, and not by blanking a field after assembly.
 | Field policy | No disposition classifies a source-carrying path, asserted rather than assumed. |
 
 The TypeScript list and the SQL list are bound together: a test fails if a name
-refused in one is not refused in the other, because two lists in two languages
-drift apart silently.
+refused in one is not refused in the other, **in either direction** — the list
+is compared as a set, so a name added to SQL alone fails too. Two lists in two
+languages drift apart silently otherwise.
 
 ### What the scanner still does
 
@@ -1433,9 +1442,22 @@ place. That was never the problem. What changed is that the text does not travel
 no excerpt is persisted, returned, logged, or included in a customer artifact.
 
 **Redaction remains defence in depth, and is no longer the safety argument.** It
-runs over a report's free-text fields, which a person writes. If it is wrong there
-the cost is a held report, not a leaked credential, because the field a credential
-would have arrived in no longer exists.
+runs over a report's free-text fields, which a person writes.
+
+An earlier version of this section claimed that if redaction was wrong there,
+"the cost is a held report, not a leaked credential, because the field a
+credential would have arrived in no longer exists." **That was false, and an
+audit measured it.** With a prose prefix in front of the assignment — `The
+committed configuration contains: DB_PASSWORD=Ab#hunter2hunter` — 30 of 116
+generated credential values reached a *deliverable* report with the value intact.
+The same 116 in a bare assignment leaked none: the span extractor stopped at the
+`#`, judged the two characters it had captured a placeholder, and suppressed the
+span. Removing the excerpt had relocated the text onto the field an auditor
+writes when describing a hardcoded credential — the most likely finding this
+product will ever produce — where the detector was weakest.
+
+The fix is not the terminator set. That is the seventh round of the cycle the
+owner ended. See *An observation describes; it does not quote* below.
 
 ### One field tightened on the way
 
@@ -1449,19 +1471,111 @@ it does not quote.
 reason — `lines` is on the forbidden list, because a `lines` array is how source
 is carried, and a name forbidden in one place should not be legitimate in another.
 
+### The path was the other one, and it had no shape
+
+An audit asked the question the first half of this decision did not: with
+`excerpt` gone, which field in a finding still takes its VALUE from the
+customer's repository? `locations[].path`. And it was `identifierString.max(400)`
+— non-empty, no leading `/`, no `..`, no `://`, and nothing else. Four hundred
+characters of anything, newlines included. A source window pasted there validated,
+stored, and rendered under a "Where" heading.
+
+`repositoryPathSchema` now enforces a grammar: a `/`-separated sequence of
+non-empty segments, each one or more single-space-separated words drawn from
+letters, digits and `. _ - + @ ~ ( ) [ ]`, no segment over 255 characters and no
+path over 400. Brackets are in the set because this product's own routes are
+named `src/app/api/orders/[id]/route.ts`, and a grammar that refuses a customer's
+real file name is a grammar nobody can ship behind.
+
+The database enforces the part of that grammar a second implementation cannot get
+wrong — no control characters, the same 400-character cap — and deliberately not
+the whole thing. A row guard *stricter* than the application refuses reports the
+application considers correct, and the operator holding the undeliverable report
+has nothing to act on. A test asserts the application refuses everything the
+trigger refuses, which is the direction that has to hold.
+
+**The honest limit.** `AKIAIOSFODNN7EXAMPLE` is a legal file name, so no path
+grammar can refuse it. The grammar removes the channel — a pasted window — and
+the scanner covers what still fits through it; a credential-shaped path produces
+a report that is not deliverable. That is asserted as an outcome, not as a claim
+about which control answered.
+
+### An observation describes; it does not quote
+
+The prose fields are the other place customer text now lives:
+`whatWeObserved`, `whyItMatters`, `recommendation`, `residualUncertainty` and an
+assessment's `rationale`. They are 4,000 characters each and an auditor writes
+them, and the single most likely finding this product will ever produce is "a
+credential is hardcoded here".
+
+`src/lib/release-rescue-prose.ts` refuses a **construct**, never a value:
+
+| Refused | Because |
+| --- | --- |
+| an assignment (`=`, `:=`) to a credential-named key, with any right-hand side | an observation names the setting; it does not reproduce the line |
+| a configuration line (`key: value`) for a credential-named key that is not a capitalised English word | `db_password: x` is a config line; `Passwords: 8-character minimum` is a sentence |
+| a URL carrying userinfo credentials | the same rule as a finding location: cite the file and line |
+| a `-----BEGIN … PRIVATE KEY-----` header | there is no safe fraction of a private key |
+
+Every branch is decided by the KEY and the OPERATOR. None reads the value. That
+is the point: there is no shape of value that clears it, so there is no question
+for a detector to get wrong, and the round of terminator-set tuning that this
+would otherwise have become does not happen. The refusal is a refusal — assembly
+throws and no artifact exists — rather than a scrub, because blanking after
+assembly means the value existed in this process and in whatever logged it.
+
+**The stated cost.** An auditor cannot paste a line of code into an observation
+when that line assigns to a credential-named identifier. `const token =
+getToken(req);`, `password = get_password(user)`, `token := fetchToken(ctx)` and
+`const authHeader = request.headers.get("authorization")` are all refused, and
+none of them holds a credential. Letting them through would mean asking whether
+the right-hand side looks like a secret, and that question is the detector ten
+audits took apart. The refusal names the key and says what to write instead. An
+assignment to a key the lexicon does not recognise — `STORAGE_KEY`, `cacheKey`,
+`PORT` — is not this rule's business and passes untouched.
+
+**What this does not claim.** These fields are free text. No rule short of
+refusing prose can prove a sentence is not a quotation of the customer's source,
+and this one does not try: it closes the credential constructs, not the general
+ability to describe code in English. A report is still read and signed by a named
+human before delivery, and that remains the mitigation for what no rule catches.
+
 ### Proof
 
-`supabase/qa/release_rescue_excerpt_removal_v8_proof.sql` — **18 live PostgreSQL
+`supabase/qa/release_rescue_excerpt_removal_v8_proof.sql` — **19 live PostgreSQL
 cases**: every forbidden field name refused in a location, a finding-level field
 refused, the refusal carrying the field name and none of the planted content, a
 well-formed report accepted with path, line range, check id, severity, observation
 and remediation all surviving, another workstream's artifacts untouched, and the
 guard confirmed `SECURITY INVOKER`.
 
-`src/lib/__tests__/release-rescue-excerpt-removal.test.ts` — 16 property-shaped
-tests over a generated credential corpus: values carrying punctuation, whitespace,
-quotes, delimiters, comments, multiline carriers, URLs and common-word passwords,
-crossed with all 22 forbidden field names and with real source-file carriers.
+`supabase/qa/release_rescue_path_shape_v9_proof.sql` — **26 live PostgreSQL
+cases**: nine control-character carriers refused inside a path, an overlong path
+refused, the refusal naming the finding and location index and none of the
+planted content, ten real repository paths accepted (including this product's own
+bracketed dynamic routes and a file name with a space), and the fourteen payload
+shapes an audit planted through the earlier two-level guard — a nested object, a
+nested array, an assessment's evidence, a capitalised `Excerpt`, a shouted
+`SNIPPET`, a padded and a differently cased schema marker, the whole report one
+level down, `findings` and `locations` as objects rather than arrays — every one
+refused.
+
+`src/lib/__tests__/release-rescue-excerpt-removal.test.ts` — **30 tests**, of
+which 6 are property-shaped over a generated credential corpus (values carrying
+punctuation, whitespace, quotes, delimiters, comments, multiline carriers, URLs
+and common-word passwords, crossed with all 22 forbidden field names and with
+real source-file carriers) and the rest are single-example assertions about the
+schema, the migration text, the field-coverage policy, the delivery gate and the
+artifact hash. An audit re-added `excerpt` to the schema and found that only 3 of
+the then-16 went red; the two that read as the structural guarantees were
+tautologies. Both were rewritten to plant the value and assert no artifact comes
+out, and the suite now goes red under that mutation.
+
+`src/lib/__tests__/release-rescue-prose.test.ts` — **9 tests**, driven from the
+key and the operator rather than the value: the corpus crossed with five
+assignment spellings inside eight sentence wrappers (5,000+ cases), the full
+qualifier × carrier lexicon in prose (500+ keys), and the false-positive
+direction as its own product so the safe side is no longer a hand-picked list.
 
 ### What this does not authorize
 
