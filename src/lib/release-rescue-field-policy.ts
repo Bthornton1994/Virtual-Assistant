@@ -78,18 +78,48 @@ export type FieldRule = {
   /** Why this decision. Required: an unexplained exemption is how coverage rots. */
   readonly because: string;
   /**
-   * This field holds a repository path or ref, not prose.
+   * This field holds a repository path, ref or branch name, not prose.
    *
-   * It changes how the claim guard reads it: a path is a machine value, and
-   * `src/utils/isSecure.ts` is a filename rather than an assertion that
-   * anything is secure. Splitting it on case transitions read it as the
-   * prohibited claim "is secure" and made the report undeliverable for any
-   * customer whose repository contained one — which is most of them, in three
-   * of the languages this offer reviews.
+   * Such a field is checked against the PATH GRAMMAR below instead of the claim
+   * guard, and by the credential scanner exactly as every other guarded field
+   * is. The claim guard does not read it at all.
    *
-   * Declared here rather than as a list inside the checker, so a new
-   * path-valued field is a visible decision in the policy. Only `guarded`
-   * fields consult it; nothing else reads a value as prose.
+   * WHY, because giving up a control needs a reason and not a preference. Two
+   * audits measured what the claim guard does to a path, one spelling at a
+   * time, and there is no spelling where it works:
+   *
+   *   * reading a path as prose refused `src/utils/isSecure.ts` — `isSecure` is
+   *     among the most common helper names in JavaScript, Go and C#;
+   *   * reading it with separators intact refused `internal/net/is_secure.go`,
+   *     `tests/test_is_secure.py`, `src/security/pen_test.py` and
+   *     `docs/pen-test-report.pdf` — 18 of 19 realistic paths from Python, Go,
+   *     Rust, Ruby, C and npm conventions, because `is_secure.go` is the
+   *     IDIOMATIC Go spelling and `IsSecure.go` is not;
+   *   * and three of the offer's prohibited claims are single words —
+   *     `pentest`, `pentesting`, `vulnerability-free` — so even a rule that
+   *     matched nothing across a separator would still refuse `docs/pentest.md`.
+   *
+   * A file name is built from the same words a claim is built from. The guard
+   * cannot tell a customer's filename from a sentence, and every version of it
+   * that caught more sentences refused more filenames. `findings[].locations[]
+   * .path` holds a path from the CUSTOMER'S repository, so each of those is a
+   * $299 review refused over data the product does not control — the failure
+   * this workstream has now shipped three times.
+   *
+   * WHAT IS GIVEN UP, stated plainly rather than argued away: an executor could
+   * write `src/this-app-is-secure.ts` as a finding location and the guard would
+   * not object. Four things stand in the way of that reaching a customer as a
+   * claim, and none of them is this guard: the path grammar, which refuses
+   * anything with a space or a control character; the credential scanner, which
+   * still runs; the fact that every customer-facing SENTENCE is resolved from
+   * the frozen observation catalog and never written by a caller; and the named
+   * human reviewer who must sign the report before it is delivered. The control
+   * that would actually settle it — checking that the path names a real file in
+   * the reviewed commit — is not available at assembly time, and is recorded in
+   * the doc as the open question it is rather than papered over here.
+   *
+   * Declared in the policy rather than as a list inside the checker, so a new
+   * path-valued field is a visible decision. Only `guarded` fields consult it.
    */
   readonly valueIsAPath?: true;
 };
@@ -475,6 +505,37 @@ const MODULE_SENTENCE: GeneratedFormat = {
     "One of exactly two fixed sentences this codebase owns, written by `sanitizeReportInput` to explain a hold. It is the one generated path whose value is legitimately prose, which is exactly why it is pinned to the SET rather than to a shape: an audit put a camelCase claim and a hyphenated credential through the shape rule that used to guard it.",
 };
 
+/**
+ * What a repository path, ref or branch name must LOOK LIKE.
+ *
+ * The positive rule for `valueIsAPath` fields, re-asserted at the artifact
+ * boundary. It is deliberately the UNION of what the three schemas already
+ * accept — `repositoryPathSchema`, `repositoryRefSchema` and `branchNameSchema`
+ * — because a boundary check stricter than the schema refuses values the
+ * product considers correct, which is the failure shape this workstream has
+ * shipped three times. It is defence in depth against a value that reached the
+ * artifact without passing a schema, not a second, competing opinion.
+ *
+ * A sentence cannot satisfy it: no spaces, no control characters, bounded.
+ */
+const PATH_CHARACTERS = /^[A-Za-z0-9._+@~()[\]/-]+$/;
+const MAX_PATH_VALUE_LENGTH = 400;
+
+/** Why a `valueIsAPath` value is not a path, or null. Never echoes the value. */
+export function pathValueIsNotAPath(value: string): string | null {
+  if (value.length === 0) return "it is empty";
+  if (value.length > MAX_PATH_VALUE_LENGTH) {
+    return `it is ${value.length} characters, and a path here is at most ${MAX_PATH_VALUE_LENGTH}`;
+  }
+  if (!PATH_CHARACTERS.test(value)) {
+    return "it holds a character a path does not: letters, digits and `. _ - + @ ~ ( ) [ ] /` only, with no spaces";
+  }
+  if (value.includes("://")) return "it is a URL, not a path";
+  if (value.startsWith("/")) return "it is absolute, and a repository path is relative";
+  if (value.split("/").includes("..")) return "it contains a parent-traversal segment";
+  return null;
+}
+
 export const GENERATED_FORMATS: Readonly<Record<string, GeneratedFormat>> = {
   "$.schemaVersion": VERSION_PIN,
   "$.reportId": MINTED_ID,
@@ -611,11 +672,19 @@ export function checkReportFieldCoverage(report: unknown): CoverageFailure[] {
         failures.push({ path: leaf.path, reason: `"${leaf.normalized}" must not appear in a report.` });
         break;
       case "guarded": {
-        for (const claim of findProhibitedClaims(leaf.value, rule.valueIsAPath ? "path" : "prose")) {
-          failures.push({
-            path: leaf.path,
-            reason: `Makes a prohibited claim ("${claim}"): "${leaf.value.slice(0, 120)}".`,
-          });
+        if (rule.valueIsAPath) {
+          // A path is checked against what a path IS, not read as prose. See
+          // `valueIsAPath` for the two audits behind that, and for what it
+          // gives up. The value is named and never echoed.
+          const wrong = pathValueIsNotAPath(leaf.value);
+          if (wrong) failures.push({ path: leaf.path, reason: `Is not a repository path: ${wrong}.` });
+        } else {
+          for (const claim of findProhibitedClaims(leaf.value)) {
+            failures.push({
+              path: leaf.path,
+              reason: `Makes a prohibited claim ("${claim}"): "${leaf.value.slice(0, 120)}".`,
+            });
+          }
         }
         // Only a CONFIDENT detection is a coverage failure. An ambiguous
         // candidate is redacted and held by the delivery gate instead, because

@@ -669,24 +669,6 @@ const DOTTED_MODE: TokenizerMode = { splitCaseTransitions: false, inWordFullStop
 /** Prose a person wrote: every mode applies. */
 const PROSE_MODES: readonly TokenizerMode[] = [BASELINE_MODE, CASE_SPLIT_MODE, DOTTED_MODE];
 
-/**
- * A repository path or ref: the baseline mode only.
- *
- * `src/utils/isSecure.ts` is a filename, not an assertion that anything is
- * secure, and `isSecure` is one of the most common helper names there is in
- * JavaScript, Go and C#. Under the case-splitting mode it read as the
- * prohibited claim "is secure", which made the report undeliverable for any
- * customer whose repository contained one — a $299 review refused because of
- * the customer's own filename, decided by data the product does not control.
- *
- * These fields are grammar-checked machine values, so the claim forms worth
- * catching in them are the separated ones, and the baseline mode catches those:
- * `acme/we-deliver-a-penetration-test` is refused, because a hyphen is a
- * separator. The measured residual is the run-together form in a path
- * (`acme/WeDeliverAPenetrationTest`), which a test records rather than hides.
- */
-const PATH_MODES: readonly TokenizerMode[] = [BASELINE_MODE];
-
 function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): ClaimToken[] {
   const tokens: ClaimToken[] = [];
   const characters = [...text];
@@ -936,9 +918,6 @@ function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
   return found;
 }
 
-/** What kind of value is being checked, which decides the tokenizer modes. */
-export type ClaimTextKind = "prose" | "path";
-
 /**
  * Guards any customer-facing string this offer produces against the claims it
  * must never make. Used by the report contract and by a test that runs it over
@@ -954,14 +933,42 @@ export type ClaimTextKind = "prose" | "path";
  * split cannot open an evasion. See `TokenizerMode` for the two evasions a
  * REPLACEMENT opened when this was one tokenizer instead of several.
  *
- * `kind` is "prose" unless the caller knows the value is a repository path or
- * ref, which the field-coverage policy declares per field rather than guessing.
+ * This reads its argument as PROSE. A repository path is not prose and is not
+ * checked here at all — see `valueIsAPath` in the field-coverage policy for why,
+ * and for what checks it instead.
  */
-export function findProhibitedClaims(text: string, kind: ClaimTextKind = "prose"): string[] {
-  const modes = kind === "path" ? PATH_MODES : PROSE_MODES;
+/**
+ * The tokenizer modes, by name, so a test can exercise the union itself.
+ *
+ * Exported for one reason: the property "a mode can add a detection and never
+ * remove one" was asserted by a test that compared two mode sets where one was
+ * a subset of the other, which is true by construction and cannot fail. An
+ * audit pointed that out. Testing the real machinery needs the real modes.
+ */
+export const CLAIM_TOKENIZER_MODES = {
+  baseline: BASELINE_MODE,
+  caseSplit: CASE_SPLIT_MODE,
+  dotted: DOTTED_MODE,
+} as const;
+
+export type ClaimTokenizerModeName = keyof typeof CLAIM_TOKENIZER_MODES;
+
+/** The claims a named subset of modes finds. For tests; production uses them all. */
+export function findProhibitedClaimsUnderModes(
+  text: string,
+  modeNames: readonly ClaimTokenizerModeName[],
+): string[] {
+  const found = new Set<string>();
+  for (const name of modeNames) {
+    for (const claim of claimsUnderMode(text, CLAIM_TOKENIZER_MODES[name])) found.add(claim);
+  }
+  return RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => found.has(claim));
+}
+
+export function findProhibitedClaims(text: string): string[] {
   const found = new Set<string>();
 
-  for (const mode of modes) {
+  for (const mode of PROSE_MODES) {
     for (const claim of claimsUnderMode(text, mode)) found.add(claim);
   }
 

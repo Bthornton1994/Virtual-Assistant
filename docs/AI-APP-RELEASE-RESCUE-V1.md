@@ -259,11 +259,13 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 640 Release Rescue tests across 30 suites (1,316 in the whole repository, of which 8 fail for an environmental reason recorded below), 361 live database cases across twelve proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 661 Release Rescue tests across 30 suites (1,337 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
 The database figure counts labelled `PASS <outcome> |` lines only. An earlier pass reported 306 by counting each proof's closing "every case above printed PASS" banner as a case — a stale count is a false claim, and so is a miscounted one.
+
+That banner has now been miscounted **twice**. A later pass published 387 by the same `grep -c "PASS "`, which also inflated every per-proof figure by one; an audit caught it, and the numbers above are counted by the convention this paragraph states. Writing the convention down did not stop it being broken, because the convention lived here and the counting happened in a shell one-liner. The figures are re-measured per proof rather than totalled from memory, and the per-proof list is in the v12 section so a future total can be checked against its parts.
 
 Three of the six Playwright specs need live preview credentials (`E2E_PASSWORD`) and a deployed preview, neither of which this environment has or should have. They are not run here, and the 16 above does not include them.
 
@@ -2183,6 +2185,9 @@ left whole, so `OAuth` and `SQL` are still one word each.
 | `thisappissecureandfreeofvulnerabilities` | **no** | — |
 | `THISAPPISSECURE` | **no** | — |
 
+(These rows are about PROSE fields. A repository path is not read by the claim
+guard at all — see below.)
+
 The residual is the two run-together forms, which carry no word boundary of any
 kind — no separator, no case transition. Catching them would mean searching for
 claim text inside longer words, which flags ordinary values. A test asserts every
@@ -2215,18 +2220,57 @@ them — is in every set. A mode can add a detection and can never remove one. T
 is the structural property that stops a future tightening from becoming an
 evasion, and a test asserts it directly rather than leaving it to the docblock.
 
-Path-valued fields read under the baseline mode alone, declared per field in the
-policy as `valueIsAPath` rather than as a list inside the checker. The separated
-forms are still caught there — `acme/we-deliver-a-penetration-test` is refused,
-because a hyphen is a separator — and the measured residual is the run-together
-form in a path (`acme/WeDeliverAPenetrationTest`), which a test records.
-
 The two lost detections are now property tests derived from the **offer's own
 claim list** rather than from anything the tokenizer believes, which is what
 makes them able to falsify it: every prohibited claim, with every single
-character upper-cased in turn (500+ variants), must still be found; and every
-denial/claim pair across a full stop, with and without the following space, must
-still be refused.
+character upper-cased in turn (**1,205 variants**), must still be found; and
+every denial/claim pair across a full stop, with and without the following
+space, must still be refused.
+
+### The claim guard does not read a repository path at all
+
+The first attempt at the path problem kept the claim guard and gave paths the
+baseline reading only. A further audit measured that one spelling at a time, and
+there is no spelling where it works:
+
+| Path | Why it is ordinary | Refused by |
+| --- | --- | --- |
+| `src/utils/isSecure.ts` | commonest helper name in JS/TS | the case-splitting reading |
+| `internal/net/is_secure.go` | the **idiomatic Go** spelling | the baseline reading |
+| `tests/test_is_secure.py` | the pytest convention | the baseline reading |
+| `src/security/pen_test.py` | an ordinary module name | the baseline reading |
+| `docs/pentest.md` | an ordinary document | any reading — `pentest` is a one-word claim |
+
+Eighteen of nineteen realistic paths drawn from Python, Go, Rust, Ruby, C and npm
+conventions were refused. Go was the commit's own second example of where
+`isSecure` is common, and Go's convention is lowercase-with-underscores.
+
+A file name is built from the same words a claim is built from. Every version of
+the rule that caught more sentences refused more filenames, and three of the
+offer's prohibited claims are single words — `pentest`, `pentesting`,
+`vulnerability-free` — so even a rule matching nothing across a separator still
+refuses `docs/pentest.md`. `findings[].locations[].path` holds a path from the
+**customer's** repository, so each of those is a $299 review refused over data
+the product does not control.
+
+So a path-valued field is checked against **what a path is**: a positive grammar,
+declared as the union of the three schemas that already govern those fields so it
+can never be stricter than the product. No spaces, no control characters, no
+URL, not absolute, no parent traversal, bounded. The claim guard does not read it.
+
+**What that gives up, stated rather than argued away.** An executor could write
+`src/this-app-is-secure.ts` as a finding location and the grammar would not
+object. Four things stand between that and a customer reading it as a claim, and
+none of them is the claim guard: the grammar itself; the credential scanner,
+which still runs on every guarded field; the fact that every customer-facing
+sentence is resolved from the frozen observation catalog and is never written by
+a caller; and the named human reviewer who must sign before delivery. A test
+asserts this residual in both directions so it cannot drift.
+
+**The open question, recorded as one.** The control that would actually settle it
+is checking that a cited path names a real file in the reviewed commit. That
+needs the repository at assembly time, which the pipeline does not have. It is an
+owner-visible gap in the guard's coverage, not something this pass has closed.
 
 **The cost was measured too, and paid down rather than absorbed.** Adding token
 boundaries made `findProhibitedClaims` slower, and one property suite went from
@@ -2234,6 +2278,30 @@ passing to a 5-second timeout. The cause was not the new boundaries: the guard
 re-tokenised the whole prohibited-claim list on every call, three times over. The
 list is a constant and is tokenised once per mode now. That suite runs in ~1.3s,
 faster than before the tokenizer changed at all.
+
+**A claim about the evidence that was itself wrong.** The commit introducing the
+modes reported that dropping `BASELINE_MODE` killed no test and called it an
+*equivalent* mutant, reasoning that the other two modes jointly cover it. An
+audit falsified that by execution. A payload carrying **both** an internal
+capital and a missing space after a full stop —
+`"This is not a penetration test.Your application is secUre"` — defeats
+`caseSplit` (which splits `secUre` into `sec` + `ure`) and `dotted` (which
+demotes the full stop, so the denial licenses the claim). Only `baseline`
+catches it, so the mutant is a genuine survivor.
+
+The reason it went unchallenged is the more useful part: the two property tests
+each moved along **one axis**. The capitalisation property used a sentence with
+no full stop; the full-stop property used claims with no internal capital. The
+cross of the two axes was untested — the same shape of gap as the round before,
+one axis over. That cross is now a test, and it asserts the inverse too: that
+`caseSplit ∪ dotted` really does miss it, so the sentence above cannot become
+quietly wrong.
+
+The monotonicity test was rewritten for the same reason. It used to compare the
+prose reading against the path reading and assert the first contained the
+second, which was true by construction — one mode set was a subset of the other —
+and so could not fail. It now runs every subset of the modes against a corpus and
+requires the full union to be a superset of each.
 
 **One more thing the mutation run corrected.** The path-reading test passed even
 with the policy ignoring `valueIsAPath` entirely, because it called

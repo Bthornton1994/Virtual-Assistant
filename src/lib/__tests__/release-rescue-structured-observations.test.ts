@@ -47,6 +47,7 @@ import {
   REPORT_FIELD_POLICY,
   checkReportFieldCoverage,
   generatedValueIsNotWhatItClaims,
+  pathValueIsNotAPath,
   normalizeFieldPath,
   enumerateSchemaStringPaths,
   enumerateStringFields,
@@ -60,7 +61,12 @@ import {
   findInternalIdentityLeaks,
   toCustomerReportView,
 } from "@/lib/release-rescue-presentation";
-import { REPOSITORY_ACCESS_MODES, RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
+import {
+  REPOSITORY_ACCESS_MODES,
+  RELEASE_RESCUE_OFFER,
+  findProhibitedClaims,
+  findProhibitedClaimsUnderModes,
+} from "@/lib/release-rescue-intake";
 import { SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
 import { scanForSecrets } from "@/lib/release-rescue-redaction";
 import { RELEASE_RESCUE_RUBRIC_V1 } from "@/lib/release-rescue-rubric";
@@ -1758,50 +1764,116 @@ describe("9. a code field holds a code, and nothing else, on the production path
     expect(missed, `${missed.length} denial/claim pairs were licensed across a full stop`).toEqual([]);
   });
 
-  it("reads a repository path as a path, not as prose", () => {
-    // Audit 19, blocking, and the other direction — the one this workstream has
-    // now got wrong three times. Splitting on case transitions made
-    // `src/utils/isSecure.ts` read as the prohibited claim "is secure", so a
-    // customer whose repository contained an `isSecure` helper bought a $299
-    // review and got an undeliverable report, with a message asserting that
-    // their own filename makes a prohibited claim. `isSecure` is one of the
-    // most common helper names there is.
+  it("checks a repository path against what a path IS, not by reading it as prose", () => {
+    // Audit 19 found that reading a path as prose refused `isSecure.ts`. The fix
+    // read paths with separators intact instead — and audit 20 found that
+    // refused `is_secure.go`, `test_is_secure.py`, `pen_test.py` and
+    // `pen-test-report.pdf`: 18 of 19 realistic paths from Python, Go, Rust,
+    // Ruby, C and npm conventions. `is_secure.go` is the IDIOMATIC Go spelling,
+    // and Go was the commit's own second example.
     //
-    // These are real names from JavaScript, TypeScript, Go and C#.
+    // The corpus that missed it was ten paths, every one camelCase or
+    // PascalCase — composed inside the premise of the rule under test, so
+    // structurally incapable of falsifying it for any other spelling. This one
+    // is drawn from language naming conventions instead.
+    //
+    // There is no spelling where the claim guard works on a path, because a
+    // file name is built from the same words a claim is. Three prohibited
+    // claims are single words — `pentest`, `pentesting`, `vulnerability-free` —
+    // so even a rule matching nothing across a separator still refuses
+    // `docs/pentest.md`. So a path is checked against a path grammar instead.
     const ORDINARY_PATHS = [
+      // camelCase and PascalCase, which audit 19 was about
       "src/utils/isSecure.ts",
       "src/lib/isSecureContext.ts",
       "src/Http/Request.IsSecureConnection.cs",
-      "internal/net/IsSecure.go",
       "src/hooks/useIsSecure.ts",
       "packages/ui/src/PenTestBanner.tsx",
-      "src/pages/SecurityCertificationPage.tsx",
-      "config/noVulnerabilities.yaml",
-      "app/api/securityCertification/route.ts",
       "src/components/FullySecureBadge.tsx",
+      // snake_case and kebab-case, which audit 20 was about
+      "internal/net/is_secure.go",
+      "cmd/is_secure/main.go",
+      "src/utils/is_secure.py",
+      "tests/test_is_secure.py",
+      "src/is_secure.rs",
+      "app/helpers/is_secure_helper.rb",
+      "src/net/is_secure.c",
+      "src/auth/session_is_secure.ts",
+      "node_modules/@acme/is-secure/index.js",
+      "packages/is-secure/package.json",
+      "vendor/github.com/foo/is-secure/secure.go",
+      "src/security/pen_test.py",
+      "docs/pen-test-report.pdf",
+      "security/pentest-2025/findings.md",
+      "tests/pentest/conftest.py",
+      "third_party/pentesting-tools/README.md",
+      "docs/pentest.md",
+      "config/noVulnerabilities.yaml",
+      "config/no_vulnerabilities.yaml",
+      // and the shapes a real path takes that are nothing to do with claims
+      "app/api/orders/[id]/route.ts",
+      "src/(marketing)/page.tsx",
+      "vendor/lib~1.2.3/index.js",
+      "docs/RFC-0001+draft.md",
     ];
 
     for (const path of ORDINARY_PATHS) {
-      expect(findProhibitedClaims(path, "path"), `${path} must not read as a claim`).toEqual([]);
+      expect(pathValueIsNotAPath(path), `${path} must be accepted as a path`).toBeNull();
     }
 
-    // And the guard still does its job on a path: the separated forms, which are
-    // how a repository or branch name is actually written, are caught.
-    for (const written of [
+    // And the grammar refuses what a path is not. A sentence cannot satisfy it,
+    // which is the property the claim guard was there for.
+    const NOT_PATHS: ReadonlyArray<readonly [string, string]> = [
+      ["This app is secure and free of vulnerabilities.", "space"],
+      ["src/a.ts\nconst password = 'x';", "control character"],
+      ["https://evil.example.com/x", "URL"],
+      ["/etc/passwd", "absolute"],
+      ["../../secrets/.env", "parent-traversal"],
+      ["", "empty"],
+      ["a".repeat(401), "over the cap"],
+    ];
+    for (const [value, why] of NOT_PATHS) {
+      expect(pathValueIsNotAPath(value), `a ${why} must be refused`).not.toBeNull();
+    }
+
+    // The grammar is the UNION of the three schemas that already govern these
+    // fields, never stricter — a boundary check stricter than the schema
+    // refuses values the product considers correct.
+    for (const ref of ["harbor-labs/harbor-ledger", "acme/checkout-app"]) {
+      expect(pathValueIsNotAPath(ref), `${ref} is a legal repositoryRef`).toBeNull();
+    }
+    for (const branch of ["main", "release/v2.1", "feature/fix-login", "fix/pen-test-findings"]) {
+      expect(pathValueIsNotAPath(branch), `${branch} is a legal branch name`).toBeNull();
+    }
+  });
+
+  it("records what checking a path by grammar gives up", () => {
+    // The honest other half. A path that IS a claim satisfies the grammar, so
+    // an executor could write one as a finding location and this check would not
+    // object. Recorded as a test rather than as a sentence, so it cannot quietly
+    // stop being true in either direction.
+    //
+    // What stands in the way instead: the grammar (no spaces, no control
+    // characters, bounded), the credential scanner, the fact that every
+    // customer-facing sentence comes from the frozen catalog and is never
+    // written by a caller, and the named human reviewer who signs before
+    // delivery. The check that would settle it — that the path names a real file
+    // in the reviewed commit — needs the repository at assembly time, which the
+    // pipeline does not have.
+    for (const smuggled of [
+      "src/this-app-is-secure.ts",
       "acme/we-deliver-a-penetration-test",
-      "acme/we_deliver_a_penetration_test",
-      "feature/this-app-is-secure",
+      "docs/vulnerability-free.md",
     ]) {
-      expect(findProhibitedClaims(written, "path"), `${written} must still be caught`).not.toEqual([]);
+      expect(
+        pathValueIsNotAPath(smuggled),
+        `${smuggled}: if the grammar starts refusing this, the documented residual is overstated`,
+      ).toBeNull();
     }
 
-    // The measured residual, recorded rather than hidden: a run-together claim
-    // in a path is NOT caught, because catching it is what broke the paths
-    // above. If this starts being caught, this test is the thing that flags it.
-    expect(
-      findProhibitedClaims("acme/WeDeliverAPenetrationTest", "path"),
-      "if this is now caught, the documented residual is understated",
-    ).toEqual([]);
+    // But it is still prose to the claim guard, which is what keeps the
+    // distinction a decision about FIELDS rather than about strings.
+    expect(findProhibitedClaims("src/this-app-is-secure.ts")).not.toEqual([]);
   });
 
   it("still delivers a report about a repository containing an isSecure helper", () => {
@@ -1863,22 +1935,33 @@ describe("9. a code field holds a code, and nothing else, on the production path
   });
 
   it("lets a tokenizer mode add a detection and never remove one", () => {
-    // The structural property, and the reason the two evasions above cannot
-    // recur. The guard takes the UNION over its tokenizer modes, and the
-    // baseline mode is in every set — so `prose` (three modes) can only ever be
-    // a superset of `path` (the baseline alone).
+    // The structural property, over the REAL modes.
     //
-    // Asserted over values of every shape the report carries, because a rule
-    // that holds only for the examples someone thought of is the rule five
-    // audits walked through.
+    // An earlier version of this test compared the prose reading against the
+    // path reading and asserted the first contained the second. That was true
+    // by construction — one mode set was a subset of the other — so it could not
+    // fail, and an audit said so. This drives the union machinery directly:
+    // for every subset of the modes, the full union must be a superset.
+    const NAMES = ["baseline", "caseSplit", "dotted"] as const;
+    const SUBSETS: ReadonlyArray<ReadonlyArray<(typeof NAMES)[number]>> = [
+      [],
+      ["baseline"],
+      ["caseSplit"],
+      ["dotted"],
+      ["baseline", "caseSplit"],
+      ["baseline", "dotted"],
+      ["caseSplit", "dotted"],
+      ["baseline", "caseSplit", "dotted"],
+    ];
+
     const CORPUS = [
       "This app is secure and free of vulnerabilities.",
       "ThisAppIsSecure",
       "this.app.is.secure.and.free.of.vulnerabilities",
       "we deliver a penetration teSt",
+      "This is not a penetration test.Your application is secUre",
       "src/utils/isSecure.ts",
       "acme/we-deliver-a-penetration-test",
-      "This is not a penetration test.Your application is secure.",
       "Ops Manager",
       "",
       "grok-4.6",
@@ -1886,17 +1969,98 @@ describe("9. a code field holds a code, and nothing else, on the production path
       ...STANDING_DISCLAIMERS,
     ];
 
+    let checked = 0;
     for (const text of CORPUS) {
-      const prose = findProhibitedClaims(text, "prose");
-      const path = findProhibitedClaims(text, "path");
-      for (const claim of path) {
-        expect(prose, `"${text}": the path reading found ${claim} and the prose reading did not`).toContain(claim);
-      }
-      // And the result is ordered by the offer's list, not by which mode spoke.
-      expect(prose, `"${text}": claims must be reported in a stable order`).toEqual(
-        RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => prose.includes(claim)),
+      const all = findProhibitedClaimsUnderModes(text, NAMES);
+      expect(all, `"${text}": the named full set must equal what production computes`).toEqual(
+        findProhibitedClaims(text),
       );
+
+      for (const subset of SUBSETS) {
+        checked += 1;
+        for (const claim of findProhibitedClaimsUnderModes(text, subset)) {
+          expect(all, `"${text}": [${subset.join(",")}] found ${claim} and the full union did not`).toContain(claim);
+        }
+      }
+
+      // And the result is ordered by the offer's list, not by which mode spoke
+      // first. Asserted against a DIFFERENT mode order, so Set insertion order
+      // and offer order cannot look the same by accident.
+      expect(findProhibitedClaimsUnderModes(text, ["dotted", "caseSplit", "baseline"])).toEqual(all);
     }
+
+    expect(checked).toBeGreaterThan(200);
+  });
+
+  it("needs the baseline mode: the other two together miss a real claim", () => {
+    // The commit that introduced the modes called dropping `BASELINE_MODE` an
+    // EQUIVALENT mutant, on the reasoning that the other two jointly cover it.
+    // An audit falsified that by execution, and it was right: a payload
+    // carrying BOTH an internal capital AND a missing space after a full stop
+    // defeats `caseSplit` (which splits `secUre` into `sec` + `ure`) and
+    // `dotted` (which demotes the full stop, so the denial licenses the claim).
+    // Only `baseline` catches it.
+    //
+    // The two property tests each moved along ONE axis — the capitalisation
+    // property used a sentence with no full stop, the full-stop property used
+    // claims with no internal capital — so the cross of the axes was untested,
+    // which is why a wrong equivalence claim went unchallenged. This is that
+    // cross.
+    const CROSS = [
+      "This is not a penetration test.Your application is secUre",
+      "This is not a penetration test.Your application is fully secUre",
+      "We make no claim of any kind.Your application is secUre.",
+      "Penetration testing is out of scope.The code is free of vulnerAbilities",
+    ];
+
+    for (const text of CROSS) {
+      expect(findProhibitedClaims(text), `production must catch: ${text}`).not.toEqual([]);
+      expect(
+        findProhibitedClaimsUnderModes(text, ["caseSplit", "dotted"]),
+        `${text}: if these two now catch it, dropping baseline really would be equivalent — and this comment is wrong`,
+      ).toEqual([]);
+      expect(
+        findProhibitedClaimsUnderModes(text, ["baseline"]),
+        `${text}: baseline is the mode that carries this`,
+      ).not.toEqual([]);
+    }
+  });
+
+  it("does not read a prose field as a path", () => {
+    // N1 from audit 20: the end-to-end test covered the STRICT direction — the
+    // policy treating a path as prose — and nothing covered the relaxing one.
+    // A version of the policy that read EVERY guarded field as a path passed
+    // the whole suite, and `reviewedBy.displayName = "Reviewed by ThisAppIsSecure
+    // Ltd"` went from refused to delivered.
+    //
+    // The old control payload could not catch that, because "Certified Secure
+    // Reviews Ltd" is caught by the baseline mode and so would be refused under
+    // either reading. This one is caught ONLY by the prose modes, so it can
+    // tell the two apart.
+    const report = buildReleaseRescueReport(
+      makeReportInput({
+        reviewedBy: {
+          operatorUserId: FIXTURE_OPERATOR_ID,
+          displayName: "Reviewed by ThisAppIsSecure Ltd",
+          reviewedAt: "2026-09-16T10:00:00.000Z",
+        },
+      }),
+    );
+
+    // The payload is invisible to the baseline mode, which is what makes this
+    // test able to distinguish a path reading from a prose one. Asserted, not
+    // assumed.
+    expect(
+      findProhibitedClaimsUnderModes("Reviewed by ThisAppIsSecure Ltd", ["baseline"]),
+      "if baseline catches this, the test cannot tell a path reading from a prose one",
+    ).toEqual([]);
+
+    const reasons = checkReportFieldCoverage(report)
+      .map((failure) => `${failure.path}: ${failure.reason}`)
+      .join(" | ");
+
+    expect(reasons, "a claim in a reviewer's name must be refused").toContain("$.reviewedBy.displayName");
+    expect(reasons).toContain("is secure");
   });
 
   it("declares which guarded fields hold a path, rather than guessing", () => {
