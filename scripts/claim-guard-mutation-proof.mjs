@@ -22,8 +22,18 @@
  * IMPORT, which runs no assertions at all and therefore scored a killed mutant
  * as survived until the run that caught it.
  *
- * What this does NOT prove: that the mechanisms are sufficient. It proves each
- * one is load-bearing. The residual records in `release-rescue-claim-guard-
+ * What this does NOT prove: that the mechanisms are sufficient. Nor, for four of
+ * them, that they are load-bearing at all. `M-ROUTE-ROOTS`, `M-ALIASES`,
+ * `M-ENTRYPOINTS` and `M-ASSET-RESIDUAL-SET` are each killed by a single test
+ * that PARSES THIS MODULE and asserts how a constant is spelled — deliberately,
+ * because this repository has exactly ONE route root and one alias, so no
+ * behavioural test can tell a derivation from a literal that happens to agree
+ * with it. Any textual change to those lines fails that assertion whether the
+ * derivation matters or not, so their HELD verdict is weaker evidence than the
+ * rest and is labelled `wiring:` rather than `verbatim:` or `modelled:`.
+ *
+ * For every other mechanism, HELD means a behavioural test failed. The residual
+ * records in `release-rescue-claim-guard-
  * residuals.ts` and the `EXTRACTOR_RESIDUALS`/`ENTRY_RESIDUALS`/`ASSET_RESIDUALS`
  * sets state what remains unread, and a named human reviewer signs before any
  * report reaches a customer.
@@ -109,7 +119,7 @@ const MUTANTS = [
     mechanism: "the route directories Next resolves are probed, not named",
     from: "const ROUTE_ROOTS = routeRoots();",
     to: 'const ROUTE_ROOTS = ["src/app"];',
-    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
+    kind: "wiring: killed by the module-source assertion, not by behaviour — see the header"
   },
   {
     id: "M-SERVED-APP",
@@ -128,14 +138,14 @@ const MUTANTS = [
     mechanism: "path aliases are read from tsconfig, not assumed to be the one this project uses",
     from: "const ALIASES = tsconfigAliases();",
     to: 'const ALIASES = [{ prefix: "@/", target: "src" }];',
-    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
+    kind: "wiring: killed by the module-source assertion, not by behaviour — see the header"
   },
   {
     id: "M-ENTRYPOINTS",
     mechanism: "framework entrypoints are derived from names x locations x extensions",
     from: "  for (const file of frameworkEntrypoints()) entries.add(file);",
     to: '  for (const file of ["src/proxy.ts", "src/middleware.ts", "src/instrumentation.ts"]) {\n    if (existsSync(resolve(process.cwd(), file))) entries.add(file);\n  }',
-    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
+    kind: "wiring: killed by the module-source assertion, not by behaviour — see the header"
   },
   {
     id: "M-ENTRYPOINT-NAMES",
@@ -156,7 +166,7 @@ const MUTANTS = [
     mechanism: "the served assets exempt from the scan are an exact set",
     from: 'export const EXPECTED_ASSET_RESIDUALS = ["src/app/favicon.ico"];',
     to: "export const EXPECTED_ASSET_RESIDUALS = assetResiduals().map((residual) => residual.file);",
-    kind: "modelled: this pin is new, so there is no predecessor to quote",
+    kind: "wiring: killed by the module-source assertion, not by behaviour — see the header"
   },
   {
     id: "M-ASSET-DECODING",
@@ -228,9 +238,9 @@ const MUTANTS = [
   {
     id: "M-ENTITY-NAMES",
     mechanism: "every named character reference is decoded, not eleven of them",
-    from: '    .replace(/&[a-z][a-z0-9]{1,31};?/gi, " ");',
-    to: '    .replace(/&nbsp;/gi, " ")\n    .replace(/&(amp|lt|gt|quot|apos|hellip|mdash|ndash|shy|zwnj|zwj);/gi, " ");',
-    kind: "verbatim: this is the eleven-name list it replaced",
+    from: '    if (hex === undefined && decimal === undefined) return " ";',
+    to: '    if (hex === undefined && decimal === undefined) return /^&(nbsp|amp|lt|gt|quot|apos|hellip|mdash|ndash|shy|zwnj|zwj);$/i.test(whole) ? " " : whole;',
+    kind: "modelled: the eleven-name list, expressed against the single-pass decoder",
   },
   {
     id: "M-GRAPH-DIALECT",
@@ -256,22 +266,6 @@ const MUTANTS = [
     file: "src/lib/release-rescue-intake.ts",
   },
   {
-    id: "M-DENIAL-VERB",
-    mechanism: "a negation on one of the offer's own reporting verbs licenses",
-    from: "    if (DENIAL_VERBS.has(next)) return true;",
-    to: "    if (DENIAL_VERBS.has(next) && next !== \"claim\") return true;",
-    kind: "modelled: one verb dropped from the declared set",
-    file: "src/lib/release-rescue-intake.ts",
-  },
-  {
-    id: "M-SUBJECT-NEGATION",
-    mechanism: "a subject negation whose predicate denies licenses the offer's refusal copy",
-    from: "    if (!SUBJECT_NEGATIONS.has(before[index] ?? \"\")) continue;",
-    to: "    if (true) continue;",
-    kind: "modelled: the subject-negation arm removed",
-    file: "src/lib/release-rescue-intake.ts",
-  },
-  {
     id: "M-SUBJECT-BOUND",
     mechanism: "the subject skip is bounded by an auxiliary, not open to the clause",
     from: "      if (!PREDICATE_AUXILIARIES.has(before[auxiliary] ?? \"\")) continue;",
@@ -288,19 +282,11 @@ const MUTANTS = [
     file: "src/lib/release-rescue-intake.ts",
   },
   {
-    id: "M-CLAUSE-COORDINATOR",
-    mechanism: "a clause ends at a coordinating word as well as at punctuation",
-    from: "    if (COORDINATORS.has(tokens[cursor].word)) return cursor;\n",
-    to: "",
-    kind: "verbatim: the predecessor broke on punctuation alone",
-    file: "src/lib/release-rescue-intake.ts",
-  },
-  {
     id: "M-DETERMINER-BOUND",
     mechanism: "the adjacency arms skip ONE determiner, not any run of function words",
     from: "      if (DETERMINERS.has(word) && determiners === 0) {",
-    to: '      if (DETERMINERS.has(word) || ["it", "such", "other", "same", "as", "of"].includes(word)) {',
-    kind: "modelled: the 40-word FUNCTION_WORDS set, skipped without limit",
+    to: '      if (DETERMINERS.has(word) || ["and", "or", "of", "for", "to", "as", "is", "are", "be", "been", "being", "was", "were", "it", "they", "you", "we", "us", "them", "in", "on", "at", "by", "with", "such", "other", "same"].includes(word)) {',
+    kind: "verbatim: the 41-word FUNCTION_WORDS set, skipped without limit",
     file: "src/lib/release-rescue-intake.ts",
   },
   {
@@ -312,16 +298,9 @@ const MUTANTS = [
     file: "src/lib/release-rescue-intake.ts",
   },
   {
-    id: "M-REFERENCE-AMBIGUITY",
-    mechanism: "the second reading is kept only where a reference run is ambiguous",
-    from: "  if (!hasAmbiguousReference(text)) return;\n",
-    to: "",
-    kind: "verbatim: this is the ungated push it replaced",
-  },
-  {
     id: "M-REQUIRE-GLOBALS",
     mechanism: "the global object's four spellings reach require too",
-    from: '        (GLOBAL_OBJECTS.has(root.toLowerCase()) && chain.length === 2 && tail === "require") ||\n',
+    from: "        (GLOBAL_OBJECTS.has(root) && chain.length >= 2 && reachesRequire) ||\n",
     to: "",
     kind: "verbatim: the root set before the excluded direction was diffed",
   },
@@ -338,6 +317,66 @@ const MUTANTS = [
     from: "const PRINTABLE_ESCAPE = /\\\\\\\\|\\\\u\\{([0-9a-fA-F]+)\\}|\\\\u([0-9a-fA-F]{4})|\\\\x([0-9a-fA-F]{2})/g;",
     to: "const PRINTABLE_ESCAPE = /\\\\\\\\|\\\\u\\{([0-9a-fA-F]{1,6})\\}|\\\\u([0-9a-fA-F]{4})|\\\\x([0-9a-fA-F]{2})/g;",
     kind: "verbatim: the six-digit cap it replaced",
+  },
+  {
+    id: "M-COMPLEMENT-BOUND",
+    mechanism: "a denial licenses only its verb's complement, whatever word follows",
+    from: "    if (!SUBJECT_NEGATIONS.has(negation) && DENIAL_VERBS.has(before[next] ?? \"\") && complementHoldsTheClaim(next)) {",
+    to: "    if (DENIAL_VERBS.has(before[next] ?? \"\")) {",
+    kind: "verbatim: the unbounded arm, with the subject-negation exclusion, as it stood",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-SUBJECT-ARM-BOUND",
+    mechanism: "the subject-negation arm is bounded by the complement too",
+    from: "      if (verb !== null && DENIAL_VERBS.has(before[verb] ?? \"\") && complementHoldsTheClaim(verb)) return true;",
+    to: "      if (verb !== null && DENIAL_VERBS.has(before[verb] ?? \"\")) return true;",
+    kind: "verbatim: the unbounded subject arm as it stood",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-VERB-CONJUNCTION",
+    mechanism: "a coordinated verb pair shares one complement",
+    from: "      if (!VERB_CONJUNCTIONS.has(conjunction) || !DENIAL_VERBS.has(second)) break;",
+    to: "      break;",
+    kind: "modelled: the coordination arm removed, which flags the offer's own refusal copy",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-REFERRAL-BRIDGE",
+    mechanism: "a referral licenses the items it refers away, not its whole clause",
+    from: "    if (span.start >= claimEnd && bridged(claimEnd, span.start)) return true;",
+    to: "    if (span.start >= claimEnd) return true;",
+    kind: "modelled: the forward arm unbounded, as the clause test was",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-SINGLE-PASS-DECODE",
+    mechanism: "decoding runs in one pass, so it cannot eat its own output",
+    from: "  return text.replace(CHARACTER_REFERENCE, (whole, hex?: string, decimal?: string) => {",
+    to: "  return text\n    .replace(/&#x([0-9a-f]+);?/gi, (_w, h) => String.fromCodePoint(Number.parseInt(h, 16)))\n    .replace(/&#(\\d+);?/g, (_w, d) => String.fromCodePoint(Number.parseInt(d, 10)))\n    .replace(/&[a-z][a-z0-9]{1,31};?/gi, \" \")\n    .replace(CHARACTER_REFERENCE, (whole, hex?: string, decimal?: string) => {",
+    kind: "verbatim: the three chained replaces it replaced, run first",
+  },
+  {
+    id: "M-REFERENCE-RANGE",
+    mechanism: "a reference outside Unicode is text, not a throw",
+    from: "    if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) return whole;",
+    to: "",
+    kind: "modelled: the guard `decodeCssEscapes` always had and this never did",
+  },
+  {
+    id: "M-CALLEE-UNWRAP",
+    mechanism: "a parenthesized or comma callee is unwrapped, so `(0, require)` is read",
+    from: "function unwrapCallee(callee: ts.Expression): ts.Expression {",
+    to: "function unwrapCallee(callee: ts.Expression): ts.Expression {\n  return callee;\n  // eslint-disable-next-line no-unreachable",
+    kind: "modelled: the predecessor did not unwrap at all",
+  },
+  {
+    id: "M-GLOBAL-CASING",
+    mechanism: "the global object's spellings are matched as JavaScript matches them",
+    from: 'const GLOBAL_OBJECTS = new Set(["globalThis", "window", "self", "global"]);',
+    to: 'const GLOBAL_OBJECTS = new Set(["globalthis", "window", "self", "global"]);\nconst GLOBAL_OBJECTS_CI = true;\nvoid GLOBAL_OBJECTS_CI;',
+    kind: "verbatim: the case-insensitive set it replaced",
   },
   {
     id: "FP1",

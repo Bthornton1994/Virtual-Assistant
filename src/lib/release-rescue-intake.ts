@@ -893,65 +893,27 @@ function claimOccurrences(tokens: readonly ClaimToken[], wanted: readonly string
 
 /** Index of the first token of the clause containing `index`. */
 /**
- * Words that end one clause and start another without any punctuation.
+ * A clause ends at punctuation, and at nothing else.
  *
- * The clause was decided by punctuation alone — `, ; : ( ) \u2014 \u2013` — so
- * "We do not claim to be the cheapest, but your application is secure" was
- * CAUGHT and the identical sentence WITHOUT the comma was LICENSED. The guard's
- * verdict turned on whether the author typed a comma, which is the criticism
- * this module levels at other people's rules.
+ * A round added a `COORDINATORS` set here so a clause also ended at `but`,
+ * `however`, `so` and fifteen others — because two licensing arms granted the
+ * rest of the CLAUSE, and shrinking the clause was the only bound they had. An
+ * audit then wrote the same sentence with `yet`, `and`, `for`, `while`,
+ * `because`, `since`, `when` and `plus`, and every one was licensed. `and` could
+ * not be added without rejecting denials the offer publishes.
  *
- * Worse, it was the whole of the bound on two of the four licensing arms: a
- * negation on a reporting verb licensed every claim anywhere later in the
- * clause, at any distance, with arbitrary material in between. An audit served
- * that sentence from the landing page at HTTP 200 with both guard suites green.
- *
- * Adding a word here can only SHORTEN the window a denial licenses, so a
- * spelling this set does not carry costs a claim that stays caught, never one
- * that starts being licensed. That is the opposite of the scope-breaker list
- * this replaced, where a missing entry opened a hole — and it is why this list
- * is allowed to be a list.
- *
- * `and`, `or` and `nor` are deliberately absent: they coordinate items inside
- * one clause ("not a penetration test and does not guarantee \u2026", "penetration
- * testing, compliance certification, or ongoing monitoring"), and breaking there
- * would reject denials and referrals the offer publishes today.
+ * `denialShapeGoverns` bounds those arms by the denial verb's COMPLEMENT now,
+ * which does not care what word follows. Measured with the set deleted, over 52
+ * connectives taken from an English grammar rather than from any list in this
+ * repository, across four sentence templates: 208 payloads, 208 caught, and no
+ * test moved. So the set is gone rather than longer — the first time this file
+ * has answered an evasion by having less in it.
  */
-const COORDINATORS = new Set([
-  "but",
-  "however",
-  "nevertheless",
-  "nonetheless",
-  "whereas",
-  "otherwise",
-  "therefore",
-  "thus",
-  "hence",
-  "so",
-  "meanwhile",
-  "moreover",
-  "furthermore",
-  "besides",
-  "regardless",
-  "anyway",
-  "though",
-  "although",
-]);
-
 function clauseStartIndex(tokens: readonly ClaimToken[], index: number): number {
   for (let cursor = index; cursor > 0; cursor -= 1) {
     if (tokens[cursor].breakBefore !== "none") return cursor;
-    if (COORDINATORS.has(tokens[cursor].word)) return cursor;
   }
   return 0;
-}
-
-/** Index one past the last token of the clause containing `index`. */
-function clauseEndIndex(tokens: readonly ClaimToken[], index: number): number {
-  for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
-    if (tokens[cursor].breakBefore !== "none") return cursor;
-  }
-  return tokens.length;
 }
 
 /**
@@ -960,7 +922,7 @@ function clauseEndIndex(tokens: readonly ClaimToken[], index: number): number {
  * "is not A penetration test", "rather than THE penetration test" — exactly one
  * of these, and nothing else.
  *
- * This was a 40-word `FUNCTION_WORDS` set skipped without limit, which let the
+ * This was a 41-word `FUNCTION_WORDS` set skipped without limit, which let the
  * adjacency arms reach across whole phrases: "No OTHER SUCH is secure" and
  * "Other than THAT IT is secure" were both licensed, because every word between
  * the licensing token and the claim happened to be in the set. A denial that
@@ -1007,6 +969,20 @@ const DENIAL_VERBS = new Set([
   "perform", "performs", "performed", "performing",
   "establish", "establishes", "established", "establishing",
 ]);
+
+/**
+ * How far past a denial verb a `that` complementizer may sit.
+ *
+ * The adverbial between them is short in every denial this offer publishes —
+ * "claim WHILE REVIEWING that" and "promise BEFORE DELIVERY that" both put it at
+ * three. This bounds an ADJUNCT, not the distance to the claim: a
+ * distance-to-claim window was measured in an earlier round and refuted, because
+ * a real denial and an affirmative claim sit the same distance out.
+ */
+const COMPLEMENTIZER_REACH = 4;
+
+/** Conjunctions that coordinate two verbs of one predicate, not two clauses. */
+const VERB_CONJUNCTIONS = new Set(["or", "and", "nor"]);
 
 /**
  * Contrast heads that point away from the thing named, rather than denying a verb.
@@ -1092,7 +1068,11 @@ function withContractions(before: readonly string[]): string[] {
   for (let index = 0; index < before.length; index += 1) {
     const word = before[index] ?? "";
     const candidate = `${word}'t`;
-    if (before[index + 1] === "t" && NEGATION_TOKENS.has(candidate)) {
+    if (!NEGATION_TOKENS.has(candidate)) {
+      rejoined.push(word);
+      continue;
+    }
+    if (before[index + 1] === "t") {
       rejoined.push(candidate);
       index += 1;
       continue;
@@ -1111,7 +1091,13 @@ function denialShapeGoverns(tokens: readonly string[]): boolean {
    * A SECOND determiner is returned rather than skipped: two of them is a
    * phrase, not the thing being denied.
    */
-  const meaningfulAfter = (from: number): string | null => {
+  /**
+   * The first index at or after `from` that is not the single permitted
+   * determiner, skipping passive auxiliaries, or null when only those stand
+   * between here and the claim. A SECOND determiner is returned rather than
+   * skipped: two of them is a phrase, not the thing being denied.
+   */
+  const meaningfulIndexAfter = (from: number): number | null => {
     let determiners = 0;
     for (let index = from; index < before.length; index += 1) {
       const word = before[index] ?? "";
@@ -1120,41 +1106,114 @@ function denialShapeGoverns(tokens: readonly string[]): boolean {
         determiners += 1;
         continue;
       }
-      return word;
+      return index;
     }
     return null;
+  };
+
+  const meaningfulAfter = (from: number): string | null => {
+    const index = meaningfulIndexAfter(from);
+    return index === null ? null : (before[index] ?? "");
+  };
+
+  /**
+   * Whether the claim sits in the COMPLEMENT of a denial verb at `verb`.
+   *
+   * This is the bound that makes the connective irrelevant. Three rounds bounded
+   * these arms by shrinking the CLAUSE — first at punctuation, then at a list of
+   * coordinating words — and an audit defeated each by writing the same sentence
+   * with a connective the list did not carry. There are more of those than
+   * anyone can enumerate: `yet` and `for` are coordinating conjunctions, `and`
+   * cannot be excluded without rejecting denials the offer publishes, and
+   * `while`, `because`, `since`, `when` and `plus` all worked.
+   *
+   * What separates them is not the connective. It is whether the claim occupies
+   * the verb's complement slot, or something else already does:
+   *
+   *   we never claim  YOUR APPLICATION IS SECURE    the complement is the claim
+   *   does not guarantee  THE ABSENCE OF …          the complement is the claim
+   *   do not claim while reviewing THAT your app …  a complementizer, then it
+   *   do not claim  TO BE THE CHEAPEST  yet your …  slot filled by an infinitive
+   *   cannot promise  A DATE  and we are SOC 2 …    slot filled by a noun phrase
+   *
+   * So the claim must begin within ONE content word of the verb, or after a
+   * `that` within a short adverbial reach of it. Both bounds are measured
+   * against the offer's own published denials rather than chosen.
+   */
+  const complementHoldsTheClaim = (verb: number): boolean => {
+    // A coordinated verb shares the complement: "it cannot be SOLD OR DESCRIBED
+    // as a penetration test" is one denial with two verbs, and counting `or` and
+    // `described` as the complement flagged the offer's own refusal copy.
+    let head = verb;
+    for (;;) {
+      const conjunction = before[head + 1] ?? "";
+      const second = before[head + 2] ?? "";
+      if (!VERB_CONJUNCTIONS.has(conjunction) || !DENIAL_VERBS.has(second)) break;
+      head += 2;
+    }
+
+    // `before` ends where the claim begins, so `before.length` IS the claim.
+    const firstContent = meaningfulIndexAfter(head + 1);
+    if (firstContent === null) return true; // the claim begins immediately
+    if (meaningfulIndexAfter(firstContent + 1) === null) return true; // one word, then it
+
+    // A declarative complement: "claim WHILE REVIEWING that …". The adverbial
+    // before `that` is short in every denial this offer publishes; past that
+    // reach, a `that` belongs to some later predication.
+    for (let index = head + 1; index < before.length && index <= head + COMPLEMENTIZER_REACH; index += 1) {
+      if (before[index] === "that") return true;
+    }
+    return false;
   };
 
   for (const head of CONTRAST_HEADS) {
     for (let index = 0; index + head.length <= before.length; index += 1) {
       if (!head.every((word, offset) => before[index + offset] === word)) continue;
-      // Nothing but function words may sit between the contrast and the claim.
+      // Only one determiner may sit between the contrast and what it points at.
       if (meaningfulAfter(index + head.length) === null) return true;
     }
   }
 
   for (let index = 0; index < before.length; index += 1) {
-    if (!NEGATION_TOKENS.has(before[index] ?? "")) continue;
-    const next = meaningfulAfter(index + 1);
+    const negation = before[index] ?? "";
+    if (!NEGATION_TOKENS.has(negation)) continue;
+    const next = meaningfulIndexAfter(index + 1);
     // Adjacent: "is not a penetration test".
     if (next === null) return true;
-    // Or the negation denies one of this offer's own reporting verbs.
-    if (DENIAL_VERBS.has(next)) return true;
+
+    // Or the negation denies one of this offer's own reporting verbs, and the
+    // claim sits in that verb's complement.
+    //
+    // A SUBJECT negation is excluded here: `no` in "NO GUARANTEE is needed"
+    // determines a noun that merely happens to spell a reporting verb, and
+    // reading it as one licensed every claim after it. Determining a subject is
+    // the arm below, which requires a predicate to deny with.
+    if (!SUBJECT_NEGATIONS.has(negation) && DENIAL_VERBS.has(before[next] ?? "") && complementHoldsTheClaim(next)) {
+      return true;
+    }
+
     // Or it determines a subject whose predicate denies one: "No review CAN
     // ESTABLISH the absence of vulnerabilities" — the offer's own refusal copy.
-    if (!SUBJECT_NEGATIONS.has(before[index] ?? "")) continue;
+    if (!SUBJECT_NEGATIONS.has(negation)) continue;
     for (let auxiliary = index + 1; auxiliary < before.length; auxiliary += 1) {
       if (!PREDICATE_AUXILIARIES.has(before[auxiliary] ?? "")) continue;
-      const verb = meaningfulAfter(auxiliary + 1);
-      if (verb !== null && DENIAL_VERBS.has(verb)) return true;
+      const verb = meaningfulIndexAfter(auxiliary + 1);
+      if (verb !== null && DENIAL_VERBS.has(before[verb] ?? "") && complementHoldsTheClaim(verb)) return true;
     }
   }
 
   return false;
 }
 
-/** Words that may sit between a referral and the items it refers away. */
-const REFERRAL_LIST_GLUE = new Set(["or", "and", "nor", "a", "an", "the"]);
+/**
+ * Words that may sit between a referral and the items it refers away.
+ *
+ * The copulas are here for the FORWARD direction: "Ongoing monitoring and
+ * compliance certification ARE out of scope" puts the referral after the list it
+ * refers away, with the verb in between. They cannot bridge an unrelated claim,
+ * because a connective like `although` still is not glue.
+ */
+const REFERRAL_LIST_GLUE = new Set(["or", "and", "nor", "a", "an", "the", "is", "are", "was", "were", "be", "been"]);
 
 /** Every position where a referral phrase starts, with the length in tokens. */
 function referralSpans(tokens: readonly ClaimToken[]): Array<{ start: number; end: number }> {
@@ -1204,26 +1263,42 @@ function referralLicenses(
   const spans = referralSpans(tokens);
   if (spans.length === 0) return false;
 
-  const start = clauseStartIndex(tokens, claimStart);
-  const end = clauseEndIndex(tokens, claimEnd - 1);
-
-  for (const span of spans) {
-    // (a) same clause, in either direction.
-    if (span.start >= start && span.end <= end) return true;
-    // (b) earlier referral, separated only by other claims and list glue.
-    if (span.end > claimStart) continue;
-    let bridged = true;
-    for (let cursor = span.end; cursor < claimStart; cursor += 1) {
-      if (tokens[cursor].breakBefore === "sentence") {
-        bridged = false;
-        break;
-      }
+  /**
+   * Whether nothing but other claims and list glue stands between two points.
+   *
+   * This is what makes a referral refer THIS claim away rather than merely
+   * share a clause with it.
+   */
+  const bridged = (from: number, to: number): boolean => {
+    for (let cursor = from; cursor < to; cursor += 1) {
+      if (tokens[cursor].breakBefore === "sentence") return false;
       if (claimTokenIndices.has(cursor)) continue;
       if (REFERRAL_LIST_GLUE.has(tokens[cursor].word)) continue;
-      bridged = false;
-      break;
+      return false;
     }
-    if (bridged) return true;
+    return true;
+  };
+
+  for (const span of spans) {
+    // A referral licenses the items it refers away — the ones in its own list —
+    // and nothing else.
+    //
+    // This used to license any claim sharing a CLAUSE with any referral, in
+    // either direction. "Your application is secure although penetration testing
+    // is out of scope" was therefore licensed: an affirmative claim of exactly
+    // the forbidden kind, standing next to a referral that refers something else
+    // away. The clause was also asymmetric — one round bounded
+    // `clauseStartIndex` at a coordinating word and left `clauseEndIndex`
+    // breaking on punctuation alone, so "clause" meant two different spans
+    // depending on which end you looked at.
+    //
+    // The bridge test the backward arm already used is the right rule, so it now
+    // governs both directions and the clause does not enter into it.
+    if (span.end <= claimStart) {
+      if (bridged(span.end, claimStart)) return true;
+      continue;
+    }
+    if (span.start >= claimEnd && bridged(claimEnd, span.start)) return true;
   }
   return false;
 }

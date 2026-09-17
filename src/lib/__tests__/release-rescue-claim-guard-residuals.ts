@@ -200,14 +200,99 @@ export const NEGATION_SCOPE_REGRESSIONS: readonly string[] = [
  *
  * Four more were here until an audit found them: `by no means`, and the `ain't`,
  * `shan't` and `mustn't` contractions, which were in-family with every entry in
- * `NEGATION_TOKENS` and simply missing. Fixing those is what makes the rest of
- * this list a bound rather than a backlog: what remains needs a new SHAPE, not
- * another spelling of one already recognised.
+ * `NEGATION_TOKENS` and simply missing.
+ *
+ * A round then claimed that what remained "needs a new SHAPE, not another
+ * spelling of one already recognised". That was false when it was written, and
+ * the next audit wrote eight sentences to show it: the same shapes, defeated by
+ * one adjective or one adverb. They are in the list now. The bound is what is
+ * measured here, not a story about how principled the remainder is.
  *
  * "This is anything but a penetration test" is here because of the coordinator
  * clause break, which is the cost of closing the blocking defect above: `but`
  * ends the clause, so the denial it belongs to is not in the claim's clause.
  */
+/**
+ * Claims a REFERRAL used to license by sharing a clause with it.
+ *
+ * A referral refers specific items away — "customers who need penetration
+ * testing should engage a qualified specialist". The arm licensed any claim in
+ * the same clause as any referral, in either direction, so an affirmative claim
+ * standing next to a referral about something else was licensed. Each of these
+ * must now be CAUGHT.
+ */
+export const REFERRAL_SCOPE_REGRESSIONS: readonly string[] = [
+  "Your application is secure although penetration testing is out of scope.",
+  "Your application is secure so penetration testing is out of scope.",
+  "We are SOC 2 certified but penetration testing is out of scope.",
+  "We do not claim to be the cheapest but your application is secure although penetration testing is out of scope.",
+];
+
+/**
+ * Connectives for the licensing sweep, taken from an English grammar.
+ *
+ * Deliberately NOT derived from anything in this repository. The previous round
+ * published "29 affirmative payloads spanning every coordinator" — a corpus
+ * built from the `COORDINATORS` list it was validating, which is why it showed
+ * 29 of 29 caught while eight ordinary connectives walked through. Evidence
+ * composed inside its own premise, three paragraphs after the file that says a
+ * record must be able to disagree with the thing it records.
+ *
+ * `LICENSING_SWEEP_TEMPLATES` x these is the corpus, computed rather than typed,
+ * so the count in the architecture doc is a product of two arrays a test reads.
+ */
+export const SWEEP_CONNECTIVES: readonly string[] = [
+  "but", "yet", "and", "or", "nor", "for", "so", "however", "nevertheless", "nonetheless",
+  "though", "although", "whereas", "otherwise", "therefore", "thus", "hence", "meanwhile",
+  "moreover", "furthermore", "besides", "regardless", "anyway", "while", "when", "whenever",
+  "because", "since", "as", "after", "before", "until", "unless", "once", "still", "plus",
+  "then", "also", "additionally", "conversely", "instead", "rather", "albeit", "notwithstanding",
+  "accordingly", "consequently", "indeed", "alternatively", "only", "except", "meantime", "ergo",
+];
+
+/**
+ * Sentence shapes that put a real denial in front of an affirmative claim.
+ *
+ * One per licensing arm the bound applies to: a reporting verb with an
+ * infinitive complement, one with a noun-phrase complement, one with neither,
+ * and a subject negation reaching its verb through an auxiliary.
+ */
+export const LICENSING_SWEEP_TEMPLATES: ReadonlyArray<(connective: string) => string> = [
+  (c) => `We do not claim to be the cheapest ${c} your application is secure.`,
+  (c) => `We cannot promise a date ${c} we are SOC 2 certified.`,
+  (c) => `We never guarantee delivery ${c} we deliver a penetration test.`,
+  (c) => `No reviewer can say much about price ${c} your application is fully secure.`,
+];
+
+/**
+ * Denials the guard rejects because a CHARACTER REFERENCE stands inside them.
+ *
+ * The extractor reads every string twice: decoded, and as written. The second
+ * reading exists because decoding can ERASE text — `S&P500 clients` became
+ * `S clients` — and a round that tried to gate it on "the run ends in a
+ * semicolon, so it is a real reference" was measured wrong: `&test;` ends in a
+ * semicolon, is not a reference, a browser prints it literally, and gating on
+ * that lost the claim in `We deliver a penetration&test; it is thorough`.
+ *
+ * So both readings are kept, and the cost lands here. In the undecoded reading
+ * the reference survives as its own tokens AND its semicolon ends the clause, so
+ * `This isn&rsquo;t a penetration test` reads as `isn rsquo` / `t a penetration
+ * test` and the negation is no longer in the claim's clause.
+ *
+ * This is NOT closable by another rule in this file. `&rsquo;` and `&test;` are
+ * the same shape; a browser tells them apart with the HTML5 named-character
+ * table of roughly 2,200 entries, which this repository does not have and which
+ * is a dependency decision rather than a guard fix — the module's own history is
+ * why an eleven-name hand-written substitute is not acceptable here. Recorded
+ * and executed instead, fail-closed: each costs an author one rewording into the
+ * plain apostrophe, and no copy in this repository is affected today.
+ */
+export const REFERENCE_INSIDE_A_DENIAL: readonly string[] = [
+  "const P = () => <p>This isn&rsquo;t a penetration test.</p>;",
+  "const P = () => <p>This isn&apos;t a penetration test.</p>;",
+  "const P = () => <p>This isn&#39;t a penetration test.</p>;",
+];
+
 export const UNRECOGNISED_DENIAL_PHRASINGS: readonly string[] = [
   "We stop short of a penetration test.",
   "We fall short of a penetration test.",
@@ -218,6 +303,26 @@ export const UNRECOGNISED_DENIAL_PHRASINGS: readonly string[] = [
   "Under no circumstances do we guarantee your application is secure.",
   "Nowhere do we claim your application is secure.",
   "We refrain from claiming your application is secure.",
+  // Audit 43. These are NOT new shapes — they are shapes the recogniser already
+  // carries, defeated by ONE intervening word: an adjective after the
+  // determiner, or an adverb before the verb. The doc claimed the remaining
+  // residual "needs a new SHAPE, not another spelling of one already
+  // recognised", and that was false when it was written.
+  //
+  // Widening the adjacency skip to one determiner PLUS one content word was
+  // measured and rejected: it re-licenses "Other than that it is secure", an
+  // audit payload in the regression corpus above. The cost is recorded here
+  // instead of traded for that.
+  "This is not a full penetration test.",
+  "This review is not a formal penetration test.",
+  "This review is not any kind of penetration test.",
+  "We do not ever claim your application is secure.",
+  "We do not currently claim your application is secure.",
+  "We never actually claim your application is secure.",
+  "It is not the case that your application is secure.",
+  // And one more cost of the complement bound: an adverb between the negation
+  // and its verb puts the verb out of reach.
+  "We do not however guarantee that your application is secure.",
 ];
 
 export const CLAIM_GUARD_BOUND_SENTENCE =

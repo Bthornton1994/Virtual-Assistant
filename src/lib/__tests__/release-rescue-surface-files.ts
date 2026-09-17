@@ -488,30 +488,76 @@ function recordUnreadable(text: string): void {
  * set-diff of the EXCLUDED direction was not run, which is rule 1 of this
  * repository's four applied to only one half of the change.
  */
-const GLOBAL_OBJECTS = new Set(["globalthis", "window", "self", "global"]);
+/**
+ * The global object's spellings, matched CASE-SENSITIVELY because JavaScript is.
+ *
+ * A case-insensitive set read `Self.require("./panel")` and `GLOBAL.require(…)`
+ * as module loads — ordinary objects that merely share a name's letters — and
+ * put `Global.require(flag)`'s boolean identifier back into
+ * `UNREADABLE_SPECIFIERS`, which is the "record full of things that are not what
+ * it says they are" defect this file has now had twice.
+ */
+const GLOBAL_OBJECTS = new Set(["globalThis", "window", "self", "global"]);
 
 /** `process.mainModule` is Node's documented alias for `require.main`. */
-const MAIN_MODULE_CHAIN = "process.mainModule";
+const MAIN_MODULE_CHAIN = ["process", "mainModule"];
 
+/**
+ * Unwrap the expression a call is really made on.
+ *
+ * `(0, require)("./panel")` is the canonical indirect-require idiom a bundler
+ * emits, and `(require)("./panel")` is the same thing with the comma left out.
+ * Both were dropped: the callee is a parenthesized comma expression, not a
+ * property access, so the chain walk returned nothing and the module left the
+ * import graph unscanned and unrecorded.
+ */
+function unwrapCallee(callee: ts.Expression): ts.Expression {
+  let current: ts.Expression = callee;
+  for (;;) {
+    if (ts.isParenthesizedExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      current = current.right;
+      continue;
+    }
+    if (ts.isAsExpression(current) || ts.isNonNullExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    return current;
+  }
+}
+
+/**
+ * The dotted segments of a callee, with `obj["name"]` read as `obj.name`.
+ *
+ * `globalThis["require"]("./panel")` is the same load written with a subscript,
+ * and reading only property access dropped it.
+ */
 function calleeChain(callee: ts.Expression): string[] {
   const segments: string[] = [];
-  let current: ts.Expression = callee;
-  while (ts.isPropertyAccessExpression(current)) {
-    segments.unshift(current.name.text);
-    current = current.expression;
+  let current: ts.Expression = unwrapCallee(callee);
+  for (;;) {
+    if (ts.isPropertyAccessExpression(current)) {
+      segments.unshift(current.name.text);
+      current = unwrapCallee(current.expression);
+      continue;
+    }
+    if (ts.isElementAccessExpression(current)) {
+      const name = current.argumentExpression;
+      if (!ts.isStringLiteral(name) && !ts.isNoSubstitutionTemplateLiteral(name)) return [];
+      segments.unshift(name.text);
+      current = unwrapCallee(current.expression);
+      continue;
+    }
+    break;
   }
   if (ts.isIdentifier(current)) segments.unshift(current.text);
   else if (ts.isMetaProperty(current)) segments.unshift(`${ts.tokenToString(current.keywordToken) ?? ""}.${current.name.text}`);
   else return [];
   return segments;
-}
-
-function calleeRoot(callee: ts.Expression): string {
-  let current: ts.Expression = callee;
-  while (ts.isPropertyAccessExpression(current)) current = current.expression;
-  if (ts.isIdentifier(current)) return current.text;
-  if (ts.isMetaProperty(current)) return `${ts.tokenToString(current.keywordToken) ?? ""}.${current.name.text}`;
-  return "";
 }
 
 export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): string[] {
@@ -554,18 +600,27 @@ export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): str
       // What actually distinguishes the real forms is the ROOT of the callee
       // chain, not its tail. CommonJS reaches `require` from `require` itself or
       // from `module`; nothing else does.
-      const root = calleeRoot(callee);
       const chain = calleeChain(callee);
+      const root = chain[0] ?? "";
       const tail = chain[chain.length - 1] ?? "";
+      const reachesRequire = tail === "require" || tail === "resolve";
       const loadsAModule =
         // `require(\u2026)`, `require.resolve(\u2026)`, `require.main.require(\u2026)`.
-        (root === "require" && (tail === "require" || tail === "resolve")) ||
+        (root === "require" && reachesRequire) ||
         // `module.require(\u2026)`, `module.parent.require(\u2026)`.
-        (root === "module" && (tail === "require" || tail === "resolve")) ||
-        // `globalThis.require(\u2026)` and its three other spellings, one level only.
-        (GLOBAL_OBJECTS.has(root.toLowerCase()) && chain.length === 2 && tail === "require") ||
-        // `process.mainModule.require(\u2026)`, and its `.resolve`.
-        (chain.slice(0, 2).join(".") === MAIN_MODULE_CHAIN && (tail === "require" || tail === "resolve")) ||
+        (root === "module" && reachesRequire) ||
+        // `globalThis.require(\u2026)`, `window.parent.require(\u2026)`, and
+        // `globalThis.require.resolve(\u2026)`. Depth is NOT bounded here: a
+        // one-level bound dropped `window.parent.require`, which the predecessor
+        // caught, and a module that leaves the graph is scanned by nothing at
+        // all, while an over-read specifier fails loudly at the resolver.
+        (GLOBAL_OBJECTS.has(root) && chain.length >= 2 && reachesRequire) ||
+        // `process.mainModule.require(\u2026)`, and its `.resolve`. Matched on the
+        // WHOLE chain: a two-segment prefix read `process.mainModule.paths.require`,
+        // which loads nothing.
+        (chain.length === MAIN_MODULE_CHAIN.length + 1 &&
+          MAIN_MODULE_CHAIN.every((segment, offset) => chain[offset] === segment) &&
+          tail === "require") ||
         (root === "import.meta" && tail === "resolve");
       const isRequire = loadsAModule && node.arguments.length === 1;
       if (isImportCall || isRequire) {
@@ -1128,11 +1183,30 @@ export const DECLARED_CLAIM_BEARING_FILES: Readonly<Record<string, string>> = {
  * The trailing semicolon is optional because browsers accept `&#32` and
  * `&amp` without it in many positions.
  */
+/**
+ * Every reference shape, in ONE alternation so the pass cannot eat its own output.
+ *
+ * These were three chained `replace` calls, which meant each rule ran over the
+ * PREVIOUS rule's result: `&#38;` became `&`, and the named-reference rule then
+ * consumed the `&test` it had just created. `We deliver a penetration&#38;test`
+ * therefore read as `We deliver a penetration for every customer` — the claim
+ * erased by the decoder's own output — while a browser renders
+ * `penetration&test`, which is the claim. A single global `replace` scans
+ * left to right and never rescans what it substitutes.
+ */
+const CHARACTER_REFERENCE = /&#x([0-9a-f]+);?|&#(\d+);?|&[a-z][a-z0-9]{1,31};?/gi;
+
 function decodeEntities(text: string): string {
-  return text
-    .replace(/&#x([0-9a-f]+);?/gi, (_whole, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#(\d+);?/g, (_whole, decimal) => String.fromCodePoint(Number.parseInt(decimal, 10)))
-    .replace(/&[a-z][a-z0-9]{1,31};?/gi, " ");
+  return text.replace(CHARACTER_REFERENCE, (whole, hex?: string, decimal?: string) => {
+    if (hex === undefined && decimal === undefined) return " ";
+    const code = Number.parseInt(hex ?? decimal ?? "", hex === undefined ? 10 : 16);
+    // `decodeCssEscapes` has always carried this guard and this one had none, so
+    // `&#x110000;` anywhere on a surface threw `RangeError` out of the extractor
+    // rather than being read. A reference outside Unicode is not a character;
+    // it renders as its own text, so it is left alone.
+    if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) return whole;
+    return String.fromCodePoint(code);
+  });
 }
 
 /**
@@ -1416,34 +1490,35 @@ function rawTextOf(node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral, so
 }
 
 /**
- * Reference-shaped runs, in the same three shapes `decodeEntities` consumes.
+ * The same text with references left alone, added whenever it differs.
  *
- * A run that ENDS IN A SEMICOLON is a well-formed character reference: the
- * browser decodes it, this module decodes it the same way, and the undecoded
- * spelling is text nobody renders. A run WITHOUT one is the ambiguous case —
- * `&P500` in `S&P500 clients` is not a reference at all, a browser prints it
- * literally, and decoding ERASED the words. That is the case the second reading
- * exists for.
- */
-const REFERENCE_RUN = /&#x[0-9a-f]+;?|&#\d+;?|&[a-z][a-z0-9]{1,31};?/gi;
-
-function hasAmbiguousReference(text: string): boolean {
-  for (const [run] of text.matchAll(REFERENCE_RUN)) if (!run.endsWith(";")) return true;
-  return false;
-}
-
-/**
- * The same text with references left alone, added when decoding was AMBIGUOUS.
+ * It is added UNCONDITIONALLY, and one round of trying to be clever about that
+ * is why the rule is stated so plainly here. The second reading exists because
+ * decoding can ERASE text — `S&P500 clients` became `S clients`, and a claim
+ * inside the erased run went with it. A gate was added so the reading was kept
+ * only when a reference-shaped run did not end in a semicolon, on the premise
+ * that "a run that ends in a semicolon is a well-formed character reference,
+ * which the browser decodes the same way we do".
  *
- * It used to be added whenever the two readings differed at all, which meant
- * every well-formed reference produced a spelling no browser shows — and the
- * guard read `This isn&rsquo;t a penetration test` as `isn rsquo t`, lost the
- * negation, and flagged the offer's own disclaimer. `&apos;` is how React's own
- * `no-unescaped-entities` rule tells an author to write that sentence, and it
- * appears four times in this repository's JSX today.
+ * That premise is false, and an audit measured the regression it caused.
+ * `&test;` and `&P500;` end in semicolons and are not character references at
+ * all: a browser prints them literally, while `decodeEntities` replaces them
+ * with a space and erases the words either side. `We deliver a
+ * penetration&test; it is thorough` therefore lost its claim entirely — CAUGHT
+ * before the gate, MISSED after it — while the identical bytes in a served
+ * asset stayed caught, re-creating the "checked in one place, invisible in
+ * another" asymmetry this module's whole history is a record of.
+ *
+ * The gate's own justification was that the corpus showed 13 readings lost and
+ * no claims changed. It could not have shown anything else: the corpus contains
+ * no semicolon-terminated non-reference, so the measurement was taken inside the
+ * premise it was meant to test.
+ *
+ * The false positive the gate was hiding — `This isn&rsquo;t a penetration test`
+ * reading as `isn rsquo t` — is fixed where it belongs, in the licensing scan's
+ * contraction rejoin, which knows that those names spell an apostrophe.
  */
 function pushUndecoded(found: string[], text: string): void {
-  if (!hasAmbiguousReference(text)) return;
   const undecoded = tidyWithoutDecoding(text);
   if (undecoded.length > 0 && undecoded !== tidy(text)) found.push(undecoded);
 }

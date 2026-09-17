@@ -6,7 +6,11 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  LICENSING_SWEEP_TEMPLATES,
   NEGATION_SCOPE_REGRESSIONS,
+  REFERENCE_INSIDE_A_DENIAL,
+  REFERRAL_SCOPE_REGRESSIONS,
+  SWEEP_CONNECTIVES,
   UNRECOGNISED_DENIAL_PHRASINGS,
 } from "./release-rescue-claim-guard-residuals";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
@@ -219,6 +223,49 @@ describe("prohibited claim guard", () => {
     // The bound cuts only the licensing window, so the denial's own clause is
     // untouched: this is the same sentence with nothing after the coordinator.
     expect(findProhibitedClaims("We do not claim to be the cheapest.", "offer_copy")).toEqual([]);
+  });
+
+  it("catches a denial-then-claim sentence under every connective, not a chosen few", () => {
+    // The bound that makes this hold is the denial verb's COMPLEMENT, so the
+    // connective is irrelevant — which is the point. Three rounds bounded these
+    // arms by shrinking the clause instead, and each was defeated by a spelling
+    // its list did not carry.
+    //
+    // The corpus is a product of two declared arrays, and the connectives come
+    // from an English grammar rather than from any set in this module. The sweep
+    // that preceded it was built from the list it was validating and reported
+    // everything caught while eight ordinary connectives walked through.
+    const missed: string[] = [];
+    for (const template of LICENSING_SWEEP_TEMPLATES) {
+      for (const connective of SWEEP_CONNECTIVES) {
+        const text = template(connective);
+        if (findProhibitedClaims(text, "offer_copy").length === 0) missed.push(text);
+      }
+    }
+    expect(missed, "a denial does not license a claim outside its complement").toEqual([]);
+
+    // And the published figure is the product, not a number someone typed.
+    const doc = readSurface("docs/AI-APP-RELEASE-RESCUE-V1.md");
+    const every = [...doc.matchAll(/\*\*(\d+) sweep payloads caught\*\*/g)];
+    expect(every.length, "the sweep figure must appear exactly once in the doc").toBe(1);
+    expect(Number(every[0]![1]), "the doc's sweep figure must be the corpus size").toBe(
+      LICENSING_SWEEP_TEMPLATES.length * SWEEP_CONNECTIVES.length,
+    );
+  });
+
+  it("lets a referral license only the items it refers away", () => {
+    for (const text of REFERRAL_SCOPE_REGRESSIONS) {
+      expect(findProhibitedClaims(text, "offer_copy"), text).not.toEqual([]);
+    }
+
+    // And the referral the offer publishes still works, in both directions —
+    // the list before the phrase, and the phrase before the list.
+    for (const text of [
+      "Customers who need penetration testing, compliance certification, or ongoing security monitoring should engage a qualified specialist.",
+      "Ongoing monitoring and compliance certification are out of scope.",
+    ]) {
+      expect(findProhibitedClaims(text, "offer_copy"), text).toEqual([]);
+    }
   });
 
   it("records the denial phrasings it does not read, and proves the record", () => {
@@ -1119,12 +1166,45 @@ describe("the marketing surface makes no prohibited claim", () => {
       expect(staticSpecifiersIn(source, "m.ts"), `${form} must yield its specifier`).toContain("./panel");
     }
 
-    // And the global spelling stays one level deep, so an unrelated object
-    // reached THROUGH the global object is still not a module load.
+    // Depth from a global root is deliberately NOT bounded. A one-level bound
+    // dropped `window.parent.require`, which the predecessor caught, and the two
+    // directions do not cost the same: a module that leaves the import graph is
+    // scanned by nothing and says nothing, while an over-read specifier either
+    // resolves to a real file (scanned, harmless) or lands in
+    // `UNRESOLVED_IMPORTS`, which a test asserts empty.
     expect(
       staticSpecifiersIn('const x = globalThis.a.require("./x");', "m.ts"),
-      "a chain through the global object is not the global require",
+      "a chain from the global object is read whatever its depth",
+    ).toEqual(["./x"]);
+
+    // What still excludes an ordinary object is the ROOT, matched exactly as
+    // JavaScript matches it. A case-insensitive set read `Self.require` and
+    // `GLOBAL.require` as loads, and put `Global.require(flag)`'s boolean into
+    // the unreadable record.
+    const beforeCasing = UNREADABLE_SPECIFIERS.length;
+    for (const [form, source] of Object.entries({
+      "Self.require": 'const x = Self.require("./panel");',
+      "GLOBAL.require": 'const x = GLOBAL.require("./panel");',
+      "Global.require(flag)": "const x = Global.require(flag);",
+      "process.mainModule.paths.require": 'const x = process.mainModule.paths.require("./panel");',
+    })) {
+      expect(staticSpecifiersIn(source, "m.ts"), `${form} is not a module load`).toEqual([]);
+    }
+    expect(
+      UNREADABLE_SPECIFIERS.slice(beforeCasing),
+      "and none of them may reach the unreadable record",
     ).toEqual([]);
+
+    // The indirect-require idioms a bundler emits, and the subscript spelling.
+    for (const [form, source] of Object.entries({
+      "(0, require)": 'const x = (0, require)("./panel");',
+      "(require)": 'const x = (require)("./panel");',
+      'globalThis["require"]': 'const x = globalThis["require"]("./panel");',
+      "globalThis.require.resolve": 'const x = globalThis.require.resolve("./panel");',
+      "window.parent.require": 'const x = window.parent.require("./panel");',
+    })) {
+      expect(staticSpecifiersIn(source, "m.ts"), `${form} must yield its specifier`).toContain("./panel");
+    }
 
     // The genuine residual: a specifier the compiler cannot read either.
     expect(staticSpecifiersIn("const n = 'p'; const m = import(`./${n}`);")).toEqual([]);
@@ -1215,41 +1295,53 @@ describe("the marketing surface makes no prohibited claim", () => {
     ).toBe(true);
   });
 
-  it("keeps the second reading only where decoding is ambiguous", () => {
-    // The second reading exists for text a decoder might ERASE: `&P500` is not a
-    // character reference, a browser prints it literally, and decoding took the
-    // words with it. A reference that ENDS IN A SEMICOLON is not that case — the
-    // browser decodes it, this module decodes it the same way, and the undecoded
-    // spelling is text nobody renders.
+  it("keeps the second reading whenever decoding changes the text", () => {
+    // The second reading exists because decoding can ERASE text. A round gated
+    // it on the run NOT ending in a semicolon, reasoning that a semicolon means
+    // a well-formed reference the browser decodes the same way.
     //
-    // Adding it unconditionally made the guard read `This isn&rsquo;t a
-    // penetration test` as `isn rsquo t`, lose the negation, and flag the offer's
-    // own disclaimer — in the spelling React's `no-unescaped-entities` rule tells
-    // authors to use, which this repository's JSX already uses four times.
-    for (const source of [
-      "const P = () => <p>This isn&rsquo;t a penetration test.</p>;",
-      "const P = () => <p>This isn&apos;t a penetration test.</p>;",
-    ]) {
-      expect(visibleStrings(source, "p.tsx"), `${source} needs no second reading`).toHaveLength(1);
-      expect(
-        visibleStrings(source, "p.tsx").flatMap((text) => findProhibitedClaims(text, "offer_copy")),
-      ).toEqual([]);
-    }
-
-    // The ambiguous run still keeps both readings, and a claim the erasure would
-    // have hidden is still caught.
+    // That premise is false. `&test;` and `&P500;` end in semicolons and are not
+    // references: a browser prints them literally, while the decoder replaces
+    // them with a space and takes the words with it. The claim below was CAUGHT
+    // before the gate and MISSED after it — and the identical bytes in a served
+    // asset stayed caught, because only the source path was gated.
+    const erased = "const P = () => <p>We deliver a penetration&test; it is thorough.</p>;";
+    expect(
+      visibleStrings(erased, "p.tsx").flatMap((text) => findProhibitedClaims(text, "typed_field")),
+      "a claim the decoder erases must survive in the second reading",
+    ).not.toEqual([]);
     expect(visibleStrings('const s = "S&P500 clients";', "p.tsx")).toEqual([
       "S clients",
       "S&P500 clients",
     ]);
+
+    // The cost of keeping both readings, recorded rather than gated away. In the
+    // undecoded reading the reference is its own tokens and its semicolon ends
+    // the clause, so the negation leaves the claim's clause and a denial is
+    // flagged. Telling `&rsquo;` from `&test;` needs the HTML5 named-character
+    // table, which is a dependency decision, not a rule this guard can write.
+    for (const source of REFERENCE_INSIDE_A_DENIAL) {
+      expect(visibleStrings(source, "p.tsx").length, `${source} keeps both readings`).toBe(2);
+      expect(
+        visibleStrings(source, "p.tsx").flatMap((text) => findProhibitedClaims(text, "offer_copy")),
+        `${source} is recorded as flagged; if it is licensed now, delete it from the record`,
+      ).not.toEqual([]);
+    }
+
+    // Decoding runs in ONE pass, so a reference cannot manufacture an `&` that a
+    // later rule then eats: `penetration&#38;test` renders as `penetration&test`,
+    // which is the claim, and three chained replaces read it as `penetration`.
     expect(
-      visibleStrings('const s = "your S&P500 application is secure";', "p.tsx").flatMap((text) =>
-        findProhibitedClaims(text, "typed_field"),
+      visibleStrings("const P = () => <p>We deliver a penetration&#38;test for every customer.</p>;", "p.tsx").flatMap(
+        (text) => findProhibitedClaims(text, "typed_field"),
       ),
-      "a claim inside an erased run must survive in the second reading",
     ).not.toEqual([]);
 
-    // And a well-formed reference that SPLITS a claim is still caught from the
+    // And a reference outside Unicode is text, not a character: this threw
+    // `RangeError` out of the extractor before the range guard.
+    expect(() => visibleStrings('const s = "a&#x110000;b";', "p.tsx")).not.toThrow();
+
+    // A well-formed reference that SPLITS a claim is still caught from the
     // decoded reading, which is the detection the decode was added for.
     expect(
       visibleStrings("const P = () => <p>Your application is&emsp;secure.</p>;", "p.tsx").flatMap((text) =>

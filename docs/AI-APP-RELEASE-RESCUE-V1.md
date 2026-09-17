@@ -3728,48 +3728,71 @@ were all in the two files whose JSX carries `&apos;`.
 text no browser renders, they caught nothing, and one of them made the guard
 flag the offer's own disclaimer.
 
-### Two of the four arms had no bound, and the guard's verdict turned on a comma
+### Two of the four arms had no bound, and three rounds bounded the wrong thing
 
-The positive rule above recognises four denial shapes. Two of them — a negation
-on a reporting verb, and a subject negation whose predicate denies one — were
-written with **no bound on how far the licence reached**. Once either matched,
-every prohibited claim anywhere later in the clause was licensed, at any
-distance, with arbitrary material in between. The clause itself ended only at
-punctuation: `, ; : ( ) — –`.
+The positive rule recognises four denial shapes. Two of them — a negation on a
+reporting verb, and a subject negation whose predicate denies one — were written
+with **no bound on how far the licence reached**. Once either matched, every
+prohibited claim later in the clause was licensed, at any distance.
 
-So these two sentences got different verdicts:
+The first repair shrank the CLAUSE: it ended only at punctuation, so
+`We do not claim to be the cheapest, but your application is secure` was caught
+and the same sentence without the comma was licensed and served at **HTTP 200**.
+A `COORDINATORS` set was added so a clause also ended at `but`, `however`, `so`
+and fifteen more. The next audit wrote the same sentence with `yet`, `and`,
+`for`, `while`, `because`, `since`, `when` and `plus` — all licensed — and `and`
+could not be added without rejecting denials the offer publishes.
 
-| sentence | verdict |
-| --- | --- |
-| `We do not claim to be the cheapest, but your application is secure.` | caught |
-| `We do not claim to be the cheapest but your application is secure.` | **licensed** |
+**Shrinking the clause was never the right axis.** What separates the two cases
+is whether the claim occupies the denial verb's COMPLEMENT, or something else
+already does:
 
-An audit put the second on the landing page, ran both guard suites green, built,
-served it and read it back at **HTTP 200**. Fifteen of its seventeen payloads
-were licensed. This is the defect the round before had just fixed, surviving its
-own fix one arm over — the positive rule was right and two of its four arms were
-unscoped, so the fail-closed direction it claimed did not hold.
+| | after the verb | |
+| --- | --- | --- |
+| we never claim | `your application is secure` | the complement **is** the claim |
+| does not guarantee | `the absence of vulnerabilities` | the complement **is** the claim |
+| do not claim while reviewing | `that` your application is secure | a complementizer, then it |
+| do not claim | `to be the cheapest` … your app is secure | slot filled by an infinitive |
+| cannot promise | `a date` … we are SOC 2 certified | slot filled by a noun phrase |
 
-Two bounds close it:
+So the claim must begin within one content word of the verb, or after a `that`
+within a short adverbial reach of it. Both bounds are measured against the
+offer's own published denials rather than chosen, and a coordinated verb pair
+("cannot be **sold or described** as a penetration test") counts as one verb,
+because treating `or described` as the complement flagged the product's own
+refusal copy.
 
-- **`COORDINATORS`** ends a clause on a word as well as on punctuation: `but`,
-  `however`, `so`, `although`, `therefore` and their kin. A word here can only
-  SHORTEN what a denial licenses, so a spelling the set does not carry costs a
-  claim that stays caught, never one that starts being licensed. That is what
-  makes this list safe where the scope-breaker list it replaced was not, and
-  `and`, `or` and `nor` are deliberately absent because they coordinate items
-  *inside* one clause — "not a penetration test **and** does not guarantee …".
-- **`DETERMINERS`** replaces a 40-word `FUNCTION_WORDS` set that was skipped
-  without limit. The adjacency arms now skip exactly one determiner. `No OTHER
-  SUCH is secure` and `Other than THAT IT is secure` were both licensed purely
-  because every word in between happened to be in that set. Passive auxiliaries
-  (`be`, `been`, `being`) are skipped separately and without limit — they belong
-  to the verb, and dropping them made the guard flag the offer's own "it cannot
-  **be** sold or described as a penetration test".
+**`COORDINATORS` is deleted, not extended.** With the complement bound in place
+the connective is irrelevant, and the set was measured to be doing nothing:
+**208 sweep payloads caught**, over 52 connectives taken from an English grammar
+rather than from any list in this repository, across four sentence templates —
+with the set removed and no test moved. That corpus is a product of two declared
+arrays and this figure is read out of it by a test, because the sweep it replaced
+was built from the `COORDINATORS` list it was validating and reported everything
+caught while eight ordinary connectives walked through.
 
-Measured over 29 affirmative payloads spanning every coordinator and both
-unbounded arms, and 24 denial phrasings including all of the offer's published
-copy: **29 caught, 24 licensed, none traded for the other.**
+The subject-negation arm also stopped firing on a noun. `claim`, `guarantee`,
+`offer`, `promise`, `state`, `call` and `say` are nouns too, so `No guarantee is
+needed because your application is secure` matched the reporting-verb arm on the
+noun and licensed the rest of the sentence. A determiner negation is the subject
+arm's business, and that arm requires a predicate.
+
+### A referral licenses the items it refers away, and nothing else
+
+The referral arm licensed any claim that shared a clause with any referral, in
+either direction. `Your application is secure although penetration testing is out
+of scope` was therefore licensed: an affirmative claim of exactly the forbidden
+kind, standing next to a referral that refers something else away.
+
+The clause was also asymmetric. The coordinator bound was added to
+`clauseStartIndex` and not to `clauseEndIndex`, so "clause" meant two different
+spans depending on which end you looked at, and the referral window still ran to
+the next punctuation mark across any number of coordinators.
+
+The backward arm already had the right rule — nothing but other claims and list
+glue may stand between the referral and the claim — so that test now governs both
+directions, and the clause does not enter into it at all. `clauseEndIndex` is
+gone.
 
 ### What a fail-closed rule costs, measured rather than asserted
 
@@ -3781,60 +3804,107 @@ of these shapes has to come here and delete the entry.
 
 Four more were on that list until they were measured: `by no means`, and the
 `ain't`, `shan't` and `mustn't` contractions, which were in-family with every
-entry `NEGATION_TOKENS` already carried and simply missing. Fixing those is what
-makes the rest a bound rather than a backlog: what remains needs a new SHAPE, not
-another spelling of one already recognised. One entry — `This is anything but a
-penetration test` — is the direct cost of the coordinator break above, and is
-recorded as such.
+entry `NEGATION_TOKENS` already carried and simply missing.
 
-### The second reading is kept only where decoding is ambiguous
+The same paragraph then claimed that what remained "needs a new SHAPE, not
+another spelling of one already recognised". **That was false**, and the next
+audit wrote eight sentences to prove it — `not a FULL penetration test`, `do not
+EVER claim`, and six more: the same shapes the recogniser carries, defeated by
+one adjective or one adverb. Widening the adjacency skip to cover them was
+measured and rejected, because it re-licenses `Other than that it is secure`,
+which is in the regression corpus. They are recorded instead, so the list is what
+is measured rather than a story about how principled the remainder is.
 
-The additive readings of the previous round were added whenever the decoded and
-undecoded text differed at all. Over the whole corpus that produced exactly 13
-extra readings, all of them `&apos;` — a well-formed reference that a browser
-decodes and this module decodes identically. They caught nothing, and one of them
-made the guard read `This isn&rsquo;t a penetration test` as `isn rsquo t`, lose
-the negation, and flag the offer's own disclaimer in the spelling React's
-`no-unescaped-entities` rule pushes authors towards.
+### The gate on the second reading was measured inside its own premise
 
-The second reading is for text a decoder might ERASE, and that risk lives
-entirely in the semicolon-less form: `&P500` in `S&P500 clients` is not a
-reference, a browser prints it literally, and decoding took the words with it. So
-the reading is kept when a reference-shaped run does NOT end in a semicolon, and
-dropped when it does. Re-measured over the same corpus, against the extractor as
-it stood two commits ago:
+The extractor reads every string twice — decoded, and as written — because
+decoding can ERASE text: `S&P500 clients` became `S clients`, and a claim inside
+the erased run went with it.
+
+A round then gated the second reading on the reference run NOT ending in a
+semicolon, reasoning that *"a run that ends in a semicolon is a well-formed
+character reference: the browser decodes it, this module decodes it the same
+way, and the undecoded spelling is text nobody renders."*
+
+**That premise is false.** `&test;` and `&P500;` end in semicolons and are not
+character references at all — a browser prints them literally — while the decoder
+replaces them with a space and takes the words either side with it:
 
 ```
-vs e0a1107 (before additive readings): LOST 0  GAINED 0  claims only-NEW 0  only-OLD 0
-vs 83cda0a (additive, ungated):        LOST 13 GAINED 0  claims only-NEW 0  only-OLD 0
+We deliver a penetration&test; it is thorough.
+  before the gate : ["penetration test", "penetration testing"]   CAUGHT
+  after the gate  : []                                            MISSED
 ```
 
-The extractor is now byte-for-byte equivalent on this corpus to the version
-before additive readings existed, and the erasure protection the change was for
-is still there — it simply has nothing to protect in this repository's own copy,
-which is why a planted case proves it and the corpus cannot.
+The identical bytes in a served `.svg` stayed caught, because only the source
+path was gated — the "checked in one place, invisible in another" asymmetry this
+module's history is a record of, re-created by the fix for something else.
 
-### `\u{00002019}`, an escaped backslash, and four spellings of the global object
+The evidence that licensed the gate was `13 lost, 0 gained, 0 flag deltas` over
+the corpus. It could not have shown anything else: the corpus contains no
+semicolon-terminated non-reference, so the measurement was taken **inside the
+premise it was meant to test**. The doc even said "a planted case proves it and
+the corpus cannot" — and the case planted, `S&P500` with no semicolon, is the one
+the gate KEEPS.
 
-Three narrower defects from the same audit, each the same shape: a bound written
-one case short.
+The gate is gone. Both readings are kept unconditionally, and the false positive
+it was hiding is recorded rather than gated away: in the undecoded reading a
+reference is its own tokens *and its semicolon ends the clause*, so `This
+isn&rsquo;t a penetration test` loses its negation. Telling `&rsquo;` from
+`&test;` requires the HTML5 named-character table — roughly 2,200 entries, a
+dependency decision rather than a guard fix, and the reason an eleven-name
+hand-written substitute is not acceptable here. `REFERENCE_INSIDE_A_DENIAL`
+records the three spellings, executed, fail-closed, and no copy in this
+repository is affected.
 
-- `PRINTABLE_ESCAPE` capped the braced escape at six hex digits. JavaScript
-  allows unbounded leading zeros, so `\u{00002019}` is the same apostrophe,
-  went undecoded, and reproduced the exact `isn u2019 t` reading the decode had
-  been added to remove. The digit cap is gone; the code-point RANGE is the real
-  bound.
-- The same regular expression could start matching INSIDE an escaped backslash,
-  so `"a\\u0020b"` — a backslash followed by the literal text `u0020b` — read as
-  `a\ b`. An escaped backslash is consumed whole now.
-- `calleeRoot` decides a `require` call by the root of its callee chain, which
-  fixed `policy.require` being matched by name. Its root set was `require`,
-  `module` and `import.meta`, so `globalThis.require`, `window.require`,
-  `self.require`, `global.require` and `process.mainModule.require` — all real
-  loads the predecessor caught — were dropped, and a module pulled in that way
-  would leave the import graph unscanned. The repository's rule is to diff the
-  SETS when a mechanism is replaced; that diff had been run on the INCLUDED
-  direction only.
+Decoding also ran as three chained replaces, so each rule saw the previous one's
+output: `&#38;` became `&`, and the named rule then ate the `&test` it had just
+created, erasing a claim a browser renders. One pass now, with the code-point
+range guard its CSS sibling always had — `&#x110000;` used to throw `RangeError`
+out of the extractor.
+
+### The require rule's excluded direction, diffed at last
+
+`calleeRoot` decided a `require` call by the root of its callee chain, which
+fixed `policy.require` being matched by name. The round after it added four
+global spellings. Neither ran the set-diff in the **excluded** direction, and an
+audit found seven more real loads still dropped — `(0, require)("./x")`, the
+canonical bundler idiom, among them — and three non-loads newly read, because the
+global set was matched case-insensitively and `process.mainModule` on a
+two-segment prefix.
+
+What reads now: parenthesized and comma callees are unwrapped, `obj["require"]`
+is read as `obj.require`, the global spellings are matched as JavaScript matches
+them, and `process.mainModule.require` is matched on the whole chain. Depth from
+a global root is deliberately unbounded — a one-level bound dropped
+`window.parent.require` — because a module that leaves the import graph is
+scanned by nothing and says nothing, while an over-read specifier either resolves
+to a real file or lands in `UNRESOLVED_IMPORTS`, which a test asserts empty.
+
+Measured in both directions: **15 real load forms read, 9 non-loads rejected**,
+and nothing added to the unreadable record.
+
+### Two figures that did not reproduce, and a proof that overclaimed
+
+- **"the 40-word `FUNCTION_WORDS` set"** — it had 41, published in four places.
+  The mutant modelling it substituted 20 of them, labelled as though it were the
+  predecessor; it now carries the real set and is labelled `verbatim`.
+- **"29 affirmative payloads spanning every coordinator"** appeared only in prose,
+  no array in the repository matched it, and nothing read it — three paragraphs
+  after this file says it binds every number it publishes. Worse, "spanning every
+  coordinator" means the corpus was built from the `COORDINATORS` list it was
+  validating, which is why it reported 29 of 29 caught while eight ordinary
+  connectives walked through. The sweep that replaced it is a product of two
+  declared arrays, its connectives come from an English grammar, and a test reads
+  the figure out of this document.
+- **The proof's header claimed it "proves each one is load-bearing."** For four
+  mechanisms it does not. `M-ROUTE-ROOTS`, `M-ALIASES`, `M-ENTRYPOINTS` and
+  `M-ASSET-RESIDUAL-SET` are each killed by one test that parses the module and
+  asserts how a constant is spelled — deliberately, because this repository has
+  one route root and one alias, so no behavioural test can separate a derivation
+  from a literal that agrees with it. Any textual change to those lines fails
+  that assertion whether the derivation matters or not. They are labelled
+  `wiring:` now, and the header says so.
 
 ## What this slice deliberately does not do
 
