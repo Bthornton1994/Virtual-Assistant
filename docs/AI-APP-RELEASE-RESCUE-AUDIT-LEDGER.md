@@ -171,7 +171,7 @@ Each was bought with a regression in this workstream.
 | | |
 | --- | --- |
 | Status | **unavailable — no run has been demonstrated** |
-| Observed on | `83cda0a`, `11f1661`, `e874c8c`, `148bb31`, `e673271` — five consecutive heads, plus every head since |
+| Observed on | `83cda0a`, `11f1661`, `e874c8c`, `148bb31`, `e673271`, `44e825a` — six consecutive heads, each checked |
 
 Every run completes in about two seconds with `runner_id` 0, an empty runner
 name, an empty check title, summary and text, and no steps. Representative:
@@ -180,7 +180,18 @@ name, an empty check title, summary and text, and no steps. Representative:
 check_run 105333443527   head_sha 148bb31
 runner_id 0 · runner_name "" · runner_group_id 0
 created 18:39:09Z → completed 18:39:11Z
+
+check_run 105394300819   head_sha 44e825a
+runner_id 0 · runner_name "" · runner_group_id 0
+created 21:44:46Z → completed 21:44:48Z
 ```
+
+An earlier revision of the row above read "five consecutive heads, **plus every
+head since**". That clause was written before any head after `e673271` existed,
+so it claimed evidence that had not been collected — the failure this ledger
+exists to catch, in the ledger's own wording. It is replaced by the list of
+heads actually checked, and a head is added to that list only after its check
+run has been read.
 
 **Investigated locally, and the workflow is not the cause.** `.github/workflows/verify.yml`
 parses, declares one job on `ubuntu-latest` with seven well-formed steps, and
