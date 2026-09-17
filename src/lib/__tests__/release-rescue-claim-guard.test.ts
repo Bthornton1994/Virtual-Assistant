@@ -168,7 +168,7 @@ describe("the marketing surface makes no prohibited claim", () => {
     for (const file of SURFACE_FILES) {
       const source = readSurface(file);
       if (!rendersMarkup(source)) continue;
-      expect(visibleStrings(source).length, file).toBeGreaterThan(0);
+      expect(visibleStrings(source, file).length, file).toBeGreaterThan(0);
     }
 
     // And across the set, a floor — which IS the right shape here, by the same
@@ -176,7 +176,7 @@ describe("the marketing surface makes no prohibited claim", () => {
     // genuinely unbounded above. Copy grows; an exact count would go red on every
     // wording change while proving nothing. What it catches is the failure it is
     // for: an extractor that silently returns nothing.
-    const total = SURFACE_FILES.reduce((sum, file) => sum + visibleStrings(readSurface(file)).length, 0);
+    const total = SURFACE_FILES.reduce((sum, file) => sum + visibleStrings(readSurface(file), file).length, 0);
 
     expect(total, "the extractor reads almost nothing — it is probably broken").toBeGreaterThan(1500);
   });
@@ -208,12 +208,25 @@ describe("the marketing surface makes no prohibited claim", () => {
       ).toBe(false);
     }
 
-    expect(EXTRACTOR_RESIDUALS.length).toBe(5);
+    expect(EXTRACTOR_RESIDUALS.length).toBe(6);
     expect([...new Set(EXTRACTOR_RESIDUALS.map((r) => r.mechanism))].sort()).toEqual([
       "computed",
       "cross_component",
       "identifier",
+      "non_jsx_element",
     ]);
+
+    // Each entry must be real source that renders the claim, not prose about
+    // one. Two used to be prose and passed by having no claim in them to miss.
+    for (const residual of EXTRACTOR_RESIDUALS) {
+      expect(parseProblems("residual.tsx", residual.source), `${residual.source} must parse`).toEqual([]);
+      // Both halves, or the entry proves nothing: what it RENDERS must be a
+      // real claim, and what the extractor SEES must not contain it.
+      expect(
+        findProhibitedClaims(residual.renders).length,
+        `${residual.mechanism}: the declared rendered text carries no claim, so its invisibility proves nothing`,
+      ).toBeGreaterThan(0);
+    }
   });
 
   it("declares exactly the files that need a claim-bearing exemption, and no more", () => {
@@ -225,7 +238,7 @@ describe("the marketing surface makes no prohibited claim", () => {
     //
     // A stale exemption therefore fails exactly as loudly as a missing one.
     const needsExemption = SURFACE_FILES.filter((file) =>
-      visibleStrings(readSurface(file)).some((text) => findProhibitedClaims(text).length > 0),
+      visibleStrings(readSurface(file), file).some((text) => findProhibitedClaims(text).length > 0),
     );
 
     expect(needsExemption.sort()).toEqual(Object.keys(DECLARED_CLAIM_BEARING_FILES).sort());
@@ -271,7 +284,7 @@ describe("the marketing surface makes no prohibited claim", () => {
       RELEASE_RESCUE_OFFER.prohibitedClaims.flatMap((claim) => [claim, claim.replace(/[ -]/g, "_")]).map((entry) => entry.toLowerCase()),
     );
     for (const file of Object.keys(DECLARED_CLAIM_BEARING_FILES)) {
-      for (const text of visibleStrings(readSurface(file)).filter((candidate) => findProhibitedClaims(candidate).length > 0)) {
+      for (const text of visibleStrings(readSurface(file), file).filter((candidate) => findProhibitedClaims(candidate).length > 0)) {
         expect(
           vocabulary.has(text.trim().toLowerCase()),
           `${file}: ${JSON.stringify(text.slice(0, 80))} is prose carrying a claim, not the offer's own vocabulary. An exemption cannot cover it.`,
@@ -347,9 +360,13 @@ describe("the marketing surface makes no prohibited claim", () => {
     // the same diff that corrected a different number for not reproducing. A
     // figure nothing reads is a figure nothing can keep true.
     const doc = readSurface("docs/AI-APP-RELEASE-RESCUE-V1.md");
-    const published = /\*\*(\d+) planted\s+shapes\*\*/.exec(doc);
+    const everyFigure = [...doc.matchAll(/\*\*(\d+) planted\s+shapes\*\*/g)];
+    const published = everyFigure[0];
 
     expect(published, "the planted-shape figure could not be located in the doc").not.toBeNull();
+    // `exec` reads the first match only, so a second figure could drift behind
+    // it unnoticed — the same "nothing reads it" defect this test exists for.
+    expect(everyFigure.length, "the planted-shape figure must appear exactly once").toBe(1);
     expect(Number(published![1]), "the doc's planted-shape count must be this map's size").toBe(
       Object.keys(planted).length,
     );

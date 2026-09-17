@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 731 Release Rescue tests across 30 suites (1,407 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 736 Release Rescue tests across 30 suites (1,412 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2732,6 +2732,66 @@ document and compared to the test's own count now, so it cannot drift again.
 Also: `createSourceFile` is error-tolerant and returns a tree for anything, so a
 file that fails to parse yields no strings and looks exactly like a file with
 nothing to check. The suite asks the parser directly now, for every surface file.
+
+### The fifth and sixth lists, both inside the fix for the fourth
+
+"Which files can put words in front of a customer?" has now been answered
+wrongly six times, and the last two were both sitting inside the repair for the
+one before them:
+
+- the entry filter was `/\/page\.tsx?$/`. Next serves `route.ts`,
+  `default.tsx`, `opengraph-image.tsx`, `sitemap.ts` and more from the same
+  tree, so a **route handler importing this offer's own constants**, printing its
+  name and price beside a prohibited claim, was never even a candidate;
+- "reaches an offer module" was a **directory pattern**, so a page whose only tie
+  to the offer was its name held in a shared copy module fell through every test.
+  Served at HTTP 200 with the claim beside the price, whole suite green.
+
+The first is the sharper one, because the commit's own stated rule — *a page
+whose imports reach this offer's modules is one of its surfaces* — was satisfied
+by that route handler, and it was still not a surface, for no reason but its
+filename.
+
+Neither a file's NAME nor a module's DIRECTORY decides anything now:
+
+> a served file is a surface when anything it can reach either belongs to this
+> offer or says this offer's name.
+
+Saying the name counts whether it is a literal or text the page renders, so a
+shared copy module pulls in every file that reaches it. The set went from 61 to
+66, and it now includes `api/internal/release-rescue/retention-sweep/route.ts` —
+offer-owned, HTTP-served, and outside every previous version of this rule.
+
+**And the entry rule's residuals are recorded**, in `ENTRY_RESIDUALS`, for the
+reason the extractor's are: the miss that produced this round had been sitting in
+an unrecorded class. What is still outside is a file that reaches no offer module
+and assembles the offer's name at runtime, and a module reached only through a
+computed `import()` specifier.
+
+### Three corrections to this document's own corrections
+
+An audit measured the things written here rather than reading them, and three did
+not survive.
+
+**An example written to repair a false comment was itself unmeasured.** The
+run-together trade was documented with `<dt>Vulnerabilities found</dt><dd>no</dd>`
+→ flags `no vulnerabilities`. It does not: that text never puts `no` before
+`vulnerabilities`. It takes **two** dt/dd pairs for the join to bring those words
+together, which is what the live report copy actually looks like. Corrected, and
+both documented examples are now measured as written.
+
+**Two recorded residuals were prose, not code.** `ROWS.map((row) => row.word)`
+had no `ROWS`, and one entry was a sentence describing two components. Both
+satisfied "still invisible" by containing no claim to miss. Every entry now
+declares the text it RENDERS as well as the source, and the test asserts both
+halves: the rendered text must carry a real claim, or its invisibility proves
+nothing.
+
+**The residual set was asserted exact and was not.** A fourth mechanism exists —
+`React.createElement("p", null, "Your application is", " secure and ready.")`.
+Every word is a plain literal stated in the source, so it is none of the three
+recorded mechanisms; the run-together rule keys on `JsxElement`, and element
+construction by call bypasses it. Recorded.
 
 ### A floor cannot tell a record from a fiction
 

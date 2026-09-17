@@ -81,62 +81,111 @@ function filesUnder(dir: string, found: string[] = []): string[] {
   return found;
 }
 
-/** The modules that belong to this offer. A page that pulls one in is selling it. */
+/** The modules this offer owns outright. */
 const OFFER_MODULE = /^src\/(?:lib|components)\/(?:ai-app-release-rescue\/|release-rescue-)/;
 
 /**
- * Every page in the app that sells this offer, found structurally.
+ * Every file the app serves that sells this offer, found structurally.
  *
- * This used to ask whether the raw SOURCE BYTES contained "Release Rescue" —
- * the same formatting dependence the extractor was rebuilt to remove, one layer
- * out. Two pages escaped it and were served at HTTP 200 with prohibited claims:
- * one rendering `{RESCUE_SERVICE_NAME}` (the name is on screen, not in the
- * bytes) and one whose `<h1>` the formatter wrapped as `AI App Release` /
- * `Rescue`. A first attempt to fix it by reading the RENDERED text closed only
- * the second: an identifier is not a literal, so the name never appears in the
- * extracted text either. Measured, not assumed — the page stayed undiscovered.
+ * FIFTH AND SIXTH TIME. This question has been answered with a hand-written
+ * list five times, and each fix contained the next one. The last two were both
+ * inside the repair for the one before:
  *
- * So the question is not what a page SAYS. It is what a page USES: a page whose
- * import graph reaches this offer's own modules is one of its surfaces, whatever
- * words it happens to spell literally. That is a fact about the graph, and no
- * formatting, constant or interpolation can hide it. The rendered-text check
- * stays as a second net for a page that names the offer without importing it.
+ *   - the entry filter was `/\/page\.tsx?$/`. Next serves `route.ts`,
+ *     `default.tsx`, `opengraph-image.tsx`, `sitemap.ts` and more from the same
+ *     tree, so a route handler importing this offer's own constants, printing
+ *     its name and price beside a prohibited claim, was never even a candidate;
+ *   - "reaches an offer module" was a DIRECTORY pattern, so a page whose only
+ *     tie to the offer was its name held in a shared copy module fell through
+ *     every test. That page was served at HTTP 200 with the claim beside the
+ *     price, whole suite green.
+ *
+ * Both are the shape the previous commit was written to remove, one notch in.
+ * So neither the file's NAME nor a module's DIRECTORY decides anything now:
+ *
+ *   a served file is a surface when anything it can reach either belongs to
+ *   this offer or says this offer's name.
+ *
+ * Saying the name counts whether it is a literal in the source or text the page
+ * renders, so a shared copy module pulls in every page that reaches it. What is
+ * still outside: a file that reaches neither, and names the offer only through a
+ * value computed at runtime. That bound is recorded in ENTRY_RESIDUALS below
+ * rather than left to be found by the next audit.
  */
-function pagesSellingTheOffer(): string[] {
-  return filesUnder(APP_DIR)
-    .filter((file) => /\/page\.tsx?$/.test(file))
-    .filter((file) => {
-      if (reachableFrom(file).some((reached) => OFFER_MODULE.test(reached))) return true;
-      const source = readFileSync(resolve(process.cwd(), file), "utf8");
-      if (source.includes(OFFER_NAME)) return true;
-      return visibleStrings(source, file).some((text) => text.includes(OFFER_NAME));
-    });
+const statesTheOffer = new Map<string, boolean>();
+
+function namesTheOffer(file: string): boolean {
+  const remembered = statesTheOffer.get(file);
+  if (remembered !== undefined) return remembered;
+  const source = readFileSync(resolve(process.cwd(), file), "utf8");
+  const answer = source.includes(OFFER_NAME) || visibleStrings(source, file).some((text) => text.includes(OFFER_NAME));
+  statesTheOffer.set(file, answer);
+  return answer;
 }
+
+function filesSellingTheOffer(): string[] {
+  return filesUnder(APP_DIR).filter((file) =>
+    reachableFrom(file).some((reached) => OFFER_MODULE.test(reached) || namesTheOffer(reached)),
+  );
+}
+
+const reachedFromCache = new Map<string, string[]>();
 
 /** Every repository file reachable from one entrypoint by import. */
 function reachableFrom(entry: string): string[] {
+  const remembered = reachedFromCache.get(entry);
+  if (remembered) return remembered;
   const reached = new Set<string>([entry]);
   const queue = [entry];
   while (queue.length > 0) {
     const file = queue.shift()!;
     const source = readFileSync(resolve(process.cwd(), file), "utf8");
-    for (const match of source.matchAll(/(?:from\s+|import\s*\(\s*)["']([^"']+)["']/g)) {
-      const target = resolveImport(match[1], file);
+    // Bare side-effect imports and `require` count too: a module reached only
+    // that way still renders, and the previous pattern could not see either.
+    for (const match of source.matchAll(
+      /(?:from\s+|import\s*\(\s*)["']([^"']+)["']|import\s+["']([^"']+)["']|require\s*\(\s*["']([^"']+)["']/g,
+    )) {
+      const specifier = match[1] ?? match[2] ?? match[3];
+      if (!specifier) continue;
+      const target = resolveImport(specifier, file);
       if (target && !reached.has(target) && !NOT_A_SURFACE.test(target)) {
         reached.add(target);
         queue.push(target);
       }
     }
   }
-  return [...reached];
+  const all = [...reached];
+  reachedFromCache.set(entry, all);
+  return all;
 }
+
+/**
+ * What the ENTRY RULE cannot see, recorded for the same reason the extractor's
+ * residuals are: the miss that produced this round had been sitting in an
+ * unrecorded class, and nobody had written the class down.
+ *
+ * The rule reads imports and stated text. It cannot read a name a program
+ * computes, and it cannot follow an import whose specifier is computed.
+ */
+export type EntryResidual = { readonly mechanism: "computed_name" | "computed_import"; readonly why: string };
+
+export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
+  {
+    mechanism: "computed_name",
+    why: "A served file that reaches no offer module and assembles the offer's name at runtime — `[\"AI App\", \"Release\", \"Rescue\"].join(\" \")` — states it nowhere a parser can read.",
+  },
+  {
+    mechanism: "computed_import",
+    why: "A dynamic `import(`./${name}`)` specifier cannot be resolved statically, so a module reached only that way is outside every graph this file walks.",
+  },
+];
 
 function listRouteEntrypoints(): string[] {
   const entries = new Set<string>(filesUnder(ROUTE_DIR));
   for (const file of ancestorChainFor(ROUTE_DIR)) entries.add(file);
-  for (const page of pagesSellingTheOffer()) {
-    entries.add(page);
-    for (const file of ancestorChainFor(page.slice(0, page.lastIndexOf("/")))) entries.add(file);
+  for (const served of filesSellingTheOffer()) {
+    entries.add(served);
+    for (const file of ancestorChainFor(served.slice(0, served.lastIndexOf("/")))) entries.add(file);
   }
   return [...entries];
 }
@@ -191,6 +240,7 @@ export const RELEASE_RESCUE_SURFACE_FILES = discoverSurfaceFiles();
  * is worth a look rather than a silent pass.
  */
 export const EXPECTED_SURFACE_FILES = [
+  "src/app/(app)/layout.tsx",
   "src/app/(marketing)/ai-app-release-rescue/demo/[id]/not-found.tsx",
   "src/app/(marketing)/ai-app-release-rescue/demo/[id]/page.tsx",
   "src/app/(marketing)/ai-app-release-rescue/demo/page.tsx",
@@ -200,8 +250,10 @@ export const EXPECTED_SURFACE_FILES = [
   "src/app/(marketing)/ai-app-release-rescue/page.tsx",
   "src/app/(marketing)/layout.tsx",
   "src/app/(marketing)/pricing/page.tsx",
+  "src/app/(ops)/layout.tsx",
   "src/app/actions/ai-app-release-rescue.ts",
   "src/app/actions/auth.ts",
+  "src/app/api/internal/release-rescue/retention-sweep/route.ts",
   "src/app/error.tsx",
   "src/app/layout.tsx",
   "src/app/not-found.tsx",
@@ -247,9 +299,11 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/release-rescue-redaction-keys.ts",
   "src/lib/release-rescue-redaction.ts",
   "src/lib/release-rescue-report.ts",
+  "src/lib/release-rescue-retention-schedule.ts",
   "src/lib/release-rescue-rubric.ts",
   "src/lib/release-rescue-secret-classification.ts",
   "src/lib/store.ts",
+  "src/lib/supabase/admin.ts",
   "src/lib/supabase/env.ts",
   "src/lib/supabase/server.ts",
 ];
@@ -311,8 +365,13 @@ export const DECLARED_CLAIM_BEARING_FILES: Readonly<Record<string, string>> = {
  *
  *     <h3>What the review is</h3><li>Secure, read-only access…</li>
  *       -> "…the review is Secure, read-only access…"  flags `is secure`
- *     <dt>Vulnerabilities found</dt><dd>no</dd>
- *       -> "Vulnerabilities found no"                  flags `no vulnerabilities`
+ *     <dt>Vulnerabilities found</dt><dd>no</dd><dt>Vulnerabilities fixed</dt><dd>no</dd>
+ *       -> "Vulnerabilities found no Vulnerabilities fixed no"  flags `no vulnerabilities`
+ *
+ * That second one was first written here as a SINGLE dt/dd pair, which does not
+ * flag — "Vulnerabilities found no" never puts `no` before `vulnerabilities`.
+ * An audit measured it and was right. It takes two pairs for the join to bring
+ * those two words together, and both examples above are measured as written.
  *
  * Neither child carries a claim. Both are plausible copy for THIS product. The
  * direction is fail-closed — a false positive stops a build, it never delivers
@@ -449,19 +508,57 @@ export function rendersMarkup(source: string, file = "surface.tsx"): boolean {
  * invisible here — measured, each one, not supposed.
  */
 export type ExtractorResidual = {
-  readonly mechanism: "identifier" | "computed" | "cross_component";
+  readonly mechanism: "identifier" | "computed" | "cross_component" | "non_jsx_element";
+  /** Source the extractor sees. */
   readonly source: string;
+  /**
+   * What a customer reads when it runs. Declared, because a residual that does
+   * not actually render a claim proves nothing by being invisible — two entries
+   * here were once prose with no claim in them and passed for exactly that
+   * reason, until an audit executed them.
+   */
+  readonly renders: string;
 };
 
 export const EXTRACTOR_RESIDUALS: readonly ExtractorResidual[] = [
-  // The sentence exists only after the identifier is resolved.
-  { mechanism: "identifier", source: 'const LEAD = "Your application is"; <p>{LEAD} secure and ready.</p>' },
-  { mechanism: "identifier", source: "const a = 'Your application is'; const b = 'secure'; a + ' ' + b" },
+  // The sentence exists only after an identifier is resolved.
+  {
+    mechanism: "identifier",
+    source: 'const LEAD = "Your application is"; const el = <p>{LEAD} secure and ready.</p>;',
+    renders: "Your application is secure and ready.",
+  },
+  {
+    mechanism: "identifier",
+    source: "const a = 'Your application is'; const b = 'secure'; const c = a + ' ' + b;",
+    renders: "Your application is secure",
+  },
   // The text is assembled at runtime from data.
-  { mechanism: "computed", source: 'ROWS.map((row) => row.word).join(" ")' },
-  { mechanism: "computed", source: 'String.fromCharCode(105, 115) + " secure"' },
+  {
+    mechanism: "computed",
+    source: 'const WORDS = ["Your application is", "secure"]; const s = WORDS.join(" ");',
+    renders: "Your application is secure",
+  },
+  {
+    mechanism: "computed",
+    source: 'const s = String.fromCharCode(105, 115) + " secure";',
+    renders: "is secure",
+  },
   // Two components each hold half of it; neither is a claim alone.
-  { mechanism: "cross_component", source: "<Lead /> renders 'Your application is'; <Tail /> renders 'secure'" },
+  {
+    mechanism: "cross_component",
+    source:
+      "const Lead = () => <span>Your application is</span>; const Tail = () => <span>secure.</span>; const P = () => <p><Lead /><Tail /></p>;",
+    renders: "Your application is secure.",
+  },
+  // Adjacent literals in an element built WITHOUT JSX. The run-together rule
+  // keys on JsxElement, so element construction by call bypasses it. Found by an
+  // audit, and it is none of the mechanisms above: every word is a plain literal
+  // stated in the source.
+  {
+    mechanism: "non_jsx_element",
+    source: 'React.createElement("p", null, "Your application is", " secure and ready.");',
+    renders: "Your application is secure and ready.",
+  },
 ];
 
 /**
@@ -474,6 +571,15 @@ export const EXTRACTOR_RESIDUALS: readonly ExtractorResidual[] = [
  */
 export const EXTRACTOR_RESIDUAL_NOTE =
   "Static extraction reads the text a source states, never the text a program computes.";
+
+/**
+ * Two residual entries used to be prose rather than code — `ROWS.map(...)` with
+ * no `ROWS`, and a sentence describing two components. Both "passed" the
+ * still-invisible assertion because there was no claim in them to see. An audit
+ * caught it. Every entry above is now real source that renders the claim, and
+ * the test executes each one rather than reading it.
+ */
+export const EXTRACTOR_RESIDUALS_ARE_EXECUTABLE = true;
 
 export function readSurface(file: string): string {
   return readFileSync(resolve(process.cwd(), file), "utf8");

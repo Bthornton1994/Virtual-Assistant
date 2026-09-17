@@ -38,7 +38,7 @@ describe("rescue customer copy", () => {
     // merely contains the characters. A rule that reads code cannot tell a
     // rendered promise from the vocabulary used to forbid one.
     for (const file of CHECKED_FILES) {
-      for (const text of visibleStrings(readSurface(file))) {
+      for (const text of visibleStrings(readSurface(file), file)) {
         expect(text, file).not.toMatch(/penetration test of your/i);
         expect(text, file).not.toMatch(/we certify/i);
         expect(text, file).not.toMatch(/guarantees the absence/i);
@@ -60,7 +60,7 @@ describe("rescue customer copy", () => {
     // unchallenged. So the rule is a union: a digit before the slash, OR a
     // slash-5 near a word that means a rating. A utility class carries neither.
     for (const file of CHECKED_FILES) {
-      for (const text of visibleStrings(readSurface(file))) {
+      for (const text of visibleStrings(readSurface(file), file)) {
         expect(text, file).not.toMatch(/1\u20135 score|1-5 score|out of 5|\d\s*\/\s*5\b|\b(?:rated|scores?|scored|scoring|readiness|overall)\b[^.]{0,24}\/\s*5\b/i);
       }
     }
