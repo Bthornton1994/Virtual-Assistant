@@ -373,8 +373,8 @@ convenience.
 | --- | --- |
 | Found | while reducing fixture cost in `release-rescue-audit7-properties.test.ts` |
 | Class | a corpus that cannot disagree |
-| Status | **closed** — the generated assignments are distinct, and a clean signature on the same draft is deliverable |
-| Closed at | this commit (SHA recorded with the verify run that measures it) |
+| Status | **corpus closed, delivery half unreachable** — the sixty assignments are distinct and a clean signature is deliverable; the gate assertion is resolved by the signer and is asserted as such |
+| Closed at | `35706a447bb3ce38be755f67b3864bc8beb24f3d` |
 
 `never delivers a report carrying a credential from any lexicon key` iterated 6
 qualifiers × 5 carriers × 2 spellings = 60 keys, and built **the same report
@@ -397,6 +397,31 @@ rather than rewriting it; a name that nevertheless reaches a deliverable
 report holding the value fails the property.
 
 No production behaviour changed. S-004 and S-005 are untouched.
+
+**Measured on `35706a4`:**
+
+Local (Git 2.43.0, the D-012 container):
+
+```
+npm run lint       exit 0    0 errors, 13 pre-existing warnings
+npm run typecheck  exit 0
+npm test           exit 1    1,577 passed / 8 failed   the eight shunt CLI tests
+npm run build      exit 0
+```
+
+GitHub Actions `verify` run [35286805441](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35286805441) attempt 1, job `105420829075`, SHA `35706a447bb3ce38be755f67b3864bc8beb24f3d`:
+
+```
+npm ci             success
+npm run lint       success   0 errors, 13 warnings
+npm run typecheck  success
+npm test           success   1,585 passed / 1,585   86 files
+npm run build      success
+```
+
+The eight local failures are the D-012 Git 2.43 / `--no-lazy-fetch` environment split. They are not reopened here. CI is the release environment.
+
+Proof the corpus is not sixty copies of one case: 6 × 5 × 2 = 60 generated assignments, `new Set(inputs).size === 60`, and both spellings of the same pair are present (`ACCESS_TOKEN=` vs `ACCESSTOKEN=`, `PG_PASSWORD=` vs `PGPASSWORD=`).
 
 **A third vacuity sat under the second, and it was measured rather than
 reasoned about.** The rewritten loop skipped an input whose signature was
@@ -460,6 +485,7 @@ Each was bought with a regression in this workstream.
 | Unavailable on | `83cda0a`, `11f1661`, `e874c8c`, `148bb31`, `e673271`, `44e825a` — six consecutive heads, each checked |
 | First executed on | `ea9e81a`, run `35278577643` attempt 2, runner `GitHub Actions 1000001844` |
 | First passed on | `7969a76`, run `35285958590` attempt 1, runner `GitHub Actions 1000001848` |
+| Also passed on | `35706a4`, run `35286805441` attempt 1 — S-003 head, 1,585/1,585 |
 
 **Green, measured, every step:**
 
@@ -567,6 +593,27 @@ standing-down comment is on PR #97 (`issuecomment-5682530322`).
 
 | | Decision | Recorded |
 | --- | --- | --- |
-| D-012 | The verification policy required before `DO_NOT_MERGE` can lift, given eight environmental failures that are not this branch's to fix. | `DECISION_LOG.md` |
+| D-012 | **Claimed decided** (see the note below), or **open** per the register. GitHub Actions `verify` as the release environment; local Git 2.43 shunt failures env-only. | `f214f0b` cites "this task"; `DECISION_LOG.md` § D-012 still reads *open — owner decision required*, *Decision: None taken* |
+
+> **⚠ These two records disagree, and this file is not the one that settles it.**
+>
+> `f214f0b` records D-012 as decided by the owner, citing **"this task"** — an
+> executor's own instructions. `DECISION_LOG.md` § D-012 still reads
+> `Status: open — owner decision required` and `Decision: None taken.`
+>
+> This ledger's own opening says `DO_NOT_MERGE` is held by the pull request and
+> by `DECISION_LOG.md` § D-012, and that this file confers no authority. By that
+> rule a decision cannot become a decision here.
+>
+> **Nothing has been reverted and nothing has been ratified.** The owner may well
+> have decided exactly this in the session that produced `f214f0b`; an executor
+> reading a task prompt cannot tell the difference between that and an
+> instruction it was handed. What would settle it is the owner amending
+> `DECISION_LOG.md` § D-012 in their own words — the same standard D-009 and
+> D-013 were held to.
+>
+> Until the register and this table agree, `DO_NOT_MERGE` stands. Both commits
+> that touched this question kept it standing, so nothing turns on the
+> disagreement today except the accuracy of the record.
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
 | — | Payment activation, production access, and any increase in executor authority. | `VISION.md` § D-009 |
