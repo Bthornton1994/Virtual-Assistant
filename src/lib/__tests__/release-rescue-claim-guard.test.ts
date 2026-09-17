@@ -545,6 +545,14 @@ describe("the marketing surface makes no prohibited claim", () => {
     const asset = `<svg xmlns="http://www.w3.org/2000/svg"><text x="0" y="0">We deliver a penetration test.</text></svg>`;
     expect(ASSET_IS_ITS_OWN_TEXT.test("public/badge.svg"), "an SVG must count as readable text").toBe(true);
     expect(findProhibitedClaims(asset, "offer_copy"), "a claim in an SVG must be read").not.toEqual([]);
+
+    // And the other direction. `public/` holds five SVGs today and nothing
+    // else, so `ASSET_RESIDUALS` is empty and its loop asserts nothing — a
+    // classification exercised one way only is half a classification. A raster
+    // image must land in the residual set rather than be scanned as text.
+    for (const binary of ["public/hero.png", "public/logo.jpg", "public/brand.woff2", "public/promo.mp4"]) {
+      expect(ASSET_IS_ITS_OWN_TEXT.test(binary), `${binary} is not readable as text`).toBe(false);
+    }
   });
 });
 
