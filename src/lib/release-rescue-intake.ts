@@ -888,6 +888,85 @@ function clauseEndIndex(tokens: readonly ClaimToken[], index: number): number {
   return tokens.length;
 }
 
+/**
+ * Words that are negation-SHAPED but do not deny anything.
+ *
+ * "Without exception" is an intensifier: it asserts the thing that follows,
+ * which is the opposite of denying it. An audit served "Without exception your
+ * application is secure" as licensed offer copy.
+ */
+const NEGATION_SHAPED_INTENSIFIERS = [
+  ["without", "exception"],
+  ["without", "fail"],
+  ["without", "doubt"],
+  ["without", "question"],
+];
+
+/**
+ * Words that start a new predicate, so a denial before one does not reach past it.
+ *
+ * "We never rest UNTIL your application is secure" denies the resting, not the
+ * security: the claim sits in a subordinate clause the negation does not
+ * govern. The tokenizer does not model grammar, but it can see the hinge.
+ */
+const SCOPE_BREAKERS = new Set([
+  "until",
+  "unless",
+  "once",
+  "when",
+  "whenever",
+  "while",
+  "after",
+  "before",
+  "because",
+  "since",
+  "so",
+  "therefore",
+  "then",
+]);
+
+/**
+ * Whether a denial found before a claim actually GOVERNS it.
+ *
+ * Licensing used to accept a negation anywhere earlier in the clause, so an
+ * affirmative claim with an unrelated denial in front of it was licensed and an
+ * audit served three such sentences.
+ *
+ * The obvious repair — require the negation within N tokens — was implemented,
+ * swept, and REFUTED by its own measurement: "Without exception your
+ * application is secure" and "We never claim your application is secure" both
+ * put their negation FOUR tokens before the claim, so no distance separates a
+ * payload from a denial the offer publishes. A record saying so was written, and
+ * it printed the payload's distance as three, which was wrong and was the number
+ * the argument rested on; the next audit measured all three at four and showed
+ * the conclusion drawn from it — that only an owner decision could close this —
+ * was unsupported.
+ *
+ * What separates them is not distance but SCOPE, and two structural facts carry
+ * it: a negation-shaped intensifier denies nothing, and a subordinating
+ * conjunction starts a predicate the negation does not reach into. Measured over
+ * the whole surface: all three payloads caught, none of the ten required denials
+ * broken, and the flagged set outside the declared exemption unchanged at zero.
+ */
+function negationGovernsTheClaim(before: readonly string[]): boolean {
+  let negationAt = -1;
+  for (let index = before.length - 1; index >= 0; index -= 1) {
+    if (!containsNegation(before[index] ?? "", BASELINE_MODE)) continue;
+    const pair = [before[index], before[index + 1] ?? ""];
+    const isIntensifier = NEGATION_SHAPED_INTENSIFIERS.some(
+      (phrase) => phrase[0] === pair[0] && phrase[1] === pair[1],
+    );
+    if (isIntensifier) continue;
+    negationAt = index;
+    break;
+  }
+  if (negationAt === -1) return false;
+  for (let index = negationAt + 1; index < before.length; index += 1) {
+    if (SCOPE_BREAKERS.has(before[index] ?? "")) return false;
+  }
+  return true;
+}
+
 function containsNegation(clause: string, mode: TokenizerMode): boolean {
   const tokens = tokenize(clause, mode);
   if (tokens.some((token) => NEGATION_TOKENS.has(token))) return true;
@@ -1018,12 +1097,10 @@ function claimsInTokens(
   for (const { claim, stems } of claims) {
     const length = stems.length;
     for (const start of occurrences.get(claim) ?? []) {
-      const clauseBefore = tokens
-        .slice(clauseStartIndex(tokens, start), start)
-        .map((token) => token.word)
-        .join(" ");
+      const before = tokens.slice(clauseStartIndex(tokens, start), start).map((token) => token.word);
+      const clauseBefore = before.join(" ");
       if (disclaimersMayLicense) {
-        if (containsNegation(clauseBefore, BASELINE_MODE)) continue;
+        if (containsNegation(clauseBefore, BASELINE_MODE) && negationGovernsTheClaim(before)) continue;
         if (referralLicenses(tokens, start, start + length, claimTokenIndices)) continue;
       }
       found.push(claim);

@@ -2665,7 +2665,7 @@ are excluded by construction, so this codebase can keep documenting its own
 attack payloads in prose. There is no length floor, no inline-tag list, no
 brace matching and no keyword list left to be wrong about.
 
-Measured against every payload the last four audits produced — **22 planted
+Measured against every payload the last four audits produced — **24 planted
 shapes** spanning newline, inline markup, entities, interpolations, semicolons,
 English keywords, short literals, comparisons inside a text node, template
 interpolation, JSX siblings with no JSX parent, JSX passed as a prop, and the
@@ -3568,6 +3568,81 @@ The first sweep of that table counted the exemption file itself and reported 27
 strings broken at every reach, which would have argued against the change
 outright. Excluding the file whose job is to hold the claim list gave the real
 numbers.
+
+### The record I wrote in place of a fix was wrong, and the fix was fifteen lines
+
+The previous round found that an unrelated denial licenses an affirmative claim
+in offer copy — "We never rest until your application is secure". I implemented
+the obvious repair, a distance window, swept it, found it broke denials the offer
+publishes, **reverted it**, recorded the hole as a residual, and escalated it as
+an owner decision on the grounds that no rule in code could close it.
+
+Two things were wrong with that.
+
+The **figure** was wrong. The record said the payload "Without exception your
+application is secure" put its negation three tokens before the claim while the
+two denials put theirs at four, so no window could separate them. Measured, all
+three sit at **four**. The sentence beside that number — "the same shape at the
+same distance" — was the true part; the figure that turned it into an argument
+was not. The record also said a short reach breaks "two declared denials"; at
+reach 2 it breaks **five**.
+
+The **conclusion** was wrong, and an audit refuted it by writing the rule. What
+separates a denial from an affirmative claim is not distance but SCOPE, and two
+structural facts carry it: a negation-shaped INTENSIFIER ("without exception")
+denies nothing, and a subordinating conjunction ("until", "unless", "once")
+starts a predicate the negation does not reach into. Measured over the whole
+174-file surface: **all three payloads caught, none of the ten required denials
+broken, and the flagged set outside the one declared exemption unchanged at
+zero.** No marketing copy changes; no owner decision was needed.
+
+The residual is gone. The three sentences stay as a REGRESSION corpus — each
+must now be caught — which is the opposite of what that file records for
+everything else, so the name says so.
+
+The lesson is not that escalating was wrong in principle. It is that an
+escalation is a claim like any other, it rested on a number I did not check, and
+"this cannot be done in code" is exactly the kind of claim that has to be
+measured before it is made.
+
+### Two more asymmetries, one of them created by the fix for the first
+
+- **CSS escapes were read on the asset path only.** So
+  `content: "penetration\000020test"` was caught in a `.css` file and invisible
+  inside an inline `<style>` in a `.tsx` — the same "checked in one place,
+  invisible in another" defect the same commit claimed to have closed for
+  entities. An audit served it at HTTP 200 and confirmed the rendered `::after`
+  content in a real browser.
+
+  Fixing it needed a second step. A template literal's **cooked** value destroys
+  the evidence: `\0` cooks to a NUL, so the backslash the CSS decoder looks for
+  is already gone. What Next copies into the stylesheet is the **raw** source
+  text, so the raw text of every literal is now read beside the cooked one.
+
+- **`decodeEntities` carried eleven named entities**, out of HTML5's roughly
+  2,200 — a hand-written list, in the module whose premise is that hand-written
+  lists fail. `Your application is&emsp;secure` served at HTTP 200. Every named
+  reference now decodes to a single space, whatever it names: this guard reads
+  prose for a fixed set of ASCII claims, so the only thing a name can do to a
+  claim is join or split its words.
+
+### The import graph parsed every module as TSX
+
+`reachableFrom` called `staticSpecifiersIn(source)` with no file, so
+`scriptKindOf` saw the default `.tsx` for every module in the graph — which is
+exactly what `scriptKindOf` exists to prevent, bypassed in the one place the
+graph is walked. A legacy `<string>x` assertion, valid `.ts` that `tsc` and
+`next build` both accept, made the parse fail and silently dropped every import
+after it. Both guards built for this were blind: `parseProblems` uses the correct
+dialect and reported clean, and `resolveImport` was never called so
+`UNRESOLVED_IMPORTS` stayed empty.
+
+And the parser that replaced the specifier regex lost four forms the regex
+caught — `import("y").X`, `import x = require("y")`, `module.require(…)` and
+`require.main.require(…)`. The repository's own rule is to diff the SETS when a
+mechanism is replaced; that diff was not run until an audit ran it over all 318
+source files. All four are read now, and `UNREADABLE_SPECIFIERS` is deduped and
+asserted rather than written to and never read.
 
 ## What this slice deliberately does not do
 

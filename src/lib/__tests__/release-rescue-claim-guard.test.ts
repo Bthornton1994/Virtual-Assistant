@@ -5,13 +5,14 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { OFFER_COPY_LICENSING_RESIDUALS } from "./release-rescue-claim-guard-residuals";
+import { NEGATION_SCOPE_REGRESSIONS } from "./release-rescue-claim-guard-residuals";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
   assetIsItsOwnText,
   collectedByTheRunner,
   parseSurface,
   staticSpecifiersIn,
+  UNREADABLE_SPECIFIERS,
   reachableFrom,
   routeRoots,
   FRAMEWORK_ENTRYPOINT_NAMES,
@@ -503,6 +504,23 @@ describe("the marketing surface makes no prohibited claim", () => {
       // extractor read nothing at all. Silently.
       "a route served as .js": ["app/page.js", `export default function P() { return <p>Your application is secure.</p>; }`],
       "a component served as .jsx": ["components/card.jsx", `export const C = () => <p>We deliver a penetration test.</p>;`],
+      // A CSS escape inside an inline `<style>`. CSS escapes were read on the
+      // ASSET path only, so the identical bytes were caught in a `.css` file and
+      // invisible here — the asymmetry the same commit claimed to have closed
+      // for entities. And the template literal's COOKED value destroys the
+      // evidence (`\0` cooks to a NUL), so the RAW source text is what has to be
+      // read: that is what Next copies into the stylesheet and what a browser's
+      // CSS parser sees. An audit confirmed the rendered `::after` content in a
+      // real Chromium.
+      "a CSS escape inside an inline style": [
+        "page.tsx",
+        "const S = () => <style>{`#x::after { content: \"penetration\\000020test\"; }`}</style>;",
+      ],
+      // An em space. `decodeEntities` carried ELEVEN named entities out of
+      // HTML5's ~2,200 — a hand-written list, in the module whose premise is
+      // that hand-written lists fail. A browser renders this as whitespace
+      // between the two claim tokens; the guard saw one word.
+      "a claim split by a named entity the list did not carry": `<p>Your application is&emsp;secure and ready to ship.</p>`,
     };
 
     // The published figure, bound to the thing it counts. A commit wrote
@@ -858,30 +876,28 @@ describe("the marketing surface makes no prohibited claim", () => {
     ).toBe("Your application is secure.");
   });
 
-  it("records the offer-copy licensing residual as a measurement, and executes it", () => {
-    // A bound that nothing runs is not evidence. Each recorded sentence must
-    // ACTUALLY get through as offer copy — otherwise the record describes a hole
-    // that is not there — and must be caught as a typed field, which is what
-    // makes it a licensing residual rather than a detection failure.
-    expect(OFFER_COPY_LICENSING_RESIDUALS.length, "the residual must not be empty").toBeGreaterThan(0);
-    for (const sentence of OFFER_COPY_LICENSING_RESIDUALS) {
+  it("does not let an unrelated denial license an affirmative claim", () => {
+    // These were recorded as a residual the previous round, with an argument
+    // that no rule in code could close them. The argument rested on a distance
+    // that was measured wrong — all three payloads and both cited denials put
+    // their negation four tokens before the claim, not three and four — and an
+    // audit refuted the conclusion by writing the rule.
+    //
+    // What separates them is scope, not distance: a negation-shaped intensifier
+    // denies nothing, and a subordinating conjunction starts a predicate the
+    // negation does not reach into.
+    expect(NEGATION_SCOPE_REGRESSIONS.length, "the regression corpus must not be empty").toBeGreaterThan(0);
+    for (const sentence of NEGATION_SCOPE_REGRESSIONS) {
       expect(
         findProhibitedClaims(sentence, "offer_copy"),
-        `${sentence} is no longer licensed; the residual is closed and must be removed`,
-      ).toEqual([]);
-      expect(
-        findProhibitedClaims(sentence, "typed_field"),
-        `${sentence} must still be caught where no disclaimer licenses anything`,
+        `${sentence} is an affirmative claim and must not be licensed by the denial in front of it`,
       ).not.toEqual([]);
     }
 
-    // And the denials the offer actually publishes must stay licensed, which is
-    // the constraint that made a distance rule unworkable.
-    for (const denial of [
-      "We never claim your application is secure.",
-      "We cannot guarantee your application is secure.",
-      "This review is not a penetration test.",
-    ]) {
+    // And every denial the offer publishes stays licensed. This is the whole
+    // constraint: a rule that caught the payloads by rejecting these would have
+    // been a worse guard, not a better one.
+    for (const denial of REQUIRED_DENIALS) {
       expect(findProhibitedClaims(denial, "offer_copy"), `${denial} is a denial and must stay licensed`).toEqual([]);
     }
   });
@@ -952,8 +968,63 @@ describe("the marketing surface makes no prohibited claim", () => {
       "a two-argument local helper named require is not an import",
     ).toEqual([]);
 
+    // Forms the PREDECESSOR REGEX caught and the first parser version dropped.
+    // The repository's rule is to diff the SETS when a mechanism is replaced;
+    // that diff was not run, and an audit ran it over all 318 source files and
+    // found these four. `import("y").X` is erased at runtime, but following
+    // `import type … from "y"` while dropping it is an inconsistency rather
+    // than a decision; the other three are real runtime loads.
+    for (const [form, source] of Object.entries({
+      "import type node": 'type T = import("./panel").X;',
+      "import = require": 'import panel = require("./panel");',
+      "module.require": 'const m = module.require("./panel");',
+      "require.main.require": 'const m = require.main.require("./panel");',
+    })) {
+      expect(staticSpecifiersIn(source, "m.ts"), `${form} must yield its specifier`).toContain("./panel");
+    }
+
     // The genuine residual: a specifier the compiler cannot read either.
     expect(staticSpecifiersIn("const n = 'p'; const m = import(`./${n}`);")).toEqual([]);
+
+    // And that residual is RECORDED — deduped, and read by this assertion. It
+    // was written to by the module and read by nothing, while three places said
+    // it "records anything it cannot place".
+    expect(UNREADABLE_SPECIFIERS, "the unreadable record must not be empty after that call").toContain("`./${n}`");
+    const before = UNREADABLE_SPECIFIERS.length;
+    staticSpecifiersIn("const n = 'p'; const m = import(`./${n}`);");
+    expect(UNREADABLE_SPECIFIERS.length, "the same specifier twice must be recorded once").toBe(before);
+  });
+
+  it("parses each module in its own dialect when walking the import graph", () => {
+    // `reachableFrom` called `staticSpecifiersIn(source)` with no file, so every
+    // module in the graph was parsed as TSX. A legacy `<string>x` assertion or a
+    // `<T>(x) => x` generic arrow — valid `.ts` that `tsc` and `next build`
+    // accept — made the parse fail and silently dropped every import after it.
+    // Both guards built for this were blind: `parseProblems` uses the correct
+    // dialect and reported clean, and `resolveImport` was never called so
+    // `UNRESOLVED_IMPORTS` stayed empty.
+    const legacy = 'const a = <string>x; import { B } from "./b"; import { C } from "./c";';
+    expect(staticSpecifiersIn(legacy, "m.ts"), "a .ts file must be parsed as TypeScript").toEqual(["./b", "./c"]);
+
+    // And the walk passes the file. On this repository the derived answer and
+    // the default agree, so only the source shows the wiring.
+    const callsWithFile: string[] = [];
+    const parsed = parseSurface(
+      "release-rescue-surface-files.ts",
+      readSurface("src/lib/__tests__/release-rescue-surface-files.ts"),
+    );
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "staticSpecifiersIn"
+      ) {
+        callsWithFile.push(node.arguments.map((argument) => argument.getText(parsed)).join(", "));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(parsed);
+    expect(callsWithFile, "the graph walk must pass the file so the dialect follows it").toContain("source, file");
   });
 
   it("would read a planted claim out of a served asset", () => {
@@ -982,8 +1053,12 @@ describe("the marketing surface makes no prohibited claim", () => {
     ).toEqual([]);
 
     // And the classification in both directions, decided by BYTES rather than by
-    // a name. `public/` holds five SVGs today, so `ASSET_RESIDUALS` is empty and
-    // its loop asserts nothing; these two files make the decision run.
+    // a name. `assetResiduals()` holds one entry today — `src/app/favicon.ico` —
+    // so its loop does run; these files make the DECISION run in both
+    // directions, which one entry cannot. (This comment said the set was empty
+    // and its loop asserted nothing, which stopped being true when the app
+    // directory joined the asset scan, and named a constant that does not
+    // exist.)
     const scratch = mkdtempSync(join(tmpdir(), "release-rescue-asset-"));
     try {
       const text = join(scratch, "notice.js");

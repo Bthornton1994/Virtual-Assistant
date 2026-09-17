@@ -28,44 +28,7 @@ export type ResidualMechanism =
   /** A character substituted, doubled or inserted inside a claim word. Each is a different token to the matcher. */
   | "intra_word"
   /** No word boundary of any kind — no separator, no case transition. */
-  | "no_boundary"
-  /**
-   * OFFER COPY ONLY. A negation anywhere earlier in the same clause licenses the
-   * claim, even when the negation is not about it: "We never rest until your
-   * application is secure" is an affirmative claim with an unrelated denial in
-   * front of it, and the whole clause is switched off.
-   *
-   * Every other residual here is a typed-field evasion — something an operator
-   * could type. This one is the reverse: it is a bound on the SURFACE the guard
-   * is said to govern, and it was unrecorded until an audit served three such
-   * sentences from the offer's own landing page at HTTP 200.
-   *
-   * A distance rule does not fix it, MEASURED rather than assumed. Requiring the
-   * negation within N tokens of the claim was implemented and swept over the
-   * whole 174-file surface:
-   *
-   *   reach 2-3  catches all three payloads, breaks no real copy — but also
-   *              rejects two DECLARED denials this suite requires to pass,
-   *              "We never claim your application is secure" and "We cannot
-   *              guarantee your application is secure", whose negations sit four
-   *              tokens out;
-   *   reach 4+   permits those two, and permits "Without exception your
-   *              application is secure", whose unrelated negation sits three.
-   *
-   * The legitimate denial and the affirmative claim are the same shape at the
-   * same distance, so no token-distance rule separates them; the difference is
-   * what the negation GOVERNS, which this tokenizer does not model. Tightening
-   * further means either rejecting denial phrasings the offer currently uses, or
-   * licensing only sentences declared verbatim — both of which change what
-   * marketing copy is permitted without a code change. That is an owner
-   * decision, so it is recorded here rather than made quietly.
-   *
-   * What stands in the meantime: offer copy is written by this repository and
-   * reviewed by a person, the four disclaimers are declared and literal-true,
-   * and a TYPED FIELD — anything a customer supplies — is read as
-   * `typed_field`, where no disclaimer licenses anything.
-   */
-  | "unrelated_negation_licenses_offer_copy";
+  | "no_boundary";
 
 export type ClaimGuardResidual = {
   readonly mechanism: ResidualMechanism;
@@ -150,10 +113,32 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
  * the production text red until it is corrected too.
  */
 /**
- * The offer-copy licensing residual, kept separate because it is not a typed
- * value: each is a whole sentence a surface could publish, read as offer copy.
+ * Sentences that an unrelated denial used to license, now CAUGHT.
+ *
+ * These were recorded here as a residual — a hole the guard had — together with
+ * an argument that no rule in code could close it and that only an owner could
+ * decide the trade-off. Both halves were wrong, and an audit showed it.
+ *
+ * The argument rested on a distance: the record said the payload "Without
+ * exception your application is secure" put its negation THREE tokens before the
+ * claim while two required denials put theirs at FOUR, so no window could
+ * separate them. Measured, all three sit at four. The sentence beside that
+ * number — "the same shape at the same distance" — was the true part, and the
+ * figure that made it an argument was not. The record also said a short reach
+ * broke "two declared denials"; at reach 2 it breaks five.
+ *
+ * The rule that closes it is not about distance at all. A negation-shaped
+ * INTENSIFIER ("without exception") denies nothing, and a subordinating
+ * conjunction ("until", "unless", "once") starts a predicate the negation does
+ * not reach into. Measured over the whole 174-file surface: all three caught,
+ * none of the ten required denials broken, and the flagged set outside the one
+ * declared exemption unchanged at zero.
+ *
+ * They stay here as a REGRESSION corpus rather than a residual: each must now be
+ * caught as offer copy, which is the opposite of what this file records for
+ * everything else, so the name says so.
  */
-export const OFFER_COPY_LICENSING_RESIDUALS: readonly string[] = [
+export const NEGATION_SCOPE_REGRESSIONS: readonly string[] = [
   "We never rest until your application is secure.",
   "We do not stop working until your application is secure and free of vulnerabilities.",
   "Without exception your application is secure after this review.",

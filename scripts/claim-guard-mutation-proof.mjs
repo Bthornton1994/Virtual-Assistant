@@ -36,6 +36,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const MODULE = "src/lib/__tests__/release-rescue-surface-files.ts";
+// One mechanism lives in the guard itself rather than the discovery module.
+const INTAKE = "src/lib/release-rescue-intake.ts";
+const FILES = [MODULE, INTAKE];
 const SUITES = [
   "src/lib/__tests__/release-rescue-claim-guard.test.ts",
   "src/lib/ai-app-release-rescue/copy.test.ts",
@@ -74,9 +77,11 @@ const SUITES = [
  *     evidence than a quoted one, and it is labelled so.
  *
  * A mutant that is not the predecessor is not worthless, but it must not be
- * counted as though it were. `kind` is printed with the verdict.
+ * counted as though it were. `kind` is printed with the verdict, and an entry
+ * WITHOUT a `kind` is verbatim — the header used to say "each says which", which
+ * was not true of the six that carry no label.
  *
- * @type {ReadonlyArray<{id: string, mechanism: string, from: string, to: string, kind?: string, control?: boolean}>}
+ * @type {ReadonlyArray<{id: string, mechanism: string, from: string, to: string, kind?: string, file?: string, control?: boolean}>}
  */
 const MUTANTS = [
   {
@@ -188,7 +193,7 @@ const MUTANTS = [
   },
   {
     id: "M-ASSET-DECODE-ENTITIES",
-    mechanism: "a served asset's entities and CSS escapes are decoded before matching",
+    mechanism: "a served asset's entities are decoded before matching",
     from: "    const decoded = decodeEntities(text);\n    if (decoded !== text) readings.add(decoded);",
     to: "    const decoded = text;\n    if (decoded !== text) readings.add(decoded);",
     kind: "reconstruction: the predecessor decoded nothing on this path",
@@ -199,6 +204,42 @@ const MUTANTS = [
     from: "    if (existsSync(full) && statSync(full).isFile()) return candidate.replace(/\\\\/g, \"/\");",
     to: '    if (existsSync(full) && statSync(full).isFile() && /\\.(tsx?|jsx?|mjs|cjs|json)$/.test(candidate)) return candidate.replace(/\\\\/g, "/");',
     kind: "verbatim: this is the READABLE filter the predecessor applied",
+  },
+  {
+    id: "M-SOURCE-CSS-ESCAPES",
+    mechanism: "CSS escapes are decoded on the SOURCE path too, not only in assets",
+    from: "  const decoded: string[] = [];\n  for (const text of found) {\n    const withoutEscapes = decodeCssEscapes(text);\n    if (withoutEscapes !== text) decoded.push(withoutEscapes);\n  }\n  return [...found, ...decoded].filter((text) => text.length > 0);",
+    to: "  return found.filter((text) => text.length > 0);",
+    kind: "verbatim: this is what the source path returned before",
+  },
+  {
+    id: "M-RAW-LITERAL-TEXT",
+    mechanism: "a literal's RAW source text is read, not only its cooked value",
+    from: "      const raw = rawTextOf(node, parsed);\n      if (raw !== null && raw !== node.text) found.push(tidy(raw));",
+    to: "      void rawTextOf;",
+    kind: "reconstruction: the predecessor had no raw reading at all",
+  },
+  {
+    id: "M-ENTITY-NAMES",
+    mechanism: "every named character reference is decoded, not eleven of them",
+    from: '    .replace(/&[a-z][a-z0-9]{1,31};?/gi, " ");',
+    to: '    .replace(/&nbsp;/gi, " ")\n    .replace(/&(amp|lt|gt|quot|apos|hellip|mdash|ndash|shy|zwnj|zwj);/gi, " ");',
+    kind: "verbatim: this is the eleven-name list it replaced",
+  },
+  {
+    id: "M-GRAPH-DIALECT",
+    mechanism: "the import graph parses each module in its own dialect",
+    from: "    for (const specifier of staticSpecifiersIn(source, file)) {",
+    to: "    for (const specifier of staticSpecifiersIn(source)) {",
+    kind: "verbatim: this is the call the predecessor made",
+  },
+  {
+    id: "M-NEGATION-SCOPE",
+    mechanism: "a denial licenses a claim only when it governs it",
+    from: "        if (containsNegation(clauseBefore, BASELINE_MODE) && negationGovernsTheClaim(before)) continue;",
+    to: "        if (containsNegation(clauseBefore, BASELINE_MODE)) continue;",
+    kind: "verbatim: this is the clause-wide rule it replaced",
+    file: "src/lib/release-rescue-intake.ts",
   },
   {
     id: "FP1",
@@ -306,7 +347,9 @@ if (existsSync(SENTINEL)) {
   process.exit(2);
 }
 
-const original = readFileSync(MODULE, "utf8");
+/** Every file a mutant may touch, snapshotted before anything runs. */
+const ORIGINALS = new Map(FILES.map((file) => [file, readFileSync(file, "utf8")]));
+const original = ORIGINALS.get(MODULE);
 writeFileSync(SENTINEL, original);
 let child = null;
 let exitCode = 0;
@@ -323,7 +366,7 @@ let exitCode = 0;
 const restore = () => {
   try {
     child?.kill("SIGKILL");
-    writeFileSync(MODULE, original);
+    for (const [file, text] of ORIGINALS) writeFileSync(file, text);
     rmSync(SENTINEL, { force: true });
   } catch {
     // Nothing useful to do while dying; the byte-for-byte check below is the
@@ -350,21 +393,23 @@ try {
   // An audit broke two mechanisms on disk and this script still printed that all
   // fifteen were held, which is correct behaviour for what it measures and
   // misleading for what a reader assumes it measures.
-  console.log(`measuring the working tree copy of ${MODULE}; run \`git status\` if you expected the committed one`);
+  console.log(`measuring the working tree copies of ${FILES.join(" and ")}; run \`git status\` if you expected the committed ones`);
 
   for (const mutant of MUTANTS) {
-    const occurrences = original.split(mutant.from).length - 1;
+    const target = mutant.file ?? MODULE;
+    const source = ORIGINALS.get(target);
+    const occurrences = source.split(mutant.from).length - 1;
     if (occurrences !== 1) {
       console.log(`${mutant.id.padEnd(18)} ANCHOR-MISS  (${occurrences} matches) — ${mutant.mechanism}`);
       exitCode = 1;
       continue;
     }
-    writeFileSync(MODULE, original.replace(mutant.from, mutant.to));
+    writeFileSync(target, source.replace(mutant.from, mutant.to));
     let newly;
     try {
       newly = [...(await failingSet())].filter((name) => !baseline.has(name)).sort();
     } finally {
-      writeFileSync(MODULE, original);
+      writeFileSync(target, source);
     }
     const held = newly.length > 0;
     const expected = mutant.control ? !held : held;
@@ -375,14 +420,16 @@ try {
     if (!expected) exitCode = 1;
   }
 } finally {
-  writeFileSync(MODULE, original);
+  for (const [file, text] of ORIGINALS) writeFileSync(file, text);
   rmSync(SENTINEL, { force: true });
   rmSync(workDir, { recursive: true, force: true });
 }
 
-if (readFileSync(MODULE, "utf8") !== original) {
-  console.error("FATAL: the module was not restored; restore it from git before continuing");
-  process.exit(2);
+for (const [file, text] of ORIGINALS) {
+  if (readFileSync(file, "utf8") !== text) {
+    console.error(`FATAL: ${file} was not restored; restore it from git before continuing`);
+    process.exit(2);
+  }
 }
 console.log(
   exitCode === 0

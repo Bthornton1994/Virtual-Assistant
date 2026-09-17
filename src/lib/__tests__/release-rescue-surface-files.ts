@@ -469,6 +469,11 @@ export function readServedAsset(file: string): string {
  */
 export const UNREADABLE_SPECIFIERS: string[] = [];
 
+/** Deduped: the same source read twice used to record the same specifier twice. */
+function recordUnreadable(text: string): void {
+  if (!UNREADABLE_SPECIFIERS.includes(text)) UNREADABLE_SPECIFIERS.push(text);
+}
+
 export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): string[] {
   const parsed = parseSurface(file, source);
   const found: string[] = [];
@@ -484,7 +489,7 @@ export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): str
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
       const text = literalText(node.moduleSpecifier);
       if (text !== null) found.push(text);
-      else UNREADABLE_SPECIFIERS.push(node.moduleSpecifier.getText(parsed));
+      else recordUnreadable(node.moduleSpecifier.getText(parsed));
     }
     // `import("y")`, `require("y")`, `require.resolve("y")`, `import.meta.resolve("y")`.
     if (ts.isCallExpression(node)) {
@@ -502,15 +507,36 @@ export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): str
       // first version of this recorded fifteen of its boolean conditions as
       // unreadable import specifiers — a record full of things that are not
       // what it says they are.
+      // `module.require(…)` and `require.main.require(…)` are real runtime
+      // loads that the predecessor regex caught and the first parser version
+      // dropped; the repository's own rule is to diff the SETS when a mechanism
+      // is replaced, and that diff was not run until an audit ran it.
       const isRequire =
-        (calleeText === "require" || calleeText === "require.resolve" || calleeText === "import.meta.resolve") &&
+        (calleeText === "require" ||
+          calleeText === "require.resolve" ||
+          calleeText === "import.meta.resolve" ||
+          calleeText.endsWith(".require") ||
+          calleeText.endsWith(".require.resolve")) &&
         node.arguments.length === 1;
       if (isImportCall || isRequire) {
         const first = node.arguments[0];
         const text = literalText(first);
         if (text !== null) found.push(text);
-        else if (first) UNREADABLE_SPECIFIERS.push(first.getText(parsed));
+        else if (first) recordUnreadable(first.getText(parsed));
       }
+    }
+    // `import("y").X` — the import TYPE node. Erased at runtime, but the module
+    // still has to be read, and following `import type … from "y"` while
+    // dropping this is an inconsistency rather than a decision.
+    if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      const literal = node.argument.literal;
+      if (ts.isStringLiteral(literal)) found.push(literal.text);
+    }
+    // `import x = require("y")` — a real runtime load.
+    if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      const text = literalText(node.moduleReference.expression);
+      if (text !== null) found.push(text);
+      else recordUnreadable(node.moduleReference.expression.getText(parsed));
     }
     // `import type … from "y"` is an ImportDeclaration and is handled above.
     ts.forEachChild(node, visit);
@@ -533,7 +559,15 @@ export function reachableFrom(entry: string): string[] {
     const source = readFileSync(resolve(process.cwd(), file), "utf8");
     // Bare side-effect imports and `require` count too: a module reached only
     // that way still renders, and the previous pattern could not see either.
-    for (const specifier of staticSpecifiersIn(source)) {
+    // The FILE is passed. Without it every module in the graph was parsed as
+    // TSX, so a legacy `<string>x` assertion or a `<T>(x) => x` generic arrow —
+    // valid `.ts` that `tsc` and `next build` both accept — made the parse fail
+    // and silently dropped every import after it. `parseProblems` uses the
+    // correct dialect and reported clean, `resolveImport` was never called so
+    // `UNRESOLVED_IMPORTS` stayed empty, and a newly added module simply never
+    // entered the set, so the exact-set pin could not move either. Both guards
+    // built for this were blind to it, in the one place the graph is walked.
+    for (const specifier of staticSpecifiersIn(source, file)) {
       const target = resolveImport(specifier, file);
       if (target && !SOURCE_IMPORT.test(target)) {
         // Reached by import and not a module the parser can read: a stylesheet,
@@ -1025,12 +1059,30 @@ export const DECLARED_CLAIM_BEARING_FILES: Readonly<Record<string, string>> = {
  * it cannot buy their way out with an exemption either: only the module that
  * defines the claim list may be declared.
  */
+/**
+ * Character references, decoded without a hand-written list of names.
+ *
+ * This carried ELEVEN named entities. HTML5 defines about 2,200, and an audit
+ * served `Your application is&emsp;secure` — an em space, which a browser
+ * renders as whitespace between the two claim tokens — straight through. A
+ * hand-written list of names, in the module whose premise is that hand-written
+ * lists fail.
+ *
+ * Numeric references are decoded to the character they name. Every NAMED
+ * reference becomes a single space, whatever it names: this guard reads prose
+ * for a fixed set of ASCII claims, so the only thing a named entity can do to a
+ * claim is join or split its words, and a space covers both readings. It is
+ * applied ADDITIVELY — the raw text is scanned too — so nothing is lost by
+ * decoding a name that was really meant as text.
+ *
+ * The trailing semicolon is optional because browsers accept `&#32` and
+ * `&amp` without it in many positions.
+ */
 function decodeEntities(text: string): string {
   return text
-    .replace(/&#x([0-9a-f]+);/gi, (_whole, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_whole, decimal) => String.fromCodePoint(Number.parseInt(decimal, 10)))
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&(amp|lt|gt|quot|apos|hellip|mdash|ndash|shy|zwnj|zwj);/gi, " ");
+    .replace(/&#x([0-9a-f]+);?/gi, (_whole, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_whole, decimal) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+    .replace(/&[a-z][a-z0-9]{1,31};?/gi, " ");
 }
 
 /**
@@ -1253,6 +1305,19 @@ function scriptKindOf(file: string): ts.ScriptKind {
   return ts.ScriptKind.TSX;
 }
 
+/**
+ * A literal's source text with its escapes still in it, or null if unavailable.
+ *
+ * The cooked value is what the program sees; the raw value is what the file
+ * contains, and for anything the framework copies into a stylesheet or a script
+ * the raw value is what reaches the customer.
+ */
+function rawTextOf(node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral, source: ts.SourceFile): string | null {
+  const text = node.getText(source);
+  if (text.length < 2) return null;
+  return text.slice(1, -1);
+}
+
 export function visibleStrings(source: string, file = "surface.tsx"): string[] {
   const parsed = parseSurface(file, source);
   const found: string[] = [];
@@ -1260,6 +1325,18 @@ export function visibleStrings(source: string, file = "surface.tsx"): string[] {
   const visit = (node: ts.Node): void => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       found.push(tidy(node.text));
+      // And the RAW text, where the two differ.
+      //
+      // `node.text` is the COOKED value — what JavaScript computes. For a CSS
+      // escape inside an inline `<style>` template, cooking destroys the
+      // evidence: `content: "penetration\000020test"` cooks `\0` to a NUL, so
+      // the backslash the CSS decoder looks for is already gone and the claim
+      // stayed invisible even after CSS escapes were read on this path. What
+      // Next puts in the stylesheet, and what the browser's CSS parser reads, is
+      // the RAW text. An audit served exactly that at HTTP 200 and confirmed the
+      // rendered `::after` content in a real browser.
+      const raw = rawTextOf(node, parsed);
+      if (raw !== null && raw !== node.text) found.push(tidy(raw));
     } else if (ts.isTemplateExpression(node)) {
       const parts = [node.head.text, ...node.templateSpans.map((span) => span.literal.text)];
       for (const part of parts) found.push(tidy(part));
@@ -1294,7 +1371,19 @@ export function visibleStrings(source: string, file = "surface.tsx"): string[] {
   // delimiters and blinded 73 positions the previous commit could see. The
   // parser returns text, so there is nothing to filter for — an empty string is
   // the only thing dropped.
-  return found.filter((text) => text.length > 0);
+  // Decoded variants, ADDITIVELY, the same way a served asset's readings are.
+  // `decodeCssEscapes` was added to the asset path only, so the identical bytes
+  // — `content: "penetration\\000020test"` — were caught in a `.css` file and
+  // invisible inside an inline `<style>` in a `.tsx`. An audit served exactly
+  // that at HTTP 200 and confirmed the rendered text in a real browser. The
+  // round that closed "checked in one place, invisible in another" for entities
+  // opened it for CSS escapes, in the same commit.
+  const decoded: string[] = [];
+  for (const text of found) {
+    const withoutEscapes = decodeCssEscapes(text);
+    if (withoutEscapes !== text) decoded.push(withoutEscapes);
+  }
+  return [...found, ...decoded].filter((text) => text.length > 0);
 }
 
 /** Whether the file contains any JSX at all, for the vacuity guard. */
