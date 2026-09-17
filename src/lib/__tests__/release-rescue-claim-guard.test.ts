@@ -507,7 +507,20 @@ describe("the marketing surface makes no prohibited claim", () => {
     }
   });
 
-  it("declares exactly the files that need a claim-bearing exemption, and no more", () => {
+  // EXPLICIT TIMEOUT, because the default is a performance assertion nobody
+  // wrote on purpose. This case parses every file reachable from the marketing
+  // route — 176 of them — and takes ~3.9s on an unloaded machine against
+  // vitest's 5s default. That is 78% of the budget, so a loaded runner or one
+  // more surface file decides the outcome, and CI proved it: this timed out at
+  // 5000ms on `f214f0b`, a commit that changed only markdown this test never
+  // reads, having passed on the three heads before it.
+  //
+  // The property under test is the exemption list, from both sides. How long the
+  // parse takes is not part of it, and S-005 is the lesson about thresholds a
+  // test never meant to assert. The scan's actual complexity is guarded by
+  // `release-rescue-credential-scanner.test.ts`, which measures growth on
+  // purpose.
+  it("declares exactly the files that need a claim-bearing exemption, and no more", { timeout: 60_000 }, () => {
     // A file reachable from a route is CHECKED unless it is declared, and the
     // declaration carries a reason. The danger with any exemption list is that
     // it becomes the place a real hit goes to die, so this asserts the list from

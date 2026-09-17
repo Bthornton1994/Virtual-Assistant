@@ -367,6 +367,41 @@ repository access. It is still customer-supplied contact data on a route anyone
 can reach, and `VISION.md` treats retention as a commitment rather than a
 convenience.
 
+### S-012 — a 5-second default decided whether the claim guard's own test passed
+
+| | |
+| --- | --- |
+| Found | by CI, failing on a commit that changed only markdown |
+| Class | a threshold nobody meant to assert |
+| Closed at | this commit |
+
+`verify` failed on `f214f0b` with **1,584 passed / 1 failed**, and the one
+failure was not an assertion:
+
+```
+FAIL  release-rescue-claim-guard.test.ts > declares exactly the files that
+      need a claim-bearing exemption, and no more
+Error: Test timed out in 5000ms.
+```
+
+`f214f0b` changed the audit ledger and nothing else — markdown this test never
+reads — and the same test had passed on the three heads before it. Measured
+locally, the case takes **3,906ms against vitest's 5,000ms default**: 78% of the
+budget on an unloaded machine, for a case that parses every one of the 176 files
+reachable from the marketing route. A loaded runner, or one more surface file,
+decides the result.
+
+The property under test is the exemption list, asserted from both sides. **How
+long the parse takes is not part of it.** The default timeout was a performance
+assertion nobody wrote on purpose, sitting on a test whose cost grows with the
+codebase — so it is now explicit and generous, and the comment says why.
+
+This is S-005 again in a different place: *a threshold the machine decides,
+attached to a test that never meant to measure time*. S-005 was a 20ms floor that
+skipped a real defect; this one was a 5s ceiling that failed a correct one. The
+pair is the argument for keeping deliberate timing assertions in the one test
+that measures growth on purpose, and out of every test that does not.
+
 ### S-003 — a loop that varies nothing
 
 | | |
