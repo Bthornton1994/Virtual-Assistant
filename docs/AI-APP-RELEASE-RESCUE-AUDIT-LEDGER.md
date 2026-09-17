@@ -308,13 +308,33 @@ Each was bought with a regression in this workstream.
 
 ## Continuous integration
 
-### CI-001 — `verify` had never executed, until it did
+### CI-001 — `verify` had never executed, then it did, then it passed
 
 | | |
 | --- | --- |
-| Status | **RESOLVED — `verify` executed on a real runner at 2026-09-17T22:47Z** |
+| Status | **RESOLVED, and GREEN — `verify` passed in full at 2026-09-17T23:17Z** |
 | Unavailable on | `83cda0a`, `11f1661`, `e874c8c`, `148bb31`, `e673271`, `44e825a` — six consecutive heads, each checked |
-| Executed on | `ea9e81a`, run `35278577643` attempt 2, runner `GitHub Actions 1000001844` |
+| First executed on | `ea9e81a`, run `35278577643` attempt 2, runner `GitHub Actions 1000001844` |
+| First passed on | `7969a76`, run `35285958590` attempt 1, runner `GitHub Actions 1000001848` |
+
+**Green, measured, every step:**
+
+```
+Set up job / checkout / setup-node / npm ci   success
+npm run lint                                  success   23:15:28 → 23:15:42
+npm run typecheck                             success   23:15:42 → 23:15:53
+npm test                                      success   23:15:53 → 23:16:55
+npm run build                                 success   23:16:55 → 23:17:18
+```
+
+This is the first green `verify` in the history of this branch, and it arrived
+two runs after the first one that executed at all. Between them: S-004, the
+near-quadratic scan path CI found, and S-006 to S-008, the review findings.
+
+**Say both halves or neither.** `npm test` passes on CI and the same command has
+**8 failures in the development container**, for the reason recorded under D-012:
+the container ships Git 2.43.0 and the runner ships 2.55.0. Neither number is the
+whole truth on its own.
 
 **The outage lifted.** A re-run the owner started — not this executor; the one
 permitted re-run remains unspent on our side — was assigned a runner and ran

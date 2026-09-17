@@ -147,6 +147,16 @@ The suite was still red on that run, for one unrelated test: a near-quadratic pa
 
 So this exception has narrowed rather than widened. It governs eight failures that are visible only here, and it is no longer the thing standing between this branch and a green CI run.
 
+**And on 2026-09-17 at 23:17Z, `verify` passed in full on `7969a76`** — lint, typecheck, `npm test` and `npm run build`, every step green, first attempt. That is the first green run this branch has ever had.
+
+This does not close D-012, and an executor may not treat it as closing it. What it does is replace the question. The original question was what to do about a red suite. The question now is narrower and is still the owner's:
+
+> Does the release gate read CI, or does it read the development container?
+
+If CI, this gate is satisfied on the current head and D-012 can close as moot. If the container must also be green, the eight failures stand and the exception above is the record of them. An executor may not choose which of those two the gate means — that is a verification policy, and `AGENTS.md` reserves verification gates to accountable humans.
+
+`DO_NOT_MERGE` therefore still stands. It is held by this entry and by the pull request, not by the state of CI.
+
 **Expiration:** this exception expires when any one of these becomes true, whichever is first:
 - the container's Git reaches a version carrying `--no-lazy-fetch` and the eight tests pass unchanged;
 - the eight failures are fixed on `main` and this branch is rebased;
