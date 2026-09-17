@@ -64,10 +64,15 @@ returns jsonb language sql immutable as $$
     'engagementId', 'c2000000-0000-4000-8000-0000000000c2',
     'runId', 'ce000000-0000-0000-0000-0000000000c1',
     'organizationId', 'cb000000-0000-0000-0000-0000000000c1',
+    -- `reasonCode` and `approvedContentHash` are v13 fields. A signature without
+    -- them is refused by the payload guard, so this fixture carries them in
+    -- order to keep exercising the identifier rule rather than the newer one.
     'reviewedBy', jsonb_build_object(
       'operatorUserId', 'ca000000-0000-0000-0000-0000000000c1',
       'displayName', 'Ops Manager',
-      'reviewedAt', '2026-09-16T10:00:00.000Z'),
+      'reviewedAt', '2026-09-16T10:00:00.000Z',
+      'reasonCode', 'reviewed_findings_and_verdict_match_the_recorded_observations',
+      'approvedContentHash', repeat('c', 64)),
     'limitationCodes', jsonb_build_array('read_only_no_running_system'),
     'assessments', jsonb_build_array(jsonb_build_object(
       'checkId', 'secrets.no_secrets_in_version_control',

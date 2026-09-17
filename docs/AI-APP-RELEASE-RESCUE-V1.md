@@ -187,7 +187,11 @@ limitationCodes[]                    never empty; resolved from the catalog
 disclaimers{}                        four literal-true fields
 authorityReport{}                    any non-zero entry fails the gate
 preparedBy{}                         executor provenance: key, kind, provider, model
-reviewedBy                           the named human, or null (then undeliverable)
+reviewedBy                           the named human's attestation, or null (then undeliverable)
+  .operatorUserId / .displayName     who
+  .reviewedAt                        when
+  .reasonCode                        why, from the review-decision catalog
+  .approvedContentHash               WHICH BYTES: the report minus reviewedBy
 generatedAt
 ```
 
@@ -202,9 +206,22 @@ generatedAt
 
 The top rung is named `no_blocking_findings_identified`, not "ready" and not "secure". We can report what a review of one commit found. We cannot report that nothing else exists, and the name refuses to imply otherwise.
 
-**Report integrity.** `hashReleaseRescueReport` is a canonical SHA-256 over the artifact, stored in `release_rescue_reports.report_hash`. It is re-derivABLE, but nothing in the pipeline re-derives it yet — there is no production caller, and the delivery path that would check it is not built. What the database does enforce is that the row's verdict, blocking count and coverage match the artifact payload it points at. The row is immutable apart from a single `delivered_at` stamp; reports cannot be deleted; the database refuses a `release_blocked` verdict with no blocking finding and a clean verdict alongside blocking findings.
+**Report integrity.** `hashReleaseRescueReport` is a canonical SHA-256 over the artifact, stored in `release_rescue_reports.report_hash`. This paragraph used to say nothing in the pipeline re-derived it, because there was no production caller and the delivery path was not built. Both halves are now false and the sentence is corrected rather than left standing: `decideReleaseRescueDelivery` is the single production path from a stored report to anything a customer sees, it re-derives this hash on every decision, and a parser-based test asserts that nothing else in the tree can construct a customer view. What it still does not do is compare that hash against a stored row — the rows are written by a path that does not exist yet. What the database does enforce is that the row's verdict, blocking count and coverage match the artifact payload it points at. The row is immutable apart from a single `delivered_at` stamp; reports cannot be deleted; the database refuses a `release_blocked` verdict with no blocking finding and a clean verdict alongside blocking findings.
 
 **Delivery requires a human.** `reviewed_by` is `NOT NULL`, and a trigger checks the named reviewer actually holds `ops_manager` or `platform_admin` — a `NOT NULL` column alone would accept any user id, including the executor's own service account. `releaseRescueDeliveryGate` refuses an agent-prepared report with no human reviewer.
+
+**And the approval says why, and over which bytes.** For fifteen rounds `reviewedBy` recorded who and when and nothing else — a record that somebody signed something, not a record of what they signed. `decideReleaseRescueDelivery` bound its decision to a content hash, which looked like the missing half and was not: the hash was recomputed from the same bytes the decision was about to render, so it could not disagree with them. It always matched, and an edit made to a report after a human approved it passed every check in the system.
+
+Two fields close that, and the shape of each was decided by a constraint rather than a preference:
+
+- `reasonCode` is a code from a frozen catalog, never a sentence. Same judgement as every other word a report carries, and the same one already applied to secret-hold clearances. This field sits on the signature line beside a display name an audit caught carrying `Reviewed by ThisAppIsSecure`.
+- `approvedContentHash` is the hash of the report **without** `reviewedBy` — `hashReleaseRescueReviewSubject`. A signature cannot cover itself: attaching one changes the full content hash, so a reviewer attesting to `hashReleaseRescueReport` would be attesting to a value that cannot exist until after they have signed. Everything else is covered: findings, severities, counts, coverage, verdict, scope, holds, clearances, limitations, provenance. A test edits each in turn and asserts the hash moves.
+
+The hash is supplied by the reviewer's side — the artifact they were shown — and verified against the stored report by `signReleaseRescueReport`, by `validateReleaseRescueReport`, and again at the gate. Deriving it here would put back the check that could not fail.
+
+A report is therefore assembled as a **draft**, shown, and signed after that. `signReleaseRescueReport` is the splice step: it refuses a second signature, an attestation that does not describe the report, a reason that is not a catalog code, a display name that makes a prohibited claim, and reviewer text that would have to be redacted. That last one is a refusal rather than a redaction, unlike everything the assembler handles — findings come out of a customer's repository and are expected to contain credential material, so the pipeline removes it and records a hold; a reviewer's own name comes from our operator, and there is nothing to salvage by rewriting it.
+
+**Existing records are not backfilled.** Migration `v13` adds nullable columns, a `NOT VALID` delivery constraint, and a payload guard; it reports how many un-attested rows exist rather than assuming none. A reason and an attestation are things a human did or did not record, and writing a default into either would manufacture an approval nobody gave. A report signed before `v13` keeps its history, loses its deliverability, and has to be reviewed and signed again. Recorded as `DECISION_LOG.md` § D-013.
 
 ## Evidence and finding severity model
 
@@ -259,7 +276,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 400 live database cases across fourteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The unit-test counts that used to open this sentence are gone from it. They read
 "738 Release Rescue tests across 30 suites (1,414 in the whole repository)" at a
@@ -285,9 +302,18 @@ The database figure counts labelled `PASS <outcome> |` lines only. An earlier pa
 
 That banner has now been miscounted **twice**. A later pass published 387 by the same `grep -c "PASS "`, which also inflated every per-proof figure by one; an audit caught it, and the numbers above are counted by the convention this paragraph states. Writing the convention down did not stop it being broken, because the convention lived here and the counting happened in a shell one-liner. The figures are re-measured per proof rather than totalled from memory. A previous
 revision said the per-proof list "is in the v12 section"; it was not — that section
-lists three of the thirteen proofs, so the total could not in fact be checked
+lists three of the proofs, so the total could not in fact be checked
 against its parts, and that is how a stale per-proof figure survived. The complete
 list is here:
+
+The convention was broken a **third** time while adding `v13`: the first count of
+that pass used `grep -c "PASS "` again, reported 410, and inflated all fourteen
+per-proof figures by one. It was caught by reading this paragraph before
+publishing rather than by an audit afterwards, which is the only reason it is a
+sentence here instead of a retraction in the ledger. The figures below are
+`grep -cE "PASS [a-z]+ +\|"`, and every pre-existing proof's number is unchanged
+from the 378 table — which is itself the check that the `v13` fixture edits added
+no cases and removed none.
 
 | Proof | Cases |
 | --- | --- |
@@ -304,7 +330,8 @@ list is here:
 | `release_rescue_structured_observations_v10_proof.sql` | 30 |
 | `release_rescue_code_fields_v11_proof.sql` | 29 |
 | `release_rescue_identifier_shape_v12_proof.sql` | 17 |
-| **Total** | **378** |
+| `release_rescue_reviewer_attestation_v13_proof.sql` | 22 |
+| **Total** | **400** |
 
 Three of the six Playwright specs need live preview credentials (`E2E_PASSWORD`) and a deployed preview, neither of which this environment has or should have. They are not run here, and the 13 above does not include them.
 
@@ -894,10 +921,10 @@ empty database:
   public.execution_plans`, which collides with the differently-shaped table
   `0004_production_auth.sql` creates earlier in the chain.
 
-The proof base applies 54 of 58 migrations: the two above, one that needs the
+The proof base applies 55 of 59 migrations: the two above, one that needs the
 `http` extension this sandbox does not have, and one that fails only because a
 function the `http` migration would have created is missing. None of the four touch Release
-Rescue tables, and all thirteen Release Rescue proofs run against the result.
+Rescue tables, and all fourteen Release Rescue proofs run against the result.
 
 ## Sixth independent audit: the axis was the key, and the fix was the regression
 

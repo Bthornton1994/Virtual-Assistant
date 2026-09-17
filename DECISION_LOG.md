@@ -109,7 +109,44 @@ Date: 2026-09-17
 Status: **open — owner decision required**  
 Decision: **None taken.** This entry records the exact decision that is missing, so that its absence is visible in the register rather than inferred from a PR body.
 
-`npm test` on `remediation/release-rescue-pipeline-authority` reports 1,546 passing and **8 failing**. All eight are in `src/lib/__tests__/software-context-shunt-cli.test.ts`, they fail identically on `main`, and `git diff c3cf4a0..HEAD` is empty for that file and its subject — they are not this branch's to fix. They are nonetheless real failures and the suite is not green.
+`npm test` on `remediation/release-rescue-pipeline-authority` reports **1,570 passing and 8 failing**. All eight are in `src/lib/__tests__/software-context-shunt-cli.test.ts`, they fail identically on `main`, and `git diff c3cf4a0..HEAD` is empty for that file, for `scripts/software-context-shunt.mjs`, and for `src/lib/software-context-shunt.ts` — they are not this branch's to fix. They are nonetheless real failures and the suite is not green.
+
+### The exception, stated exactly
+
+**Scope — these eight tests in this one file, and nothing else.** Any other failure, in this file or any other, is outside this exception and blocks the release on its own.
+
+| | Test name, verbatim |
+| --- | --- |
+| 1 | `reads an immutable blob, not dirty working-tree content, without mutations` |
+| 2 | `runs as a real Node command with structured stdout and no dynamic install` |
+| 3 | `refuses invalid UTF-8, symlink, or oversized blob: binary.ts` |
+| 4 | `refuses invalid UTF-8, symlink, or oversized blob: linked.ts` |
+| 5 | `refuses invalid UTF-8, symlink, or oversized blob: oversized.ts` |
+| 6 | `keeps a UTF-8 byte-order mark in the source hash` |
+| 7 | `accepts exactly the file-size boundary without emitting an oversized result` |
+| 8 | `requires an explicit continuation after a no-match result` |
+
+All eight are in `describe("software context CLI: actual Git boundary")`.
+
+**Cause — measured, not inferred.** `scripts/software-context-shunt.mjs` invokes Git with `--no-lazy-fetch` on every call, and refuses outright if a preflight `git --no-lazy-fetch --version` fails. This container ships **Git 2.43.0**, which does not have that option:
+
+```
+$ git --version
+git version 2.43.0
+$ git --no-lazy-fetch --version
+unknown option: --no-lazy-fetch          # exit 129
+```
+
+So the adapter's own runtime precondition is unmet and it returns exit 2 for every invocation. Each of the eight tests asserts an exit code or a receipt that a working Git would produce. The flag is a deliberate part of the adapter's threat model — it stops a partial clone reaching the network to fetch a missing object — so **lowering the requirement is a security change, not a test fix**, and is not an executor's call.
+
+**Owner:** the repository owner, as the only party who may set a verification policy (`AGENTS.md`: an executor may never own verification gates).
+
+**Expiration:** this exception expires when any one of these becomes true, whichever is first:
+- the container's Git reaches a version carrying `--no-lazy-fetch` and the eight tests pass unchanged;
+- the eight failures are fixed on `main` and this branch is rebased;
+- **2026-10-17** — one month from this entry. After that date the exception is void and the eight failures block the release again with no exception recorded, rather than lapsing quietly into an assumption.
+
+**What this exception does NOT do.** It does not make the suite green, it does not lift `DO_NOT_MERGE`, and it does not authorize a merge. It records exactly which failures are known, why, whose decision is outstanding, and when the record goes stale. The decision itself is still open.
 
 The release gate as written requires a green suite. Three options exist and none may be taken by an executor:
 
@@ -119,4 +156,30 @@ The release gate as written requires a green suite. Three options exist and none
 
 Until one is chosen, **`DO_NOT_MERGE` stands**, and no report, commit message, or pull request on this branch may describe the suite as green. An executor may not choose between these, may not silently exclude the failures, and may not reinterpret a red suite as passing.
 
+Option 1 is the one the exception above is written FOR: it supplies the named list, the cause, the owner and the review date that option would need. Recording those is not the same as electing it, and this executor has not.
+
 Source: PR [#97](https://github.com/Bthornton1994/Virtual-Assistant/pull/97), `src/lib/__tests__/software-context-shunt-cli.test.ts`, [D-008](#d-008--bounded-owner-authorized-merge-while-ci-was-unavailable).
+
+---
+
+## D-013 — A reviewer's approval records why it was given and which bytes it covers
+
+Date: 2026-09-17  
+Status: **decided — owner-directed**  
+Decision: `reviewedBy` carries a `reasonCode` from a frozen catalog and an `approvedContentHash`. Both are required, both are enforced at the delivery gate, and existing records are not backfilled.
+
+The register listed this as an open question in `docs/AI-APP-RELEASE-RESCUE-AUDIT-LEDGER.md`: whether `reviewedBy` should carry a reason and a hash of the artifact approved, noting that closing it was a schema change and a migration. The owner directed both.
+
+What was wrong. `reviewedBy` recorded an operator id, a display name and a timestamp — who and when, and nothing else. `decideReleaseRescueDelivery` bound its decision to a content hash, which looked like the missing half and was not: it recomputed that hash from the same bytes it was about to render, so it could not disagree with them. **It always matched.** An edit made to a report after a human approved it — a verdict flipped, a blocking finding dropped, a limitation removed — passed every check in the system.
+
+What was decided, and the constraints that decided it:
+
+- **The reason is a code, not a sentence.** The same judgement as [D-011](#d-011--a-report-carries-codes-and-a-frozen-catalog-carries-the-words) and the same one already applied to secret-hold clearances. This field sits on the signature line of a customer's report, beside a display name an audit caught carrying `Reviewed by ThisAppIsSecure`.
+- **The hash covers the report WITHOUT `reviewedBy`.** A signature cannot cover itself: the full content hash changes the moment the signature is attached, so a reviewer attesting to it would be attesting to a value that cannot exist until after they have signed. Everything else is in scope — findings, severities, counts, coverage, verdict, scope, holds, clearances, limitations, provenance.
+- **The hash comes from the reviewer's side.** It is the hash of the artifact they were shown, sent back with the approval and verified against the stored report. Deriving it here would reinstate the check that could not fail.
+- **Existing records are not backfilled, and this is the substance of the migration rather than an omission in it.** A reason and an attestation are things a human did or did not record; writing a default into either would manufacture an approval nobody gave. A report signed before `v13` cannot be repaired — it has to be reviewed and signed again. The new columns are nullable, the delivery constraint is `NOT VALID` so pre-existing rows keep their history and lose only their deliverability, and the migration reports how many un-attested rows exist rather than assuming none.
+- **A reviewer's own text is refused rather than redacted.** Findings come from a repository we are reading and are expected to contain credential material, so the pipeline removes it and records a hold. A reviewer's name comes from our operator, and there is nothing to salvage by rewriting it.
+
+This decision changes an artifact contract and a database schema. It does not lift `DO_NOT_MERGE`, does not make the suite green, and does not authorize a merge, a deployment, payment activation, production access, or any increase in executor authority.
+
+Source: `supabase/migrations/20260917200000_release_rescue_reviewer_attestation_v13.sql`, `supabase/qa/release_rescue_reviewer_attestation_v13_proof.sql`, `src/lib/release-rescue-report.ts`, `src/lib/__tests__/release-rescue-review-attestation.test.ts`, PR [#97](https://github.com/Bthornton1994/Virtual-Assistant/pull/97).

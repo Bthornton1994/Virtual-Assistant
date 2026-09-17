@@ -477,7 +477,11 @@ values ('7f000000-0000-0000-0000-00000000bb09', '7b000000-0000-0000-0000-0000000
           'reviewedBy', jsonb_build_object(
             'operatorUserId', '7a000000-0000-0000-0000-00000000dd01',
             'displayName', 'VICTIM-CONFIDENTIAL-STRING-abc123',
-            'reviewedAt', '2026-09-16T00:00:00Z')));
+            'reviewedAt', '2026-09-16T00:00:00Z',
+            -- v13 fields. A signature missing them is refused before this
+            -- proof's own subject -- tenant isolation -- can be reached.
+            'reasonCode', 'reviewed_findings_and_verdict_match_the_recorded_observations',
+            'approvedContentHash', repeat('c', 64))));
 
 do $$
 declare v_message text; v_state text;

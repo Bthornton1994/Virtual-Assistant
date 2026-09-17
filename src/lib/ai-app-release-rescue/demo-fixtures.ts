@@ -8,6 +8,9 @@ import {
 import {
   buildReleaseRescueReport,
   hashReleaseRescueReport,
+  hashReleaseRescueReviewSubject,
+  signReleaseRescueReport,
+  type AssembleReportInput,
   type ReleaseRescueReportV1,
   type RubricAssessment,
 } from "@/lib/release-rescue-report";
@@ -178,7 +181,7 @@ const FINDINGS: ReleaseRescueFindingV1[] = [
   }),
 ];
 
-export const SAMPLE_REPORT: ReleaseRescueReportV1 = buildReleaseRescueReport({
+const SAMPLE_REPORT_INPUT: AssembleReportInput = {
   reportId: DEMO_SAMPLE_REPORT_ID,
   engagementId: DEMO_ENGAGEMENT_ID,
   runId: DEMO_RUN_ID,
@@ -209,12 +212,28 @@ export const SAMPLE_REPORT: ReleaseRescueReportV1 = buildReleaseRescueReport({
     modelId: null,
     protocolVersion: "v1",
   },
-  reviewedBy: {
-    operatorUserId: DEMO_OPERATOR_ID,
-    displayName: "Sam Okafor, operations manager",
-    reviewedAt: "2026-09-12T16:30:00.000Z",
-  },
+  reviewedBy: null,
   generatedAt: "2026-09-12T15:00:00.000Z",
+};
+
+/**
+ * The draft a reviewer is shown, and then the same artifact with a signature.
+ *
+ * Two steps, because they are two steps in the product. A report is assembled
+ * unsigned, a named human reads THAT artifact, and their approval carries the
+ * hash of what they read back with it. Collapsing them would have the reviewer
+ * attesting to bytes that did not exist when the attestation was written.
+ */
+const SAMPLE_DRAFT: ReleaseRescueReportV1 = buildReleaseRescueReport(SAMPLE_REPORT_INPUT);
+
+export const SAMPLE_REPORT: ReleaseRescueReportV1 = signReleaseRescueReport(SAMPLE_DRAFT, {
+  operatorUserId: DEMO_OPERATOR_ID,
+  displayName: "Sam Okafor, operations manager",
+  reviewedAt: "2026-09-12T16:30:00.000Z",
+  reasonCode: "reviewed_findings_and_verdict_match_the_recorded_observations",
+  // What the reviewer was shown. `signReleaseRescueReport` refuses it if it does
+  // not describe the draft being signed.
+  approvedContentHash: hashReleaseRescueReviewSubject(SAMPLE_DRAFT),
 });
 
 export const SAMPLE_REPORT_HASH: string = hashReleaseRescueReport(SAMPLE_REPORT);

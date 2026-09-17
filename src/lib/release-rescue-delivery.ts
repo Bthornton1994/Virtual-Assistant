@@ -1,5 +1,9 @@
 import { checkReportFieldCoverage, type CoverageFailure } from "@/lib/release-rescue-field-policy";
 import {
+  REVIEW_DECISION_REASON_CATALOG,
+  isReviewDecisionReasonCode,
+} from "@/lib/release-rescue-observation-catalog";
+import {
   hashReleaseRescueReport,
   releaseRescueDeliveryGate,
   validateReleaseRescueReport,
@@ -49,17 +53,25 @@ export type DeliveryDecision =
  * Every field here is persisted ON the report and hashed with it, so what the
  * page shows is the stored record rather than anything computed for display.
  *
- * `reviewedBy` carries identity and timestamp and NOT a reason, nor a hash of
- * what was approved. `approvedContentHash` below is therefore recomputed here
- * from the artifact at decision time — it binds this decision to these bytes,
- * but it is not the reviewer's own attestation that they approved these bytes.
- * Closing that needs a schema change and a migration, and is recorded as an
- * owner decision in `docs/AI-APP-RELEASE-RESCUE-V1.md` rather than implied here.
+ * `approvedContentHash` used to be recomputed HERE, from the artifact, at
+ * decision time. That bound the decision to the bytes it released, which is
+ * worth having, but it was the system attesting on the reviewer's behalf and it
+ * could not disagree with itself — it always matched. It is now the reviewer's
+ * own stored attestation: the hash of the artifact they were shown, sent back
+ * with their approval and verified against the report by the gate. A report
+ * edited after signing no longer matches it and is withheld.
+ *
+ * `reason` is the catalog sentence for the code the reviewer chose. The code is
+ * what is stored; the words belong to the catalog, hashed into the report as
+ * `observationCatalogHash`, so a later edit to the wording cannot change what an
+ * already-delivered report is understood to have said.
  */
 export type DeliveryReviewer = {
   readonly operatorUserId: string;
   readonly displayName: string;
   readonly reviewedAt: string;
+  readonly reasonCode: string;
+  readonly reason: string;
   readonly approvedContentHash: string;
 };
 
@@ -82,13 +94,19 @@ const NOTHING_RAN: DeliveryChecks = {
   gateBlockerCount: 0,
 };
 
-function reviewerOf(report: ReleaseRescueReportV1, contentHash: string): DeliveryReviewer | null {
+function reviewerOf(report: ReleaseRescueReportV1): DeliveryReviewer | null {
   if (report.reviewedBy === null) return null;
+  const reasonCode = report.reviewedBy.reasonCode;
   return {
     operatorUserId: report.reviewedBy.operatorUserId,
     displayName: report.reviewedBy.displayName,
     reviewedAt: report.reviewedBy.reviewedAt,
-    approvedContentHash: contentHash,
+    reasonCode,
+    // A stored code with no catalog entry renders as nothing rather than as the
+    // code itself. The gate has already refused such a report; this only decides
+    // what a withheld decision shows about the signature it refused.
+    reason: isReviewDecisionReasonCode(reasonCode) ? REVIEW_DECISION_REASON_CATALOG[reasonCode] : "",
+    approvedContentHash: report.reviewedBy.approvedContentHash,
   };
 }
 
@@ -140,7 +158,7 @@ export function decideReleaseRescueDelivery(report: ReleaseRescueReportV1): Deli
       ...gate.blockers,
     ];
 
-    const reviewer = reviewerOf(report, contentHash);
+    const reviewer = reviewerOf(report);
 
     if (blockers.length > 0 || !gate.deliverable || reviewer === null) {
       return {

@@ -316,7 +316,7 @@ insert into public.evidence_artifacts
 values ('2222a000-0000-0000-0000-000000000001', 'bbbb4000-0000-0000-0000-000000000001',
         'eeee4000-0000-0000-0000-000000000001', 'observation', 'Release Rescue report body',
         repeat('1', 64),
-        '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"conditional_release","blockingFindingCount":0,"reviewedCommitSha":"9f2c1b7e4d5a308c6b1e0f72a4d9c83b5e017642","coverage":{"totalChecks":32,"assessedChecks":32}}'::jsonb);
+        '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"conditional_release","blockingFindingCount":0,"reviewedCommitSha":"9f2c1b7e4d5a308c6b1e0f72a4d9c83b5e017642","reviewedBy":{"operatorUserId":"aaaa4000-0000-0000-0000-000000000002","displayName":"Ops Manager","reviewedAt":"2026-09-17T10:00:00.000Z","reasonCode":"reviewed_findings_and_verdict_match_the_recorded_observations","approvedContentHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"coverage":{"totalChecks":32,"assessedChecks":32}}'::jsonb);
 
 -- A body naming a DIFFERENT commit. The report row that points at it must be
 -- refused, or the pin would be decoration.
@@ -335,12 +335,17 @@ select rrl4.expect_refusal(
     (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
      rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
      coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by,
+     review_reason_code, review_approved_content_hash,
      reviewed_commit_sha)
   values ('bbbb4000-0000-0000-0000-000000000001', 'ffff4000-0000-0000-0000-000000000001',
           'eeee4000-0000-0000-0000-000000000001', '2222a000-0000-0000-0000-000000000001',
           'release-rescue-report/v1', repeat('3', 64), 'release-rescue-rubric/v1', repeat('4', 64),
           repeat('a', 64), 'conditional_release', 0, 32, 32, 'auditor',
-          'aaaa4000-0000-0000-0000-000000000002', repeat('0', 40));
+          'aaaa4000-0000-0000-0000-000000000002',
+          -- v13: the row's attestation must match the one in the artifact, and a
+          -- report without one cannot reach step 7's delivery stamp at all.
+          'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('c', 64),
+          repeat('0', 40));
 $q$);
 
 select rrl4.expect_refusal(
@@ -362,12 +367,16 @@ select rrl4.expect_ok('the report is issued, and the commit is filled in from th
   insert into public.release_rescue_reports
     (id, organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
      rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
-     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by,
+     review_reason_code, review_approved_content_hash)
   values ('3333a000-0000-0000-0000-000000000001', 'bbbb4000-0000-0000-0000-000000000001',
           'ffff4000-0000-0000-0000-000000000001', 'eeee4000-0000-0000-0000-000000000001',
           '2222a000-0000-0000-0000-000000000001', 'release-rescue-report/v1', repeat('6', 64),
           'release-rescue-rubric/v1', repeat('4', 64), repeat('a', 64), 'conditional_release', 0,
-          32, 32, 'auditor', 'aaaa4000-0000-0000-0000-000000000002');
+          32, 32, 'auditor', 'aaaa4000-0000-0000-0000-000000000002',
+          -- v13: matches the signature in artifact 2222a000-...-0001. Without it
+          -- this row cannot be stamped delivered in step 7.
+          'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('c', 64));
 $q$);
 
 do $$

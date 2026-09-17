@@ -12,7 +12,11 @@ import {
   releaseRescueDeliveryGate,
   validateReleaseRescueReport,
 } from "@/lib/release-rescue-report";
-import { makeFinding, makeReportInput } from "@/lib/__tests__/release-rescue-fixtures";
+import {
+  makeFinding,
+  makeReportInput,
+  signWithFixtureReviewer,
+} from "@/lib/__tests__/release-rescue-fixtures";
 
 // The seventh audit's diagnosis, as tests.
 //
@@ -236,14 +240,20 @@ describe("the outcome the whole workstream exists to prevent", () => {
           `${qualifier}_${carrier}`.toUpperCase(),
           `${qualifier}${carrier}`.toUpperCase(),
         ]) {
-          const report = buildReleaseRescueReport(
-            makeReportInput({
-              findings: [
-                makeFinding({
-                  locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
-                }),
-              ],
-            }),
+          // Assembled unsigned and signed by splice, which is one assembly
+          // rather than two. `makeReportInput` signs by assembling a draft to
+          // read its subject hash off, and this loop runs sixty times.
+          const report = signWithFixtureReviewer(
+            buildReleaseRescueReport(
+              makeReportInput({
+                reviewedBy: null,
+                findings: [
+                  makeFinding({
+                    locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
+                  }),
+                ],
+              }),
+            ),
           );
           const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
 

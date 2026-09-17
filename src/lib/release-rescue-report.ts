@@ -14,6 +14,7 @@ import {
   branchNameSchema,
   REPOSITORY_ACCESS_MODES,
   RELEASE_RESCUE_OFFER_VERSION,
+  findProhibitedClaims,
   type ReleaseRescueScope,
 } from "@/lib/release-rescue-intake";
 import {
@@ -35,6 +36,7 @@ import {
   ENGAGEMENT_LIMITATION_CODES,
   RELEASE_RESCUE_OBSERVATION_CATALOG_HASH,
   RELEASE_RESCUE_OBSERVATION_CATALOG_VERSION,
+  REVIEW_DECISION_REASON_CODES,
   STANDING_LIMITATION_CODES,
   STANDING_LIMITATIONS,
   isAssessmentRationaleCode,
@@ -42,8 +44,10 @@ import {
   isLimitationCode,
   isObservationCode,
   isRemediationCode,
+  isReviewDecisionReasonCode,
   isUncertaintyCode,
   type LimitationCode,
+  type ReviewDecisionReasonCode,
 } from "@/lib/release-rescue-observation-catalog";
 import {
   FINDING_SEVERITIES,
@@ -258,11 +262,36 @@ export const preparedBySchema = z
   })
   .strict();
 
+/**
+ * A named human's attestation that they released THIS artifact.
+ *
+ * Identity and a timestamp were all this carried for fifteen rounds, which made
+ * it a record that somebody signed something — not a record of what they signed
+ * or why. `decideReleaseRescueDelivery` bound its decision to the bytes it
+ * released, but that binding was the system's, recomputed at display time, and
+ * it could not disagree with itself. It always matched.
+ *
+ * Two fields close that:
+ *
+ * `reasonCode` is why, as a code. It sits directly beside `displayName`, which an
+ * audit caught rendering "Reviewed by ThisAppIsSecure" to a customer; a free-text
+ * reason on the signature line of a $299 report is the same field with a longer
+ * maximum length.
+ *
+ * `approvedContentHash` is what, as the hash of the report WITHOUT this record —
+ * see `hashReleaseRescueReviewSubject`. It is supplied by the reviewer's side
+ * from the artifact they were shown, and verified against the stored report by
+ * `signReleaseRescueReport` and again at the gate. If a finding, a verdict, a
+ * count, or a limitation changes after the signature, the hash the reviewer
+ * attested to no longer describes the report and delivery is refused.
+ */
 export const reviewedBySchema = z
   .object({
     operatorUserId: identifierString.max(100),
     displayName: nonEmptyString.max(200),
     reviewedAt: isoDateTimeSchema,
+    reasonCode: z.enum(REVIEW_DECISION_REASON_CODES),
+    approvedContentHash: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
 
@@ -302,7 +331,7 @@ export const clearedSecretHoldSchema = z
     /** An operator user id. The database checks it holds manager authority. */
     clearedBy: identifierString.max(100),
     clearedAt: isoDateTimeSchema,
-    /** Why it was safe. Free text, and itself subject to the field policy. */
+    /** Why it was safe, as a code from the clearance catalog rather than a note. */
     reasonCode: z.enum(CLEARANCE_REASON_CODES),
   })
   .strict();
@@ -539,6 +568,21 @@ export type AssembleReportInput = {
   preparedBy: z.infer<typeof preparedBySchema>;
   unresolvedHolds?: z.infer<typeof unresolvedHoldSchema>[];
   clearedSecretHolds?: z.infer<typeof clearedSecretHoldSchema>[];
+  /**
+   * The reviewer's signature, if one has been collected.
+   *
+   * It stays an assembler input, and it still goes through `sanitizeReportInput`
+   * with everything else: `$.reviewedBy.displayName` is the one free-text string
+   * a report holds, and removing it from this path would take the redaction and
+   * hold machinery's last reachable carrier with it.
+   *
+   * `approvedContentHash` is NOT checked here. It is checked by
+   * `validateReleaseRescueReport` and again at the gate, the same way `scopeHash`
+   * is: the assembler builds, and the deterministic validator decides whether
+   * what was built is sound. That ordering is also what makes the two-step real
+   * flow expressible — assemble a draft, show it, take the reviewer's hash back,
+   * and splice it in with `signReleaseRescueReport`.
+   */
   reviewedBy: z.infer<typeof reviewedBySchema> | null;
   generatedAt: string;
 };
@@ -672,6 +716,11 @@ function assertEveryCodeIsInItsCatalog(input: AssembleReportInput): void {
   (input.clearedSecretHolds ?? []).forEach((hold, index) => {
     if (!isClearanceReasonCode(hold.reasonCode)) bad.push(`clearedSecretHolds[${index}].reasonCode`);
   });
+
+  if (input.reviewedBy !== null && !isReviewDecisionReasonCode(input.reviewedBy.reasonCode)) {
+    bad.push("reviewedBy.reasonCode");
+  }
+
 
   if (bad.length > 0) {
     throw new Error(
@@ -848,6 +897,97 @@ export function hashReleaseRescueReport(report: ReleaseRescueReportV1): string {
   return sha256Hex(report);
 }
 
+/**
+ * The hash of everything a reviewer is asked to approve.
+ *
+ * Everything except `reviewedBy` itself. A signature cannot cover itself: the
+ * full content hash changes the moment the signature is attached, so a reviewer
+ * attesting to `hashReleaseRescueReport` would be attesting to a value that
+ * cannot exist until after they have signed.
+ *
+ * What is left is the whole artifact — findings, severities, counts, coverage,
+ * verdict, scope, holds, clearances, limitations, disclaimers, provenance. Every
+ * field a change could make the report say something different. So this is the
+ * right subject, not merely the computable one.
+ */
+export function hashReleaseRescueReviewSubject(report: ReleaseRescueReportV1): string {
+  const subject = { ...report } as Partial<ReleaseRescueReportV1>;
+  delete subject.reviewedBy;
+  return sha256Hex(subject);
+}
+
+/** What a reviewer's console submits when a named human releases a report. */
+export type ReviewAttestation = {
+  operatorUserId: string;
+  displayName: string;
+  reviewedAt: string;
+  reasonCode: ReviewDecisionReasonCode;
+  /**
+   * The subject hash of the artifact the reviewer was SHOWN, sent back with the
+   * approval. Not derived from the stored report at display time — that is what
+   * the delivery decision used to do, and a hash the system recomputes from the
+   * bytes it is about to render cannot disagree with them. This one can.
+   */
+  approvedContentHash: string;
+};
+
+/**
+ * Splice a reviewer's attestation into a report that has already been assembled.
+ *
+ * This is the second half of the real flow: a report is assembled as a draft,
+ * the draft is shown to a named reviewer, and their approval comes back carrying
+ * the hash of what they read. Only then does a signature exist.
+ *
+ * It refuses a second signature, an attestation whose hash does not describe the
+ * report being signed, and reviewer text that would have to be redacted. That
+ * last one is a refusal and not a redaction, unlike everything the assembler
+ * handles: findings come from a repository we are reading and are expected to
+ * contain credential material, so the pipeline removes it and records a hold the
+ * customer can read. A reviewer's own name comes from our operator, and there is
+ * nothing to salvage by rewriting it.
+ */
+export function signReleaseRescueReport(
+  report: ReleaseRescueReportV1,
+  attestation: ReviewAttestation,
+): ReleaseRescueReportV1 {
+  if (report.reviewedBy !== null) {
+    throw new Error(
+      "Release Rescue review: this report already carries a reviewer signature. A signature is written once; re-signing would silently replace the accountable human.",
+    );
+  }
+
+  if (!isReviewDecisionReasonCode(attestation.reasonCode)) {
+    throw new Error(
+      "Release Rescue review: the review decision reason must be a code from the review-decision catalog, not text. The offending value is withheld from this message deliberately.",
+    );
+  }
+
+  // Paths, never values. This message reaches logs.
+  const { holds, redactedPaths } = sanitizeReportInput({ reviewedBy: attestation });
+  const unsafe = [...new Set([...redactedPaths, ...holds.map((hold) => hold.path)])];
+  if (unsafe.length > 0) {
+    throw new Error(
+      `Release Rescue review: the reviewer signature holds text that would have to be redacted at ${unsafe.join(", ")}. A signature is refused rather than rewritten. The offending values are withheld from this message deliberately.`,
+    );
+  }
+
+  const claims = findProhibitedClaims(attestation.displayName, "typed_field");
+  if (claims.length > 0) {
+    throw new Error(
+      `Release Rescue review: the reviewer signature makes a prohibited claim ("${claims.join('", "')}"). A display name is the report's signature line, not a place to state what the review found.`,
+    );
+  }
+
+  const subject = hashReleaseRescueReviewSubject(report);
+  if (attestation.approvedContentHash !== subject) {
+    throw new Error(
+      `Release Rescue review: the reviewer approved content hash ${attestation.approvedContentHash}, but the report they are signing hashes to ${subject}. The artifact changed between review and approval, so the approval does not describe it.`,
+    );
+  }
+
+  return { ...report, reviewedBy: { ...attestation } };
+}
+
 // --- Validation ---------------------------------------------------------------------
 
 const ZERO_METRICS: ReleaseRescueReportMetrics = {
@@ -882,6 +1022,32 @@ const ZERO_METRICS: ReleaseRescueReportMetrics = {
  * whether the artifact is sound, so it cannot itself depend on anything that
  * could answer differently on a second run.
  */
+/**
+ * Whether a stored signature predates the reviewer-attestation fields.
+ *
+ * Read BEFORE the parse, for the same reason `describeSourceFieldSightings` is:
+ * `.strict()` answers "Required" at `reviewedBy.reasonCode` for a row written by
+ * an older build, which is true and tells an operator holding an undeliverable
+ * report nothing about what happened or what to do. A signature collected before
+ * this contract existed is not a defect in the artifact — it is an approval that
+ * never recorded why or over what, and it cannot be repaired by editing the row.
+ * The report has to be signed again.
+ */
+function describeUnattestedSignature(candidate: unknown): string | null {
+  if (candidate === null || typeof candidate !== "object") return null;
+  const reviewedBy = (candidate as { reviewedBy?: unknown }).reviewedBy;
+  if (reviewedBy === null || reviewedBy === undefined || typeof reviewedBy !== "object") return null;
+
+  const missing: string[] = [];
+  if (typeof (reviewedBy as { reasonCode?: unknown }).reasonCode !== "string") missing.push("reasonCode");
+  if (typeof (reviewedBy as { approvedContentHash?: unknown }).approvedContentHash !== "string") {
+    missing.push("approvedContentHash");
+  }
+  if (missing.length === 0) return null;
+
+  return `This report carries a reviewer signature written before reviewer attestation was required: reviewedBy is missing ${missing.join(" and ")}. An approval that does not record why it was given, or which bytes it covered, cannot release a report. The report must be reviewed and signed again; the missing fields must not be filled in on the reviewer's behalf.`;
+}
+
 export function validateReleaseRescueReport(candidate: unknown): ValidationResult<ReleaseRescueReportMetrics> {
   // Read before the parse, because the parse cannot say this. A stored artifact
   // written by an older build, or hand-edited in the database, carries `excerpt`
@@ -895,12 +1061,15 @@ export function validateReleaseRescueReport(candidate: unknown): ValidationResul
     ),
   );
 
+  const unattested = describeUnattestedSignature(candidate);
+
   const parsed = releaseRescueReportV1Schema.safeParse(candidate);
   if (!parsed.success) {
     return {
       hardGatePass: false,
       hardFailures: [
         ...(sourceFields ? [sourceFields] : []),
+        ...(unattested ? [unattested] : []),
         ...parsed.error.issues.map(
           (issue) => `Schema violation at ${issue.path.join(".") || "(root)"}: ${issue.message}`,
         ),
@@ -926,6 +1095,19 @@ export function validateReleaseRescueReport(candidate: unknown): ValidationResul
     hardFailures.push(
       `Report scope hash "${report.scopeHash}" does not match the hash recomputed from its scope ("${recomputedScopeHash}").`,
     );
+  }
+
+  // The reviewer's attestation, recomputed. This is the check that can fail:
+  // the hash is what the reviewer was shown, so an edit to a finding, a count,
+  // a limitation or the verdict after the signature makes it stop describing
+  // the report. The system's own binding could never disagree with itself.
+  if (report.reviewedBy !== null) {
+    const reviewSubject = hashReleaseRescueReviewSubject(report);
+    if (report.reviewedBy.approvedContentHash !== reviewSubject) {
+      hardFailures.push(
+        `The reviewer approved content hash "${report.reviewedBy.approvedContentHash}" does not match this report ("${reviewSubject}"). The report changed after it was signed, so the approval no longer describes it.`,
+      );
+    }
   }
 
   // --- assessment coverage and consistency ---
@@ -1159,6 +1341,28 @@ export function releaseRescueDeliveryGate(
   }
   if (report.reviewedBy === null) {
     blockers.push("No human reviewer has signed this report. An ops reviewer must approve before delivery.");
+  } else {
+    // Checked at runtime and not left to the type, because this is the point a
+    // STORED row reaches. A report written before reviewer attestation existed
+    // satisfies `ReleaseRescueReportV1` at compile time — a caller reads it back
+    // as `unknown` and casts — and arrives here with a signature that records no
+    // reason and covers no bytes. The gate is the last refusal before delivery,
+    // so it asks rather than assuming the parse ran.
+    const attested = report.reviewedBy as Partial<z.infer<typeof reviewedBySchema>>;
+    if (typeof attested.reasonCode !== "string" || !isReviewDecisionReasonCode(attested.reasonCode)) {
+      blockers.push(
+        "The reviewer signature records no reason from the review-decision catalog. An approval that does not say why it was given cannot release a report.",
+      );
+    }
+    if (typeof attested.approvedContentHash !== "string" || !/^[0-9a-f]{64}$/.test(attested.approvedContentHash)) {
+      blockers.push(
+        "The reviewer signature names no approved content hash. An approval that does not say which bytes it covered cannot release a report.",
+      );
+    } else if (attested.approvedContentHash !== hashReleaseRescueReviewSubject(report)) {
+      blockers.push(
+        "The reviewer approved a different version of this report. The artifact changed after it was signed, so it must be reviewed and signed again.",
+      );
+    }
   }
   if (report.limitationCodes.length === 0) {
     blockers.push("The report states no limitations.");

@@ -298,6 +298,16 @@ export const REPORT_FIELD_POLICY: Readonly<Record<string, FieldRule>> = {
     because: "An operator's name, rendered to the customer as the signature.",
   },
   "$.reviewedBy.reviewedAt": { disposition: "generated", because: "A timestamp this codebase writes." },
+  "$.reviewedBy.reasonCode": {
+    disposition: "generated",
+    because:
+      "A closed enum over the review-decision catalog. A reviewer selects why they are releasing the report; they do not write it, for the same reason a clearance reason is a code — this field sits on the signature line beside a display name an audit caught carrying a claim.",
+  },
+  "$.reviewedBy.approvedContentHash": {
+    disposition: "generated",
+    because:
+      "A hash binding the reviewer's approval to the exact bytes they approved. It is supplied by the reviewer's side and verified against the report, never derived from it at display time.",
+  },
 } as const;
 
 /**
@@ -595,6 +605,8 @@ export const GENERATED_FORMATS: Readonly<Record<string, GeneratedFormat>> = {
   "$.preparedBy.modelId": CONTROL_PLANE_PIN,
   "$.reviewedBy.operatorUserId": MINTED_ID,
   "$.reviewedBy.reviewedAt": ISO_TIMESTAMP,
+  "$.reviewedBy.reasonCode": CATALOG_CODE,
+  "$.reviewedBy.approvedContentHash": HASH_64,
 };
 
 /**

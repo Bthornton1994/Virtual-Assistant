@@ -285,7 +285,7 @@ insert into public.evidence_artifacts
   (id, organization_id, run_id, kind, summary, content_hash, payload)
 values ('88888888-0000-0000-0000-00000000aaaa', '22222222-0000-0000-0000-00000000aaaa',
         '55555555-0000-0000-0000-00000000aaaa', 'observation', 'Release Rescue report body',
-        repeat('e', 64), '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"conditional_release"}'::jsonb);
+        repeat('e', 64), '{"schemaVersion":"release-rescue-report/v1","observationCatalogVersion":"release-rescue-observations/v1","observationCatalogHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedBy":{"operatorUserId":"11111111-0000-0000-0000-00000000dddd","displayName":"Ops Manager","reviewedAt":"2026-09-17T10:00:00.000Z","reasonCode":"reviewed_findings_and_verdict_match_the_recorded_observations","approvedContentHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"verdict":"conditional_release"}'::jsonb);
 
 -- An artifact belonging to a different run, used to prove the binding check.
 insert into public.workstream_runs (id, organization_id, workstream_id, delegation_spec_id, status)
@@ -302,12 +302,16 @@ select rrtest.expect_error('a report signed by a plain operator is refused', $q$
   insert into public.release_rescue_reports
     (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
      rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
-     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by,
+     review_reason_code, review_approved_content_hash)
   values ('22222222-0000-0000-0000-00000000aaaa', '66666666-0000-0000-0000-00000000aaaa',
           '55555555-0000-0000-0000-00000000aaaa', '88888888-0000-0000-0000-00000000aaaa',
           'release-rescue-report/v1', repeat('1', 64), 'release-rescue-rubric/v1', repeat('2', 64),
           repeat('a', 64), 'conditional_release', 0, 24, 24, 'release-rescue-auditor',
-          '11111111-0000-0000-0000-00000000dddd');
+          '11111111-0000-0000-0000-00000000dddd',
+          -- v13: matches the signature in the report body artifact. Without it
+          -- the delivery stamp below is refused by the delivery constraint.
+          'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('c', 64));
 $q$);
 
 select rrtest.expect_error('a report bound to an artifact from another run is refused', $q$
@@ -366,12 +370,16 @@ select rrtest.expect_ok('an operations manager issues the report', $q$
   insert into public.release_rescue_reports
     (id, organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
      rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count, medium_count,
-     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by)
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by,
+     review_reason_code, review_approved_content_hash)
   values ('99999999-0000-0000-0000-00000000aaaa', '22222222-0000-0000-0000-00000000aaaa',
           '66666666-0000-0000-0000-00000000aaaa', '55555555-0000-0000-0000-00000000aaaa',
           '88888888-0000-0000-0000-00000000aaaa', 'release-rescue-report/v1', repeat('7', 64),
           'release-rescue-rubric/v1', repeat('2', 64), repeat('a', 64), 'conditional_release', 0, 3,
-          24, 24, 'release-rescue-auditor', '11111111-0000-0000-0000-00000000cccc');
+          24, 24, 'release-rescue-auditor', '11111111-0000-0000-0000-00000000cccc',
+          -- v13: matches the signature in the report body artifact. The delivery
+          -- stamp further down is refused without it.
+          'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('c', 64));
 $q$);
 
 select rrtest.expect_error('a report verdict cannot be edited after issue', $q$

@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+
+/**
+ * Number words this document uses, so the headline sentence can be checked
+ * against a count rather than against a literal somebody has to remember.
+ */
+const NUMBER_WORDS: Readonly<Record<number, string>> = {
+  12: "twelve",
+  13: "thirteen",
+  14: "fourteen",
+  15: "fifteen",
+  16: "sixteen",
+};
 import {
   ASSESSMENT_RATIONALE_CATALOG,
   ASSESSMENT_RATIONALE_CODES,
@@ -2580,10 +2592,29 @@ describe("9. a code field holds a code, and nothing else, on the production path
     const rows = [...doc.matchAll(/^\| `release_rescue_[a-z0-9_]+\.sql` \| (\d+) \|$/gm)].map((m) =>
       Number(m[1]),
     );
-    expect(rows.length, "the per-proof table could not be located").toBe(13);
+    // Counted from the proof DIRECTORY rather than written here as a literal.
+    // The literal was 13, and adding a fourteenth proof made this assertion fail
+    // for the right reason and the wrong cause — it said the table "could not be
+    // located" when the table was fine and the number beside it was the stale
+    // thing. A count taken from disk cannot go stale, and it still fails if a
+    // proof is added without a row.
+    const proofFiles = readdirSync(resolve(process.cwd(), "supabase/qa")).filter((file) =>
+      /^release_rescue_.*\.sql$/.test(file),
+    );
+    expect(rows.length, "every Release Rescue proof needs a row in the per-proof table").toBe(
+      proofFiles.length,
+    );
+
     const total = rows.reduce((sum, row) => sum + row, 0);
-    expect(total, "the per-proof table must sum to the published database figure").toBe(378);
-    expect(doc).toContain("378 live database cases across thirteen proofs");
+    const headline = /(\d+) live database cases across ([a-z]+) proofs/.exec(doc);
+    expect(headline, "the headline database figure could not be located").not.toBeNull();
+    expect(
+      Number(headline![1]),
+      "the per-proof table must sum to the published database figure",
+    ).toBe(total);
+    expect(headline![2], "and the headline must name the number of proofs in words").toBe(
+      NUMBER_WORDS[proofFiles.length] ?? String(proofFiles.length),
+    );
 
     // The payload figure, which this test did not read — and so a commit wrote
     // "50 payloads" into the doc while, in the same diff, making the corpus 52.

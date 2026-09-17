@@ -12,7 +12,15 @@ import {
   RELEASE_RESCUE_OFFER_VERSION,
   type ReleaseRescueScope,
 } from "@/lib/release-rescue-intake";
-import type { AssembleReportInput, RubricAssessment } from "@/lib/release-rescue-report";
+import {
+  buildReleaseRescueReport,
+  hashReleaseRescueReviewSubject,
+  signReleaseRescueReport,
+  type AssembleReportInput,
+  type ReleaseRescueReportV1,
+  type ReviewAttestation,
+  type RubricAssessment,
+} from "@/lib/release-rescue-report";
 
 // Shared fixtures for the Release Rescue suites. Kept out of the .test.ts naming
 // convention so vitest does not try to run it as a suite.
@@ -165,8 +173,64 @@ export function makeFinding(overrides: Partial<FindingFacts> = {}): ReleaseRescu
   });
 }
 
-export function makeReportInput(overrides: Partial<AssembleReportInput> = {}): AssembleReportInput {
+/** The identity and decision a fixture reviewer signs with, minus the per-report hash. */
+export const FIXTURE_REVIEWER: Omit<ReviewAttestation, "approvedContentHash"> = {
+  operatorUserId: FIXTURE_OPERATOR_ID,
+  displayName: "Ops Manager",
+  reviewedAt: "2026-09-16T10:00:00.000Z",
+  reasonCode: "reviewed_findings_and_verdict_match_the_recorded_observations",
+};
+
+/**
+ * A stand-in hash, used only to assemble the draft a reviewer would be shown.
+ *
+ * `hashReleaseRescueReviewSubject` excludes `reviewedBy` entirely, so the value
+ * here cannot affect the hash read off the draft. That is what makes the
+ * two-step flow expressible in one call: assemble a draft, read the subject hash
+ * off it, assemble again with that hash in the signature. A console does the
+ * same thing with a human in between the two steps.
+ */
+const DRAFT_HASH = "0".repeat(64);
+
+/**
+ * Overrides for `makeReportInput`.
+ *
+ * `reviewedBy` is looser than the schema on purpose: a test names the part of
+ * the signature it cares about — usually the display name — and the fixture
+ * supplies the decision code and the attestation hash, which it can compute and
+ * a test author cannot.
+ */
+export type ReportInputOverrides = Partial<Omit<AssembleReportInput, "reviewedBy">> & {
+  reviewedBy?: Partial<ReviewAttestation> | null;
+};
+
+export function makeReportInput(overrides: ReportInputOverrides = {}): AssembleReportInput {
+  const { reviewedBy, ...rest } = overrides;
+  const base = makeUnsignedReportInput(rest);
+  if (reviewedBy === null) return base;
+
+  const signature = { ...FIXTURE_REVIEWER, ...reviewedBy };
+  if (typeof signature.approvedContentHash === "string") {
+    return { ...base, reviewedBy: signature as ReviewAttestation };
+  }
+
+  // Assemble the draft this signature will be attached to, read the subject hash
+  // off it, then return the input carrying that hash. Two assemblies rather than
+  // one, because that is what the flow is: a reviewer reads an artifact that
+  // already exists and reports back what they read.
+  const draft = buildReleaseRescueReport({
+    ...base,
+    reviewedBy: { ...signature, approvedContentHash: DRAFT_HASH },
+  });
   return {
+    ...base,
+    reviewedBy: { ...signature, approvedContentHash: hashReleaseRescueReviewSubject(draft) },
+  };
+}
+
+function makeUnsignedReportInput(overrides: Partial<Omit<AssembleReportInput, "reviewedBy">> = {}): AssembleReportInput {
+  return {
+    reviewedBy: null,
     reportId: FIXTURE_REPORT_ID,
     engagementId: FIXTURE_ENGAGEMENT_ID,
     runId: FIXTURE_RUN_ID,
@@ -184,12 +248,25 @@ export function makeReportInput(overrides: Partial<AssembleReportInput> = {}): A
       modelId: null,
       protocolVersion: "v1",
     },
-    reviewedBy: {
-      operatorUserId: FIXTURE_OPERATOR_ID,
-      displayName: "Ops Manager",
-      reviewedAt: "2026-09-16T10:00:00.000Z",
-    },
     generatedAt: "2026-09-16T09:00:00.000Z",
     ...overrides,
   };
+}
+
+/**
+ * Splice a fixture reviewer's signature onto an already-assembled draft.
+ *
+ * The other half of the flow that `makeReportInput` collapses into one call.
+ * Tests about the signature itself use this; tests that just need a signed
+ * report let `makeReportInput` do it.
+ */
+export function signWithFixtureReviewer(
+  draft: ReleaseRescueReportV1,
+  reviewer: Partial<ReviewAttestation> = {},
+): ReleaseRescueReportV1 {
+  return signReleaseRescueReport(draft, {
+    ...FIXTURE_REVIEWER,
+    approvedContentHash: hashReleaseRescueReviewSubject(draft),
+    ...reviewer,
+  });
 }

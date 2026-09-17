@@ -948,6 +948,40 @@ export const CLEARANCE_REASON_CATALOG: Readonly<Record<ClearanceReasonCode, stri
     "The customer confirmed the held value is intended to be public.",
 };
 
+// --- Review decisions -----------------------------------------------------------
+
+/**
+ * Why a named reviewer released a report to the customer.
+ *
+ * A code, for the same reason a clearance reason is a code. The signature line
+ * of a $299 report is not a place for a reviewer's keystrokes to become report
+ * content, and this field sits directly beside `displayName`, which an audit
+ * already caught carrying "Reviewed by ThisAppIsSecure".
+ *
+ * The accountability is not weakened by making it an enum. A reviewer still has
+ * to pick one and their name is still on it; what they cannot do is write a
+ * sentence the product would then have to guarantee.
+ */
+export const REVIEW_DECISION_REASON_CODES = [
+  "reviewed_findings_and_verdict_match_the_recorded_observations",
+  "reviewed_after_every_held_item_was_cleared",
+  "reviewed_and_the_stated_limitations_are_accurate_for_this_engagement",
+  "reviewed_and_the_scope_matches_what_the_customer_agreed",
+] as const;
+
+export type ReviewDecisionReasonCode = (typeof REVIEW_DECISION_REASON_CODES)[number];
+
+export const REVIEW_DECISION_REASON_CATALOG: Readonly<Record<ReviewDecisionReasonCode, string>> = {
+  reviewed_findings_and_verdict_match_the_recorded_observations:
+    "A named reviewer read this report and confirmed its findings and verdict follow from the observations recorded during the review.",
+  reviewed_after_every_held_item_was_cleared:
+    "A named reviewer read this report after every held item had been examined and cleared, and released it.",
+  reviewed_and_the_stated_limitations_are_accurate_for_this_engagement:
+    "A named reviewer read this report and confirmed the limitations it states are accurate for this engagement.",
+  reviewed_and_the_scope_matches_what_the_customer_agreed:
+    "A named reviewer read this report and confirmed it covers the repository, application, and workflow the customer agreed at intake.",
+};
+
 // --- Limitations -----------------------------------------------------------------
 
 /**
@@ -1072,6 +1106,10 @@ export function isClearanceReasonCode(code: string): code is ClearanceReasonCode
   return Object.prototype.hasOwnProperty.call(CLEARANCE_REASON_CATALOG, code);
 }
 
+export function isReviewDecisionReasonCode(code: string): code is ReviewDecisionReasonCode {
+  return Object.prototype.hasOwnProperty.call(REVIEW_DECISION_REASON_CATALOG, code);
+}
+
 /**
  * Binds a report to the catalog that produced its words.
  *
@@ -1091,6 +1129,7 @@ export const RELEASE_RESCUE_OBSERVATION_CATALOG_HASH = createHash("sha256")
       rationales: ASSESSMENT_RATIONALE_CATALOG,
       limitations: LIMITATION_CATALOG,
       clearances: CLEARANCE_REASON_CATALOG,
+      reviewDecisions: REVIEW_DECISION_REASON_CATALOG,
     }),
     "utf8",
   )

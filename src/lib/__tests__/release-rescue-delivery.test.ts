@@ -4,7 +4,10 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { decideReleaseRescueDelivery } from "@/lib/release-rescue-delivery";
 import { SAMPLE_DELIVERY, SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
-import type { ReleaseRescueReportV1 } from "@/lib/release-rescue-report";
+import {
+  hashReleaseRescueReviewSubject,
+  type ReleaseRescueReportV1,
+} from "@/lib/release-rescue-report";
 
 const REPORT_PAGE = "src/app/(marketing)/ai-app-release-rescue/demo/report/page.tsx";
 const DOWNLOAD_ROUTE = "src/app/(marketing)/ai-app-release-rescue/demo/report/download/route.ts";
@@ -128,7 +131,25 @@ describe("the delivery gate runs on the production path", () => {
     expect(SAMPLE_DELIVERY.reviewer.operatorUserId).toBe(SAMPLE_REPORT.reviewedBy?.operatorUserId);
     expect(SAMPLE_DELIVERY.reviewer.displayName).toBe(SAMPLE_REPORT.reviewedBy?.displayName);
     expect(SAMPLE_DELIVERY.reviewer.reviewedAt).toBe(SAMPLE_REPORT.reviewedBy?.reviewedAt);
-    expect(SAMPLE_DELIVERY.reviewer.approvedContentHash).toBe(SAMPLE_DELIVERY.contentHash);
+    expect(SAMPLE_DELIVERY.reviewer.reasonCode).toBe(SAMPLE_REPORT.reviewedBy?.reasonCode);
+
+    // The hash shown is the REVIEWER'S, read off the artifact, and it is
+    // deliberately NOT the report's own content hash. This assertion used to be
+    // `toBe(SAMPLE_DELIVERY.contentHash)` and it passed for a reason worth
+    // remembering: the decision recomputed that hash from the bytes it was about
+    // to render, so it could not have been anything else. A check that cannot
+    // fail is not a check.
+    //
+    // It is the subject hash now — the report without the signature, because a
+    // signature cannot cover itself — supplied by the reviewer and verified
+    // against the artifact.
+    expect(SAMPLE_DELIVERY.reviewer.approvedContentHash).toBe(
+      SAMPLE_REPORT.reviewedBy?.approvedContentHash,
+    );
+    expect(SAMPLE_DELIVERY.reviewer.approvedContentHash).toBe(
+      hashReleaseRescueReviewSubject(SAMPLE_REPORT),
+    );
+    expect(SAMPLE_DELIVERY.reviewer.approvedContentHash).not.toBe(SAMPLE_DELIVERY.contentHash);
 
     // The surface renders these, so a future edit that stops showing them is a
     // visible-status-without-persisted-state regression.

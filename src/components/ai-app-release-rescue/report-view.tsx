@@ -80,7 +80,20 @@ export function ReportView({
               <time dateTime={reviewer.reviewedAt}>{reviewer.reviewedAt}</time>
             </dd>
           </div>
+          {/* What the reviewer recorded, as the catalog words for the code they
+              chose. The code is what is stored; the sentence belongs to the
+              observation catalog, which is hashed into the report, so editing
+              the wording later cannot change what a delivered report said. */}
+          {reviewer.reason ? (
+            <div className="flex flex-wrap gap-x-2">
+              <dt className="font-semibold">Reviewer recorded</dt>
+              <dd>{reviewer.reason}</dd>
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-x-2">
+            {/* The hash the REVIEWER attested to, not one recomputed for this
+                page. It is checked against the report at the gate, so a report
+                edited after signing does not reach this component at all. */}
             <dt className="font-semibold">Approval bound to</dt>
             <dd className="font-mono break-all">{reviewer.approvedContentHash}</dd>
           </div>
