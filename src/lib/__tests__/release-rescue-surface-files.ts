@@ -479,6 +479,33 @@ function recordUnreadable(text: string): void {
  * `module` for `module.require`, `policy` for `policy.require`, `import.meta` for
  * `import.meta.resolve`.
  */
+/**
+ * The global object, under every spelling a bundle target uses.
+ *
+ * `globalThis.require("./panel")`, `window.require(\u2026)` and `self.require(\u2026)`
+ * are real CommonJS loads that the predecessor's `.endsWith(".require")` caught
+ * and the root rule dropped. The rule was right and its root set was short: a
+ * set-diff of the EXCLUDED direction was not run, which is rule 1 of this
+ * repository's four applied to only one half of the change.
+ */
+const GLOBAL_OBJECTS = new Set(["globalthis", "window", "self", "global"]);
+
+/** `process.mainModule` is Node's documented alias for `require.main`. */
+const MAIN_MODULE_CHAIN = "process.mainModule";
+
+function calleeChain(callee: ts.Expression): string[] {
+  const segments: string[] = [];
+  let current: ts.Expression = callee;
+  while (ts.isPropertyAccessExpression(current)) {
+    segments.unshift(current.name.text);
+    current = current.expression;
+  }
+  if (ts.isIdentifier(current)) segments.unshift(current.text);
+  else if (ts.isMetaProperty(current)) segments.unshift(`${ts.tokenToString(current.keywordToken) ?? ""}.${current.name.text}`);
+  else return [];
+  return segments;
+}
+
 function calleeRoot(callee: ts.Expression): string {
   let current: ts.Expression = callee;
   while (ts.isPropertyAccessExpression(current)) current = current.expression;
@@ -528,16 +555,19 @@ export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): str
       // chain, not its tail. CommonJS reaches `require` from `require` itself or
       // from `module`; nothing else does.
       const root = calleeRoot(callee);
-      const tail = ts.isPropertyAccessExpression(callee)
-        ? callee.name.text
-        : ts.isIdentifier(callee)
-          ? callee.text
-          : "";
-      const isRequire =
-        ((root === "require" && (tail === "require" || tail === "resolve")) ||
-          (root === "module" && tail === "require") ||
-          (root === "import.meta" && tail === "resolve")) &&
-        node.arguments.length === 1;
+      const chain = calleeChain(callee);
+      const tail = chain[chain.length - 1] ?? "";
+      const loadsAModule =
+        // `require(\u2026)`, `require.resolve(\u2026)`, `require.main.require(\u2026)`.
+        (root === "require" && (tail === "require" || tail === "resolve")) ||
+        // `module.require(\u2026)`, `module.parent.require(\u2026)`.
+        (root === "module" && (tail === "require" || tail === "resolve")) ||
+        // `globalThis.require(\u2026)` and its three other spellings, one level only.
+        (GLOBAL_OBJECTS.has(root.toLowerCase()) && chain.length === 2 && tail === "require") ||
+        // `process.mainModule.require(\u2026)`, and its `.resolve`.
+        (chain.slice(0, 2).join(".") === MAIN_MODULE_CHAIN && (tail === "require" || tail === "resolve")) ||
+        (root === "import.meta" && tail === "resolve");
+      const isRequire = loadsAModule && node.arguments.length === 1;
       if (isImportCall || isRequire) {
         const first = node.arguments[0];
         const text = literalText(first);
@@ -1362,20 +1392,58 @@ function scriptKindOf(file: string): ts.ScriptKind {
  * depend on a literal backslash — are left exactly as written, which is what the
  * raw reading exists for.
  */
-const PRINTABLE_ESCAPE = /\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})/g;
+/**
+ * The leading `\\\\` alternative is load-bearing, not decoration: it consumes an
+ * escaped backslash WHOLE so the engine cannot start matching at its second
+ * character. Without it `"a\\\\u0020b"` — a backslash followed by the literal
+ * text `u0020b` — decoded to `a\\ b`, a reading nothing renders. It falls
+ * through the range check below unchanged, which is why the arm needs no
+ * special case in the replacer.
+ */
+const PRINTABLE_ESCAPE = /\\\\|\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})/g;
 
 function rawTextOf(node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral, source: ts.SourceFile): string | null {
   const text = node.getText(source);
   if (text.length < 2) return null;
   return text.slice(1, -1).replace(PRINTABLE_ESCAPE, (whole, braced?: string, four?: string, two?: string) => {
+    // `\\u{0000_2019}` is valid JavaScript — leading zeros are unbounded, and a
+    // `{1,6}` bound left `\\u{00002019}` undecoded, reproducing the `isn u2019 t`
+    // reading this decode exists to remove. The range check is the real bound.
     const code = Number.parseInt(braced ?? four ?? two ?? "", 16);
     if (!Number.isInteger(code) || code <= 0x1f || code === 0x7f || code > 0x10ffff) return whole;
     return String.fromCodePoint(code);
   });
 }
 
-/** The same text with references left alone, added when it differs. */
+/**
+ * Reference-shaped runs, in the same three shapes `decodeEntities` consumes.
+ *
+ * A run that ENDS IN A SEMICOLON is a well-formed character reference: the
+ * browser decodes it, this module decodes it the same way, and the undecoded
+ * spelling is text nobody renders. A run WITHOUT one is the ambiguous case —
+ * `&P500` in `S&P500 clients` is not a reference at all, a browser prints it
+ * literally, and decoding ERASED the words. That is the case the second reading
+ * exists for.
+ */
+const REFERENCE_RUN = /&#x[0-9a-f]+;?|&#\d+;?|&[a-z][a-z0-9]{1,31};?/gi;
+
+function hasAmbiguousReference(text: string): boolean {
+  for (const [run] of text.matchAll(REFERENCE_RUN)) if (!run.endsWith(";")) return true;
+  return false;
+}
+
+/**
+ * The same text with references left alone, added when decoding was AMBIGUOUS.
+ *
+ * It used to be added whenever the two readings differed at all, which meant
+ * every well-formed reference produced a spelling no browser shows — and the
+ * guard read `This isn&rsquo;t a penetration test` as `isn rsquo t`, lost the
+ * negation, and flagged the offer's own disclaimer. `&apos;` is how React's own
+ * `no-unescaped-entities` rule tells an author to write that sentence, and it
+ * appears four times in this repository's JSX today.
+ */
 function pushUndecoded(found: string[], text: string): void {
+  if (!hasAmbiguousReference(text)) return;
   const undecoded = tidyWithoutDecoding(text);
   if (undecoded.length > 0 && undecoded !== tidy(text)) found.push(undecoded);
 }

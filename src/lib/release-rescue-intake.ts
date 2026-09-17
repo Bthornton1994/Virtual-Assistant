@@ -604,6 +604,16 @@ const NEGATION_TOKENS = new Set([
   "wasnt",
   "weren't",
   "werent",
+  // Audit 42: in-family with every entry above, and simply missing. The
+  // contractions this set does NOT carry are a bound on the recogniser, not a
+  // bound on English, and the ones it fails to read are recorded and executed in
+  // `UNRECOGNISED_DENIAL_PHRASINGS`.
+  "ain't",
+  "aint",
+  "shan't",
+  "shant",
+  "mustn't",
+  "mustnt",
 ]);
 
 /**
@@ -882,9 +892,56 @@ function claimOccurrences(tokens: readonly ClaimToken[], wanted: readonly string
 }
 
 /** Index of the first token of the clause containing `index`. */
+/**
+ * Words that end one clause and start another without any punctuation.
+ *
+ * The clause was decided by punctuation alone — `, ; : ( ) \u2014 \u2013` — so
+ * "We do not claim to be the cheapest, but your application is secure" was
+ * CAUGHT and the identical sentence WITHOUT the comma was LICENSED. The guard's
+ * verdict turned on whether the author typed a comma, which is the criticism
+ * this module levels at other people's rules.
+ *
+ * Worse, it was the whole of the bound on two of the four licensing arms: a
+ * negation on a reporting verb licensed every claim anywhere later in the
+ * clause, at any distance, with arbitrary material in between. An audit served
+ * that sentence from the landing page at HTTP 200 with both guard suites green.
+ *
+ * Adding a word here can only SHORTEN the window a denial licenses, so a
+ * spelling this set does not carry costs a claim that stays caught, never one
+ * that starts being licensed. That is the opposite of the scope-breaker list
+ * this replaced, where a missing entry opened a hole — and it is why this list
+ * is allowed to be a list.
+ *
+ * `and`, `or` and `nor` are deliberately absent: they coordinate items inside
+ * one clause ("not a penetration test and does not guarantee \u2026", "penetration
+ * testing, compliance certification, or ongoing monitoring"), and breaking there
+ * would reject denials and referrals the offer publishes today.
+ */
+const COORDINATORS = new Set([
+  "but",
+  "however",
+  "nevertheless",
+  "nonetheless",
+  "whereas",
+  "otherwise",
+  "therefore",
+  "thus",
+  "hence",
+  "so",
+  "meanwhile",
+  "moreover",
+  "furthermore",
+  "besides",
+  "regardless",
+  "anyway",
+  "though",
+  "although",
+]);
+
 function clauseStartIndex(tokens: readonly ClaimToken[], index: number): number {
   for (let cursor = index; cursor > 0; cursor -= 1) {
     if (tokens[cursor].breakBefore !== "none") return cursor;
+    if (COORDINATORS.has(tokens[cursor].word)) return cursor;
   }
   return 0;
 }
@@ -898,16 +955,32 @@ function clauseEndIndex(tokens: readonly ClaimToken[], index: number): number {
 }
 
 /**
- * Words that carry no meaning between a denial and the thing denied.
+ * The determiners that may sit between a denial and the thing it denies.
  *
- * "is not A penetration test", "does not guarantee THE absence" — a determiner
- * or a copula between the two does not break the denial.
+ * "is not A penetration test", "rather than THE penetration test" — exactly one
+ * of these, and nothing else.
+ *
+ * This was a 40-word `FUNCTION_WORDS` set skipped without limit, which let the
+ * adjacency arms reach across whole phrases: "No OTHER SUCH is secure" and
+ * "Other than THAT IT is secure" were both licensed, because every word between
+ * the licensing token and the claim happened to be in the set. A denial that
+ * points at something points at ONE thing, so the skip is one determiner.
  */
-const FUNCTION_WORDS = new Set([
+const DETERMINERS = new Set([
   "a", "an", "the", "any", "some", "this", "that", "these", "those", "our", "your", "its", "their", "my",
-  "and", "or", "of", "for", "to", "as", "is", "are", "be", "been", "being", "was", "were", "it", "they",
-  "you", "we", "us", "them", "in", "on", "at", "by", "with", "such", "other", "same",
 ]);
+
+/**
+ * The passive auxiliaries, which belong to the VERB rather than to what follows.
+ *
+ * "it cannot BE sold or described as a penetration test" — the offer's own
+ * refusal copy. Dropping these from the skip made `cannot` reach `be` instead of
+ * `sold`, and the guard flagged the sentence the product shows a customer when
+ * it refuses to sell them a penetration test. They are skipped without limit
+ * because a verb phrase can stack them; they cannot introduce a new thing the
+ * way a determiner can.
+ */
+const PASSIVE_AUXILIARIES = new Set(["be", "been", "being"]);
 
 /**
  * The verbs a denial in this offer's copy actually denies.
@@ -935,8 +1008,21 @@ const DENIAL_VERBS = new Set([
   "establish", "establishes", "established", "establishing",
 ]);
 
-/** Contrast heads that point away from the thing named, rather than denying a verb. */
-const CONTRAST_HEADS = [["rather", "than"], ["instead", "of"], ["other", "than"], ["unlike"]];
+/**
+ * Contrast heads that point away from the thing named, rather than denying a verb.
+ *
+ * `by no means` is here rather than in the negation loop because its negation
+ * determines `means`, not the claim: "It is by no means a penetration test" is
+ * an ordinary denial that the subject-negation arm cannot reach, since `means`
+ * is neither a determiner nor an auxiliary.
+ */
+const CONTRAST_HEADS = [
+  ["rather", "than"],
+  ["instead", "of"],
+  ["other", "than"],
+  ["unlike"],
+  ["by", "no", "means"],
+];
 
 /**
  * Negations that can determine a SUBJECT rather than a verb: "NO review can
@@ -1018,10 +1104,23 @@ function withContractions(before: readonly string[]): string[] {
 
 function denialShapeGoverns(tokens: readonly string[]): boolean {
   const before = withContractions(tokens);
+  /**
+   * The first word after `from` that is not the single permitted determiner,
+   * or null when only that determiner stands between here and the claim.
+   *
+   * A SECOND determiner is returned rather than skipped: two of them is a
+   * phrase, not the thing being denied.
+   */
   const meaningfulAfter = (from: number): string | null => {
+    let determiners = 0;
     for (let index = from; index < before.length; index += 1) {
       const word = before[index] ?? "";
-      if (!FUNCTION_WORDS.has(word)) return word;
+      if (PASSIVE_AUXILIARIES.has(word)) continue;
+      if (DETERMINERS.has(word) && determiners === 0) {
+        determiners += 1;
+        continue;
+      }
+      return word;
     }
     return null;
   };

@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NEGATION_SCOPE_REGRESSIONS } from "./release-rescue-claim-guard-residuals";
+import {
+  NEGATION_SCOPE_REGRESSIONS,
+  UNRECOGNISED_DENIAL_PHRASINGS,
+} from "./release-rescue-claim-guard-residuals";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
   assetIsItsOwnText,
@@ -93,6 +96,13 @@ const REQUIRED_DENIALS = [
   // thing it points away from: nothing, and function words only.
   "This is a review, not a penetration test.",
   "We sell a review rather than the penetration test you may be looking for.",
+  // Audit 42. Ordinary denials the recogniser rejected: three `n't`
+  // contractions in-family with every entry `NEGATION_TOKENS` already carried,
+  // and one whose negation determines a noun the subject arm cannot reach.
+  "It is by no means a penetration test.",
+  "This ain\u2019t a penetration test.",
+  "We shan\u2019t claim your application is secure.",
+  "We mustn\u2019t claim your application is secure.",
 ];
 
 /**
@@ -188,6 +198,38 @@ describe("prohibited claim guard", () => {
       const every = [...doc.matchAll(pattern)];
       expect(every.length, `the ${label} figure must appear exactly once in the doc`).toBe(1);
       expect(Number(every[0]![1]), `the doc's ${label} count must be the array's length`).toBe(actual);
+    }
+  });
+
+  it("does not let a denial license a claim past the end of its clause", () => {
+    // The blocking defect of audit 42. Two of the four arms had no bound at all:
+    // a negation on a reporting verb licensed every claim anywhere later in the
+    // clause, and the clause ended only at punctuation. So the guard's verdict
+    // turned on whether the author typed a comma.
+    const withComma = "We do not claim to be the cheapest, but your application is secure.";
+    const withoutComma = "We do not claim to be the cheapest but your application is secure.";
+    for (const text of [withComma, withoutComma]) {
+      expect(findProhibitedClaims(text, "offer_copy"), text).not.toEqual([]);
+    }
+    expect(
+      findProhibitedClaims(withComma, "offer_copy"),
+      "the comma and the word are the same boundary, so they must give the same verdict",
+    ).toEqual(findProhibitedClaims(withoutComma, "offer_copy"));
+
+    // The bound cuts only the licensing window, so the denial's own clause is
+    // untouched: this is the same sentence with nothing after the coordinator.
+    expect(findProhibitedClaims("We do not claim to be the cheapest.", "offer_copy")).toEqual([]);
+  });
+
+  it("records the denial phrasings it does not read, and proves the record", () => {
+    // A positive rule fails closed, and this is what that costs. The list is a
+    // measurement: if a later round teaches the recogniser one of these shapes,
+    // this test turns red until the entry is removed.
+    for (const text of UNRECOGNISED_DENIAL_PHRASINGS) {
+      expect(
+        findProhibitedClaims(text, "offer_copy"),
+        `${text} is recorded as unrecognised; if it is licensed now, delete it from the record`,
+      ).not.toEqual([]);
     }
   });
 
@@ -1060,6 +1102,30 @@ describe("the marketing surface makes no prohibited claim", () => {
       "and none of them may be recorded as an unreadable specifier either",
     ).toEqual([]);
 
+    // The ROOT rule's own excluded direction, which the round that wrote it did
+    // not diff: `globalThis.require` and its three other spellings, and
+    // `process.mainModule` (Node's documented alias for `require.main`), are
+    // real loads the predecessor caught and the first root set dropped. Rule 1
+    // of this repository's four says run the OLD implementation against the NEW
+    // mutants; it had been applied to the included direction only.
+    for (const [form, source] of Object.entries({
+      "globalThis.require": 'const x = globalThis.require("./panel");',
+      "window.require": 'const x = window.require("./panel");',
+      "self.require": 'const x = self.require("./panel");',
+      "global.require": 'const x = global.require("./panel");',
+      "module.parent.require": 'const x = module.parent.require("./panel");',
+      "process.mainModule.require": 'const x = process.mainModule.require("./panel");',
+    })) {
+      expect(staticSpecifiersIn(source, "m.ts"), `${form} must yield its specifier`).toContain("./panel");
+    }
+
+    // And the global spelling stays one level deep, so an unrelated object
+    // reached THROUGH the global object is still not a module load.
+    expect(
+      staticSpecifiersIn('const x = globalThis.a.require("./x");', "m.ts"),
+      "a chain through the global object is not the global require",
+    ).toEqual([]);
+
     // The genuine residual: a specifier the compiler cannot read either.
     expect(staticSpecifiersIn("const n = 'p'; const m = import(`./${n}`);")).toEqual([]);
 
@@ -1122,6 +1188,24 @@ describe("the marketing surface makes no prohibited claim", () => {
       ),
     ).not.toEqual([]);
 
+    // Leading zeros are unbounded in `\\u{...}`, and a six-digit cap left the
+    // longest spellings of the SAME character undecoded, reproducing the reading
+    // this decode exists to remove.
+    for (const spelling of ["\\u{2019}", "\\u{0002019}", "\\u{00002019}"]) {
+      const source = `const s = "This isn${spelling}t a penetration test.";`;
+      expect(
+        visibleStrings(source, "p.tsx").flatMap((text) => findProhibitedClaims(text, "offer_copy")),
+        `${spelling} is the same apostrophe and must read as one`,
+      ).toEqual([]);
+    }
+
+    // An ESCAPED BACKSLASH is consumed whole, so the decoder cannot start inside
+    // it. `"a\\\\u0020b"` is a backslash then the literal text `u0020b`; reading
+    // it as an escape produced `a\\ b`, which is nothing anyone renders.
+    expect(visibleStrings(String.raw`const s = "a\\u0020b is secure";`, "p.tsx")).not.toContain(
+      "a\\ b is secure",
+    );
+
     // And the destructive escape keeps its second reading, which is the whole
     // reason the raw text is read at all.
     const cssEscape = "const S = () => <style>{`#x::after { content: \"penetration\\000020test\"; }`}</style>;";
@@ -1129,6 +1213,49 @@ describe("the marketing surface makes no prohibited claim", () => {
       visibleStrings(cssEscape, "page.tsx").some((text) => text.includes("\\000020")),
       "the raw reading must still carry the backslash run the CSS decoder needs",
     ).toBe(true);
+  });
+
+  it("keeps the second reading only where decoding is ambiguous", () => {
+    // The second reading exists for text a decoder might ERASE: `&P500` is not a
+    // character reference, a browser prints it literally, and decoding took the
+    // words with it. A reference that ENDS IN A SEMICOLON is not that case — the
+    // browser decodes it, this module decodes it the same way, and the undecoded
+    // spelling is text nobody renders.
+    //
+    // Adding it unconditionally made the guard read `This isn&rsquo;t a
+    // penetration test` as `isn rsquo t`, lose the negation, and flag the offer's
+    // own disclaimer — in the spelling React's `no-unescaped-entities` rule tells
+    // authors to use, which this repository's JSX already uses four times.
+    for (const source of [
+      "const P = () => <p>This isn&rsquo;t a penetration test.</p>;",
+      "const P = () => <p>This isn&apos;t a penetration test.</p>;",
+    ]) {
+      expect(visibleStrings(source, "p.tsx"), `${source} needs no second reading`).toHaveLength(1);
+      expect(
+        visibleStrings(source, "p.tsx").flatMap((text) => findProhibitedClaims(text, "offer_copy")),
+      ).toEqual([]);
+    }
+
+    // The ambiguous run still keeps both readings, and a claim the erasure would
+    // have hidden is still caught.
+    expect(visibleStrings('const s = "S&P500 clients";', "p.tsx")).toEqual([
+      "S clients",
+      "S&P500 clients",
+    ]);
+    expect(
+      visibleStrings('const s = "your S&P500 application is secure";', "p.tsx").flatMap((text) =>
+        findProhibitedClaims(text, "typed_field"),
+      ),
+      "a claim inside an erased run must survive in the second reading",
+    ).not.toEqual([]);
+
+    // And a well-formed reference that SPLITS a claim is still caught from the
+    // decoded reading, which is the detection the decode was added for.
+    expect(
+      visibleStrings("const P = () => <p>Your application is&emsp;secure.</p>;", "p.tsx").flatMap((text) =>
+        findProhibitedClaims(text, "typed_field"),
+      ),
+    ).not.toEqual([]);
   });
 
   it("would read a planted claim out of a served asset", () => {

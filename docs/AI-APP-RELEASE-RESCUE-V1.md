@@ -3684,15 +3684,17 @@ an unrecognised denial costs a rewording, an unrecognised affirmative costs a
 served claim. The difference is not that this list is better. It is that the
 list now has to be *satisfied* rather than *evaded*.
 
-Measured: **10 regression payloads caught, 17 declared denials licensed**, all
-six refusal reasons licensed, and the flagged set over the 180-file corpus
-outside the one declared exemption unchanged at zero. Six mutants bind the four
-arms, replacing the one that bound the rule this deleted.
+Measured: **17 regression payloads caught, 21 declared denials licensed**, all
+six refusal reasons licensed, and the flagged set over the corpus of 174 surface
+files and 6 scannable assets, outside the one declared exemption, unchanged at
+zero. Mutants bind each arm and each of its bounds.
 
 Both figures are read out of this paragraph by a test and compared to the arrays
 they count, because the two counts they replaced were written by hand, were both
 wrong within an hour of being written, and are the reason this file now binds
-every number it publishes.
+every number it publishes. The figures above are the ones that test enforces —
+the pair published one round earlier read 10 and 17, and the same test turned red
+the moment the corpus grew.
 
 Two of the four arms are there because the round that wrote them broke something
 real. The subject-negation arm exists because the positive rule, on its first
@@ -3720,8 +3722,119 @@ claims flagged only by OLD:                0
 ```
 
 Strictly additive, and no behaviour change on real copy. The 13 gained strings
-are all in the two files whose JSX carries `&apos;` — four occurrences between
-them, each now readable both as an apostrophe and as the source text.
+were all in the two files whose JSX carries `&apos;`.
+
+**Those 13 readings are gone again, and the next section says why.** They were
+text no browser renders, they caught nothing, and one of them made the guard
+flag the offer's own disclaimer.
+
+### Two of the four arms had no bound, and the guard's verdict turned on a comma
+
+The positive rule above recognises four denial shapes. Two of them — a negation
+on a reporting verb, and a subject negation whose predicate denies one — were
+written with **no bound on how far the licence reached**. Once either matched,
+every prohibited claim anywhere later in the clause was licensed, at any
+distance, with arbitrary material in between. The clause itself ended only at
+punctuation: `, ; : ( ) — –`.
+
+So these two sentences got different verdicts:
+
+| sentence | verdict |
+| --- | --- |
+| `We do not claim to be the cheapest, but your application is secure.` | caught |
+| `We do not claim to be the cheapest but your application is secure.` | **licensed** |
+
+An audit put the second on the landing page, ran both guard suites green, built,
+served it and read it back at **HTTP 200**. Fifteen of its seventeen payloads
+were licensed. This is the defect the round before had just fixed, surviving its
+own fix one arm over — the positive rule was right and two of its four arms were
+unscoped, so the fail-closed direction it claimed did not hold.
+
+Two bounds close it:
+
+- **`COORDINATORS`** ends a clause on a word as well as on punctuation: `but`,
+  `however`, `so`, `although`, `therefore` and their kin. A word here can only
+  SHORTEN what a denial licenses, so a spelling the set does not carry costs a
+  claim that stays caught, never one that starts being licensed. That is what
+  makes this list safe where the scope-breaker list it replaced was not, and
+  `and`, `or` and `nor` are deliberately absent because they coordinate items
+  *inside* one clause — "not a penetration test **and** does not guarantee …".
+- **`DETERMINERS`** replaces a 40-word `FUNCTION_WORDS` set that was skipped
+  without limit. The adjacency arms now skip exactly one determiner. `No OTHER
+  SUCH is secure` and `Other than THAT IT is secure` were both licensed purely
+  because every word in between happened to be in that set. Passive auxiliaries
+  (`be`, `been`, `being`) are skipped separately and without limit — they belong
+  to the verb, and dropping them made the guard flag the offer's own "it cannot
+  **be** sold or described as a penetration test".
+
+Measured over 29 affirmative payloads spanning every coordinator and both
+unbounded arms, and 24 denial phrasings including all of the offer's published
+copy: **29 caught, 24 licensed, none traded for the other.**
+
+### What a fail-closed rule costs, measured rather than asserted
+
+"21 declared denials licensed" measures the denials someone thought to declare.
+The same audit wrote ordinary English denials the recogniser rejects, so the
+bound is now recorded and executed as `UNRECOGNISED_DENIAL_PHRASINGS` — nine
+sentences, each asserted to be flagged today, so a later round that teaches one
+of these shapes has to come here and delete the entry.
+
+Four more were on that list until they were measured: `by no means`, and the
+`ain't`, `shan't` and `mustn't` contractions, which were in-family with every
+entry `NEGATION_TOKENS` already carried and simply missing. Fixing those is what
+makes the rest a bound rather than a backlog: what remains needs a new SHAPE, not
+another spelling of one already recognised. One entry — `This is anything but a
+penetration test` — is the direct cost of the coordinator break above, and is
+recorded as such.
+
+### The second reading is kept only where decoding is ambiguous
+
+The additive readings of the previous round were added whenever the decoded and
+undecoded text differed at all. Over the whole corpus that produced exactly 13
+extra readings, all of them `&apos;` — a well-formed reference that a browser
+decodes and this module decodes identically. They caught nothing, and one of them
+made the guard read `This isn&rsquo;t a penetration test` as `isn rsquo t`, lose
+the negation, and flag the offer's own disclaimer in the spelling React's
+`no-unescaped-entities` rule pushes authors towards.
+
+The second reading is for text a decoder might ERASE, and that risk lives
+entirely in the semicolon-less form: `&P500` in `S&P500 clients` is not a
+reference, a browser prints it literally, and decoding took the words with it. So
+the reading is kept when a reference-shaped run does NOT end in a semicolon, and
+dropped when it does. Re-measured over the same corpus, against the extractor as
+it stood two commits ago:
+
+```
+vs e0a1107 (before additive readings): LOST 0  GAINED 0  claims only-NEW 0  only-OLD 0
+vs 83cda0a (additive, ungated):        LOST 13 GAINED 0  claims only-NEW 0  only-OLD 0
+```
+
+The extractor is now byte-for-byte equivalent on this corpus to the version
+before additive readings existed, and the erasure protection the change was for
+is still there — it simply has nothing to protect in this repository's own copy,
+which is why a planted case proves it and the corpus cannot.
+
+### `\u{00002019}`, an escaped backslash, and four spellings of the global object
+
+Three narrower defects from the same audit, each the same shape: a bound written
+one case short.
+
+- `PRINTABLE_ESCAPE` capped the braced escape at six hex digits. JavaScript
+  allows unbounded leading zeros, so `\u{00002019}` is the same apostrophe,
+  went undecoded, and reproduced the exact `isn u2019 t` reading the decode had
+  been added to remove. The digit cap is gone; the code-point RANGE is the real
+  bound.
+- The same regular expression could start matching INSIDE an escaped backslash,
+  so `"a\\u0020b"` — a backslash followed by the literal text `u0020b` — read as
+  `a\ b`. An escaped backslash is consumed whole now.
+- `calleeRoot` decides a `require` call by the root of its callee chain, which
+  fixed `policy.require` being matched by name. Its root set was `require`,
+  `module` and `import.meta`, so `globalThis.require`, `window.require`,
+  `self.require`, `global.require` and `process.mainModule.require` — all real
+  loads the predecessor caught — were dropped, and a module pulled in that way
+  would leave the import graph unscanned. The repository's rule is to diff the
+  SETS when a mechanism is replaced; that diff had been run on the INCLUDED
+  direction only.
 
 ## What this slice deliberately does not do
 

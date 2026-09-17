@@ -132,12 +132,27 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
  * five ordinary denials rejected by the same lists.
  *
  * The rule in force is positive (`denialShapeGoverns`): a denial is recognised
- * only in a shape this offer writes — a negation adjacent to the claim, a
- * negation on one of the offer's own reporting verbs, or a contrast head
- * pointing away from it. Everything else is an affirmative claim. Measured over
- * the 180-file surface corpus: all ten below caught, all seventeen declared
- * denials licensed, and the flagged set outside the one declared exemption
- * unchanged at zero.
+ * only in one of FOUR shapes this offer writes — a negation adjacent to the
+ * claim, a negation on one of the offer's own reporting verbs, a SUBJECT
+ * negation whose predicate denies one, or a contrast head pointing away from it.
+ * Everything else is an affirmative claim.
+ *
+ * The subject-negation arm was missing from this paragraph for one round, which
+ * is the same defect this file's opening comment is about: the record that
+ * exists so one fact is written down once, describing the rule in force with one
+ * of its arms left out.
+ *
+ * Two of those arms were also UNBOUNDED. A negation on a reporting verb licensed
+ * every claim anywhere later in the clause, and the clause ended only at
+ * punctuation — so "We do not claim to be the cheapest, but your application is
+ * secure" was caught and the same sentence without the comma was licensed and
+ * served at HTTP 200. The clause now ends at a `COORDINATORS` word as well as at
+ * punctuation, and the adjacency arms skip one determiner rather than any run of
+ * function words.
+ *
+ * Measured over the corpus of 174 surface files and 6 scannable assets: all
+ * seventeen below caught, all twenty-one declared denials licensed, and the
+ * flagged set outside the one declared exemption unchanged at zero.
  *
  * They stay here as a REGRESSION corpus rather than a residual: each must now be
  * caught as offer copy, which is the opposite of what this file records for
@@ -161,6 +176,48 @@ export const NEGATION_SCOPE_REGRESSIONS: readonly string[] = [
   // license anything after "rather than".
   "No fewer than three reviewers say your application is secure.",
   "We confirm rather than guess that your application is secure.",
+  // Audit 42. A denial earlier in the same clause licensed every claim after it,
+  // at any distance, because arms (b) and (c) had no bound and the clause ended
+  // only at punctuation. Each of these was served or measured as LICENSED.
+  "We do not claim to be the cheapest but your application is secure.",
+  "We cannot promise a date but we are SOC 2 certified.",
+  "We do not guarantee delivery dates however your application is secure.",
+  "We never promise speed although your application is secure.",
+  "No reviewer can guarantee anything so we went further and your application is fully secure.",
+  // And the two where the adjacency skip crossed a phrase rather than a
+  // determiner, because every word in between happened to be a function word.
+  "Other than that it is secure.",
+  "No other such is secure.",
+];
+
+/**
+ * Denial phrasings the recogniser does NOT read, measured rather than asserted.
+ *
+ * A positive rule fails closed, so every shape it does not carry costs an author
+ * a rewording. That is the accepted trade, but "17 declared denials licensed"
+ * measures only the denials someone thought to declare. These are ordinary
+ * English denials of the things this offer refuses, each FLAGGED today.
+ *
+ * Four more were here until an audit found them: `by no means`, and the `ain't`,
+ * `shan't` and `mustn't` contractions, which were in-family with every entry in
+ * `NEGATION_TOKENS` and simply missing. Fixing those is what makes the rest of
+ * this list a bound rather than a backlog: what remains needs a new SHAPE, not
+ * another spelling of one already recognised.
+ *
+ * "This is anything but a penetration test" is here because of the coordinator
+ * clause break, which is the cost of closing the blocking defect above: `but`
+ * ends the clause, so the denial it belongs to is not in the claim's clause.
+ */
+export const UNRECOGNISED_DENIAL_PHRASINGS: readonly string[] = [
+  "We stop short of a penetration test.",
+  "We fall short of a penetration test.",
+  "This review falls well short of a penetration test.",
+  "This is anything but a penetration test.",
+  "Far from a penetration test, this is a source review.",
+  "At no point do we claim your application is secure.",
+  "Under no circumstances do we guarantee your application is secure.",
+  "Nowhere do we claim your application is secure.",
+  "We refrain from claiming your application is secure.",
 ];
 
 export const CLAIM_GUARD_BOUND_SENTENCE =
