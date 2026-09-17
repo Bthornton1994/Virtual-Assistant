@@ -5,8 +5,10 @@ import {
   executorConfigurationSnapshotSchema,
 } from "@/lib/executor-envelope";
 import { sha256Hex } from "@/lib/catalog-evidence-hash";
-import { identifierString, isoDateTimeSchema, nonEmptyString } from "@/lib/catalog-evidence-shared";
+import { identifierString, isoDateTimeSchema } from "@/lib/catalog-evidence-shared";
 import { sha256HexSchema } from "@/lib/catalog-evidence-review";
+import { getAgentTraceSink } from "@/lib/agent-trace/sink";
+import { traceToolInvocationBoundary } from "@/lib/agent-trace/boundaries";
 
 export const EXECUTION_CONTEXT_SCHEMA_VERSION = "execution-context/v1" as const;
 
@@ -321,7 +323,31 @@ export function validateToolInvocation(
     failures.push("An authorized tool class cannot be recorded as blocked for tool_class_not_authorized.");
   }
 
-  return failures.length > 0 ? { ok: false, failures } : { ok: true, value: invocation.data };
+  const ok = failures.length === 0;
+
+  // Optional agent-trace sink only. No-op unless a test or harness installed a sink.
+  if (getAgentTraceSink()) {
+    const endedAt = invocation.data.completedAt ?? invocation.data.invokedAt;
+    traceToolInvocationBoundary({
+      traceId: "execution-context-" + context.value.contextId,
+      runId: context.value.runId,
+      stepId: invocation.data.invocationId,
+      organizationIdHash: null,
+      actorIdHash: null,
+      actorRole: null,
+      capability: context.value.assignmentSnapshot.capabilityKey,
+      actionClass: context.value.delegationSpecSnapshot.actionClass,
+      toolClass: invocation.data.toolClass,
+      toolKey: invocation.data.toolKey,
+      allowed: ok && invocation.data.status === "allowed",
+      failureCode: ok ? invocation.data.failureCode : "invocation_validation_failed",
+      contextHash: context.value.contextHash,
+      startedAt: invocation.data.invokedAt,
+      endedAt,
+    });
+  }
+
+  return ok ? { ok: true, value: invocation.data } : { ok: false, failures };
 }
 
 export function validateToolInvocationTrace(
