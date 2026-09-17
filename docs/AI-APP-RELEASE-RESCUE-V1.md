@@ -2546,6 +2546,72 @@ byte, which made `grep` classify the file as binary and made `ripgrep` **drop it
 from directory-wide results entirely** — the module defining the whole customer
 surface was invisible to the codebase's own search tool. It is plain ASCII now.
 
+### The rewrite that fixed one defect and reintroduced another
+
+The tag-anchored extractor closed the brace-deletion bug and the entity bug. It
+also **lost coverage the commit before it had**, which is the third time this
+branch has traded detections while believing it was only adding them.
+
+The new reading discarded any run containing `{`, `}`, `;` or `=>` as "code". But
+a JSX text node and the expression inside it are ONE run between `>` and `<`, so
+a single `{price}` threw the whole sentence away — and that is the dominant prose
+shape in this codebase. A semicolon did the same to any sentence containing one.
+
+An audit measured **14 runs of live customer copy never read**, the offer's own
+`<h1>` among them, and served four overclaims at HTTP 200 from a real build with
+the suite green. It then ran the parent commit's extractor against the same
+mutated files: the parent **caught all three**. Deleting the expression and
+reading the words around it was the thing that worked; the rewrite replaced it
+with a heuristic that guessed from punctuation.
+
+| | parent `8fb3ccf` | the rewrite | now |
+| --- | --- | --- | --- |
+| claim beside `{formatUsd(...)}` | caught | **missed** | caught |
+| claim in a sentence with a semicolon | caught | **missed** | caught |
+| claim after a leading `{count}` | caught | **missed** | caught |
+| claim behind `&#32;` | missed | caught | caught |
+| claim in the site footer | missed | caught | caught |
+
+Expressions are removed by balanced-brace matching now, and only an UNBALANCED
+brace — a function body, a `.map()` — marks a run as code. Prose keeps its
+semicolons. Every shape in that table is a case in the planted-claim test, so the
+next rewrite has to keep all five rather than rediscover them one audit at a time.
+
+**The lesson is the one this document already carried and the work did not
+apply:** when a mechanism is replaced rather than extended, the question is not
+"does the new one pass the tests?" but "does it still catch everything the old
+one caught?" That question has a cheap answer — run the old implementation
+against the new mutants — and it was not asked.
+
+### A floor that was never measured, and five claims shorter than it
+
+Both extraction branches required 12 characters. Five of the 24 prohibited claims
+are shorter: `pen test`, `pen testing`, `pentest`, `pentesting` and `is secure`.
+Standing alone in an element, none of them was visible — and none was recorded as
+a residual either, in a repository that keeps an exact residual corpus precisely
+so that gaps are written down.
+
+The floor is derived from the claim list now rather than chosen. Measuring what
+the old number bought: dropping to the shortest claim's length adds roughly a
+thousand strings across the 61 files and produces **zero** new findings. The
+larger number was not buying precision; nobody had checked.
+
+### An exemption narrowed twice, and closed the third time
+
+"Checked unless declared" was bypassed by planting a claim and declaring the file
+in one edit. Requiring the flagged strings to be bare VOCABULARY closed that, and
+an audit immediately walked through the door that was left: it exported
+`RESCUE_TRUST_BADGE = "guaranteed secure"` from `constants.ts`, rendered it on the
+offer's pricing card, declared `constants.ts`, and served the badge at HTTP 200
+with the suite green. A bare vocabulary entry IS the overclaim once something
+renders it.
+
+There is exactly one honest reason to hold claim text, and it applies to exactly
+one file: the module that DEFINES `prohibitedClaims`, whose strings the guard
+consumes rather than renders. Only that file can be declared now, checked by
+identity and by the definition being present. Every other file is a rendering
+surface, and the door is shut rather than narrowed.
+
 ### A floor cannot tell a record from a fiction
 
 Converting one floor to an exact set found a false record that had been in the

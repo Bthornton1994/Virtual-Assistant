@@ -197,6 +197,26 @@ describe("the marketing surface makes no prohibited claim", () => {
       expect(why.length, `${file} needs a reason, not an entry`).toBeGreaterThan(80);
     }
 
+    // AND only ONE file can ever be declared: the one that defines the list.
+    //
+    // The vocabulary rule below was still too wide. An audit exported
+    // `RESCUE_TRUST_BADGE = "guaranteed secure"` from `constants.ts`, rendered
+    // it on the offer's pricing card, declared `constants.ts`, and served the
+    // badge at HTTP 200 with the suite green — because a bare vocabulary entry
+    // IS the overclaim once something renders it.
+    //
+    // There is exactly one honest reason to hold claim text, and it applies to
+    // exactly one file: the module that defines `prohibitedClaims`, whose
+    // strings the guard consumes rather than renders. Any other file is a
+    // rendering surface, so it cannot be declared at all and the door closes.
+    const claimListModule = "src/lib/release-rescue-intake.ts";
+
+    expect(Object.keys(DECLARED_CLAIM_BEARING_FILES)).toEqual([claimListModule]);
+    expect(
+      readSurface(claimListModule),
+      "the declared file must be the one that DEFINES the claim list, not merely quote it",
+    ).toMatch(/prohibitedClaims\s*:/);
+
     // AND the exemption covers VOCABULARY, never prose.
     //
     // Both-sides was not enough on its own: an audit planted a claim in the
@@ -260,6 +280,20 @@ describe("the marketing surface makes no prohibited claim", () => {
       // codebase would reach for rather than an adversarial one.
       "a claim hidden behind numeric entities": `<p>We deliver a penetration&#32;test and your application is&#32;secure.</p>`,
       "a claim hidden behind &nbsp;": `<p>We deliver a penetration&nbsp;test and your application is&nbsp;secure.</p>`,
+      // The shapes a REGRESSION let through. An extractor rewrite discarded any
+      // run containing `{`, `}`, `;` or `=>` as code — but a JSX text node and
+      // the expression inside it are one run, so a single `{price}` threw the
+      // whole sentence away, and that is the dominant prose shape in this
+      // codebase. Fourteen runs of live copy went unread, the offer's own `<h1>`
+      // among them, and four overclaims served at HTTP 200 with the suite green.
+      // The commit before it caught all three of these.
+      "prose beside an interpolation": `<h1>A {formatUsd(PRICE)} penetration test of what would block a release.</h1>`,
+      "prose containing a semicolon": `<p>Checkout is prepared; after this review your application is secure.</p>`,
+      "an interpolation opening the sentence": `<p>{count} of these findings are in scope. We deliver a penetration test of every repository.</p>`,
+      // Five of the 24 claims are shorter than the old 12-character floor, so
+      // they were invisible standing alone in an element — and were not recorded
+      // as residuals either. The floor is derived from the claim list now.
+      "a short claim standing alone": `<li>pentest</li>`,
     };
 
     for (const [shape, source] of Object.entries(planted)) {

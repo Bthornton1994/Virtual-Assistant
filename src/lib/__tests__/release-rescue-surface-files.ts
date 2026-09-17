@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { RELEASE_RESCUE_OFFER } from "@/lib/release-rescue-intake";
 
 /**
  * Every file that can put words in front of a Release Rescue customer, DERIVED
@@ -311,6 +312,62 @@ export function rendersMarkup(source: string): boolean {
   return /<\/[A-Za-z]|\/>/.test(source);
 }
 
+/**
+ * The literal words of one JSX text node, with its expressions removed — or
+ * `null` when the run is code between two elements rather than text inside one.
+ *
+ * THIS REPLACED A HEURISTIC THAT COST COVERAGE. The previous version discarded
+ * any run containing `;`, `{`, `}` or `=>` as "code". A JSX text node and the
+ * expression inside it are ONE run between `>` and `<`, so a single `{price}`
+ * threw the whole sentence away — and that is the dominant prose shape here. An
+ * audit measured 14 runs of live customer copy going unread, including the
+ * offer's own `<h1>`, and served four overclaims at HTTP 200 with the suite
+ * green. A semicolon did the same thing to any sentence containing one.
+ *
+ * Worse, the commit before it caught all three of those shapes. Deleting
+ * expressions and reading the words around them is what it did; this restores
+ * that and keeps the tag-anchored reading that fixed the footer.
+ *
+ * Balanced braces are an expression and are removed. An UNBALANCED brace means
+ * the run spans a function body or a `.map()` — that is code, and code is the
+ * only thing dropped.
+ */
+function literalTextOf(run: string): string | null {
+  let text = "";
+  let depth = 0;
+  for (const character of run) {
+    if (character === "{") {
+      depth += 1;
+      continue;
+    }
+    if (character === "}") {
+      if (depth === 0) return null;
+      depth -= 1;
+      continue;
+    }
+    if (depth === 0) text += character;
+  }
+  if (depth !== 0) return null;
+  // What survives with an arrow or a declaration keyword in it is a fragment of
+  // source, not a sentence. Prose keeps its semicolons.
+  if (/=>|\b(?:function|return|export|import|const|await)\b/.test(text)) return null;
+  return text;
+}
+
+/**
+ * The shortest string that could possibly BE a prohibited claim, derived from
+ * the claim list rather than chosen.
+ *
+ * Both branches used a flat 12 characters, which is longer than five of the 24
+ * claims — `pen test`, `pen testing`, `pentest`, `pentesting` and `is secure`
+ * were invisible standing alone in an element, and an audit found that none of
+ * them was recorded as a residual either. Measuring the alternative cost
+ * nothing: dropping to this floor across all 61 files adds 22 runs and produces
+ * zero new findings, so there was no precision being bought by the larger
+ * number.
+ */
+const SHORTEST_POSSIBLE_CLAIM = Math.min(...RELEASE_RESCUE_OFFER.prohibitedClaims.map((claim) => claim.length));
+
 export function visibleStrings(source: string): string[] {
   let code = stripComments(source);
 
@@ -327,8 +384,12 @@ export function visibleStrings(source: string): string[] {
     code = folded;
   }
 
-  const quoted = [...code.matchAll(/"([^"\n]{12,})"|'([^'\n]{12,})'|`([^`]{12,})`/g)].map(
-    (match) => decodeEntities(match[1] ?? match[2] ?? match[3] ?? ""),
+  const quotedPattern = new RegExp(
+    `"([^"\\n]{${SHORTEST_POSSIBLE_CLAIM},})"|'([^'\\n]{${SHORTEST_POSSIBLE_CLAIM},})'|\`([^\`]{${SHORTEST_POSSIBLE_CLAIM},})\``,
+    "g",
+  );
+  const quoted = [...code.matchAll(quotedPattern)].map((match) =>
+    decodeEntities(match[1] ?? match[2] ?? match[3] ?? ""),
   );
 
   if (!rendersMarkup(code)) return quoted;
@@ -351,10 +412,12 @@ export function visibleStrings(source: string): string[] {
     .replace(INLINE_TAG, "");
 
   const rendered = [...markup.matchAll(/>([^<>]*)</g)]
-    .map((match) => decodeEntities(match[1]).replace(/\s+/g, " ").trim())
-    // Prose has a space in it. A run carrying `;` or `=>` is the code between
-    // two elements, not words anyone reads.
-    .filter((text) => text.length >= 12 && text.includes(" ") && !/[;{}]|=>/.test(text));
+    .map((match) => literalTextOf(match[1]))
+    .filter((text): text is string => text !== null)
+    .map((text) => decodeEntities(text).replace(/\s+/g, " ").trim())
+    // No space requirement: `pentest` alone in an element is the claim, and the
+    // structural rules above already exclude code.
+    .filter((text) => text.length >= SHORTEST_POSSIBLE_CLAIM);
 
   return [...quoted, ...rendered];
 }
