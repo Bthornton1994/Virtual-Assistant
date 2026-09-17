@@ -251,34 +251,35 @@ function everyFileUnder(dir: string, found: string[] = []): string[] {
  * reason is then true of it.
  */
 /**
- * Read a served asset as the words a customer sees, or null if it has none.
+ * EVERY reading a browser could give a served asset's bytes.
  *
- * The predecessor called any file containing a NUL byte "not decodable text",
- * which is the same defect as the extension list it replaced, one encoding out.
- * **UTF-16 text is full of NULs.** A `.svg` saved as "Unicode" by an ordinary
- * Windows editor — no hostile byte anywhere — was classified as binary, exempted
- * from the scan, and served at HTTP 200 carrying two prohibited claims with the
- * suite green. An adversarial single NUL inside an HTML comment did the same for
- * a `text/html` document.
+ * Picking one reading was the mistake. The previous version tried UTF-8, then
+ * UTF-16LE, then UTF-16BE, and returned the first that looked printable — and
+ * arbitrary bytes of Latin-1 prose decode as perfectly printable CJK under
+ * UTF-16LE. So an SVG saved as Windows-1252, with a few per cent of accented
+ * characters and an `<?xml encoding="windows-1252"?>` declaration, failed the
+ * UTF-8 attempt, "succeeded" as UTF-16LE, was classified as TEXT, and the guard
+ * was handed mojibake. The claim inside it was served at HTTP 200 and read by
+ * nothing. The exact-set pin could not fire either, because the file was in the
+ * SCANNED set rather than the exempt one.
  *
- * Worse, the recorded reason said those files' words were "pixels or glyph
- * outlines". A record that states something untrue about what it covers is the
- * inverse of a record that executes nothing, and this module has now shipped
- * both — the second inside the fix for the first.
+ * Worse, BOM-less UTF-16 sniffing is something no browser does — the HTML
+ * standard detects UTF-16 only from a byte-order mark, and XML requires one. I
+ * added that branch on my own initiative while fixing the previous round, and
+ * the comment beside it claimed these were "the encodings a browser honours".
+ * It was the one encoding in the list that a browser specifically does not.
  *
- * So the encodings a browser honours are TRIED. A byte-order mark is a
- * declaration and is believed; otherwise UTF-8 is attempted strictly, then
- * UTF-16 in both orders, and a decoding counts only if what comes back is
- * overwhelmingly printable. Anything that survives none of that has no words
- * this extractor can read, and the residual reason is then true of it.
+ * So the choice is dropped, the way "which files sell the offer" was dropped.
+ * Every plausible reading is returned and the caller scans ALL of them: a claim
+ * visible under any reading a browser might produce is a claim. Fail-closed
+ * costs a rewording; choosing wrongly costs a served claim.
  */
-export function decodedAssetText(bytes: Uint8Array): string | null {
+export function assetReadings(bytes: Uint8Array): string[] {
   const readable = (text: string): string | null => {
     // Measured POSITIVELY, as the share of characters a reader would see. A
-    // noise ratio with a small epsilon was the first attempt, and it called a
+    // noise ratio with a small epsilon was an earlier attempt, and it called a
     // fifty-character HTML document with one stray NUL binary — one in fifty is
-    // two per cent — while the whole point is that such a document is plainly
-    // text. What separates a document from a PNG is that almost all of a
+    // two per cent. What separates a document from a PNG is that almost all of a
     // document is readable, not that none of it is odd.
     if (text.length === 0) return null;
     const noise = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g) ?? []).length;
@@ -292,31 +293,56 @@ export function decodedAssetText(bytes: Uint8Array): string | null {
     }
   };
 
-  // A byte-order mark is a declaration, so it is believed rather than guessed at.
-  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return decode("utf-16le", bytes.subarray(2));
-  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return decode("utf-16be", bytes.subarray(2));
-  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
-    return decode("utf-8", bytes.subarray(3));
+  // A byte-order mark is a declaration, and it is the ONLY thing that makes a
+  // browser read UTF-16. When one is present it settles the question alone.
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    const text = decode("utf-16le", bytes.subarray(2));
+    return text === null ? [] : [text];
   }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const text = decode("utf-16be", bytes.subarray(2));
+    return text === null ? [] : [text];
+  }
+  const body = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes;
 
-  // With no mark, every candidate is TRIED and the first readable one wins.
-  //
-  // The first version returned whatever UTF-8 gave and only fell through to
-  // UTF-16 when UTF-8 THREW. UTF-16LE of ASCII is a valid UTF-8 byte sequence —
-  // NUL is a legal UTF-8 character — so UTF-8 succeeded, produced a string that
-  // was half NULs, failed the readability check, and the UTF-16 branch was never
-  // reached. Measured: a BOM-less UTF-16 SVG read as binary. Decoding succeeding
-  // is not the same as decoding correctly.
-  for (const encoding of ["utf-8", "utf-16le", "utf-16be"]) {
-    const text = decode(encoding, bytes);
-    if (text !== null) return text;
+  const readings = new Set<string>();
+  // UTF-8 is the default for everything the framework serves, and
+  // windows-1252 is what a browser falls back to for legacy single-byte
+  // content — every byte maps, so it never fails and it covers the whole
+  // Latin-1 family. An in-band declaration, if the file carries one, is added
+  // as well rather than instead: a file whose declaration disagrees with its
+  // bytes is exactly the case where reading only one of them loses the words.
+  for (const encoding of ["utf-8", "windows-1252", declaredEncoding(body)]) {
+    if (!encoding) continue;
+    const text = decode(encoding, body);
+    if (text !== null) readings.add(text);
   }
-  return null;
+  return [...readings];
 }
 
+/** An `<?xml encoding="…"?>` or `<meta charset=…>` declaration, which browsers honour. */
+function declaredEncoding(bytes: Uint8Array): string | null {
+  // The declaration is ASCII in every encoding that can carry one, so a lenient
+  // reading of the first bytes is enough to find it.
+  const head = new TextDecoder("windows-1252").decode(bytes.subarray(0, 1024));
+  const xml = /<\?xml[^>]*\bencoding\s*=\s*["']([\w-]+)["']/i.exec(head);
+  const meta = /<meta[^>]*\bcharset\s*=\s*["']?([\w-]+)/i.exec(head);
+  const declared = xml?.[1] ?? meta?.[1] ?? null;
+  if (!declared) return null;
+  try {
+    // Ask the platform whether it knows the label rather than listing them.
+    new TextDecoder(declared);
+    return declared;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether any reading of this asset yields words. */
 export function assetIsItsOwnText(file: string): boolean {
-  return decodedAssetText(readFileSync(resolve(process.cwd(), file))) !== null;
+  return assetReadings(readFileSync(resolve(process.cwd(), file))).length > 0;
 }
+
 
 /**
  * Everything `public/` serves, at the site root, byte for byte.
@@ -343,8 +369,21 @@ export const RELEASE_RESCUE_SERVED_ASSETS: string[] = [
   ...ROUTE_ROOTS.flatMap((root) => everyFileUnder(root)).filter((file) => !SOURCE_EXTENSION.test(file)),
 ].sort();
 
-/** The served assets whose text this suite reads. */
-export const SCANNABLE_ASSETS: string[] = RELEASE_RESCUE_SERVED_ASSETS.filter(assetIsItsOwnText);
+/**
+ * Every asset this suite reads: served from disk, or reached by import.
+ *
+ * `RELEASE_RESCUE_SERVED_ASSETS` is computed at module load, before any walk has
+ * run, so the imported ones are appended here — after `RELEASE_RESCUE_SURFACE_FILES`
+ * below has forced the discovery — rather than folded into that constant.
+ */
+export function scannableAssets(): string[] {
+  return allAssets().filter(assetIsItsOwnText);
+}
+
+/** Every asset considered, served or imported. */
+export function allAssets(): string[] {
+  return [...new Set([...RELEASE_RESCUE_SERVED_ASSETS, ...IMPORTED_ASSETS])].sort();
+}
 
 /**
  * Served assets this suite does NOT read, with the reason — a raster image, a
@@ -353,11 +392,14 @@ export const SCANNABLE_ASSETS: string[] = RELEASE_RESCUE_SERVED_ASSETS.filter(as
  * Words rendered INTO a PNG are outside this guard and outside the scanner; the
  * control that stands there is human review of what the repository publishes.
  */
-export const ASSET_RESIDUALS: ReadonlyArray<{ readonly file: string; readonly why: string }> =
-  RELEASE_RESCUE_SERVED_ASSETS.filter((file) => !assetIsItsOwnText(file)).map((file) => ({
-    file,
-    why: "its bytes decode as text in no encoding a browser honours, so any words it shows a customer are pixels or glyph outlines that no extractor here can read; human review of what the repository publishes is the control that stands in its place",
-  }));
+export function assetResiduals(): ReadonlyArray<{ readonly file: string; readonly why: string }> {
+  return allAssets()
+    .filter((file) => !assetIsItsOwnText(file))
+    .map((file) => ({
+      file,
+      why: "no reading of its bytes in any encoding a browser would apply yields text, so any words it shows a customer are pixels or glyph outlines that no extractor here can read; human review of what the repository publishes is the control that stands in its place",
+    }));
+}
 
 /**
  * The served assets this suite is allowed not to read, as an EXACT set.
@@ -380,7 +422,7 @@ export const EXPECTED_ASSET_RESIDUALS = ["src/app/favicon.ico"];
  * Classifying it and reading it have to agree, and they now share one decoder.
  */
 export function readServedAsset(file: string): string {
-  return decodedAssetText(readFileSync(resolve(process.cwd(), file))) ?? "";
+  return assetReadings(readFileSync(resolve(process.cwd(), file))).join("\n");
 }
 
 
@@ -419,6 +461,13 @@ export function reachableFrom(entry: string): string[] {
     // that way still renders, and the previous pattern could not see either.
     for (const specifier of staticSpecifiersIn(source)) {
       const target = resolveImport(specifier, file);
+      if (target && !SOURCE_IMPORT.test(target)) {
+        // Reached by import and not a module the parser can read: a stylesheet,
+        // a vendored asset. Its words are scanned the way a served asset's are,
+        // rather than dropped because they are not TypeScript.
+        if (!IMPORTED_ASSETS.includes(target)) IMPORTED_ASSETS.push(target);
+        continue;
+      }
       // No exclusion here. A module a RENDERED PAGE imports is a surface whatever
       // it is called: the name pattern that used to sit here deleted a component
       // from the graph AFTER it resolved, so `UNRESOLVED_IMPORTS` could not fire
@@ -440,8 +489,16 @@ export function reachableFrom(entry: string): string[] {
  * residuals are: the miss that produced this round had been sitting in an
  * unrecorded class, and nobody had written the class down.
  *
- * The rule reads imports. It cannot follow an import whose specifier is
- * computed.
+ * The rule reads imports and walks the route roots. It cannot follow an import
+ * whose specifier is computed, and it cannot find a file the framework loads
+ * from the project root under a name Next does not declare as a constant.
+ *
+ * The second was unwritten until an audit named it. Deleting `computed_name`
+ * last round was right — nothing reads a name any more — but the class left
+ * behind was not recorded, and "the entry rule's residuals" then described a
+ * bound narrower than the one that actually holds. `mdx-components` is not
+ * reachable today (`@next/mdx` is not a dependency and `pageExtensions` is
+ * unset), so this is a bound recorded before it bites rather than after.
  *
  * `computed_name` used to sit beside this one: a served file that assembled the
  * offer's name at runtime was invisible because membership was decided by
@@ -450,7 +507,7 @@ export function reachableFrom(entry: string): string[] {
  * reworded. A bound that stops existing should be deleted, not kept as decor.
  */
 export type EntryResidual = {
-  readonly mechanism: "computed_import";
+  readonly mechanism: "computed_import" | "framework_root_file";
   readonly why: string;
   /** Source that DEMONSTRATES the miss, so the bound is run rather than asserted. */
   readonly source: string;
@@ -459,6 +516,12 @@ export type EntryResidual = {
 };
 
 export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
+  {
+    mechanism: "framework_root_file",
+    why: "A file the framework loads from the project root whose name is not one of Next's `*FILENAME` constants — `mdx-components.tsx` is the live example, and `next.config.ts`, whose `env` values are inlined into client bundles, is another. Neither is imported by any module, neither sits under a route root, and `frameworkEntrypointNames()` cannot discover either, because Next does not declare their names the way it declares the entrypoints.",
+    source: "export function useMDXComponents(components) { return { ...components }; }",
+    seenWhenStatic: 'import "./mdx-components";',
+  },
   {
     mechanism: "computed_import",
     why: "A dynamic `import(`./${name}`)` specifier cannot be resolved statically, so a module reached only that way is outside every graph this file walks.",
@@ -486,7 +549,7 @@ export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
  *
  * So the question is dropped rather than answered again. Everything under a
  * route root is an entry, and the import graph does the rest. Measured before
- * committing to it: the surface goes from 68 files to 172, and the only
+ * committing to it: the surface goes from 68 files to 174, and the only
  * prohibited claims anywhere in it are the 27 inside the one declared
  * exemption — the whole application already says nothing it should not, so this
  * is a widening of what is CHECKED and not a relaxation of anything.
@@ -568,23 +631,42 @@ function resolveImport(specifier: string, fromFile: string): string | null {
     ...suffixes.map((suffix) => join(base, `index${suffix}`)),
     base,
   ];
-  // Only source and data. A bare-path fallback used to accept anything on disk,
-  // which pulled `globals.css` in through `import "./globals.css"` — a real
-  // stylesheet parsed as TypeScript. JSON stays: an audit put customer copy in a
-  // `.json` import and the guard correctly caught it.
-  const READABLE = /\.(tsx?|jsx?|mjs|cjs|json)$/;
+  // ANY own-tree file that exists. The caller decides what to do with it: a
+  // source module is parsed and followed, anything else is read as an asset.
+  //
+  // This used to stop at `/\.(tsx?|jsx?|mjs|cjs|json)$/` and then return null
+  // for a list of asset extensions, under the comment "a stylesheet or asset is
+  // resolvable and simply not text we read". That was untrue of a stylesheet on
+  // its own terms — `content:` renders words, and `src/app/globals.css` IS
+  // scanned, because it happens to sit under a route root. So the same bytes
+  // were checked in one directory and invisible in another: the identical
+  // asymmetry as `manifest.webmanifest` against `manifest.ts`, which the round
+  // before this one called the last one. An audit put a claim in
+  // `src/components/marketing/trust-badge.css`, imported it from the site
+  // chrome, and served it on every marketing route at HTTP 200 with the suite
+  // green, `UNRESOLVED_IMPORTS` empty and the exact-set assertion unmoved.
   for (const candidate of candidates) {
     const full = resolve(process.cwd(), candidate);
-    if (existsSync(full) && statSync(full).isFile() && READABLE.test(candidate)) return candidate.replace(/\\/g, "/");
+    if (existsSync(full) && statSync(full).isFile()) return candidate.replace(/\\/g, "/");
   }
-  // A stylesheet or asset is resolvable and simply not text we read.
-  if (/\.(css|scss|svg|png|jpe?g|webp|woff2?|ico)$/.test(specifier)) return null;
   // A specifier into our own tree that resolves to nothing is not a package and
   // not a miss to shrug at — it is a module the guard will never read. Recorded
   // so the suite can fail on it rather than silently narrowing the surface.
   UNRESOLVED_IMPORTS.push(`${fromFile} -> ${specifier}`);
   return null;
 }
+
+/** Modules the parser can read. Anything else reached by import is an asset. */
+const SOURCE_IMPORT = /\.(tsx?|jsx?|mjs|cjs|json)$/;
+
+/**
+ * Files reached BY IMPORT that are not modules — stylesheets, vendored assets.
+ *
+ * They are scanned as text beside the served assets. Nothing used to look at
+ * them at all: the resolver returned null for a list of asset extensions, so a
+ * `.css` outside a route root was in no set this module exports.
+ */
+export const IMPORTED_ASSETS: string[] = [];
 
 /** Own-tree specifiers the resolver could not place. Asserted empty by the suite. */
 export const UNRESOLVED_IMPORTS: string[] = [];

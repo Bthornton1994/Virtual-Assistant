@@ -3376,11 +3376,18 @@ outlines", which was untrue of both: **a record that states something false abou
 what it covers**, shipped inside the fix for a record that stated something false
 about what it covered.
 
-Two things were wrong and both are fixed. The encodings a browser honours are
-tried — a byte-order mark is believed, then UTF-8, then UTF-16 in both orders,
-and a decoding counts only if what comes back is overwhelmingly printable — and
-`readServedAsset` shares that decoder, because classifying a UTF-16 file as text
-while still reading it as UTF-8 would have changed nothing. The first attempt at
+Two things were wrong and both are fixed. A byte-order mark is believed, and
+`readServedAsset` shares the decoder, because classifying a UTF-16 file as text
+while still reading it as UTF-8 would have changed nothing.
+
+The sentence that stood here — "the encodings a browser honours are tried … then
+UTF-16 in both orders" — was false in the way this section is about, and the next
+audit served a claim through it. Browsers detect UTF-16 **only** from a byte-order
+mark; the HTML standard says so and XML requires one. Sniffing BOM-less UTF-16
+was the one candidate in that list a browser specifically does *not* apply, it
+was added on my own initiative rather than from any finding, and arbitrary bytes
+of Latin-1 prose decode under it as perfectly printable CJK. See the round
+below. The first attempt at
 the readability test measured NOISE against a small epsilon and called a
 fifty-character document with one stray NUL binary at two per cent; it is the
 readable SHARE that matters, not the absence of oddity. The second attempt still
@@ -3413,6 +3420,72 @@ question. That is this project's signature failure, rebuilt inside the fix for a
 instance of it, and caught only by re-running the audit's own attack against the
 repair. The names are read from Next's own `*FILENAME` constants now. There is no
 list left to shorten.
+
+### Eleventh time, and it was the sniffing I invented that did it
+
+The tenth round replaced a byte sniff that called any NUL-containing file binary.
+The replacement tried UTF-8, then UTF-16LE, then UTF-16BE, and took the first
+reading that looked printable. **Arbitrary bytes of Latin-1 prose decode under
+UTF-16LE as perfectly printable CJK.** So an SVG saved as Windows-1252 — an
+`<?xml encoding="windows-1252"?>` declaration, a few per cent of accented French,
+and one ASCII line carrying a claim — failed the UTF-8 reading, "succeeded" as
+UTF-16LE, was classified as TEXT, and the guard was handed mojibake. The claim
+was served at HTTP 200 and read by nothing, and the pinned exemption could not
+fire, because the file was in the SCANNED set rather than the exempt one.
+
+The comment beside that loop called those "the encodings a browser honours".
+Browsers detect UTF-16 **only** from a byte-order mark — the HTML standard says
+so, and XML requires one. BOM-less UTF-16 sniffing was the single candidate in
+that list a browser specifically does not apply, and I added it on my own
+initiative rather than from any finding, along with a test asserting it. Both are
+gone.
+
+The choice is dropped, the way "which files sell the offer" was dropped. **Every
+plausible reading is returned and all of them are scanned**: a claim visible
+under any reading a browser might produce is a claim. UTF-8, the windows-1252
+legacy fallback, and an in-band `encoding=`/`charset=` declaration if the file
+carries one. A byte-order mark, being a declaration, still settles the question
+alone.
+
+### A stylesheet in one directory was checked and the same stylesheet in another was not
+
+`resolveImport` returned null for `.css`, `.svg`, `.png` and friends, under a
+comment saying a stylesheet is "resolvable and simply not text we read". Untrue
+on its own terms: `content:` renders words, and `src/app/globals.css` IS scanned,
+because it happens to sit under a route root. So the same bytes were checked in
+one directory and invisible in another — the identical asymmetry as
+`manifest.webmanifest` against `manifest.ts`, which the round before this one
+called the last one, one directory over.
+
+An audit put a claim in `src/components/marketing/trust-badge.css`, imported it
+from the site chrome, and served it on every marketing route at HTTP 200 with the
+suite green, `UNRESOLVED_IMPORTS` empty and the exact-set assertion unmoved. The
+resolver now resolves any own-tree file that exists, and the walk sorts them:
+a module is parsed and followed, anything else joins `IMPORTED_ASSETS` and is
+read as an asset. Three sources feed the asset scan now — `public/`, the route
+roots' non-source files, and whatever is reached by import — and each is required
+to contribute.
+
+### The wiring assertions could be satisfied by a decoy
+
+Four mutants were killed only by source-text assertions, and the helper behind
+them walked the whole file keeping the LAST declaration of a name, with no scope
+check. A decoy — `function unused() { const ROUTE_ROOTS = routeRoots(); }` —
+satisfied the assertion while the module-level constant held the literal
+predecessor. An audit broke two mechanisms that way with both suites green and
+this proof printing that all fifteen were held. The helper reads module-level
+declarations only, requires exactly one, and a separate assertion fails if any of
+the checked names is shadowed anywhere in the file. A `moduleSource.includes(...)`
+check that a comment could satisfy is parsed now instead.
+
+The proof also said "every `to` below is quoted from the commit that the
+mechanism replaced". Two are not: the asset-residual pin has no predecessor at
+all, and the every-route-file mutant's real predecessor called three functions
+that this round deleted. Both are labelled `modelled`, the label prints beside
+the verdict, and the closing line counts them separately. A mutant that is not
+the predecessor is not worthless, but it must not be counted as though it were.
+
+And the proof measures the WORKING TREE, which it now says out loud on every run.
 
 ## What this slice deliberately does not do
 

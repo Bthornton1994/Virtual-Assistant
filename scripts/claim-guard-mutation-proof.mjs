@@ -54,9 +54,23 @@ const SUITES = [
  * repeated it. The rule this harness exists to enforce — run the OLD
  * implementation against the NEW mutants — was the rule this harness broke.
  *
- * Every `to` below is now quoted from the commit that the mechanism replaced.
+ * Most `to` values are QUOTED from the commit the mechanism replaced. Two cannot
+ * be, and say so rather than passing themselves off as quotes — an audit checked
+ * the git history and found the blanket claim that used to stand here untrue:
  *
- * @type {ReadonlyArray<{id: string, mechanism: string, from: string, to: string, control?: boolean}>}
+ *   - `M-ASSET-RESIDUAL-SET` guards a pin that has no predecessor at all. Its
+ *     `to` MODELS the absence of a pin, which is the state before it existed.
+ *   - `M-EVERY-ROUTE-FILE` had a four-statement predecessor that called
+ *     `ROUTE_DIR`, `ancestorChainFor` and `filesSellingTheOffer`, all deleted by
+ *     the commit this proof runs against. Its `to` restores what the current
+ *     module can still express, which is a BIGGER deviation than the real
+ *     predecessor and therefore easier to catch — so its HELD verdict is weaker
+ *     evidence than a quoted one, and it is labelled so.
+ *
+ * A mutant that is not the predecessor is not worthless, but it must not be
+ * counted as though it were. `kind` is printed with the verdict.
+ *
+ * @type {ReadonlyArray<{id: string, mechanism: string, from: string, to: string, kind?: string, control?: boolean}>}
  */
 const MUTANTS = [
   {
@@ -112,18 +126,21 @@ const MUTANTS = [
     mechanism: "every file under a route root is an entry, not only those that sell the offer",
     from: "  const entries = new Set<string>(ROUTE_ROOTS.flatMap((root) => filesUnder(root)));",
     to: '  const entries = new Set<string>(filesUnder("src/app/(marketing)/ai-app-release-rescue"));',
+    kind: "modelled: the predecessor also called ancestorChainFor and filesSellingTheOffer, both deleted",
   },
   {
     id: "M-ASSET-RESIDUAL-SET",
     mechanism: "the served assets exempt from the scan are an exact set",
     from: 'export const EXPECTED_ASSET_RESIDUALS = ["src/app/favicon.ico"];',
-    to: "export const EXPECTED_ASSET_RESIDUALS = ASSET_RESIDUALS.map((residual) => residual.file);",
+    to: "export const EXPECTED_ASSET_RESIDUALS = assetResiduals().map((residual) => residual.file);",
+    kind: "modelled: this pin is new, so there is no predecessor to quote",
   },
   {
     id: "M-ASSET-DECODING",
-    mechanism: "a served asset is decoded in every encoding a browser honours",
-    from: "  for (const encoding of [\"utf-8\", \"utf-16le\", \"utf-16be\"]) {\n    const text = decode(encoding, bytes);\n    if (text !== null) return text;\n  }\n  return null;",
-    to: "  if (bytes.includes(0)) return null;\n  return decode(\"utf-8\", bytes);",
+    mechanism: "every reading a browser could give an asset is scanned, not just the first that looks printable",
+    from:
+      '  for (const encoding of ["utf-8", "windows-1252", declaredEncoding(body)]) {\n    if (!encoding) continue;\n    const text = decode(encoding, body);\n    if (text !== null) readings.add(text);\n  }\n  return [...readings];',
+    to: '  for (const encoding of ["utf-8", "utf-16le", "utf-16be"]) {\n    const text = decode(encoding, body);\n    if (text !== null) return [text];\n  }\n  return [];',
   },
   {
     id: "M-SELF-CLOSING",
@@ -295,6 +312,11 @@ process.on("uncaughtException", (error) => {
 try {
   const baseline = await failingSet();
   console.log(`baseline failing tests: ${baseline.size === 0 ? "(none)" : [...baseline].join(", ")}`);
+  // Stated rather than implied: this measures the WORKING TREE, not the commit.
+  // An audit broke two mechanisms on disk and this script still printed that all
+  // fifteen were held, which is correct behaviour for what it measures and
+  // misleading for what a reader assumes it measures.
+  console.log(`measuring the working tree copy of ${MODULE}; run \`git status\` if you expected the committed one`);
 
   for (const mutant of MUTANTS) {
     const occurrences = original.split(mutant.from).length - 1;
@@ -314,6 +336,7 @@ try {
     const expected = mutant.control ? !held : held;
     const verdict = mutant.control ? (held ? "CONTROL FAILED" : "control ok") : held ? "HELD" : "UNHELD";
     console.log(`${mutant.id.padEnd(18)} ${verdict.padEnd(14)} ${mutant.mechanism}`);
+    if (mutant.kind) console.log(`${" ".repeat(20)}(${mutant.kind})`);
     for (const name of newly.slice(0, 2)) console.log(`${" ".repeat(20)}by: ${name}`);
     if (!expected) exitCode = 1;
   }
@@ -329,7 +352,7 @@ if (readFileSync(MODULE, "utf8") !== original) {
 }
 console.log(
   exitCode === 0
-    ? `\nall ${MUTANTS.length - 1} mechanisms are held by a named test, each reverted to the implementation it replaced, and the control changed nothing`
+    ? `\nall ${MUTANTS.length - 1} mechanisms are held by a named test (${MUTANTS.filter((m) => m.kind && !m.control).length} against a modelled predecessor rather than a quoted one, marked above), and the control changed nothing`
     : "\nsee UNHELD/ANCHOR-MISS above",
 );
 process.exit(exitCode);

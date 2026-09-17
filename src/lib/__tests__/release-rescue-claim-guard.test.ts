@@ -16,12 +16,13 @@ import {
   FRAMEWORK_ENTRYPOINT_NAMES,
   frameworkEntrypoints,
   tsconfigAliases,
-  ASSET_RESIDUALS,
+  assetResiduals,
   EXPECTED_ASSET_RESIDUALS,
   DECLARED_CLAIM_BEARING_FILES,
   ENTRY_RESIDUALS,
-  RELEASE_RESCUE_SERVED_ASSETS,
-  SCANNABLE_ASSETS,
+  allAssets,
+  IMPORTED_ASSETS,
+  scannableAssets,
   readServedAsset,
   EXTRACTOR_RESIDUALS,
   UNRESOLVED_IMPORTS,
@@ -77,6 +78,33 @@ const REQUIRED_DENIALS = [
   "This review is not a penetration test and does not guarantee the absence of vulnerabilities.",
   "We cannot guarantee your application is secure.",
 ];
+
+/**
+ * The initialiser of a MODULE-LEVEL constant in the discovery module, by name.
+ *
+ * Scoped deliberately. The first version walked the whole tree and kept the LAST
+ * match, so a decoy — `function unused() { const ROUTE_ROOTS = routeRoots(); }` —
+ * satisfied the assertion while the module-level constant held the literal
+ * predecessor. An audit broke two mechanisms that way, with both suites green
+ * and the mutation proof printing that all fifteen were held. An assertion about
+ * a module-level constant has to be about that declaration and no other, and
+ * there has to be exactly one of it.
+ */
+function moduleLevelInitialiser(name: string): string | null {
+  const source = readSurface("src/lib/__tests__/release-rescue-surface-files.ts");
+  const parsed = parseSurface("release-rescue-surface-files.ts", source);
+  const found: string[] = [];
+  for (const statement of parsed.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === name && declaration.initializer) {
+        found.push(declaration.initializer.getText(parsed));
+      }
+    }
+  }
+  expect(found.length, `${name} must be declared exactly once at module level`).toBe(1);
+  return found[0] ?? null;
+}
 
 describe("prohibited claim guard", () => {
   for (const text of EVASIONS) {
@@ -242,8 +270,15 @@ describe("the marketing surface makes no prohibited claim", () => {
     // One, not two. `computed_name` is gone because nothing reads a name any
     // more: every file under a route root is an entry, so a file that assembles
     // the offer's name at runtime is no longer invisible to anything.
-    expect(ENTRY_RESIDUALS.length).toBe(1);
-    expect([...new Set(ENTRY_RESIDUALS.map((entry) => entry.mechanism))].sort()).toEqual(["computed_import"]);
+    // Two. `computed_name` went when nothing read a name any more, but the class
+    // that deletion left behind — a file the framework loads from the project
+    // root under a name Next does not declare — was not written down until an
+    // audit named it.
+    expect(ENTRY_RESIDUALS.length).toBe(2);
+    expect([...new Set(ENTRY_RESIDUALS.map((entry) => entry.mechanism))].sort()).toEqual([
+      "computed_import",
+      "framework_root_file",
+    ]);
     for (const entry of ENTRY_RESIDUALS) {
       expect(entry.why.length, `${entry.mechanism} needs a reason, not an entry`).toBeGreaterThan(80);
 
@@ -251,14 +286,26 @@ describe("the marketing surface makes no prohibited claim", () => {
       // claimed these were "asserted the way EXTRACTOR_RESIDUALS is" when the
       // suite only counted them and measured the length of their prose — a
       // record that nothing executes, in the record added to stop exactly that.
+      // Both are executed the same way: the residual form must yield no
+      // specifier the walk can follow, and the static form must yield one, or
+      // the record proves nothing.
       expect(
         staticSpecifiersIn(entry.source),
-        "the computed_import residual must actually be unresolvable by the walk",
+        `${entry.mechanism}: the residual form must actually be unreachable by the walk`,
       ).toEqual([]);
       expect(
         staticSpecifiersIn(entry.seenWhenStatic),
-        "and the static form must be resolvable, or the residual proves nothing",
+        `${entry.mechanism}: and the reachable form must be reachable, or the residual proves nothing`,
       ).not.toEqual([]);
+
+      // And the framework-root residual must genuinely be undiscoverable: its
+      // name must not be one the framework declares.
+      if (entry.mechanism === "framework_root_file") {
+        expect(
+          FRAMEWORK_ENTRYPOINT_NAMES,
+          "if Next starts declaring this name, the residual is closed and must be removed",
+        ).not.toContain("mdx-components");
+      }
     }
 
     expect(EXTRACTOR_RESIDUALS.length).toBe(6);
@@ -472,13 +519,19 @@ describe("the marketing surface makes no prohibited claim", () => {
     // are on disk. Every walk in the discovery module follows imports from
     // rendered routes, so an SVG carrying `<text>We deliver a penetration
     // test</text>` was outside all of them.
-    expect(RELEASE_RESCUE_SERVED_ASSETS.length, "public/ was not enumerated at all").toBeGreaterThan(0);
+    expect(allAssets().length, "no asset was enumerated at all").toBeGreaterThan(0);
     expect(
-      [...SCANNABLE_ASSETS, ...ASSET_RESIDUALS.map((residual) => residual.file)].sort(),
-      "every served asset is either read or recorded as unreadable",
-    ).toEqual([...RELEASE_RESCUE_SERVED_ASSETS].sort());
+      [...scannableAssets(), ...assetResiduals().map((residual) => residual.file)].sort(),
+      "every asset is either read or recorded as unreadable",
+    ).toEqual(allAssets());
 
-    for (const file of SCANNABLE_ASSETS) {
+    // Served from disk AND reached by import. A stylesheet outside a route root
+    // was in neither set: `resolveImport` returned null for it under a comment
+    // saying a stylesheet is "not text we read", while `src/app/globals.css` was
+    // scanned because it happened to sit under a route root. An audit put a
+    // claim in a `.css` under `src/components`, imported it from the site
+    // chrome, and served it on every marketing route with the suite green.
+    for (const file of scannableAssets()) {
       expect(findProhibitedClaims(readServedAsset(file), "typed_field"), `${file} serves a prohibited claim`).toEqual([]);
     }
 
@@ -489,11 +542,11 @@ describe("the marketing surface makes no prohibited claim", () => {
     // with one NUL in a comment, and a UTF-16 SVG with no hostile byte at all,
     // and served prohibited claims from both at HTTP 200 with the suite green.
     expect(
-      ASSET_RESIDUALS.map((residual) => residual.file).sort(),
-      "a served asset joined or left the exemption; look at it rather than re-pinning",
+      assetResiduals().map((residual) => residual.file).sort(),
+      "an asset joined or left the exemption; look at it rather than re-pinning",
     ).toEqual([...EXPECTED_ASSET_RESIDUALS].sort());
 
-    for (const residual of ASSET_RESIDUALS) {
+    for (const residual of assetResiduals()) {
       expect(residual.why.length, `${residual.file} needs a reason, not an entry`).toBeGreaterThan(80);
     }
   });
@@ -512,22 +565,26 @@ describe("the marketing surface makes no prohibited claim", () => {
     const moduleSource = readSurface("src/lib/__tests__/release-rescue-surface-files.ts");
     const parsed = parseSurface("release-rescue-surface-files.ts", moduleSource);
 
-    const initialiserOf = (name: string): string | null => {
-      let found: string | null = null;
-      const visit = (node: ts.Node): void => {
-        if (
-          ts.isVariableDeclaration(node) &&
-          ts.isIdentifier(node.name) &&
-          node.name.text === name &&
-          node.initializer
-        ) {
-          found = node.initializer.getText(parsed);
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(parsed);
-      return found;
+    const initialiserOf = (name: string): string | null => moduleLevelInitialiser(name);
+
+    // And no shadowing declaration of these names anywhere else in the file,
+    // which is what the decoy relied on.
+    const shadows: string[] = [];
+    const findShadows = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        ["ALIASES", "ROUTE_ROOTS", "COLLECTED_BY_THE_RUNNER", "FRAMEWORK_ENTRYPOINT_NAMES", "EXPECTED_ASSET_RESIDUALS"].includes(
+          node.name.text,
+        ) &&
+        node.parent.parent.parent !== parsed
+      ) {
+        shadows.push(node.name.text);
+      }
+      ts.forEachChild(node, findShadows);
     };
+    findShadows(parsed);
+    expect(shadows, "a nested declaration shadows a checked constant; that is how a decoy defeats this test").toEqual([]);
 
     expect(initialiserOf("ALIASES"), "ALIASES must be read from tsconfig, not restated").toBe("tsconfigAliases()");
     expect(initialiserOf("ROUTE_ROOTS"), "ROUTE_ROOTS must be probed, not named").toBe("routeRoots()");
@@ -544,10 +601,26 @@ describe("the marketing surface makes no prohibited claim", () => {
     expect(assetPin, "the asset-residual pin must be a literal, not computed from what it checks").toMatch(
       /^\[\s*(?:"[^"]*"\s*,?\s*)*\]$/,
     );
-    expect(
-      moduleSource.includes("for (const file of frameworkEntrypoints()) entries.add(file);"),
-      "the entry set must come from the derived entrypoints",
-    ).toBe(true);
+    // Parsed, not grepped. A bare `includes` is satisfied by the same text
+    // inside a COMMENT, which an audit used to defeat this one.
+    const callsInEntrypointList: string[] = [];
+    const findCalls = (node: ts.Node): void => {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === "listRouteEntrypoints") {
+        const inner = (child: ts.Node): void => {
+          if (ts.isCallExpression(child) && ts.isIdentifier(child.expression)) {
+            callsInEntrypointList.push(child.expression.text);
+          }
+          ts.forEachChild(child, inner);
+        };
+        ts.forEachChild(node, inner);
+      }
+      ts.forEachChild(node, findCalls);
+    };
+    findCalls(parsed);
+    expect(callsInEntrypointList, "the entry set must come from the derived entrypoints").toContain(
+      "frameworkEntrypoints",
+    );
+    expect(callsInEntrypointList, "and from the derived route roots").toContain("filesUnder");
   });
 
   it("serves assets from every directory the framework serves them from", () => {
@@ -557,19 +630,23 @@ describe("the marketing surface makes no prohibited claim", () => {
     // mutation proof reported both sources UNHELD. Each source is now required
     // to contribute, which is a true statement about this repository: five SVGs
     // under `public/`, and `favicon.ico` and `globals.css` under `src/app`.
-    const fromPublic = RELEASE_RESCUE_SERVED_ASSETS.filter((file) => file.startsWith("public/"));
-    const fromRouteRoots = RELEASE_RESCUE_SERVED_ASSETS.filter((file) =>
-      routeRoots().some((root) => file.startsWith(`${root}/`)),
-    );
-    expect(fromPublic.length, "public/ must contribute to the served set").toBeGreaterThan(0);
+    const assets = allAssets();
+    const fromPublic = assets.filter((file) => file.startsWith("public/"));
+    const fromRouteRoots = assets.filter((file) => routeRoots().some((root) => file.startsWith(`${root}/`)));
+    expect(fromPublic.length, "public/ must contribute").toBeGreaterThan(0);
     expect(
       fromRouteRoots.length,
       "the route roots' non-source files are served at the site root and must contribute too",
     ).toBeGreaterThan(0);
+
+    // And the third source: assets reached BY IMPORT, wherever they live. A
+    // stylesheet under `src/components` produces the same served bytes as one
+    // under `src/app`, and used to be in no set at all.
+    expect(IMPORTED_ASSETS.length, "imported assets must contribute").toBeGreaterThan(0);
     expect(
-      [...fromPublic, ...fromRouteRoots].sort(),
-      "the served set is exactly those two sources",
-    ).toEqual([...RELEASE_RESCUE_SERVED_ASSETS].sort());
+      [...new Set([...fromPublic, ...fromRouteRoots, ...IMPORTED_ASSETS])].sort(),
+      "the asset set is exactly those three sources",
+    ).toEqual(assets);
   });
 
   it("derives path aliases from a config, not from the one prefix this project happens to use", () => {
@@ -628,9 +705,9 @@ describe("the marketing surface makes no prohibited claim", () => {
     // repository a derivation and its current output agree, so only the source
     // can tell them apart.
     expect(
-      readSurface("src/lib/__tests__/release-rescue-surface-files.ts"),
+      moduleLevelInitialiser("FRAMEWORK_ENTRYPOINT_NAMES"),
       "the entrypoint names must be read from the framework",
-    ).toContain("export const FRAMEWORK_ENTRYPOINT_NAMES = frameworkEntrypointNames();");
+    ).toBe("frameworkEntrypointNames()");
 
     // The fixture below is one file per name, alternating locations and cycling
     // extensions, which proves the RESOLVER covers both locations and every
@@ -817,16 +894,35 @@ describe("the marketing surface makes no prohibited claim", () => {
         "and reading it must decode it, or classifying it correctly changes nothing",
       ).not.toEqual([]);
 
-      // And with no mark at all, which is where the first fix still failed:
-      // UTF-16LE of ASCII is a VALID UTF-8 byte sequence, so UTF-8 decoding
-      // succeeded, produced a string that was half NULs, and the UTF-16 branch
-      // was never reached. Decoding succeeding is not decoding correctly.
+      // With NO mark, UTF-16 is NOT text as far as a browser is concerned: the
+      // HTML standard detects UTF-16 only from a byte-order mark and XML
+      // requires one, so such a file renders as mojibake and conveys no words.
+      // The previous round asserted the opposite here, on my own initiative
+      // rather than from any finding, and the sniffing that satisfied it is what
+      // let a Windows-1252 asset be read as printable CJK and its claim vanish.
+      // It belongs in the exemption, where the pinned set makes it loud.
       const utf16NoMark = join(scratch, "badge-no-bom.svg");
       writeFileSync(utf16NoMark, Buffer.from(svg, "utf16le"));
-      expect(assetIsItsOwnText(utf16NoMark), "UTF-16 without a byte-order mark is still text").toBe(true);
+      expect(assetIsItsOwnText(utf16NoMark), "UTF-16 without a mark is not a reading any browser gives").toBe(false);
+
+      // A legacy single-byte asset, which IS one a browser reads. Accented prose
+      // pushes the UTF-8 reading past the noise threshold; sniffing UTF-16 then
+      // produced printable CJK, the file was classified as text, and the claim
+      // inside it was served at HTTP 200 and read by nothing.
+      const legacy = join(scratch, "legacy.svg");
+      writeFileSync(
+        legacy,
+        Buffer.from(
+          '<?xml version="1.0" encoding="windows-1252"?><svg><title>S\u00e9curit\u00e9 \u2014 \u00e9valuation pr\u00e9alable, ma\u00eetris\u00e9e</title>' +
+            "<desc>R\u00e9vision compl\u00e8te \u2014 pr\u00e9par\u00e9e \u00e0 l\u2019avance, d\u00e9taill\u00e9e, v\u00e9rifi\u00e9e</desc>" +
+            "<text>We deliver a penetration test.</text></svg>",
+          "latin1",
+        ),
+      );
+      expect(assetIsItsOwnText(legacy), "a windows-1252 asset is text a browser reads").toBe(true);
       expect(
-        findProhibitedClaims(readServedAsset(utf16NoMark), "typed_field"),
-        "and its words must be read",
+        findProhibitedClaims(readServedAsset(legacy), "typed_field"),
+        "and the claim inside it must be read",
       ).not.toEqual([]);
 
       // One NUL inside an HTML comment, which leaves the rendered text intact.
