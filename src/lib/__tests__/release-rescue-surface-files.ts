@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
 
 /**
@@ -64,7 +64,40 @@ const SOURCE_EXTENSION = /\.(tsx?|jsx?|mjs|cjs)$/;
  * own entrypoint names, not a judgement about which of our files matter, and a
  * name that stops existing is caught by the exact-set assertion.
  */
-const FRAMEWORK_ENTRYPOINTS = ["src/proxy.ts", "src/middleware.ts", "src/instrumentation.ts"];
+const FRAMEWORK_ENTRYPOINT_NAMES = [
+  "proxy",
+  "middleware",
+  "instrumentation",
+  "instrumentation-client",
+];
+
+/**
+ * Next resolves each of these from the project root OR `src/`, in any servable
+ * extension — `MIDDLEWARE_LOCATION_REGEXP` in the installed framework is
+ * `(?:src/)?middleware`, and `create-compiler-aliases` looks for
+ * `src/instrumentation-client` and `instrumentation-client` alike.
+ *
+ * The previous version was three literal strings with the `src/` spelling only,
+ * and it missed `instrumentation-client` — which runs in the BROWSER on every
+ * route, is imported by nothing, and needs no config flag. An audit served a
+ * claim from it at HTTP 200 with the whole suite green.
+ *
+ * The defence offered for a literal list was that "a name that stops existing
+ * fails the exact-set assertion". True for deletion and rename; an entrypoint
+ * that is ADDED is silent, which is exactly what happened.
+ */
+function frameworkEntrypoints(): string[] {
+  const found: string[] = [];
+  for (const name of FRAMEWORK_ENTRYPOINT_NAMES) {
+    for (const directory of ["src", "."]) {
+      for (const extension of [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]) {
+        const candidate = directory === "." ? `${name}${extension}` : `${directory}/${name}${extension}`;
+        if (existsSync(resolve(process.cwd(), candidate))) found.push(candidate);
+      }
+    }
+  }
+  return found;
+}
 
 /**
  * The files Next renders AROUND a page, by its own routing rules rather than by
@@ -81,7 +114,8 @@ const FRAMEWORK_ENTRYPOINTS = ["src/proxy.ts", "src/middleware.ts", "src/instrum
  *
  * So the chain is derived from the filesystem the way the framework derives it.
  */
-const RENDERED_AROUND_A_PAGE = /^(layout|template|error|global-error|not-found|loading)\.tsx?$/;
+export const RENDERED_AROUND_A_PAGE =
+  /^(layout|template|error|global-error|global-not-found|not-found|forbidden|unauthorized|loading|default)\.(tsx?|jsx?|mjs|cjs)$/;
 
 function ancestorChainFor(dir: string): string[] {
   const found: string[] = [];
@@ -105,6 +139,63 @@ function filesUnder(dir: string, found: string[] = []): string[] {
   return found;
 }
 
+/** Every file under a directory, whatever its extension. */
+function everyFileUnder(dir: string, found: string[] = []): string[] {
+  const full = resolve(process.cwd(), dir);
+  if (!existsSync(full)) return found;
+  for (const entry of readdirSync(full, { withFileTypes: true })) {
+    const child = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) everyFileUnder(child, found);
+    else found.push(child);
+  }
+  return found;
+}
+
+/**
+ * Asset formats whose bytes ARE their words.
+ *
+ * An SVG carries `<text>`; a `.txt`, `.md`, `.json` or `.webmanifest` is read as
+ * written. There is no module to parse and no import to follow, so the whole
+ * file is the visible string.
+ */
+export const ASSET_IS_ITS_OWN_TEXT = /\.(svgz?|html?|txt|md|json|xml|csv|webmanifest|vtt)$/i;
+
+/**
+ * Everything `public/` serves, at the site root, byte for byte.
+ *
+ * The discovery in this file answers "which files can put words in front of a
+ * customer" by following imports from rendered routes. `public/` is reached by
+ * NO import: Next serves `public/x.svg` at `/x.svg` because it is on disk. So an
+ * SVG with `<text>We deliver a penetration test</text>`, or a `claims.txt`
+ * linked from a page, was outside every walk in this module — not a residual,
+ * not an exemption, simply unconsidered. The offer's own marketing surface is
+ * exactly where such an asset would live.
+ */
+export const RELEASE_RESCUE_SERVED_ASSETS: string[] = everyFileUnder("public").sort();
+
+/** The served assets whose text this suite reads. */
+export const SCANNABLE_ASSETS: string[] = RELEASE_RESCUE_SERVED_ASSETS.filter((file) =>
+  ASSET_IS_ITS_OWN_TEXT.test(file),
+);
+
+/**
+ * Served assets this suite does NOT read, with the reason — a raster image, a
+ * font, a media file. Recorded rather than skipped, under the same rule the
+ * tokenizer and extractor residuals follow: a bound should be a measurement.
+ * Words rendered INTO a PNG are outside this guard and outside the scanner; the
+ * control that stands there is human review of what the repository publishes.
+ */
+export const ASSET_RESIDUALS: ReadonlyArray<{ readonly file: string; readonly why: string }> =
+  RELEASE_RESCUE_SERVED_ASSETS.filter((file) => !ASSET_IS_ITS_OWN_TEXT.test(file)).map((file) => ({
+    file,
+    why: "a binary asset whose words, if any, are pixels or glyph outlines rather than text; no extractor here can read it, and human review of published assets is the control that stands in its place",
+  }));
+
+/** The text of one served asset, exactly as the framework would hand it over. */
+export function readServedAsset(file: string): string {
+  return readFileSync(resolve(process.cwd(), file), "utf8");
+}
+
 /** The modules this offer owns outright. */
 const OFFER_MODULE = /^src\/(?:lib|components)\/(?:ai-app-release-rescue\/|release-rescue-)/;
 
@@ -125,7 +216,9 @@ const OFFER_MODULE = /^src\/(?:lib|components)\/(?:ai-app-release-rescue\/|relea
  *     price, whole suite green.
  *
  * Both are the shape the previous commit was written to remove, one notch in.
- * So neither the file's NAME nor a module's DIRECTORY decides anything now:
+ * So the rule is stated with its DIRECTORY disjunct named rather than described
+ * away — saying "neither NAME nor DIRECTORY decides anything" was false in two
+ * commit messages, and this comment carried it for one more:
  *
  *   a served file is a surface when anything it can reach either belongs to
  *   this offer or says this offer's name.
@@ -215,9 +308,7 @@ export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
 
 function listRouteEntrypoints(): string[] {
   const entries = new Set<string>(filesUnder(ROUTE_DIR));
-  for (const file of FRAMEWORK_ENTRYPOINTS) {
-    if (existsSync(resolve(process.cwd(), file))) entries.add(file);
-  }
+  for (const file of frameworkEntrypoints()) entries.add(file);
   for (const file of ancestorChainFor(ROUTE_DIR)) entries.add(file);
   for (const served of filesSellingTheOffer()) {
     entries.add(served);
@@ -226,10 +317,62 @@ function listRouteEntrypoints(): string[] {
   return [...entries];
 }
 
+/**
+ * The project's own path aliases, READ FROM `tsconfig.json`.
+ *
+ * "Our tree" was decided by the literal prefix `@/`. Any second alias — the
+ * ordinary `~/*` beside it, say — was classified as a package and dropped
+ * BEFORE the unresolved-import recording, so the guard added for exactly this
+ * failure could not fire. An audit added `"~/*": ["./src/*"]`, imported a
+ * component through it, built it, and served a prohibited claim at HTTP 200 with
+ * `UNRESOLVED_IMPORTS` empty and the suite green.
+ *
+ * The aliases are a fact about this project, written down in one place by the
+ * project itself. Reading them is not a list; assuming them was.
+ */
+function tsconfigAliases(): Array<{ readonly prefix: string; readonly target: string }> {
+  // TypeScript reads its own config. The first attempt at this stripped comments
+  // with a regex before `JSON.parse`, and the block-comment pattern matched the
+  // `/*` INSIDE the alias key `"@/*"` — it ate the paths map and threw. A
+  // hand-rolled parser for a format the compiler already parses is the same
+  // mistake as a hand-written list, one layer down. `parseJsonConfigFileContent`
+  // also resolves `extends`, so an alias inherited from a base config counts.
+  const configPath = resolve(process.cwd(), "tsconfig.json");
+  const read = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (read.error) throw new Error(`tsconfig.json is unreadable: ${ts.flattenDiagnosticMessageText(read.error.messageText, " ")}`);
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configPath));
+  const paths = parsed.options.paths ?? {};
+  const baseUrl = parsed.options.baseUrl ?? dirname(configPath);
+  return Object.entries(paths).flatMap(([pattern, targets]) => {
+    const prefix = pattern.replace(/\*$/, "");
+    const first = targets[0];
+    if (first === undefined) return [];
+    // Targets are relative to baseUrl (or the config's own directory); the rest
+    // of this module speaks repository-relative paths, so convert once here.
+    const absolute = resolve(baseUrl, first.replace(/\*$/, ""));
+    const target = relative(process.cwd(), absolute).replace(/\\/g, "/");
+    return target ? [{ prefix, target }] : [];
+  });
+}
+
+const ALIASES = tsconfigAliases();
+
+if (ALIASES.length === 0) {
+  throw new Error("tsconfig.json declares no path aliases; every `@/` import would be read as a package");
+}
+
+function aliasFor(specifier: string): string | null {
+  for (const { prefix, target } of ALIASES) {
+    if (specifier.startsWith(prefix)) return join(target, specifier.slice(prefix.length));
+  }
+  return null;
+}
+
 /** Resolve an import specifier to a repository-relative file, or null if it leaves the tree. */
 function resolveImport(specifier: string, fromFile: string): string | null {
   let base: string;
-  if (specifier.startsWith("@/")) base = join("src", specifier.slice(2));
+  const alias = aliasFor(specifier);
+  if (alias) base = alias;
   else if (specifier.startsWith(".")) base = join(dirname(fromFile), specifier);
   else return null; // a package, not our source
   const suffixes = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"];
@@ -455,6 +598,32 @@ function concatenatedParts(node: ts.Expression, into: string[]): void {
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) into.push(node.text);
 }
 
+/**
+ * Whether a node's JSX children are ALTERNATIVES rather than neighbours.
+ *
+ * `ok ? <span>Your application is </span> : <span>secure.</span>` has two JSX
+ * children, so the run-together rule joined them into a sentence that NO render
+ * produces — one arm or the other runs, never both. Flagging fabricated text is
+ * the safe direction for a guard, but it is still a claim the repository does
+ * not make, and this file's whole subject is not asserting things that are not
+ * so. Each arm is visited on its own by the walk, so nothing is lost.
+ *
+ * Inside a real JsxElement the conservative join stays: there the children ARE
+ * adjacent, and a conditional between two literal siblings is a real path.
+ */
+function rendersAlternatives(node: ts.Node): boolean {
+  if (ts.isConditionalExpression(node)) return true;
+  if (ts.isBinaryExpression(node)) {
+    const operator = node.operatorToken.kind;
+    return (
+      operator === ts.SyntaxKind.AmpersandAmpersandToken ||
+      operator === ts.SyntaxKind.BarBarToken ||
+      operator === ts.SyntaxKind.QuestionQuestionToken
+    );
+  }
+  return false;
+}
+
 /** How many of a node's direct children are JSX elements that would render adjacently. */
 function jsxChildCount(node: ts.Node): number {
   const isJsx = (candidate: ts.Node): boolean =>
@@ -511,7 +680,7 @@ export function interpolatesSomething(source: string): boolean {
 export function jsxTextOf(node: ts.Node, mode: "separated" | "verbatim"): string {
   const parts: string[] = [];
   const walk = (child: ts.Node): void => {
-    if (ts.isJsxText(child)) parts.push(child.text);
+    if (ts.isJsxText(child)) parts.push(mode === "separated" ? child.text : jsxTextValue(child.text));
     else if (ts.isJsxExpression(child)) {
       const inner = child.expression;
       if (inner && (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner))) parts.push(inner.text);
@@ -519,7 +688,41 @@ export function jsxTextOf(node: ts.Node, mode: "separated" | "verbatim"): string
     child.forEachChild(walk);
   };
   node.forEachChild(walk);
-  return tidy(parts.join(mode === "separated" ? " " : ""));
+  if (mode === "separated") return tidy(parts.join(" "));
+  // Verbatim joins with nothing and keeps the significant spaces JSX preserves,
+  // so it can be compared against a recorded residual's declared rendered text.
+  return decodeEntities(parts.join("")).trim();
+}
+
+/**
+ * One JSX text node's value, under JSX's own whitespace rule.
+ *
+ * Verbatim used to be `tidy(parts.join(""))`, and `tidy` collapses every run of
+ * whitespace to one space. So siblings written across lines —
+ *
+ *   <p>
+ *     <Lead />
+ *     <Tail />
+ *   </p>
+ *
+ * — produced "Lead Tail" from the "\n    " between them, when JSX DELETES a
+ * whitespace-only line break and a browser renders "LeadTail". The check that
+ * compares a residual's declared `renders` against its source therefore
+ * disagreed with the source for a formatting reason, which is the opposite of
+ * what it was added to catch. This is the rule the compiler applies: lines are
+ * trimmed at the inner edges, empty ones vanish, and what survives joins with a
+ * single space.
+ */
+function jsxTextValue(text: string): string {
+  const lines = text.split(/\r\n|\n|\r/);
+  const kept: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    let line = lines[index] ?? "";
+    if (index > 0) line = line.replace(/^[ \t]+/, "");
+    if (index < lines.length - 1) line = line.replace(/[ \t]+$/, "");
+    if (line) kept.push(line);
+  }
+  return kept.join(" ");
 }
 
 /** What one source snippet renders as text, with nothing inserted between elements. */
@@ -565,8 +768,26 @@ function parseSurface(file: string, source: string): ts.SourceFile {
     source,
     ts.ScriptTarget.Latest,
     true,
-    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    scriptKindOf(file),
   );
+}
+
+/**
+ * The dialect to parse a file as, from its extension.
+ *
+ * This was `endsWith(".tsx") ? TSX : TS`, so every `.jsx` and `.js` surface —
+ * which `allowJs` and Next's default `pageExtensions` both permit — was parsed
+ * as TypeScript. JSX in a `.js` file is a syntax error to the TS dialect, so the
+ * parser returned a tree full of error nodes and the extractor read nothing from
+ * it. Silently. `.js` maps to JSX rather than JS because Next serves JSX from
+ * `.js` routinely, and JSX is the superset; `.ts` stays TS because `<T>expr` is
+ * a type assertion there and a broken tag in TSX.
+ */
+function scriptKindOf(file: string): ts.ScriptKind {
+  if (file.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  if (file.endsWith(".ts")) return ts.ScriptKind.TS;
+  if (/\.(jsx|js|mjs|cjs)$/.test(file)) return ts.ScriptKind.JSX;
+  return ts.ScriptKind.TSX;
 }
 
 export function visibleStrings(source: string, file = "surface.tsx"): string[] {
@@ -585,9 +806,15 @@ export function visibleStrings(source: string, file = "surface.tsx"): string[] {
       const parts: string[] = [];
       concatenatedParts(node, parts);
       if (parts.length > 1) found.push(tidy(parts.join("")));
-    } else if (ts.isJsxElement(node) || ts.isJsxFragment(node)) {
+    } else if (ts.isJsxElement(node) || ts.isJsxFragment(node) || ts.isJsxSelfClosingElement(node)) {
+      // A SELF-CLOSING element belongs here too. Its own tag has no children,
+      // but its PROPS can carry JSX — `<Row lead={<b>Your application is </b>}
+      // tail={<b>secure.</b>} />` puts a whole sentence in front of a customer
+      // with no JsxElement anywhere above it. Wrapped in a `<div>` the guard
+      // caught it, because the div is a JsxElement and the walk descends through
+      // attributes; outermost, it was read by nothing.
       found.push(renderedTextOf(node));
-    } else if (jsxChildCount(node) >= 2) {
+    } else if (jsxChildCount(node) >= 2 && !rendersAlternatives(node)) {
       // Siblings that render adjacently without a JSX parent — an array of
       // elements returned from a component, or elements in object values. Every
       // word is a plain literal in a real JsxElement, so it is none of the

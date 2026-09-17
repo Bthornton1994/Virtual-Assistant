@@ -2645,10 +2645,11 @@ are excluded by construction, so this codebase can keep documenting its own
 attack payloads in prose. There is no length floor, no inline-tag list, no
 brace matching and no keyword list left to be wrong about.
 
-Measured against every payload the last four audits produced — **19 planted
+Measured against every payload the last four audits produced — **22 planted
 shapes** spanning newline, inline markup, entities, interpolations, semicolons,
 English keywords, short literals, comparisons inside a text node, template
-interpolations and concatenations — the parser catches all of them, with zero
+interpolation, JSX siblings with no JSX parent, JSX passed as a prop, and the
+`.js`/`.jsx` dialects Next servess and concatenations — the parser catches all of them, with zero
 false positives. Every one is a case in the planted-claim test, and that figure
 is now read out of this sentence and compared to the test's own shape count, so
 it cannot drift: the commit that wrote it published **eighteen**, which was one
@@ -2752,7 +2753,10 @@ whose imports reach this offer's modules is one of its surfaces* — was satisfi
 by that route handler, and it was still not a surface, for no reason but its
 filename.
 
-Neither a file's NAME nor a module's DIRECTORY decides anything now:
+The rule, with its directory disjunct named rather than described away — this
+paragraph asserted *"neither a file's NAME nor a module's DIRECTORY decides
+anything now"* for one more round after that sentence was measured false, and
+retracted it forty lines below while still stating it here:
 
 > a served file is a surface when anything it can reach either belongs to this
 > offer or says this offer's name.
@@ -3157,6 +3161,81 @@ Nothing about payment activation, production access, customer intake, deployment
 or executor authority changes. The engagement remains prepare-only, read-only,
 tenant-isolated, retention-bound, and undeliverable without a named human
 reviewer — all of which this pass re-asserts in tests rather than assuming.
+
+### Eighth time: the two facts the module still wrote down by hand
+
+The seventh round closed the extractor by replacing a regex with the TypeScript
+parser. The eighth found the same defect one layer out, in the two questions the
+parser does not answer: **which files the framework serves**, and **which import
+specifiers are ours**. Both were literals, in the file whose entire premise is
+that literals fail.
+
+- `FRAMEWORK_ENTRYPOINTS` was three strings with the `src/` spelling only. Next
+  resolves each of its entrypoints from the project root *or* `src/`, in any
+  servable extension, and the list omitted `instrumentation-client` entirely —
+  which runs in the browser on every route, is imported by nothing, and needs no
+  configuration flag. The defence offered for the list was that "a name that
+  stops existing fails the exact-set assertion". True for a deletion or a rename;
+  an entrypoint that is **added** is silent, which is what happened. The names,
+  directories and extensions are now crossed and probed on disk.
+- "Our tree" was the literal prefix `@/`. A second alias beside it would have
+  been classified as a package and dropped *before* the unresolved-import
+  recording, so the guard added for exactly this failure could not fire. The
+  aliases are now read from `tsconfig.json` — by the TypeScript compiler, via
+  `parseJsonConfigFileContent`, which also resolves `extends`.
+
+  The first attempt at reading them stripped comments with a regex before
+  `JSON.parse`, and the block-comment pattern matched the `/*` **inside the alias
+  key `"@/*"`**: it ate the paths map and threw. A hand-rolled parser for a
+  format the compiler already parses is the same mistake as a hand-written list,
+  one layer down. It was caught by running the change rather than reading it.
+- `public/` was reached by nothing. Next serves `public/x.svg` at `/x.svg`
+  because the file is on disk, and every walk in the module follows imports from
+  rendered routes, so an SVG carrying `<text>` prose was outside all of them.
+  The directory is enumerated now; formats whose bytes are their words are
+  scanned, and the rest are recorded in `ASSET_RESIDUALS` with the reason,
+  because a bound should be a measurement rather than a silence.
+
+Four narrower defects went with them. JSX passed as a **prop** on an outermost
+element (`<Row lead={<b>…</b>} tail={<b>…</b>} />`) was read by nothing — wrapped
+in a `<div>` the guard saw it, because the walk descends through attributes from
+any `JsxElement`, but a `JsxSelfClosingElement` was claimed by no branch. Every
+surface was parsed as TypeScript regardless of extension, in which JSX is a
+syntax error, so a `.js` or `.jsx` route came back as a tree of error nodes and
+read as nothing at all. The run-together rule joined the two arms of a
+conditional into a sentence **no render produces**. And `renderedTextVerbatim`
+collapsed whitespace, so siblings written across lines read as "Lead Tail" where
+a browser renders "LeadTail" — the check that compares a residual's declared
+rendered text against its source disagreeing with the source for a formatting
+reason, which is the opposite of what it was added to catch.
+
+### Each mechanism is now held by a test that fails without it
+
+Three times in this area a widening was reverted and nothing failed. Prose in a
+commit message is not evidence for a mechanism being load-bearing; reverting it
+and watching a named test fail is. `npm run proof:claim-guard` reverts each of
+the eight mechanisms in turn to the implementation it replaced and reports which
+named test catches it. All eight are held. A ninth entry changes only a comment
+and must fail nothing — a harness that kills everything proves nothing, so the
+control is part of the printed result rather than an aside.
+
+Scoring is the **difference between failing-test sets**, never an exit code and
+never a count: this repository's full suite exits non-zero from eight failures
+unrelated to this area. Two harness defects were found and fixed while building
+it, both of which had already produced a false result. `vitest` writes no
+`--outputFile` when collection throws, so reading the report unconditionally
+returns the *previous* run's content — a module-level throw read as "nothing
+failed". And a file that throws at import runs no assertions at all, so counting
+only assertion names scored a killed mutant as survived. Both are recorded in the
+script, because the thing that keeps being wrong here is the evidence, not the
+code.
+
+Measured against the previous implementation over the same 68-file corpus, the
+change extracts an identical set of 4,287 strings and flags an identical set of
+36 candidates — zero lost, zero gained. The three new shapes are missed by the
+previous implementation and read by this one. Counting only what a change *adds*
+is how an earlier round published "zero new findings" for a diff that had
+silently removed 1,087 strings, so both directions are diffed as sets.
 
 ## What this slice deliberately does not do
 

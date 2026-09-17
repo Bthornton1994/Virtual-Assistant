@@ -3,8 +3,14 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
+  ASSET_IS_ITS_OWN_TEXT,
+  RENDERED_AROUND_A_PAGE,
+  ASSET_RESIDUALS,
   DECLARED_CLAIM_BEARING_FILES,
   ENTRY_RESIDUALS,
+  RELEASE_RESCUE_SERVED_ASSETS,
+  SCANNABLE_ASSETS,
+  readServedAsset,
   EXTRACTOR_RESIDUALS,
   UNRESOLVED_IMPORTS,
   interpolatesSomething,
@@ -154,7 +160,7 @@ describe("the marketing surface makes no prohibited claim", () => {
       const source = readSurface(file);
       const offences: Array<{ text: string; claims: string[] }> = [];
 
-      for (const text of visibleStrings(source)) {
+      for (const text of visibleStrings(source, file)) {
         const claims = findProhibitedClaims(text);
         if (claims.length > 0) offences.push({ text, claims });
       }
@@ -342,7 +348,10 @@ describe("the marketing surface makes no prohibited claim", () => {
     //      caught, so the formatter decided whether the guard ran.
     //
     // Both are here now, so the extractor cannot silently stop reading prose.
-    const planted = {
+    // A shape is either a source string parsed as `.tsx`, or a [file, source]
+    // pair when the FILE NAME is the point — the dialect a surface is parsed as
+    // comes from its extension, and that was wrong for every `.js` and `.jsx`.
+    const planted: Record<string, string | readonly [string, string]> = {
       "single-line quoted string": `export const COPY = "We deliver a penetration test of your application.";`,
       "retention copy in a lib constant": `  purge_on_delivery: "Delete my source material once the report proves my app is secure",`,
       "wrapped JSX paragraph": `
@@ -395,6 +404,17 @@ describe("the marketing surface makes no prohibited claim", () => {
       // from a component slipped past it and served at HTTP 200.
       "adjacent siblings in an array": `const A = () => [<span key="a">Your application is </span>, <span key="b">secure.</span>];`,
       "adjacent siblings in object values": `const M = { a: <b>Your application is </b>, b: <b>secure.</b> };`,
+      // JSX passed as a PROP, on an element with nothing above it. Wrapped in a
+      // `<div>` the guard read it, because the walk descends through attributes
+      // from any JsxElement; outermost, the node is a JsxSelfClosingElement and
+      // no branch claimed it. A whole sentence, read by nothing.
+      "JSX in props on an outermost element": `const L = () => <Row lead={<b>Your application is </b>} tail={<b>secure.</b>} />;`,
+      // The dialect shapes. `allowJs` is on and Next's default `pageExtensions`
+      // includes `js` and `jsx`, but every surface was parsed as TypeScript — in
+      // which JSX is a syntax error, so the tree came back as error nodes and the
+      // extractor read nothing at all. Silently.
+      "a route served as .js": ["app/page.js", `export default function P() { return <p>Your application is secure.</p>; }`],
+      "a component served as .jsx": ["components/card.jsx", `export const C = () => <p>We deliver a penetration test.</p>;`],
     };
 
     // The published figure, bound to the thing it counts. A commit wrote
@@ -413,12 +433,118 @@ describe("the marketing surface makes no prohibited claim", () => {
       Object.keys(planted).length,
     );
 
-    for (const [shape, source] of Object.entries(planted)) {
+    for (const [shape, entry] of Object.entries(planted)) {
+      const [file, source] = typeof entry === "string" ? ["planted.tsx", entry] : entry;
       expect(
-        visibleStrings(source).flatMap((text) => findProhibitedClaims(text)),
+        visibleStrings(source, file).flatMap((text) => findProhibitedClaims(text)),
         `a planted claim in a ${shape} must be read by the extractor`,
       ).not.toEqual([]);
     }
+  });
+
+  it("reads the words in everything `public/` serves", () => {
+    // `public/` is reached by no import: Next serves these files because they
+    // are on disk. Every walk in the discovery module follows imports from
+    // rendered routes, so an SVG carrying `<text>We deliver a penetration
+    // test</text>` was outside all of them.
+    expect(RELEASE_RESCUE_SERVED_ASSETS.length, "public/ was not enumerated at all").toBeGreaterThan(0);
+    expect(
+      [...SCANNABLE_ASSETS, ...ASSET_RESIDUALS.map((residual) => residual.file)].sort(),
+      "every served asset is either read or recorded as unreadable",
+    ).toEqual([...RELEASE_RESCUE_SERVED_ASSETS].sort());
+
+    for (const file of SCANNABLE_ASSETS) {
+      expect(findProhibitedClaims(readServedAsset(file), "offer_copy"), `${file} serves a prohibited claim`).toEqual([]);
+    }
+
+    // The unreadable ones carry a reason, not an entry — the rule the tokenizer
+    // and extractor residuals already follow.
+    for (const residual of ASSET_RESIDUALS) {
+      expect(residual.why.length, `${residual.file} needs a reason, not an entry`).toBeGreaterThan(80);
+    }
+  });
+
+  it("counts every file Next renders around a page, including the ones this repo has none of yet", () => {
+    // This pattern was widened to Next 16's full set — `global-not-found`,
+    // `forbidden`, `unauthorized`, `default`, and the `.jsx`/`.mjs`/`.cjs`
+    // extensions. The repository has an instance of none of them, so narrowing
+    // it back changed no discovered file and failed no test: a widening nothing
+    // exercises is a widening nothing keeps. The pattern is asserted directly.
+    for (const name of [
+      "layout.tsx",
+      "template.tsx",
+      "error.tsx",
+      "global-error.tsx",
+      "global-not-found.tsx",
+      "not-found.tsx",
+      "forbidden.tsx",
+      "unauthorized.tsx",
+      "loading.tsx",
+      "default.tsx",
+      "layout.jsx",
+      "not-found.js",
+    ]) {
+      expect(RENDERED_AROUND_A_PAGE.test(name), `${name} is rendered around a page`).toBe(true);
+    }
+
+    // And it must not swallow an ordinary module that merely starts the same way.
+    for (const name of ["layout-helpers.tsx", "errors.ts", "default-theme.ts"]) {
+      expect(RENDERED_AROUND_A_PAGE.test(name), `${name} is not a page-adjacent file`).toBe(false);
+    }
+  });
+
+  it("does not invent a sentence out of two arms that never render together", () => {
+    // The run-together rule joins JSX siblings because a browser concatenates
+    // them. The arms of a conditional are not siblings — one runs or the other
+    // does — so joining them produced "Your application is secure." from a
+    // source that renders no such sentence. Flagging fabricated text errs safe,
+    // but this file's whole subject is not asserting things that are not so.
+    const alternatives = `const T = ({ok}: {ok: boolean}) => (ok ? <span>Your application is </span> : <span>secure.</span>);`;
+    expect(
+      visibleStrings(alternatives, "planted.tsx"),
+      "the two arms must be read separately, not concatenated",
+    ).not.toContain("Your application is secure.");
+
+    // And the real path through a conditional INSIDE an element still counts:
+    // there the children genuinely are adjacent when the branch is taken.
+    const realPath = `const T = ({ok}: {ok: boolean}) => <p>{ok ? <b>Your application is </b> : null}<b>secure.</b></p>;`;
+    expect(
+      visibleStrings(realPath, "planted.tsx").flatMap((text) => findProhibitedClaims(text)),
+      "a claim completed by a taken branch must still be read",
+    ).not.toEqual([]);
+  });
+
+  it("reads rendered text the way a browser does, not the way it is indented", () => {
+    // `renderedTextVerbatim` exists to check a recorded residual's declared
+    // rendered text against its own source. It collapsed every whitespace run to
+    // one space, so siblings written across lines read as "Lead Tail" when JSX
+    // deletes a whitespace-only line break and a browser renders "LeadTail" —
+    // the check disagreeing with the source for a formatting reason, which is
+    // the opposite of what it was added to catch.
+    expect(
+      renderedTextVerbatim(`const P = () => (
+  <p>
+    <span>Lead</span>
+    <span>Tail</span>
+  </p>
+);`),
+      "a whitespace-only line break renders as nothing",
+    ).toBe("LeadTail");
+
+    // A space written INSIDE an element is significant and must survive.
+    expect(
+      renderedTextVerbatim(`const P = () => <p><span>Your application is </span><span>secure.</span></p>;`),
+      "a trailing space inside an element is rendered",
+    ).toBe("Your application is secure.");
+  });
+
+  it("would read a planted claim out of a served asset", () => {
+    // Without this the asset scan is vacuous: a loop over files whose extension
+    // never matches passes exactly as loudly as one that works. `public/` today
+    // holds five SVGs with no text at all.
+    const asset = `<svg xmlns="http://www.w3.org/2000/svg"><text x="0" y="0">We deliver a penetration test.</text></svg>`;
+    expect(ASSET_IS_ITS_OWN_TEXT.test("public/badge.svg"), "an SVG must count as readable text").toBe(true);
+    expect(findProhibitedClaims(asset, "offer_copy"), "a claim in an SVG must be read").not.toEqual([]);
   });
 });
 
