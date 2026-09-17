@@ -374,7 +374,7 @@ convenience.
 | Found | while reducing fixture cost in `release-rescue-audit7-properties.test.ts` |
 | Class | a corpus that cannot disagree |
 | Status | **closed** — the generated assignments are distinct, and a clean signature on the same draft is deliverable |
-| Closed at | this commit (SHA recorded with the verify run that measures it) |
+| Closed at | `35706a447bb3ce38be755f67b3864bc8beb24f3d` |
 
 `never delivers a report carrying a credential from any lexicon key` iterated 6
 qualifiers × 5 carriers × 2 spellings = 60 keys, and built **the same report
@@ -397,6 +397,31 @@ rather than rewriting it; a name that nevertheless reaches a deliverable
 report holding the value fails the property.
 
 No production behaviour changed. S-004 and S-005 are untouched.
+
+**Measured on `35706a4`:**
+
+Local (Git 2.43.0, the D-012 container):
+
+```
+npm run lint       exit 0    0 errors, 13 pre-existing warnings
+npm run typecheck  exit 0
+npm test           exit 1    1,577 passed / 8 failed   the eight shunt CLI tests
+npm run build      exit 0
+```
+
+GitHub Actions `verify` run [35286805441](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35286805441) attempt 1, job `105420829075`, SHA `35706a447bb3ce38be755f67b3864bc8beb24f3d`:
+
+```
+npm ci             success
+npm run lint       success   0 errors, 13 warnings
+npm run typecheck  success
+npm test           success   1,585 passed / 1,585   86 files
+npm run build      success
+```
+
+The eight local failures are the D-012 Git 2.43 / `--no-lazy-fetch` environment split. They are not reopened here. CI is the release environment.
+
+Proof the corpus is not sixty copies of one case: 6 × 5 × 2 = 60 generated assignments, `new Set(inputs).size === 60`, and both spellings of the same pair are present (`ACCESS_TOKEN=` vs `ACCESSTOKEN=`, `PG_PASSWORD=` vs `PGPASSWORD=`).
 
 ---
 
@@ -431,6 +456,7 @@ Each was bought with a regression in this workstream.
 | Unavailable on | `83cda0a`, `11f1661`, `e874c8c`, `148bb31`, `e673271`, `44e825a` — six consecutive heads, each checked |
 | First executed on | `ea9e81a`, run `35278577643` attempt 2, runner `GitHub Actions 1000001844` |
 | First passed on | `7969a76`, run `35285958590` attempt 1, runner `GitHub Actions 1000001848` |
+| Also passed on | `35706a4`, run `35286805441` attempt 1 — S-003 head, 1,585/1,585 |
 
 **Green, measured, every step:**
 
@@ -538,6 +564,6 @@ standing-down comment is on PR #97 (`issuecomment-5682530322`).
 
 | | Decision | Recorded |
 | --- | --- | --- |
-| D-012 | The verification policy required before `DO_NOT_MERGE` can lift, given eight environmental failures that are not this branch's to fix. | `DECISION_LOG.md` |
+| D-012 | **Owner decided:** GitHub Actions `verify` is the release environment. Local Git 2.43 shunt failures are env-only. Not reopened. | this task; `DECISION_LOG.md` still holds the exception text |
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
 | — | Payment activation, production access, and any increase in executor authority. | `VISION.md` § D-009 |
