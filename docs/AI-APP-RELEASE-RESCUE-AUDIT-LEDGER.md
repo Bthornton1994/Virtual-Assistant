@@ -266,6 +266,107 @@ codebase mints. That walk immediately surfaced three strings — the demo
 organization id and two service codes — which are accounted for by name rather
 than by loosening the assertion.
 
+### S-009 — the engagement lifecycle has preconditions but no transition graph
+
+| | |
+| --- | --- |
+| Found | by an automated review on the PR |
+| Class | a state machine enforced at its entrances only |
+| Status | **CONFIRMED by execution — not fixed, owner decision** |
+
+Reproduced against the real migration chain on a disposable Postgres. All three
+of the reviewer's examples succeed:
+
+```
+intake          -> access_granted   ACCEPTED   with no repository grant recorded
+access_granted  -> intake           ACCEPTED   a backward transition
+cancelled       -> scoped           ACCEPTED   a cancelled engagement reopened
+```
+
+**What IS enforced, and it is not nothing.** `release_rescue_status_starts_review`
+covers `auditing`, `report_ready` and `delivered`, and entering any of those
+requires a recorded ownership confirmation written by an ops manager, a known
+access mode, a repository named in the frozen scope, a pinned reviewed commit,
+and a live unrevoked read-only grant. A direct `intake -> delivered` was refused
+in the same probe, by the grant precondition.
+
+So the states that carry the customer's source are well defended. What is missing
+is an ORDER: `scoped` and `access_granted` are outside that set, and no trigger
+compares `old.status` to `new.status`, so the graph is unenforced in both
+directions.
+
+**Not fixed here, and the reason is not effort.** Which transitions are legal,
+and which role may make each one, is a lifecycle design decision with an
+operational cost if it is guessed wrong — a graph that is too strict blocks a
+legitimate operator recovering a mis-set engagement. `AGENTS.md` puts explicit
+authority and required approvals on the owner's side of the line. The evidence is
+here; the decision is not an executor's.
+
+The first version of this probe reported all three as refused. That was a false
+negative: the engagement fixture had failed to insert, so every `UPDATE` matched
+zero rows and reported success by matching nothing. The result above is from a
+run where the baseline `select` shows the row actually exists.
+
+### S-010 — the retention sweep deletes artifacts by run, not by engagement
+
+| | |
+| --- | --- |
+| Found | by an automated review on the PR |
+| Class | a destructive operation scoped wider than the thing it acts on |
+| Status | **CONFIRMED by reading the migration and the live schema — not fixed** |
+
+The sweep updates reports with `where engagement_id = ... and organization_id = ...`
+and then deletes evidence with:
+
+```sql
+delete from public.evidence_artifacts
+ where run_id = v_engagement.run_id
+   and organization_id = v_engagement.organization_id
+   and coalesce(payload->>'schemaVersion', '') like 'release-rescue-%';
+```
+
+The organization scope is there and deliberate. **The engagement scope is not.**
+And nothing makes a run exclusive to one engagement — the only constraint on
+`release_rescue_engagements.run_id` is a composite foreign key to
+`workstream_runs (id, organization_id)`, with a plain non-unique index beside it:
+
+```
+release_rescue_engagements_run_organization_fkey  FOREIGN KEY (run_id, organization_id) ...
+release_rescue_engagements_run_idx                btree (run_id) WHERE run_id IS NOT NULL
+```
+
+So two engagements in one organization may share a run, and purging the first
+deletes the second's unexpired artifacts.
+
+**Not fixed, because both repairs change a privacy commitment.** Deleting only
+artifacts referenced by this engagement's report rows would leave any artifact
+with no report row behind — which for a retention promise may be the worse
+failure. Enforcing one engagement per run constrains a relationship this schema
+currently allows. That is the owner's call, not an executor's.
+
+### S-011 — the public demo store has no retention bound
+
+| | |
+| --- | --- |
+| Found | by an automated review on the PR (P2) |
+| Class | customer data with no expiry on a path open to the public |
+| Status | **CONFIRMED by reading — not fixed** |
+
+`createDemoEngagement` writes into a process-global `Map` and nothing ever
+removes an entry: `engagement.ts` contains no delete, eviction, expiry, TTL,
+prune, clear, or size check of any kind. Each record holds a prospect's name,
+work email, private repository reference and workflow description.
+
+The 24-hour cookie is real and does its own job — it stops a viewer who merely
+knows the id from reading the record — but it governs the browser, not the
+store. The record itself survives for the life of the process, and repeated
+anonymous submissions grow the map without bound.
+
+Scope worth stating: this is the demo path, which takes no payment and grants no
+repository access. It is still customer-supplied contact data on a route anyone
+can reach, and `VISION.md` treats retention as a commitment rather than a
+convenience.
+
 ### S-003 — a loop that varies nothing
 
 | | |
