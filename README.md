@@ -71,10 +71,13 @@ Northline Advisory is a **seeded demonstration organization**, not a public case
 npm run lint
 npm run typecheck
 npm test
+npm run eval:agent
 npm run build
 ```
 
-Or `npm run verify` to run all four.
+Or `npm run verify` to run lint, typecheck, unit tests, the deterministic agent-reliability eval gate, and build.
+
+`npm run eval:agent` runs fixture-only control-plane graders (authority, tenant isolation, evidence, approval, lifecycle, acceptance, false completion, forbidden actions). It does not call external models and does not measure model quality. See `docs/AGENT-RELIABILITY-EVALUATION-V1.md`.
 
 ## Environment variables
 
