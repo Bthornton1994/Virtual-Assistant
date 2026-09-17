@@ -263,7 +263,13 @@ describe("the gate, asserted directly, in both directions", () => {
     }
 
     expect(delivered, `${delivered.length} credentials reached a deliverable report`).toEqual([]);
-  });
+  }, 30_000);
+  // 30s, not the 5s default. This is a corpus-scale property test and it runs in
+  // ~5.2s — it passed in isolation and failed under full-suite load, which made
+  // every full run ambiguous about whether the eight known environmental
+  // failures were the only ones. An explicit timeout for a test that genuinely
+  // needs one is not masking a failure; leaving it marginal was costing a
+  // re-run-in-isolation on every audit.
 
   it("cannot express them at all in the fields that used to carry them", () => {
     // The stronger statement, and the one that made the previous rounds

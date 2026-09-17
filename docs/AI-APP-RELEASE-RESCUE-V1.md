@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 676 Release Rescue tests across 30 suites (1,352 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 681 Release Rescue tests across 30 suites (1,357 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2351,7 +2351,7 @@ a union over a superset is monotone.
 **And the test that would have caught it now exists.** Every other test here asks
 *is this caught?* of a payload chosen for the rule under test. None asked *is
 everything that used to be caught still caught?*, so a change that traded
-detections passed them all. There is a frozen regression corpus now — 50 payloads
+detections passed them all. There is a frozen regression corpus now — 52 payloads
 that must never stop being caught. Reinstating the exact regression turns it red
 and names `AcmePENtest`.
 
@@ -2367,6 +2367,25 @@ split only letter-to-digit survived the whole suite, because every digit payload
 in it capitalised the following word and another option rescued it.
 
 ### Disclaimer licensing belongs to offer copy, not to a typed field
+
+**And it belongs there at BOTH call sites.** The source split was applied to the
+`guarded` branch and the sibling call site one function away —
+`generatedValueIsNotWhatItClaims` — was left on the default. A `generated` value
+is a UUID, a hash, an enum, a catalog code or a vendor pin; it can carry a
+disclaimer even less than a name can, so the same reasoning applied there with
+more force and was not applied. Prefixing `no-`, `not-`, `never-` or `without-`
+licensed the whole value, so `no-This-app-is-secure-and-free-of-vulnerabilities`
+was accepted as a model id and crossed the persistence boundary.
+
+Two asserted properties were false while that held: the test comment claiming the
+guard catches "every separated form" on the loose control-plane paths, and
+`CONTROL_PLANE_PIN`'s own `because`. A mutation flipping the call site killed
+nothing, because no test pinned which source either site used. Both are pinned
+now, in both directions — the prefixed claims are refused, and `grok-4.6`,
+`software-factory/v1` and the empty string still pass.
+
+This is the "one side of a multi-layer contract tightened" shape, occurring
+**inside the diff that created the two sides**.
 
 A denial (*"this is not a penetration test"*) and a referral (*"customers who
 need penetration testing should engage a qualified specialist"*) are required

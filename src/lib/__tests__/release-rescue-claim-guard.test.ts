@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
@@ -112,19 +112,38 @@ describe("prohibited claim guard", () => {
 // AGENTS.md states that findProhibitedClaims "is the single list governing both
 // report text and the marketing surface". Before this test, no code path applied
 // it to the marketing surface at all, so that was an aspiration. Now it is CI.
-const SURFACE_FILES = [
-  "src/app/(marketing)/ai-app-release-rescue/page.tsx",
-  "src/app/(marketing)/ai-app-release-rescue/intake/page.tsx",
-  "src/app/(marketing)/ai-app-release-rescue/demo/page.tsx",
-  "src/app/(marketing)/ai-app-release-rescue/demo/report/page.tsx",
-  "src/components/ai-app-release-rescue/intake-form.tsx",
-  "src/components/ai-app-release-rescue/report-view.tsx",
-  "src/components/ai-app-release-rescue/non-claims.tsx",
-  "src/components/ai-app-release-rescue/offer-pricing.tsx",
-  "src/components/ai-app-release-rescue/rubric-checklist.tsx",
-  "src/lib/ai-app-release-rescue/constants.ts",
-  "src/lib/ai-app-release-rescue/payment.ts",
-];
+// DISCOVERED, not listed. The hand-written list named 11 files and three more
+// existed: `demo/[id]/page.tsx` and `demo/[id]/not-found.tsx` are rendered
+// customer-facing routes with visible copy, and `demo/report/download/route.ts`
+// serves an artifact. An audit found the gap — which is the "a list kept in a
+// test is the pattern that failed five audits running" anti-pattern this
+// codebase names elsewhere, in the test that exists to make a governing claim
+// true in CI.
+//
+// A new marketing route is now covered the day it is added, not the day someone
+// remembers to add it here.
+function discoverSurfaceFiles(): string[] {
+  const roots = [
+    "src/app/(marketing)/ai-app-release-rescue",
+    "src/components/ai-app-release-rescue",
+  ];
+  const found: string[] = [];
+
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })) {
+      const child = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(child);
+      else if (/\.(tsx?|ts)$/.test(entry.name)) found.push(child);
+    }
+  };
+  for (const root of roots) walk(root);
+
+  // The two library files that hold customer-visible WORDS rather than markup.
+  found.push("src/lib/ai-app-release-rescue/constants.ts", "src/lib/ai-app-release-rescue/payment.ts");
+  return found.sort();
+}
+
+const SURFACE_FILES = discoverSurfaceFiles();
 
 /** Text inside quotes and JSX text nodes — what a customer actually reads. */
 function visibleStrings(source: string): string[] {
@@ -136,6 +155,17 @@ function visibleStrings(source: string): string[] {
 }
 
 describe("the marketing surface makes no prohibited claim", () => {
+  it("discovers every surface file, so the set cannot go stale", () => {
+    // If a directory is renamed the walk would quietly return nothing and every
+    // per-file test below would vanish with it — a suite that passes by having
+    // no cases. This is the floor, and it is above the 11 the hand-written list
+    // carried so that removing the discovery cannot look like success.
+    expect(SURFACE_FILES.length, "the surface walk found too few files").toBeGreaterThan(12);
+    for (const file of SURFACE_FILES) {
+      expect(existsSync(resolve(process.cwd(), file)), `${file} does not exist`).toBe(true);
+    }
+  });
+
   for (const file of SURFACE_FILES) {
     it(file, () => {
       const source = readFileSync(resolve(process.cwd(), file), "utf8");

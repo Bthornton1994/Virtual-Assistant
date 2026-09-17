@@ -620,7 +620,18 @@ export function generatedValueIsNotWhatItClaims(normalizedPath: string, value: s
   if (format.allowed && !format.allowed.includes(value)) {
     return `is not one of the ${format.allowed.length} values "${normalizedPath}" may hold (${format.because})`;
   }
-  const claims = findProhibitedClaims(value);
+  // "typed_field", for the same reason the `guarded` branch uses it, and with
+  // more force: a `generated` value is a UUID, a hash, an enum, a catalog code,
+  // a timestamp or a vendor pin. It can carry a disclaimer even less than a
+  // person's name can.
+  //
+  // This call site was left on the default when the source split was introduced
+  // one function away, and an audit walked straight through it: prefixing
+  // `no-`, `not-`, `never-` or `without-` to any claim licensed the whole value,
+  // so `no-This-app-is-secure-and-free-of-vulnerabilities` was accepted as a
+  // model id and crossed the persistence boundary. Tightening one side of a
+  // two-sided contract, inside the diff that created the two sides.
+  const claims = findProhibitedClaims(value, "typed_field");
   if (claims.length > 0) {
     return `carries a prohibited claim ("${claims[0]}")`;
   }

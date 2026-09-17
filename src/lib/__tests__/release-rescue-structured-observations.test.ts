@@ -2507,6 +2507,16 @@ describe("9. a code field holds a code, and nothing else, on the production path
     const total = rows.reduce((sum, row) => sum + row, 0);
     expect(total, "the per-proof table must sum to the published database figure").toBe(378);
     expect(doc).toContain("378 live database cases across thirteen proofs");
+
+    // The payload figure, which this test did not read — and so a commit wrote
+    // "50 payloads" into the doc while, in the same diff, making the corpus 52.
+    // The correction was stale at the moment it was written, in the sentence the
+    // previous round had been blocked over.
+    const payloads = /frozen regression corpus now — (\d+) payloads/.exec(doc);
+    expect(payloads, "the payload figure sentence could not be located").not.toBeNull();
+    expect(Number(payloads![1]), "the doc's payload figure must match the corpus").toBe(
+      RELEASE_RESCUE_OFFER.prohibitedClaims.length + 28,
+    );
   });
 
   it("pins the claim-stem cache to the data that makes it safe", () => {
@@ -2532,6 +2542,64 @@ describe("9. a code field holds a code, and nothing else, on the production path
       for (const name of Object.keys(CLAIM_TOKENIZER_MODES)) {
         expect(findProhibitedClaimsUnderModes(claim, [name]), `${name} on "${claim}"`).toContain(claim);
       }
+    }
+  });
+
+  it("reads EVERY policy-checked value as a typed field, not just the guarded ones", () => {
+    // Audit 26, blocking. `findProhibitedClaims` gained a source, the `guarded`
+    // branch was moved onto `"typed_field"`, and the sibling call site one
+    // function away — `generatedValueIsNotWhatItClaims` — was left on the
+    // default. A `generated` value is a UUID, a hash, an enum, a catalog code or
+    // a vendor pin; it can carry a disclaimer even less than a name can, so the
+    // commit's own reasoning applied there with more force and was not applied.
+    //
+    // The result: prefixing `no-`, `not-`, `never-` or `without-` licensed the
+    // whole value, and `no-This-app-is-secure-and-free-of-vulnerabilities` was
+    // accepted as a model id and crossed the persistence boundary. A mutation
+    // flipping that call site killed NOTHING, because no test pinned which
+    // source either site uses.
+    //
+    // This pins both. The three loose control-plane paths are where the claim
+    // guard is documented as the only control, so they are the ones that matter.
+    const LICENSED_BY_A_PREFIX = [
+      "no-This-app-is-secure-and-free-of-vulnerabilities",
+      "NoThisAppIsSecure",
+      "never-this-app-is-secure",
+      "without-this-app-is-secure",
+      "no.this.app.is.secure.and.free.of.vulnerabilities",
+    ];
+    const LOOSE = Object.entries(GENERATED_FORMATS)
+      .filter(([, format]) => format.notCustomerVisible)
+      .map(([path]) => path);
+
+    expect(LOOSE.length, "no loose path found, so this proves nothing").toBeGreaterThan(0);
+    for (const path of LOOSE) {
+      for (const value of LICENSED_BY_A_PREFIX) {
+        const wrong = generatedValueIsNotWhatItClaims(path, value);
+        expect(wrong, `${path} <- ${value}`).not.toBeNull();
+        expect(wrong, `${path} <- ${value} must be refused BY THE CLAIM GUARD`).toContain(
+          "prohibited claim",
+        );
+      }
+    }
+
+    // And the values a real report legitimately produces on those paths still
+    // pass — turning licensing off can only ADD detections, but the other
+    // direction is what this workstream has got wrong eight times.
+    for (const value of [
+      "grok-4.6",
+      "claude-fable-5-1",
+      "software-factory/v1",
+      "internal",
+      "cursor",
+      "",
+      "release-rescue-auditor",
+      "sf-implementer",
+    ]) {
+      expect(
+        generatedValueIsNotWhatItClaims("$.preparedBy.modelId", value),
+        `${value} is a legitimate control-plane value`,
+      ).toBeNull();
     }
   });
 
@@ -2632,6 +2700,32 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // the same class — `'` is a word character that matches neither side of any
     // boundary rule.
     const ALL_CAPS_RUN = ["ACMEISSecure Ltd", "ThisAppISSECURE Ltd", "Acme'Is'Secure Ltd"];
+
+    // A THIRD mechanism, found by audit 26 and previously recorded nowhere:
+    // a word inserted BETWEEN the claim's two tokens. Plain ASCII, no casing
+    // trick, no unicode — and `Ops Manager, Your App Is Now Secure` on the
+    // signature line reads to a customer as exactly the guarantee the offer
+    // forbids. The guard matches a contiguous token sequence, so any filler
+    // breaks it, as does a near-synonym the list does not carry.
+    //
+    // Recorded rather than fixed: catching it needs either a gap-tolerant match
+    // (which would flag ordinary prose) or a synonym list (which is an open set,
+    // and an open set is what six rounds of this file are about).
+    const WORD_INSERTION = [
+      "Ops Manager, Your App Is Now Secure",
+      "Dana Okafor, Acme - Your App Is Totally Secure",
+      "Acme 100% Secure Ltd",
+      "Acme Is 2 Secure Ltd",
+      "Zero Vulnerabilities Ltd",
+      "Acme Free From Vulnerabilities Ltd",
+      "Acme Is Secure's Ltd",
+    ];
+    for (const text of [...WORD_INSERTION]) {
+      expect(
+        findProhibitedClaims(text, "typed_field"),
+        `${text}: if this is now caught, this recorded residual is overstated and should be narrowed`,
+      ).toEqual([]);
+    }
     for (const text of ALL_CAPS_RUN) {
       expect(
         findProhibitedClaims(text, "typed_field"),
