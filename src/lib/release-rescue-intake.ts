@@ -981,6 +981,15 @@ const DENIAL_VERBS = new Set([
  */
 const COMPLEMENTIZER_REACH = 4;
 
+/**
+ * How far past a subject negation its predicate's auxiliary may sit.
+ *
+ * Bounds the SUBJECT noun phrase, not the distance to the claim. Every denial
+ * this offer publishes puts the auxiliary two tokens out — "no review CAN
+ * establish", "no one CAN say", "nothing here CAN promise".
+ */
+const SUBJECT_REACH = 3;
+
 /** Conjunctions that coordinate two verbs of one predicate, not two clauses. */
 const VERB_CONJUNCTIONS = new Set(["or", "and", "nor"]);
 
@@ -1152,16 +1161,32 @@ function denialShapeGoverns(tokens: readonly string[]): boolean {
       head += 2;
     }
 
-    // `before` ends where the claim begins, so `before.length` IS the claim.
-    const firstContent = meaningfulIndexAfter(head + 1);
-    if (firstContent === null) return true; // the claim begins immediately
-    if (meaningfulIndexAfter(firstContent + 1) === null) return true; // one word, then it
+    // `before` ends where the claim begins, so `before.length` IS the claim, and
+    // this asks whether the claim is the next thing after `from` — allowing the
+    // one content word a complement's subject needs ("claim YOUR APPLICATION is
+    // secure") and nothing more.
+    const claimIsNextAfter = (from: number): boolean => {
+      const firstContent = meaningfulIndexAfter(from);
+      if (firstContent === null) return true; // the claim begins immediately
+      return meaningfulIndexAfter(firstContent + 1) === null; // one word, then it
+    };
+
+    if (claimIsNextAfter(head + 1)) return true;
 
     // A declarative complement: "claim WHILE REVIEWING that …". The adverbial
     // before `that` is short in every denial this offer publishes; past that
     // reach, a `that` belongs to some later predication.
+    //
+    // The claim must be the complement OF THAT `that`. This tested only that a
+    // `that` EXISTED in the window and then licensed everything after it at any
+    // distance — so "We do not claim that our pricing is the best and your
+    // application is secure" was licensed, which is the unbounded arm this
+    // whole bound exists to close, surviving inside the bound. Measured over
+    // the repository's own connective list, 52 of 52 spellings went through.
     for (let index = head + 1; index < before.length && index <= head + COMPLEMENTIZER_REACH; index += 1) {
-      if (before[index] === "that") return true;
+      // The FIRST `that` only: a later one belongs to a later predication, so
+      // reading past it is how the previous version reached the whole sentence.
+      if (before[index] === "that") return claimIsNextAfter(index + 1);
     }
     return false;
   };
@@ -1195,7 +1220,20 @@ function denialShapeGoverns(tokens: readonly string[]): boolean {
     // Or it determines a subject whose predicate denies one: "No review CAN
     // ESTABLISH the absence of vulnerabilities" — the offer's own refusal copy.
     if (!SUBJECT_NEGATIONS.has(negation)) continue;
-    for (let auxiliary = index + 1; auxiliary < before.length; auxiliary += 1) {
+    // The auxiliary belongs to the NEGATED SUBJECT's own predicate, so it sits
+    // just past the subject noun phrase: "no review CAN establish", "no one CAN
+    // say", "no report MAY state" all put it two tokens out.
+    //
+    // This scan ran to the end of the clause. While the clause was cut at a
+    // coordinating word that was survivable; deleting that cut made `before` the
+    // whole sentence, and an unrelated subject negation could then reach a
+    // genuinely affirmative guarantee much later in it — "No refunds are given
+    // after delivery but we do guarantee your application is secure" was
+    // licensed, and it was caught at both predecessors. That regression is the
+    // cost of removing the clause bound without bounding what the clause bound
+    // had been holding.
+    const subjectEnd = Math.min(before.length, index + 1 + SUBJECT_REACH);
+    for (let auxiliary = index + 1; auxiliary < subjectEnd; auxiliary += 1) {
       if (!PREDICATE_AUXILIARIES.has(before[auxiliary] ?? "")) continue;
       const verb = meaningfulIndexAfter(auxiliary + 1);
       if (verb !== null && DENIAL_VERBS.has(before[verb] ?? "") && complementHoldsTheClaim(verb)) return true;

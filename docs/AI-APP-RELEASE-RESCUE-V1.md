@@ -3684,7 +3684,7 @@ an unrecognised denial costs a rewording, an unrecognised affirmative costs a
 served claim. The difference is not that this list is better. It is that the
 list now has to be *satisfied* rather than *evaded*.
 
-Measured: **17 regression payloads caught, 21 declared denials licensed**, all
+Measured: **18 regression payloads caught, 21 declared denials licensed**, all
 six refusal reasons licensed, and the flagged set over the corpus of 174 surface
 files and 6 scannable assets, outside the one declared exemption, unchanged at
 zero. Mutants bind each arm and each of its bounds.
@@ -3762,14 +3762,31 @@ offer's own published denials rather than chosen, and a coordinated verb pair
 because treating `or described` as the complement flagged the product's own
 refusal copy.
 
-**`COORDINATORS` is deleted, not extended.** With the complement bound in place
-the connective is irrelevant, and the set was measured to be doing nothing:
-**208 sweep payloads caught**, over 52 connectives taken from an English grammar
-rather than from any list in this repository, across four sentence templates —
-with the set removed and no test moved. That corpus is a product of two declared
-arrays and this figure is read out of it by a test, because the sweep it replaced
-was built from the `COORDINATORS` list it was validating and reported everything
-caught while eight ordinary connectives walked through.
+**`COORDINATORS` is deleted, not extended** — but the measurement first published
+for that deletion was worthless, and the deletion is now justified by a different
+one.
+
+The original evidence was *"208 sweep payloads caught, over 52 connectives …
+across four sentence templates."* All four templates filled the denial verb's
+complement slot, so the complement bound rejected every one of them whatever word
+was substituted. **208 of 208 was the only answer that corpus could ever
+produce.** It was structurally incapable of detecting either licensing defect an
+audit then found in this very commit. The connectives had been freed from this
+module's own list — which was the axis the round *before* failed on — and the
+templates, which are the axis that decides the outcome, were left fixed. That
+figure is retracted, not re-explained.
+
+The corpus now varies **what occupies the complement slot**: an infinitive, a
+noun phrase, a bare noun, a `that`-clause about something else, a subject
+negation whose auxiliary sits far from it, and a determiner `that` that is not a
+complementizer at all. **468 sweep payloads caught**, 9 templates x 52
+connectives, read out of this paragraph by a test.
+
+On that corpus the coordinator break was reinstated and removed, and the two
+configurations were diffed over **10,400 generated payloads** (20 leads x 52
+connectives x 10 tails): **zero disagreement**. The break only ever shortens a
+licensing window, so it can only catch more; it catches nothing more here. The
+set stays deleted on that evidence rather than on the vacuous one.
 
 The subject-negation arm also stopped firing on a noun. `claim`, `guarantee`,
 `offer`, `promise`, `state`, `call` and `say` are nouns too, so `No guarantee is

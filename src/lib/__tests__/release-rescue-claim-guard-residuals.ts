@@ -176,6 +176,11 @@ export const NEGATION_SCOPE_REGRESSIONS: readonly string[] = [
   // license anything after "rather than".
   "No fewer than three reviewers say your application is secure.",
   "We confirm rather than guess that your application is secure.",
+  // Audit 44. The payload the previous round's commit message and PR body both
+  // cited as the evidence for the subject-negation exclusion — and which existed
+  // in neither this corpus nor any test. A record that nothing executes is not
+  // evidence, which is this repository's own fourth rule.
+  "No guarantee is needed because your application is secure.",
   // Audit 42. A denial earlier in the same clause licensed every claim after it,
   // at any distance, because arms (b) and (c) had no bound and the clause ended
   // only at punctuation. Each of these was served or measured as LICENSED.
@@ -240,6 +245,15 @@ export const REFERRAL_SCOPE_REGRESSIONS: readonly string[] = [
  *
  * `LICENSING_SWEEP_TEMPLATES` x these is the corpus, computed rather than typed,
  * so the count in the architecture doc is a product of two arrays a test reads.
+ *
+ * THE CONNECTIVES WERE NEVER THE AXIS THAT MATTERED. Freeing them from this
+ * module's own list fixed the defect the round before had, and left the real one
+ * in place: all four templates filled the denial verb's complement slot, so the
+ * complement bound rejected every one of them whatever word was substituted, and
+ * 208 of 208 was the only answer the corpus could produce. It was structurally
+ * incapable of detecting either licensing defect an audit then found. The
+ * templates now vary WHAT OCCUPIES THE SLOT, which is the axis that decides the
+ * outcome.
  */
 export const SWEEP_CONNECTIVES: readonly string[] = [
   "but", "yet", "and", "or", "nor", "for", "so", "however", "nevertheless", "nonetheless",
@@ -258,10 +272,27 @@ export const SWEEP_CONNECTIVES: readonly string[] = [
  * and a subject negation reaching its verb through an auxiliary.
  */
 export const LICENSING_SWEEP_TEMPLATES: ReadonlyArray<(connective: string) => string> = [
+  // 1-3: the complement slot filled by an infinitive, a noun phrase, and a bare
+  // noun. These four were the WHOLE corpus, and that is why it could not fail:
+  // a filled slot is rejected by the complement bound whatever follows it, so
+  // 208 of 208 was the only answer the corpus could ever give.
   (c) => `We do not claim to be the cheapest ${c} your application is secure.`,
   (c) => `We cannot promise a date ${c} we are SOC 2 certified.`,
   (c) => `We never guarantee delivery ${c} we deliver a penetration test.`,
   (c) => `No reviewer can say much about price ${c} your application is fully secure.`,
+  // 4-5: a `that` COMPLEMENT about something else. The slot is filled by a
+  // clause rather than a phrase, and the arm licensed everything after the
+  // `that` at any distance. 52 of 52 connectives went through.
+  (c) => `We do not claim that our pricing is the best ${c} your application is secure.`,
+  (c) => `We never guarantee that scope is wide ${c} your application is fully secure.`,
+  // 6-7: a SUBJECT negation whose auxiliary sits far from it, reaching a
+  // genuinely affirmative guarantee later in the sentence. Caught at both
+  // predecessors, licensed once the clause stopped being cut at a connective.
+  (c) => `No refunds are given after delivery ${c} we do guarantee your application is secure.`,
+  (c) => `No part of this is rushed ${c} we do offer a penetration test.`,
+  // 8: a determiner `that` immediately after the verb, which is not a
+  // complementizer at all — "say THAT MUCH" — and must not open the arm.
+  (c) => `We cannot say that much ${c} we are ISO 27001 certified.`,
 ];
 
 /**
