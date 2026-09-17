@@ -474,6 +474,19 @@ function recordUnreadable(text: string): void {
   if (!UNREADABLE_SPECIFIERS.includes(text)) UNREADABLE_SPECIFIERS.push(text);
 }
 
+/**
+ * The identifier a callee chain starts from: `require` for `require.main.require`,
+ * `module` for `module.require`, `policy` for `policy.require`, `import.meta` for
+ * `import.meta.resolve`.
+ */
+function calleeRoot(callee: ts.Expression): string {
+  let current: ts.Expression = callee;
+  while (ts.isPropertyAccessExpression(current)) current = current.expression;
+  if (ts.isIdentifier(current)) return current.text;
+  if (ts.isMetaProperty(current)) return `${ts.tokenToString(current.keywordToken) ?? ""}.${current.name.text}`;
+  return "";
+}
+
 export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): string[] {
   const parsed = parseSurface(file, source);
   const found: string[] = [];
@@ -495,11 +508,6 @@ export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): str
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const isImportCall = callee.kind === ts.SyntaxKind.ImportKeyword;
-      const calleeText = ts.isIdentifier(callee)
-        ? callee.text
-        : ts.isPropertyAccessExpression(callee)
-          ? callee.getText(parsed)
-          : "";
       // A bare identifier named `require` is matched by NAME, which is the
       // defect class this whole module is about, so it is qualified by ARITY:
       // CommonJS `require` takes exactly one argument. `skill-qualification.ts`
@@ -507,16 +515,28 @@ export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): str
       // first version of this recorded fifteen of its boolean conditions as
       // unreadable import specifiers — a record full of things that are not
       // what it says they are.
+      //
       // `module.require(…)` and `require.main.require(…)` are real runtime
       // loads that the predecessor regex caught and the first parser version
-      // dropped; the repository's own rule is to diff the SETS when a mechanism
-      // is replaced, and that diff was not run until an audit ran it.
+      // dropped. They were added back as `calleeText.endsWith(".require")` —
+      // which is matching by name again, one syntax form over: `policy.require`
+      // and `a.b.c.require` matched too, so a one-argument `policy.require(flag)`
+      // put a boolean identifier back into `UNREADABLE_SPECIFIERS` and
+      // `policy.require("./x")` fed a non-import string to `resolveImport`.
+      //
+      // What actually distinguishes the real forms is the ROOT of the callee
+      // chain, not its tail. CommonJS reaches `require` from `require` itself or
+      // from `module`; nothing else does.
+      const root = calleeRoot(callee);
+      const tail = ts.isPropertyAccessExpression(callee)
+        ? callee.name.text
+        : ts.isIdentifier(callee)
+          ? callee.text
+          : "";
       const isRequire =
-        (calleeText === "require" ||
-          calleeText === "require.resolve" ||
-          calleeText === "import.meta.resolve" ||
-          calleeText.endsWith(".require") ||
-          calleeText.endsWith(".require.resolve")) &&
+        ((root === "require" && (tail === "require" || tail === "resolve")) ||
+          (root === "module" && tail === "require") ||
+          (root === "import.meta" && tail === "resolve")) &&
         node.arguments.length === 1;
       if (isImportCall || isRequire) {
         const first = node.arguments[0];
@@ -1099,6 +1119,24 @@ function decodeCssEscapes(text: string): string {
   });
 }
 
+/**
+ * Whitespace-collapsed only, with character references LEFT ALONE.
+ *
+ * `tidy` always decodes, so the undecoded reading was never produced on this
+ * path and the round that introduced "every named reference becomes a space"
+ * described itself as additive when it was not. Two things follow from that,
+ * both measured by an audit: `"S&P500 clients"` came out as `"S clients"` —
+ * `&P500` is not a valid reference, a browser renders it literally, and the
+ * words were ERASED rather than joined or split; and `&period;` between two
+ * sentences became a space, so a sentence break the licensing scope depends on
+ * disappeared and a claim that the eleven-name predecessor caught was missed.
+ *
+ * Both readings are kept now, the way the asset path already keeps them.
+ */
+function tidyWithoutDecoding(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function tidy(text: string): string {
   return decodeEntities(text).replace(/\s+/g, " ").trim();
 }
@@ -1192,7 +1230,7 @@ export function interpolatesSomething(source: string): boolean {
  * produces — used to check a recorded residual's declared rendered text against
  * its own source, because one of them declared a space that does not exist.
  */
-export function jsxTextOf(node: ts.Node, mode: "separated" | "verbatim"): string {
+export function jsxTextOf(node: ts.Node, mode: "separated" | "verbatim", decode = true): string {
   const parts: string[] = [];
   const walk = (child: ts.Node): void => {
     if (ts.isJsxText(child)) parts.push(mode === "separated" ? child.text : jsxTextValue(child.text));
@@ -1203,7 +1241,7 @@ export function jsxTextOf(node: ts.Node, mode: "separated" | "verbatim"): string
     child.forEachChild(walk);
   };
   node.forEachChild(walk);
-  if (mode === "separated") return tidy(parts.join(" "));
+  if (mode === "separated") return decode ? tidy(parts.join(" ")) : tidyWithoutDecoding(parts.join(" "));
   // Verbatim joins with nothing and keeps the significant spaces JSX preserves,
   // so it can be compared against a recorded residual's declared rendered text.
   return decodeEntities(parts.join("")).trim();
@@ -1312,10 +1350,34 @@ function scriptKindOf(file: string): ts.ScriptKind {
  * contains, and for anything the framework copies into a stylesheet or a script
  * the raw value is what reaches the customer.
  */
+/**
+ * Escapes that stand for one printable character: `\u2019`, `\u{1f600}`, `\x41`.
+ *
+ * These are decoded in the raw reading, because cooking does not LOSE them —
+ * the cooked value already carries the character, so leaving the escape spelled
+ * out adds a reading that is no text anyone renders. It also broke a denial:
+ * `"This isn\u2019t a penetration test."` reads as `isn u2019 t` raw, the
+ * negation disappears with the apostrophe, and the guard flagged the offer's own
+ * disclaimer. The escapes cooking DESTROYS — `\0`, and the CSS escape runs that
+ * depend on a literal backslash — are left exactly as written, which is what the
+ * raw reading exists for.
+ */
+const PRINTABLE_ESCAPE = /\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})/g;
+
 function rawTextOf(node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral, source: ts.SourceFile): string | null {
   const text = node.getText(source);
   if (text.length < 2) return null;
-  return text.slice(1, -1);
+  return text.slice(1, -1).replace(PRINTABLE_ESCAPE, (whole, braced?: string, four?: string, two?: string) => {
+    const code = Number.parseInt(braced ?? four ?? two ?? "", 16);
+    if (!Number.isInteger(code) || code <= 0x1f || code === 0x7f || code > 0x10ffff) return whole;
+    return String.fromCodePoint(code);
+  });
+}
+
+/** The same text with references left alone, added when it differs. */
+function pushUndecoded(found: string[], text: string): void {
+  const undecoded = tidyWithoutDecoding(text);
+  if (undecoded.length > 0 && undecoded !== tidy(text)) found.push(undecoded);
 }
 
 export function visibleStrings(source: string, file = "surface.tsx"): string[] {
@@ -1325,6 +1387,7 @@ export function visibleStrings(source: string, file = "surface.tsx"): string[] {
   const visit = (node: ts.Node): void => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       found.push(tidy(node.text));
+      pushUndecoded(found, node.text);
       // And the RAW text, where the two differ.
       //
       // `node.text` is the COOKED value — what JavaScript computes. For a CSS
@@ -1336,12 +1399,19 @@ export function visibleStrings(source: string, file = "surface.tsx"): string[] {
       // the RAW text. An audit served exactly that at HTTP 200 and confirmed the
       // rendered `::after` content in a real browser.
       const raw = rawTextOf(node, parsed);
-      if (raw !== null && raw !== node.text) found.push(tidy(raw));
+      if (raw !== null && raw !== node.text) {
+        found.push(tidy(raw));
+        pushUndecoded(found, raw);
+      }
     } else if (ts.isTemplateExpression(node)) {
       const parts = [node.head.text, ...node.templateSpans.map((span) => span.literal.text)];
-      for (const part of parts) found.push(tidy(part));
+      for (const part of parts) {
+        found.push(tidy(part));
+        pushUndecoded(found, part);
+      }
       // And the sentence the template renders as, minus its interpolations.
       found.push(tidy(parts.join(" ")));
+      pushUndecoded(found, parts.join(" "));
     } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       const parts: string[] = [];
       concatenatedParts(node, parts);
@@ -1354,6 +1424,7 @@ export function visibleStrings(source: string, file = "surface.tsx"): string[] {
       // caught it, because the div is a JsxElement and the walk descends through
       // attributes; outermost, it was read by nothing.
       found.push(renderedTextOf(node));
+      pushUndecoded(found, jsxTextOf(node, "separated", false));
     } else if (jsxChildCount(node) >= 2 && !rendersAlternatives(node)) {
       // Siblings that render adjacently without a JSX parent — an array of
       // elements returned from a component, or elements in object values. Every
@@ -1361,6 +1432,7 @@ export function visibleStrings(source: string, file = "surface.tsx"): string[] {
       // recorded residual mechanisms, and the branch above never saw it because
       // it keys on the PARENT being JSX. An audit served it at HTTP 200.
       found.push(renderedTextOf(node));
+      pushUndecoded(found, jsxTextOf(node, "separated", false));
     }
     ts.forEachChild(node, visit);
   };

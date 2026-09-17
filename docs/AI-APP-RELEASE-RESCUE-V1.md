@@ -3558,11 +3558,15 @@ executed payloads.
 
 Closing it means either rejecting denial phrasings the offer currently uses or
 licensing only sentences declared verbatim — both change what marketing copy is
-permitted without a code change. **That is an owner decision and is surfaced
-rather than made quietly.** What stands meanwhile: offer copy is written by this
-repository and reviewed by a person, the four disclaimers are declared and
-literal-true, and anything a customer supplies is read as a typed field, where
-no disclaimer licenses anything.
+permitted without a code change. That was written here as an owner decision, in
+bold and in the present tense. **It was not one, and this paragraph is left
+standing only so the later sections can be read against it.** Two rounds later
+the hole is closed in code, by a rule that changes no marketing copy at all; see
+"The record I wrote in place of a fix was wrong" and "The rule that closed it was
+itself the next served claim" below. What stood meanwhile, and still stands:
+offer copy is written by this repository and reviewed by a person, the four
+disclaimers are declared and literal-true, and anything a customer supplies is
+read as a typed field, where no disclaimer licenses anything.
 
 The first sweep of that table counted the exemption file itself and reported 27
 strings broken at every reach, which would have argued against the change
@@ -3588,13 +3592,19 @@ was not. The record also said a short reach breaks "two declared denials"; at
 reach 2 it breaks **five**.
 
 The **conclusion** was wrong, and an audit refuted it by writing the rule. What
-separates a denial from an affirmative claim is not distance but SCOPE, and two
-structural facts carry it: a negation-shaped INTENSIFIER ("without exception")
-denies nothing, and a subordinating conjunction ("until", "unless", "once")
-starts a predicate the negation does not reach into. Measured over the whole
-174-file surface: **all three payloads caught, none of the ten required denials
-broken, and the flagged set outside the one declared exemption unchanged at
-zero.** No marketing copy changes; no owner decision was needed.
+separates a denial from an affirmative claim is not distance but SCOPE. The rule
+the audit wrote carried that insight on two hand-written lists — a
+negation-shaped INTENSIFIER ("without exception") denies nothing, and a
+subordinating conjunction ("until", "unless", "once") starts a predicate the
+negation does not reach into — and measured over the whole 174-file surface it
+caught all three payloads, broke none of the ten required denials, and left the
+flagged set outside the one declared exemption at zero. No marketing copy
+changed; no owner decision was needed.
+
+That rule is **no longer in force**: the next audit broke it in both directions
+within a day, because two hand-written lists are still two hand-written lists.
+The section after next records what replaced it. The insight survived the
+implementation.
 
 The residual is gone. The three sentences stay as a REGRESSION corpus — each
 must now be caught — which is the opposite of what that file records for
@@ -3643,6 +3653,75 @@ caught — `import("y").X`, `import x = require("y")`, `module.require(…)` and
 mechanism is replaced; that diff was not run until an audit ran it over all 318
 source files. All four are read now, and `UNREADABLE_SPECIFIERS` is deduped and
 asserted rather than written to and never read.
+
+### The rule that closed it was itself the next served claim
+
+The scope rule above was two hand-written lists — `NEGATION_SHAPED_INTENSIFIERS`
+and `SCOPE_BREAKERS` — and it was NEGATIVE: it licensed the claim unless one of
+the two lists matched. A negative rule fails **open**. The next audit served
+"In no uncertain terms your application is secure" from the landing page at HTTP
+200 with both suites green, because the list carried `without doubt` and not
+`without a doubt`, `until` and not `provided that`. The same rule rejected five
+ordinary denials — "We describe a review rather than a penetration test" among
+them — and called the phrase check one word at a time, so the multi-word denials
+it shipped with could never match at all.
+
+The rule in force is **positive**. `denialShapeGoverns` recognises a denial only
+in a shape this offer actually writes:
+
+- a negation adjacent to the claim — "is **not** a penetration test";
+- a negation on one of the offer's own reporting verbs — "we **never claim**",
+  "we **cannot guarantee**";
+- a subject negation whose predicate denies one — "**No** review **can
+  establish** the absence of vulnerabilities", which is the offer's own refusal
+  copy, with the skip bounded by the auxiliary so the subject cannot run to the
+  end of the clause;
+- a contrast head pointing away from the thing named — "a review **rather than**
+  a penetration test" — with nothing but function words between it and the claim.
+
+Everything else is an affirmative claim. That is the fail-**closed** direction:
+an unrecognised denial costs a rewording, an unrecognised affirmative costs a
+served claim. The difference is not that this list is better. It is that the
+list now has to be *satisfied* rather than *evaded*.
+
+Measured: **10 regression payloads caught, 17 declared denials licensed**, all
+six refusal reasons licensed, and the flagged set over the 180-file corpus
+outside the one declared exemption unchanged at zero. Six mutants bind the four
+arms, replacing the one that bound the rule this deleted.
+
+Both figures are read out of this paragraph by a test and compared to the arrays
+they count, because the two counts they replaced were written by hand, were both
+wrong within an hour of being written, and are the reason this file now binds
+every number it publishes.
+
+Two of the four arms are there because the round that wrote them broke something
+real. The subject-negation arm exists because the positive rule, on its first
+pass, flagged `REFUSED_SERVICE_REASONS.security_guarantee` — production copy the
+product shows a customer when it refuses to sell them a guarantee. Fail-closed
+means the failures land here rather than on a customer, which is the point, but
+it is not free: every arm is a shape someone had to notice.
+
+### The readings are additive now, and the diff says so
+
+Entity and CSS decoding REPLACED the text it decoded, so a decoder that guesses
+wrong destroys evidence: `S&P500 clients` decoded to `S clients`, and a claim
+inside the erased run would have gone with it. Both readings are kept now — the
+decoded one and the source text — and the scan reads all of them.
+
+The repository's rule is to measure both ways over the same corpus when a change
+alters what gets measured. Over all 180 files (174 surface files and six
+scannable assets), old extractor against new:
+
+```
+strings LOST (new misses what old saw):    0
+strings GAINED (new sees what old missed): 13
+claims flagged only by NEW:                0
+claims flagged only by OLD:                0
+```
+
+Strictly additive, and no behaviour change on real copy. The 13 gained strings
+are all in the two files whose JSX carries `&apos;` — four occurrences between
+them, each now readable both as an apostrophe and as the source text.
 
 ## What this slice deliberately does not do
 

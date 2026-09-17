@@ -78,8 +78,14 @@ const SUITES = [
  *
  * A mutant that is not the predecessor is not worthless, but it must not be
  * counted as though it were. `kind` is printed with the verdict, and an entry
- * WITHOUT a `kind` is verbatim — the header used to say "each says which", which
- * was not true of the six that carry no label.
+ * WITHOUT a `kind` is verbatim. The header used to say "each says which", which
+ * was not true of the entries carrying no label; it was then corrected to name
+ * "the six that carry no label", and there were SEVEN — the seventh being the
+ * CONTROL, whose `to` is a synthetic comment reword and a verbatim predecessor
+ * of nothing. Counting by hand is how both versions went wrong, so no count is
+ * stated here: the control now carries its own `kind`, and the check below
+ * fails the run if it ever loses it, which is what makes "no label means
+ * verbatim" true of every remaining entry.
  *
  * @type {ReadonlyArray<{id: string, mechanism: string, from: string, to: string, kind?: string, file?: string, control?: boolean}>}
  */
@@ -215,8 +221,8 @@ const MUTANTS = [
   {
     id: "M-RAW-LITERAL-TEXT",
     mechanism: "a literal's RAW source text is read, not only its cooked value",
-    from: "      const raw = rawTextOf(node, parsed);\n      if (raw !== null && raw !== node.text) found.push(tidy(raw));",
-    to: "      void rawTextOf;",
+    from: "      const raw = rawTextOf(node, parsed);",
+    to: "      const raw = node.text;",
     kind: "reconstruction: the predecessor had no raw reading at all",
   },
   {
@@ -234,11 +240,51 @@ const MUTANTS = [
     kind: "verbatim: this is the call the predecessor made",
   },
   {
-    id: "M-NEGATION-SCOPE",
-    mechanism: "a denial licenses a claim only when it governs it",
-    from: "        if (containsNegation(clauseBefore, BASELINE_MODE) && negationGovernsTheClaim(before)) continue;",
-    to: "        if (containsNegation(clauseBefore, BASELINE_MODE)) continue;",
-    kind: "verbatim: this is the clause-wide rule it replaced",
+    id: "M-DENIAL-SHAPE",
+    mechanism: "only a declared denial SHAPE licenses a claim",
+    from: "        if (denialShapeGoverns(before)) continue;",
+    to: "        if (before.some((word) => NEGATION_TOKENS.has(word))) continue;",
+    kind: "verbatim: this is the clause-wide rule two predecessors ago",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-DENIAL-ADJACENT",
+    mechanism: "an adjacent negation licenses, so the offer's own denials survive",
+    from: "    if (next === null) return true;",
+    to: "    if (next === null) return false;",
+    kind: "modelled: the adjacency arm removed",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-DENIAL-VERB",
+    mechanism: "a negation on one of the offer's own reporting verbs licenses",
+    from: "    if (DENIAL_VERBS.has(next)) return true;",
+    to: "    if (DENIAL_VERBS.has(next) && next !== \"claim\") return true;",
+    kind: "modelled: one verb dropped from the declared set",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-SUBJECT-NEGATION",
+    mechanism: "a subject negation whose predicate denies licenses the offer's refusal copy",
+    from: "    if (!SUBJECT_NEGATIONS.has(before[index] ?? \"\")) continue;",
+    to: "    if (true) continue;",
+    kind: "modelled: the subject-negation arm removed",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-SUBJECT-BOUND",
+    mechanism: "the subject skip is bounded by an auxiliary, not open to the clause",
+    from: "      if (!PREDICATE_AUXILIARIES.has(before[auxiliary] ?? \"\")) continue;",
+    to: "      if (false) continue;",
+    kind: "modelled: the bound removed, so any later denial verb licenses",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
+    id: "M-CONTRAST-ADJACENT",
+    mechanism: "a contrast head licenses only what it points straight at",
+    from: "      if (meaningfulAfter(index + head.length) === null) return true;",
+    to: "      return true;",
+    kind: "modelled: the adjacency requirement dropped from the contrast arm",
     file: "src/lib/release-rescue-intake.ts",
   },
   {
@@ -246,9 +292,19 @@ const MUTANTS = [
     mechanism: "control: a comment reworded, nothing behavioural",
     from: "// ONE walk. There were two",
     to: "// ONE walk (control mutant). There were two",
+    kind: "control: a synthetic reword, and a verbatim predecessor of nothing",
     control: true,
   },
 ];
+
+// The invariant the header rests on, checked rather than counted: an entry with
+// no `kind` is claiming to be a verbatim predecessor, and the control is not one.
+for (const mutant of MUTANTS) {
+  if (mutant.control && !mutant.kind) {
+    console.error(`FATAL: control mutant ${mutant.id} carries no \`kind\`, so the header's "no label means verbatim" is false`);
+    process.exit(2);
+  }
+}
 
 const workDir = mkdtempSync(join(tmpdir(), "claim-guard-mutation-"));
 const reportPath = join(workDir, "report.json");
@@ -309,7 +365,21 @@ async function failingSet() {
   return names;
 }
 
-const SENTINEL = `${MODULE}.mutation-proof-original`;
+/**
+ * One sentinel per mutable file.
+ *
+ * This was a single `${MODULE}.mutation-proof-original`, added after a run died
+ * mid-mutation. It covered the discovery module only — while the mutant list had
+ * already grown a second target, `src/lib/release-rescue-intake.ts`, which holds
+ * the claim guard itself. A run killed while an intake mutant was planted left
+ * the LICENSING RULE weakened on disk with no sentinel beside it, and the next
+ * run started, found no sentinel, and measured the weakened copy without
+ * refusing. A recovery mechanism that covers one of the two files it mutates is
+ * the failure it was written to prevent, narrowed rather than fixed.
+ *
+ * Derived from `FILES` so a third target cannot be added without one.
+ */
+const SENTINELS = new Map(FILES.map((file) => [file, `${file}.mutation-proof-original`]));
 
 // Belt and braces. A signal handler cannot run through a `SIGKILL`, a power cut
 // or an OOM kill, and any of those would leave the guard silently weakened in
@@ -328,20 +398,25 @@ const SENTINEL = `${MODULE}.mutation-proof-original`;
 //
 // Refusing is the whole fix: the operator is told what to compare and restores
 // deliberately. Recovery stays possible; it stops being silent.
-if (existsSync(SENTINEL)) {
+const stranded = [...SENTINELS].filter(([, sentinel]) => existsSync(sentinel));
+if (stranded.length > 0) {
   console.error(
     [
-      `${MODULE} may have been left mutated by an earlier run of this script.`,
-      `The untouched copy is at ${SENTINEL}.`,
+      ...stranded.flatMap(([file, sentinel]) => [
+        `${file} may have been left mutated by an earlier run of this script.`,
+        `The untouched copy is at ${sentinel}.`,
+      ]),
       "",
       "This script will not restore it for you: it cannot tell a genuine rescue copy",
       "from one that was placed there, and restoring the wrong bytes would weaken the",
       "guard while the proof reported success. Compare and restore deliberately:",
       "",
-      `    git diff -- ${MODULE}`,
-      `    diff ${SENTINEL} ${MODULE}`,
-      `    git checkout -- ${MODULE}   # or copy the sentinel back, having looked at it`,
-      `    rm ${SENTINEL}`,
+      ...stranded.flatMap(([file, sentinel]) => [
+        `    git diff -- ${file}`,
+        `    diff ${sentinel} ${file}`,
+        `    git checkout -- ${file}   # or copy the sentinel back, having looked at it`,
+        `    rm ${sentinel}`,
+      ]),
     ].join("\n"),
   );
   process.exit(2);
@@ -349,8 +424,7 @@ if (existsSync(SENTINEL)) {
 
 /** Every file a mutant may touch, snapshotted before anything runs. */
 const ORIGINALS = new Map(FILES.map((file) => [file, readFileSync(file, "utf8")]));
-const original = ORIGINALS.get(MODULE);
-writeFileSync(SENTINEL, original);
+for (const [file, sentinel] of SENTINELS) writeFileSync(sentinel, ORIGINALS.get(file));
 let child = null;
 let exitCode = 0;
 
@@ -367,7 +441,7 @@ const restore = () => {
   try {
     child?.kill("SIGKILL");
     for (const [file, text] of ORIGINALS) writeFileSync(file, text);
-    rmSync(SENTINEL, { force: true });
+    for (const sentinel of SENTINELS.values()) rmSync(sentinel, { force: true });
   } catch {
     // Nothing useful to do while dying; the byte-for-byte check below is the
     // backstop for the normal path.
@@ -376,13 +450,13 @@ const restore = () => {
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {
     restore();
-    console.error(`\ninterrupted by ${signal}; ${MODULE} restored`);
+    console.error(`\ninterrupted by ${signal}; ${FILES.join(" and ")} restored`);
     process.exit(130);
   });
 }
 process.on("uncaughtException", (error) => {
   restore();
-  console.error(`\nuncaught: ${error instanceof Error ? error.message : String(error)}; ${MODULE} restored`);
+  console.error(`\nuncaught: ${error instanceof Error ? error.message : String(error)}; ${FILES.join(" and ")} restored`);
   process.exit(2);
 });
 
@@ -421,7 +495,7 @@ try {
   }
 } finally {
   for (const [file, text] of ORIGINALS) writeFileSync(file, text);
-  rmSync(SENTINEL, { force: true });
+  for (const sentinel of SENTINELS.values()) rmSync(sentinel, { force: true });
   rmSync(workDir, { recursive: true, force: true });
 }
 

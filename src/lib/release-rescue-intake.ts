@@ -587,10 +587,24 @@ const NEGATION_TOKENS = new Set([
   "dont",
   "won't",
   "wont",
+  "can't",
+  "couldn't",
+  "couldnt",
+  "wouldn't",
+  "wouldnt",
+  "shouldn't",
+  "shouldnt",
+  "didn't",
+  "didnt",
+  "hasn't",
+  "hasnt",
+  "haven't",
+  "havent",
+  "wasn't",
+  "wasnt",
+  "weren't",
+  "werent",
 ]);
-
-/** Multi-word denials that no single token captures. */
-const NEGATION_PHRASES = ["rather than", "instead of", "other than"];
 
 /**
  * Clause shapes that point the customer ELSEWHERE for the thing named.
@@ -814,11 +828,6 @@ function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): C
   return tokens;
 }
 
-/** Lowercased, whitespace-normalised, punctuation-stripped word tokens. */
-function tokenize(text: string, mode: TokenizerMode = BASELINE_MODE): string[] {
-  return tokenizeClaimText(text, mode).map((token) => token.word);
-}
-
 /**
  * Finds every position where a claim's token sequence occurs.
  *
@@ -889,89 +898,160 @@ function clauseEndIndex(tokens: readonly ClaimToken[], index: number): number {
 }
 
 /**
- * Words that are negation-SHAPED but do not deny anything.
+ * Words that carry no meaning between a denial and the thing denied.
  *
- * "Without exception" is an intensifier: it asserts the thing that follows,
- * which is the opposite of denying it. An audit served "Without exception your
- * application is secure" as licensed offer copy.
+ * "is not A penetration test", "does not guarantee THE absence" — a determiner
+ * or a copula between the two does not break the denial.
  */
-const NEGATION_SHAPED_INTENSIFIERS = [
-  ["without", "exception"],
-  ["without", "fail"],
-  ["without", "doubt"],
-  ["without", "question"],
-];
-
-/**
- * Words that start a new predicate, so a denial before one does not reach past it.
- *
- * "We never rest UNTIL your application is secure" denies the resting, not the
- * security: the claim sits in a subordinate clause the negation does not
- * govern. The tokenizer does not model grammar, but it can see the hinge.
- */
-const SCOPE_BREAKERS = new Set([
-  "until",
-  "unless",
-  "once",
-  "when",
-  "whenever",
-  "while",
-  "after",
-  "before",
-  "because",
-  "since",
-  "so",
-  "therefore",
-  "then",
+const FUNCTION_WORDS = new Set([
+  "a", "an", "the", "any", "some", "this", "that", "these", "those", "our", "your", "its", "their", "my",
+  "and", "or", "of", "for", "to", "as", "is", "are", "be", "been", "being", "was", "were", "it", "they",
+  "you", "we", "us", "them", "in", "on", "at", "by", "with", "such", "other", "same",
 ]);
 
 /**
- * Whether a denial found before a claim actually GOVERNS it.
+ * The verbs a denial in this offer's copy actually denies.
  *
- * Licensing used to accept a negation anywhere earlier in the clause, so an
- * affirmative claim with an unrelated denial in front of it was licensed and an
- * audit served three such sentences.
- *
- * The obvious repair — require the negation within N tokens — was implemented,
- * swept, and REFUTED by its own measurement: "Without exception your
- * application is secure" and "We never claim your application is secure" both
- * put their negation FOUR tokens before the claim, so no distance separates a
- * payload from a denial the offer publishes. A record saying so was written, and
- * it printed the payload's distance as three, which was wrong and was the number
- * the argument rested on; the next audit measured all three at four and showed
- * the conclusion drawn from it — that only an owner decision could close this —
- * was unsupported.
- *
- * What separates them is not distance but SCOPE, and two structural facts carry
- * it: a negation-shaped intensifier denies nothing, and a subordinating
- * conjunction starts a predicate the negation does not reach into. Measured over
- * the whole surface: all three payloads caught, none of the ten required denials
- * broken, and the flagged set outside the declared exemption unchanged at zero.
+ * "We never CLAIM …", "We cannot GUARANTEE …", "We do not OFFER …". A closed set
+ * of the offer's own reporting verbs, and a POSITIVE requirement: a denial is
+ * recognised when one of these follows the negation, not when some list of
+ * disqualifiers fails to appear.
  */
-function negationGovernsTheClaim(before: readonly string[]): boolean {
-  let negationAt = -1;
-  for (let index = before.length - 1; index >= 0; index -= 1) {
-    if (!containsNegation(before[index] ?? "", BASELINE_MODE)) continue;
-    const pair = [before[index], before[index + 1] ?? ""];
-    const isIntensifier = NEGATION_SHAPED_INTENSIFIERS.some(
-      (phrase) => phrase[0] === pair[0] && phrase[1] === pair[1],
-    );
-    if (isIntensifier) continue;
-    negationAt = index;
-    break;
+const DENIAL_VERBS = new Set([
+  "claim", "claims", "claimed", "claiming",
+  "guarantee", "guarantees", "guaranteed", "guaranteeing",
+  "offer", "offers", "offered", "offering",
+  "provide", "provides", "provided", "providing",
+  "promise", "promises", "promised", "promising",
+  "say", "says", "said", "saying",
+  "state", "states", "stated", "stating",
+  "assert", "asserts", "asserted", "asserting",
+  "conclude", "concludes", "concluded", "concluding",
+  "sell", "sells", "sold", "selling",
+  "describe", "describes", "described", "describing",
+  "call", "calls", "called", "calling",
+  "certify", "certifies", "certified", "certifying",
+  "perform", "performs", "performed", "performing",
+  "establish", "establishes", "established", "establishing",
+]);
+
+/** Contrast heads that point away from the thing named, rather than denying a verb. */
+const CONTRAST_HEADS = [["rather", "than"], ["instead", "of"], ["other", "than"], ["unlike"]];
+
+/**
+ * Negations that can determine a SUBJECT rather than a verb: "NO review can
+ * establish …", "NEITHER report guarantees …". The thing denied is then the
+ * predicate's verb, with the subject in between.
+ */
+const SUBJECT_NEGATIONS = new Set(["no", "none", "neither", "nothing"]);
+
+/**
+ * The auxiliaries that mark the end of that subject and the start of its
+ * predicate. Requiring one is what keeps the subject skip bounded: "In no
+ * uncertain terms your application is secure" has a subject negation and no
+ * auxiliary after it, so the skip never opens.
+ */
+const PREDICATE_AUXILIARIES = new Set([
+  "can", "cannot", "could", "will", "would", "shall", "should", "may", "might", "must",
+  "do", "does", "did", "ever",
+]);
+
+/**
+ * Whether the clause before a claim carries a DECLARED DENIAL SHAPE.
+ *
+ * This is the fourth rule tried here, and the first that is positive.
+ *
+ *   1. Any negation anywhere in the clause licensed the claim. "We never rest
+ *      until your application is secure" was licensed — an audit served three
+ *      such sentences.
+ *   2. A distance window. Measured, it rejected denials the offer publishes,
+ *      because "Without exception your application is secure" and "We never
+ *      claim your application is secure" put their negation the same four tokens
+ *      away. Reverted.
+ *   3. Scope lists: license unless a negation-shaped intensifier or a
+ *      subordinating conjunction intervened. That was NEGATIVE — it licensed
+ *      whatever the lists failed to describe — so it failed OPEN, and the next
+ *      audit served "In no uncertain terms your application is secure" at HTTP
+ *      200 and had five ordinary denials rejected by the same lists. It also
+ *      called its phrase check one word at a time, so the multi-word denials
+ *      ("rather than", "instead of") could never match and every "a review
+ *      rather than a penetration test" was rejected. Those phrases are now
+ *      `CONTRAST_HEADS`, matched over the token sequence.
+ *
+ * So the question is inverted. A denial is recognised only in a shape this offer
+ * actually writes: a negation adjacent to the claim, a negation on one of its
+ * own reporting verbs, a subject negation whose predicate denies one, or a
+ * contrast head pointing away from it. Anything else
+ * is an affirmative claim, which is the FAIL-CLOSED direction: an unrecognised
+ * denial costs a rewording, an unrecognised affirmative costs a served claim.
+ */
+/**
+ * The clause's tokens with `n't` contractions put back together.
+ *
+ * The tokenizer treats an ASCII apostrophe as a word character, so `isn't` is
+ * one token and matches `NEGATION_TOKENS` — but a TYPOGRAPHIC apostrophe is a
+ * separator, so `isn\u2019t` arrives as `isn` and `t`, the negation vanishes, and
+ * the guard flagged the offer's own disclaimer "This isn\u2019t a penetration
+ * test". A curly apostrophe is how that sentence is normally typeset.
+ *
+ * Normalising the apostrophe in the TOKENIZER would have removed detections:
+ * `is\u2019secure` is caught today precisely because the separator splits it, and
+ * `sec'ure` is a recorded residual that is NOT caught. So the repair is here, in
+ * the licensing scan alone, and it is closed: a pair rejoins only when the
+ * result spells a negation this file already declares. `an` + `t` spells
+ * `an't`, which is not one, so nothing happens.
+ */
+function withContractions(before: readonly string[]): string[] {
+  const rejoined: string[] = [];
+  for (let index = 0; index < before.length; index += 1) {
+    const word = before[index] ?? "";
+    const candidate = `${word}'t`;
+    if (before[index + 1] === "t" && NEGATION_TOKENS.has(candidate)) {
+      rejoined.push(candidate);
+      index += 1;
+      continue;
+    }
+    rejoined.push(word);
   }
-  if (negationAt === -1) return false;
-  for (let index = negationAt + 1; index < before.length; index += 1) {
-    if (SCOPE_BREAKERS.has(before[index] ?? "")) return false;
-  }
-  return true;
+  return rejoined;
 }
 
-function containsNegation(clause: string, mode: TokenizerMode): boolean {
-  const tokens = tokenize(clause, mode);
-  if (tokens.some((token) => NEGATION_TOKENS.has(token))) return true;
-  const normalised = tokens.join(" ");
-  return NEGATION_PHRASES.some((phrase) => normalised.includes(phrase));
+function denialShapeGoverns(tokens: readonly string[]): boolean {
+  const before = withContractions(tokens);
+  const meaningfulAfter = (from: number): string | null => {
+    for (let index = from; index < before.length; index += 1) {
+      const word = before[index] ?? "";
+      if (!FUNCTION_WORDS.has(word)) return word;
+    }
+    return null;
+  };
+
+  for (const head of CONTRAST_HEADS) {
+    for (let index = 0; index + head.length <= before.length; index += 1) {
+      if (!head.every((word, offset) => before[index + offset] === word)) continue;
+      // Nothing but function words may sit between the contrast and the claim.
+      if (meaningfulAfter(index + head.length) === null) return true;
+    }
+  }
+
+  for (let index = 0; index < before.length; index += 1) {
+    if (!NEGATION_TOKENS.has(before[index] ?? "")) continue;
+    const next = meaningfulAfter(index + 1);
+    // Adjacent: "is not a penetration test".
+    if (next === null) return true;
+    // Or the negation denies one of this offer's own reporting verbs.
+    if (DENIAL_VERBS.has(next)) return true;
+    // Or it determines a subject whose predicate denies one: "No review CAN
+    // ESTABLISH the absence of vulnerabilities" — the offer's own refusal copy.
+    if (!SUBJECT_NEGATIONS.has(before[index] ?? "")) continue;
+    for (let auxiliary = index + 1; auxiliary < before.length; auxiliary += 1) {
+      if (!PREDICATE_AUXILIARIES.has(before[auxiliary] ?? "")) continue;
+      const verb = meaningfulAfter(auxiliary + 1);
+      if (verb !== null && DENIAL_VERBS.has(verb)) return true;
+    }
+  }
+
+  return false;
 }
 
 /** Words that may sit between a referral and the items it refers away. */
@@ -1098,9 +1178,8 @@ function claimsInTokens(
     const length = stems.length;
     for (const start of occurrences.get(claim) ?? []) {
       const before = tokens.slice(clauseStartIndex(tokens, start), start).map((token) => token.word);
-      const clauseBefore = before.join(" ");
       if (disclaimersMayLicense) {
-        if (containsNegation(clauseBefore, BASELINE_MODE) && negationGovernsTheClaim(before)) continue;
+        if (denialShapeGoverns(before)) continue;
         if (referralLicenses(tokens, start, start + length, claimTokenIndices)) continue;
       }
       found.push(claim);

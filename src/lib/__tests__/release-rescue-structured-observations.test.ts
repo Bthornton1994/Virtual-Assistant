@@ -2436,7 +2436,20 @@ describe("9. a code field holds a code, and nothing else, on the production path
       splitCaseTransitions: "Not a penetration test.ThisAppIsSecure",
       splitUpperRuns: "ACMEIsSecure",
       splitLetterDigitBoundaries: "ISO27001 Certified",
-      inWordFullStopSeparates: "Not a pentest. acme.is.secUre",
+      // "Not a pentest. acme.is.secUre" until the licensing rule went positive.
+      // That payload worked because the four `sentenceMarksDoNotBreak` modes
+      // pulled "Not a pentest" into the claim's clause, where ANY negation
+      // licensed it. A denial that governs nothing licenses nothing now, so
+      // those four caught the claim and the witness stopped being a witness.
+      //
+      // For an IN-WORD full stop, `sentenceMarksDoNotBreak` subsumes what this
+      // option does — both leave the claim's tokens adjacent — so the two are
+      // separable only where a REAL sentence end matters, which is the licensing
+      // scan. Here the denial is a declared shape ("never" on a reporting verb):
+      // the four no-break modes read it as governing the claim and license it,
+      // and the modes where the full stop still ends the sentence do not have it
+      // in the clause at all, so they catch.
+      inWordFullStopSeparates: "We never claim. acme.is.secure",
       sentenceMarksDoNotBreak: "Reviewed by AcmeIs. SecureLtd",
     };
 

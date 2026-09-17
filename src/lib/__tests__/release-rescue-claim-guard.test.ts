@@ -80,6 +80,19 @@ const REQUIRED_DENIALS = [
   "Customers who need penetration testing should engage a qualified specialist.",
   "This review is not a penetration test and does not guarantee the absence of vulnerabilities.",
   "We cannot guarantee your application is secure.",
+  // Audit 41. The scope-list rule rejected all five: ordinary denials whose
+  // shape the lists did not describe. They are the reason the rule is now
+  // positive — a denial is recognised by a shape this offer writes, not by the
+  // absence of a disqualifier.
+  "We describe a review rather than a penetration test.",
+  "We provide a review instead of a penetration test.",
+  "This is a review other than a penetration test.",
+  "We do not claim while reviewing that your application is secure.",
+  "We never promise before delivery that your application is secure.",
+  // The two shapes the contrast head has to tolerate between itself and the
+  // thing it points away from: nothing, and function words only.
+  "This is a review, not a penetration test.",
+  "We sell a review rather than the penetration test you may be looking for.",
 ];
 
 /**
@@ -132,6 +145,50 @@ describe("prohibited claim guard", () => {
       "compliance certification",
     );
     expect(findProhibitedClaims("This is not a compliance certification.")).toEqual([]);
+  });
+
+  it("reads an n't contraction typeset with a curly apostrophe", () => {
+    // The tokenizer treats an ASCII apostrophe as a word character and a
+    // typographic one as a separator, so `isn\u2019t` arrived as `isn` and `t`,
+    // the negation vanished, and the guard flagged the offer's own disclaimer.
+    for (const text of [
+      "This isn\u2019t a penetration test.",
+      "We can\u2019t guarantee your application is secure.",
+      "This doesn\u2019t guarantee the absence of vulnerabilities.",
+      "We haven\u2019t promised your application is secure.",
+    ]) {
+      expect(findProhibitedClaims(text, "offer_copy"), text).toEqual([]);
+    }
+
+    // Repaired in the licensing scan alone, and closed. Normalising the
+    // apostrophe in the TOKENIZER would have REMOVED a detection: this is
+    // caught precisely because the separator splits it.
+    expect(
+      findProhibitedClaims("Your application is\u2019secure.", "offer_copy"),
+      "a curly apostrophe inside a claim is still a separator",
+    ).not.toEqual([]);
+
+    // And a pair that is not a contraction rejoins to nothing this file
+    // declares, so it licenses nothing.
+    expect(
+      findProhibitedClaims("We sell an t penetration test.", "offer_copy"),
+      "`an` + `t` spells `an't`, which is not a declared negation",
+    ).not.toEqual([]);
+  });
+
+  it("publishes the regression and denial counts the arrays actually hold", () => {
+    // Every count in this area has been published wrong at least once, twice in
+    // the same commit that corrected a different one. A figure nothing reads is
+    // a figure nothing can keep true.
+    const doc = readSurface("docs/AI-APP-RELEASE-RESCUE-V1.md");
+    for (const [label, pattern, actual] of [
+      ["regression payloads", /\*\*(\d+) regression payloads caught/g, NEGATION_SCOPE_REGRESSIONS.length],
+      ["declared denials", /(\d+) declared denials licensed\*\*/g, REQUIRED_DENIALS.length],
+    ] as const) {
+      const every = [...doc.matchAll(pattern)];
+      expect(every.length, `the ${label} figure must appear exactly once in the doc`).toBe(1);
+      expect(Number(every[0]![1]), `the doc's ${label} count must be the array's length`).toBe(actual);
+    }
   });
 
   it("licenses every item in a multi-item referral", () => {
@@ -983,6 +1040,26 @@ describe("the marketing surface makes no prohibited claim", () => {
       expect(staticSpecifiersIn(source, "m.ts"), `${form} must yield its specifier`).toContain("./panel");
     }
 
+    // The ARITY check covered the two-argument case above and nothing else. A
+    // one-argument member call named `require` was still matched by name, one
+    // syntax form over: `policy.require("./x")` fed a non-import string to the
+    // resolver and `policy.require(flag)` put a boolean identifier back into the
+    // record audit 39 had just cleaned of fifteen of them. What distinguishes a
+    // CommonJS require is the ROOT of the callee chain, not its tail.
+    const pollutedBefore = UNREADABLE_SPECIFIERS.length;
+    for (const [form, source] of Object.entries({
+      "one-argument member, literal": 'const x = policy.require("./missing-config");',
+      "one-argument member, identifier": "const x = policy.require(flag);",
+      "deep member": 'const x = a.b.c.require("./deep");',
+      "two-argument member": 'const x = policy.require(a, "code");',
+    })) {
+      expect(staticSpecifiersIn(source, "m.ts"), `${form} is not a module load`).toEqual([]);
+    }
+    expect(
+      UNREADABLE_SPECIFIERS.slice(pollutedBefore),
+      "and none of them may be recorded as an unreadable specifier either",
+    ).toEqual([]);
+
     // The genuine residual: a specifier the compiler cannot read either.
     expect(staticSpecifiersIn("const n = 'p'; const m = import(`./${n}`);")).toEqual([]);
 
@@ -1027,6 +1104,33 @@ describe("the marketing surface makes no prohibited claim", () => {
     expect(callsWithFile, "the graph walk must pass the file so the dialect follows it").toContain("source, file");
   });
 
+  it("decodes a printable escape in the raw reading and leaves a destructive one alone", () => {
+    // The raw reading exists for what COOKING DESTROYS: `\0` cooks to a NUL, so
+    // the backslash a CSS decoder looks for is gone from `node.text`. It does
+    // not exist for escapes that cook to a printable character, where the cooked
+    // value already carries it — and spelling those out gave a reading nobody
+    // renders, which flagged the offer's own disclaimer.
+    const curly = String.raw`const s = "This isn’t a penetration test.";`;
+    expect(visibleStrings(curly, "p.tsx"), "one reading, with the apostrophe decoded").toEqual([
+      "This isn\u2019t a penetration test.",
+    ]);
+
+    // The escape still cannot hide a claim: cooking decodes it identically.
+    expect(
+      visibleStrings(String.raw`const s = "We deliver a penetration test.";`, "p.tsx").flatMap((text) =>
+        findProhibitedClaims(text, "typed_field"),
+      ),
+    ).not.toEqual([]);
+
+    // And the destructive escape keeps its second reading, which is the whole
+    // reason the raw text is read at all.
+    const cssEscape = "const S = () => <style>{`#x::after { content: \"penetration\\000020test\"; }`}</style>;";
+    expect(
+      visibleStrings(cssEscape, "page.tsx").some((text) => text.includes("\\000020")),
+      "the raw reading must still carry the backslash run the CSS decoder needs",
+    ).toBe(true);
+  });
+
   it("would read a planted claim out of a served asset", () => {
     // Without this the asset scan is vacuous: a loop over files whose extension
     // never matches passes exactly as loudly as one that works. `public/` today
@@ -1037,20 +1141,35 @@ describe("the marketing surface makes no prohibited claim", () => {
     // A served asset is scanned as a TYPED FIELD, not as offer copy. Offer copy
     // lets a disclaimer license a claim in the same clause, which is right for
     // prose a person wrote and wrong for markup: an SVG's tag names, `id`s and
-    // `aria-label`s all enter the same token stream, so any of them lands
-    // between a denial and the claim and licenses it. An audit served a badge
+    // `aria-label`s all enter the same token stream. An audit served a badge
     // reading "This is not a penetration test" beside "We deliver a penetration
     // test" at HTTP 200 with the suite green. An asset cannot carry a scoped
     // disclaimer, so it does not get to benefit from one.
-    const licensed = `<svg xmlns="http://www.w3.org/2000/svg"><desc>This is not a penetration test</desc><text x="10" y="30">We deliver a penetration test</text></svg>`;
+    //
+    // That SPLIT payload is now caught under both sources, because the licensing
+    // rule went positive: a denial has to sit adjacent to the claim or deny one
+    // of the offer's own verbs, and `</desc><text x 10 y 30 We deliver` is
+    // neither. Asserting it stays disarmed under offer_copy would be asserting a
+    // weakness the guard no longer has, so the pair below is the distinction
+    // that survives: an ADJACENT disclaimer is still licensed as offer copy and
+    // still caught in an asset.
+    const split = `<svg xmlns="http://www.w3.org/2000/svg"><desc>This is not a penetration test</desc><text x="10" y="30">We deliver a penetration test</text></svg>`;
+    for (const source of ["typed_field", "offer_copy"] as const) {
+      expect(
+        findProhibitedClaims(split, source),
+        `a disclaimer elsewhere in an asset must not license the claim (${source})`,
+      ).not.toEqual([]);
+    }
+
+    const adjacent = `<svg><desc>This review is not a penetration test</desc></svg>`;
     expect(
-      findProhibitedClaims(licensed, "typed_field"),
-      "a disclaimer elsewhere in an asset must not license the claim",
-    ).not.toEqual([]);
-    expect(
-      findProhibitedClaims(licensed, "offer_copy"),
-      "this payload is disarmed under offer_copy, which is why assets are not read as offer copy",
+      findProhibitedClaims(adjacent, "offer_copy"),
+      "an adjacent denial is licensed when a person wrote it as prose",
     ).toEqual([]);
+    expect(
+      findProhibitedClaims(adjacent, "typed_field"),
+      "the same bytes in an asset are read as a typed field, where nothing licenses them",
+    ).not.toEqual([]);
 
     // And the classification in both directions, decided by BYTES rather than by
     // a name. `assetResiduals()` holds one entry today — `src/app/favicon.ico` —

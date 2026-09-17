@@ -115,33 +115,52 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
 /**
  * Sentences that an unrelated denial used to license, now CAUGHT.
  *
- * These were recorded here as a residual — a hole the guard had — together with
- * an argument that no rule in code could close it and that only an owner could
- * decide the trade-off. Both halves were wrong, and an audit showed it.
+ * Three rules have been tried here and two were recorded in this file as
+ * settled. Both records were wrong, which is why the corpus is kept rather than
+ * the reasoning.
  *
- * The argument rested on a distance: the record said the payload "Without
- * exception your application is secure" put its negation THREE tokens before the
- * claim while two required denials put theirs at FOUR, so no window could
- * separate them. Measured, all three sit at four. The sentence beside that
- * number — "the same shape at the same distance" — was the true part, and the
- * figure that made it an argument was not. The record also said a short reach
- * broke "two declared denials"; at reach 2 it breaks five.
+ * The first record said no rule in code could close the hole and only an owner
+ * could decide the trade-off, resting on a distance: "Without exception your
+ * application is secure" supposedly put its negation THREE tokens before the
+ * claim while two required denials put theirs at FOUR. Measured, all three sit
+ * at four. An auditor then wrote the rule the record said did not exist.
  *
- * The rule that closes it is not about distance at all. A negation-shaped
- * INTENSIFIER ("without exception") denies nothing, and a subordinating
- * conjunction ("until", "unless", "once") starts a predicate the negation does
- * not reach into. Measured over the whole 174-file surface: all three caught,
- * none of the ten required denials broken, and the flagged set outside the one
- * declared exemption unchanged at zero.
+ * That rule — license the claim unless a negation-shaped intensifier or a
+ * subordinating conjunction intervenes — was NEGATIVE: it licensed whatever its
+ * two lists failed to describe, so it failed OPEN. The next audit served "In no
+ * uncertain terms your application is secure" through it at HTTP 200, and had
+ * five ordinary denials rejected by the same lists.
+ *
+ * The rule in force is positive (`denialShapeGoverns`): a denial is recognised
+ * only in a shape this offer writes — a negation adjacent to the claim, a
+ * negation on one of the offer's own reporting verbs, or a contrast head
+ * pointing away from it. Everything else is an affirmative claim. Measured over
+ * the 180-file surface corpus: all ten below caught, all seventeen declared
+ * denials licensed, and the flagged set outside the one declared exemption
+ * unchanged at zero.
  *
  * They stay here as a REGRESSION corpus rather than a residual: each must now be
  * caught as offer copy, which is the opposite of what this file records for
  * everything else, so the name says so.
  */
 export const NEGATION_SCOPE_REGRESSIONS: readonly string[] = [
+  // Audit 39: a negation anywhere in the clause licensed the claim.
   "We never rest until your application is secure.",
   "We do not stop working until your application is secure and free of vulnerabilities.",
   "Without exception your application is secure after this review.",
+  // Audit 41: negation-shaped intensifiers the scope list did not name, and
+  // subordinating conjunctions beyond the three it carried.
+  "In no uncertain terms your application is secure.",
+  "Without a doubt your application is secure.",
+  "Without any exception your application is secure.",
+  "We never rest as soon as your application is secure.",
+  "We do not stop working provided that your application is secure.",
+  // The two arms the mutation proof found nothing holding: a subject negation
+  // whose skip is not bounded by an auxiliary would reach `say` here, and a
+  // contrast head that does not have to point straight at the claim would
+  // license anything after "rather than".
+  "No fewer than three reviewers say your application is secure.",
+  "We confirm rather than guess that your application is secure.",
 ];
 
 export const CLAIM_GUARD_BOUND_SENTENCE =
