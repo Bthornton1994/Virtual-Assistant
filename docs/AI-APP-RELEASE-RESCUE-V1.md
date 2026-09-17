@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 736 Release Rescue tests across 30 suites (1,412 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 738 Release Rescue tests across 30 suites (1,414 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2645,7 +2645,7 @@ are excluded by construction, so this codebase can keep documenting its own
 attack payloads in prose. There is no length floor, no inline-tag list, no
 brace matching and no keyword list left to be wrong about.
 
-Measured against every payload the last four audits produced — **17 planted
+Measured against every payload the last four audits produced — **19 planted
 shapes** spanning newline, inline markup, entities, interpolations, semicolons,
 English keywords, short literals, comparisons inside a text node, template
 interpolations and concatenations — the parser catches all of them, with zero
@@ -2792,6 +2792,74 @@ nothing.
 Every word is a plain literal stated in the source, so it is none of the three
 recorded mechanisms; the run-together rule keys on `JsxElement`, and element
 construction by call bypasses it. Recorded.
+
+### Seventh time, and the two false sentences in the commit that claimed to fix the sixth
+
+The commit before this said *"neither a file's NAME nor a module's DIRECTORY
+decides anything now."* Measured, that is false: `OFFER_MODULE` is a directory
+prefix and is still a decisive disjunct. Removing it drops three files from the
+set — including `api/internal/release-rescue/retention-sweep/route.ts`, the very
+file that commit celebrated pulling in, which contains the offer's name nowhere.
+The directory pattern is the only thing that finds it.
+
+It only ever WIDENS, so it causes no miss today. But the sentence was a claim
+about the architecture that the architecture did not support, and it is corrected
+rather than defended: **a served file is a surface when anything it can reach
+either sits in this offer's directories or says this offer's name.** The
+directory disjunct is named, not hidden.
+
+Two more of that commit's sentences were false, both about wiring:
+
+- *"ScriptKind follows the extension at every extraction call site"* — three call
+  sites still used the default, including the main per-file loop.
+- *"EXTRACTOR_RESIDUAL_NOTE is referenced rather than exported into silence"* — it
+  was referenced nowhere, exactly as before, and the same commit added a second
+  export nothing read. Both constants are deleted now; what they asserted is an
+  assertion in the suite instead of a string in a module.
+
+### What was actually served, and what the walk could not see
+
+An audit served four prohibited claims at HTTP 200 from real builds:
+
+| Where | Why it was invisible |
+| --- | --- |
+| `src/proxy.ts` | Next 16 renamed `middleware.ts` to `proxy.ts`. It can return a response body, **nothing imports it**, and the walk only enumerated `src/app`. |
+| a `.jsx` component imported by a checked page | the resolver tried `.ts`/`.tsx` only and returned **null in silence**, so the module left the surface without changing anything that could fail |
+| a module reached by `import "x"` or `require("x")` | `reachableFrom` was widened to follow both; `discoverSurfaceFiles` was **not**. Two walks in one file, disagreeing. |
+| a page saying "release rescue" in lower case | the name was matched with `includes` on exact casing |
+
+All four are closed. The framework's own entrypoint names are listed explicitly —
+that is not the hand-written-list defect, because they are the framework's names
+rather than a judgement about which of our files matter, and a name that stops
+existing fails the exact-set assertion. There is **one** walk now. Every
+extension this project can serve or import resolves, and an own-tree specifier
+that resolves to nothing is recorded and asserted empty rather than shrugged off.
+Matching is case-folded and accepts the route slug.
+
+**One thing was not a hole and is not treated as one:** a `.jsx` page that neither
+names the offer nor reaches its modules stays outside the set. That is an
+unrelated page in the same app, and this guard governs this offer's surfaces. A
+`.jsx` page that does name the offer is discovered and caught — measured.
+
+### A residual that proved nothing, in the field added to stop residuals proving nothing
+
+The previous round added a `renders` field to each extractor residual, because two
+entries had been prose with no claim in them and "passed" by having nothing to
+miss. One of the six then declared a rendered string its own source does not
+produce: two adjacent inline elements with no whitespace between them render
+`"Your application issecure."`, not `"Your application is secure."` — so it was
+invisible for the wrong reason and satisfied the new test anyway, since the test
+checked only the declaration.
+
+`renders` is now checked against the source that produces it, for every residual
+whose JSX interpolates nothing. The entry is fixed, and the binding is the point:
+a field describing a measurement is not a measurement.
+
+**And a fifth mechanism was served.** JSX siblings with no common JSX ancestor — an
+array returned from a component, or elements as object values — render adjacently
+while the run-together rule keyed on the *parent* being JSX. Rather than record a
+fifth residual, the rule now runs together any node with two or more JSX children,
+so the class is closed instead of documented.
 
 ### A floor cannot tell a record from a fiction
 

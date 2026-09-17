@@ -4,8 +4,12 @@ import { describe, expect, it } from "vitest";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
   DECLARED_CLAIM_BEARING_FILES,
+  ENTRY_RESIDUALS,
   EXTRACTOR_RESIDUALS,
+  UNRESOLVED_IMPORTS,
+  interpolatesSomething,
   parseProblems,
+  renderedTextVerbatim,
   EXPECTED_SURFACE_FILES,
   RELEASE_RESCUE_SURFACE_FILES,
   readSurface,
@@ -167,7 +171,7 @@ describe("the marketing surface makes no prohibited claim", () => {
     // them would assert something untrue.
     for (const file of SURFACE_FILES) {
       const source = readSurface(file);
-      if (!rendersMarkup(source)) continue;
+      if (!rendersMarkup(source, file)) continue;
       expect(visibleStrings(source, file).length, file).toBeGreaterThan(0);
     }
 
@@ -192,6 +196,12 @@ describe("the marketing surface makes no prohibited claim", () => {
     for (const file of SURFACE_FILES) {
       expect(parseProblems(file, readSurface(file)), `${file} does not parse cleanly`).toEqual([]);
     }
+
+    // A specifier into our own tree that resolves to nothing is a module the
+    // guard will never read. It used to return null in silence, so importing a
+    // `.jsx` component into a checked page removed it from the surface without
+    // changing anything that could fail.
+    expect(UNRESOLVED_IMPORTS, "an own-tree import resolved to nothing").toEqual([]);
   });
 
   it("records what the extractor cannot see, as an exact set", () => {
@@ -206,6 +216,18 @@ describe("the marketing surface makes no prohibited claim", () => {
         visibleStrings(residual.source).some((text) => findProhibitedClaims(text).length > 0),
         `${residual.mechanism}: ${residual.source} — if this is now seen, the recorded bound is overstated`,
       ).toBe(false);
+    }
+
+    // The ENTRY rule's residuals, asserted the same way. They were recorded and
+    // then read by nothing — the "a figure nothing reads is a figure nothing can
+    // keep true" defect, in the record added to prevent the next round of it.
+    expect(ENTRY_RESIDUALS.length).toBe(2);
+    expect([...new Set(ENTRY_RESIDUALS.map((entry) => entry.mechanism))].sort()).toEqual([
+      "computed_import",
+      "computed_name",
+    ]);
+    for (const entry of ENTRY_RESIDUALS) {
+      expect(entry.why.length, `${entry.mechanism} needs a reason, not an entry`).toBeGreaterThan(80);
     }
 
     expect(EXTRACTOR_RESIDUALS.length).toBe(6);
@@ -226,6 +248,21 @@ describe("the marketing surface makes no prohibited claim", () => {
         findProhibitedClaims(residual.renders).length,
         `${residual.mechanism}: the declared rendered text carries no claim, so its invisibility proves nothing`,
       ).toBeGreaterThan(0);
+
+      // And `renders` must be what the SOURCE produces, not what its author
+      // believed. One entry declared a space between two adjacent elements that
+      // a browser does not insert, so it rendered "issecure" and was invisible
+      // for the wrong reason — passing the very test added to stop that. Where
+      // the JSX interpolates something the parser cannot resolve, the rendered
+      // text is by definition uncomputable and the declaration stands alone.
+      if (!interpolatesSomething(residual.source)) {
+        const verbatim = renderedTextVerbatim(residual.source);
+        if (verbatim.length > 0) {
+          expect(verbatim, `${residual.mechanism}: declared renders disagrees with its own source`).toBe(
+            residual.renders,
+          );
+        }
+      }
     }
   });
 
@@ -353,6 +390,11 @@ describe("the marketing surface makes no prohibited claim", () => {
       "a claim after a short sibling literal": `const row = { id: "sk", name: "We deliver a penetration test", tier: "x" };`,
       "a comparison inside the text node": `<p>{n} pass. Your application is secure.{n > 0 ? " x" : ""}</p>`,
       "a claim split by a template interpolation": "const w = \"secure\"; const s = `Your application is ${w} and free of vulnerabilities`;",
+      // Siblings that render adjacently with no JSX parent between them. The
+      // run-together rule keyed on the PARENT being JSX, so an array returned
+      // from a component slipped past it and served at HTTP 200.
+      "adjacent siblings in an array": `const A = () => [<span key="a">Your application is </span>, <span key="b">secure.</span>];`,
+      "adjacent siblings in object values": `const M = { a: <b>Your application is </b>, b: <b>secure.</b> };`,
     };
 
     // The published figure, bound to the thing it counts. A commit wrote

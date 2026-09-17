@@ -40,7 +40,31 @@ const ROUTE_DIR = "src/app/(marketing)/ai-app-release-rescue";
 const OFFER_NAME = "Release Rescue";
 
 /** Test files and fixtures are not a customer surface; everything else reachable is. */
-const NOT_A_SURFACE = /\.(test|test-fixtures)\.tsx?$/;
+const NOT_A_SURFACE = /\.(test|test-fixtures)\.(tsx?|jsx?|mjs|cjs)$/;
+
+/**
+ * Every extension this project can serve or import.
+ *
+ * It was `.ts`/`.tsx` in both the directory walk and the import resolver, while
+ * `tsconfig.json` sets `allowJs` and Next's default `pageExtensions` includes
+ * `js` and `jsx`. An audit served a `page.jsx` at HTTP 200 with a prohibited
+ * claim, and — worse, because it is silent — imported a `.jsx` component into an
+ * already-checked page: the resolver returned null, the module never joined the
+ * set, and nothing changed to alarm about.
+ */
+const SOURCE_EXTENSION = /\.(tsx?|jsx?|mjs|cjs)$/;
+
+/**
+ * Files the FRAMEWORK loads, which no import graph reaches.
+ *
+ * Next 16 renamed `middleware.ts` to `proxy.ts`, and this repository has one.
+ * A proxy can return a response body, so it can put words in front of a
+ * customer — and nothing imports it, so every walk in this file missed it.
+ * Listing them is not the hand-written-list defect: these are the framework's
+ * own entrypoint names, not a judgement about which of our files matter, and a
+ * name that stops existing is caught by the exact-set assertion.
+ */
+const FRAMEWORK_ENTRYPOINTS = ["src/proxy.ts", "src/middleware.ts", "src/instrumentation.ts"];
 
 /**
  * The files Next renders AROUND a page, by its own routing rules rather than by
@@ -76,7 +100,7 @@ function filesUnder(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })) {
     const child = `${dir}/${entry.name}`;
     if (entry.isDirectory()) filesUnder(child, found);
-    else if (/\.tsx?$/.test(entry.name) && !NOT_A_SURFACE.test(entry.name)) found.push(child);
+    else if (SOURCE_EXTENSION.test(entry.name) && !NOT_A_SURFACE.test(entry.name)) found.push(child);
   }
   return found;
 }
@@ -118,7 +142,16 @@ function namesTheOffer(file: string): boolean {
   const remembered = statesTheOffer.get(file);
   if (remembered !== undefined) return remembered;
   const source = readFileSync(resolve(process.cwd(), file), "utf8");
-  const answer = source.includes(OFFER_NAME) || visibleStrings(source, file).some((text) => text.includes(OFFER_NAME));
+  // Case-folded, and the route slug counts too. It was `includes` on the exact
+  // casing, so a page saying "release rescue" was not a surface — the audit-33
+  // escape again, one case-fold in.
+  const needle = OFFER_NAME.toLowerCase();
+  const slug = OFFER_NAME.toLowerCase().replace(/ /g, "-");
+  const says = (text: string): boolean => {
+    const folded = text.toLowerCase();
+    return folded.includes(needle) || folded.includes(slug);
+  };
+  const answer = says(source) || visibleStrings(source, file).some(says);
   statesTheOffer.set(file, answer);
   return answer;
 }
@@ -182,6 +215,9 @@ export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
 
 function listRouteEntrypoints(): string[] {
   const entries = new Set<string>(filesUnder(ROUTE_DIR));
+  for (const file of FRAMEWORK_ENTRYPOINTS) {
+    if (existsSync(resolve(process.cwd(), file))) entries.add(file);
+  }
   for (const file of ancestorChainFor(ROUTE_DIR)) entries.add(file);
   for (const served of filesSellingTheOffer()) {
     entries.add(served);
@@ -196,28 +232,42 @@ function resolveImport(specifier: string, fromFile: string): string | null {
   if (specifier.startsWith("@/")) base = join("src", specifier.slice(2));
   else if (specifier.startsWith(".")) base = join(dirname(fromFile), specifier);
   else return null; // a package, not our source
-  for (const candidate of [`${base}.ts`, `${base}.tsx`, join(base, "index.ts"), join(base, "index.tsx"), base]) {
+  const suffixes = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"];
+  const candidates = [
+    ...suffixes.map((suffix) => `${base}${suffix}`),
+    ...suffixes.map((suffix) => join(base, `index${suffix}`)),
+    base,
+  ];
+  // Only source and data. A bare-path fallback used to accept anything on disk,
+  // which pulled `globals.css` in through `import "./globals.css"` — a real
+  // stylesheet parsed as TypeScript. JSON stays: an audit put customer copy in a
+  // `.json` import and the guard correctly caught it.
+  const READABLE = /\.(tsx?|jsx?|mjs|cjs|json)$/;
+  for (const candidate of candidates) {
     const full = resolve(process.cwd(), candidate);
-    if (existsSync(full) && statSync(full).isFile()) return candidate.replace(/\\/g, "/");
+    if (existsSync(full) && statSync(full).isFile() && READABLE.test(candidate)) return candidate.replace(/\\/g, "/");
   }
+  // A stylesheet or asset is resolvable and simply not text we read.
+  if (/\.(css|scss|svg|png|jpe?g|webp|woff2?|ico)$/.test(specifier)) return null;
+  // A specifier into our own tree that resolves to nothing is not a package and
+  // not a miss to shrug at — it is a module the guard will never read. Recorded
+  // so the suite can fail on it rather than silently narrowing the surface.
+  UNRESOLVED_IMPORTS.push(`${fromFile} -> ${specifier}`);
   return null;
 }
 
-function discoverSurfaceFiles(): string[] {
-  const reached = new Set<string>();
-  const queue = listRouteEntrypoints();
-  queue.forEach((file) => reached.add(file));
+/** Own-tree specifiers the resolver could not place. Asserted empty by the suite. */
+export const UNRESOLVED_IMPORTS: string[] = [];
 
-  while (queue.length > 0) {
-    const file = queue.shift()!;
-    const source = readFileSync(resolve(process.cwd(), file), "utf8");
-    for (const match of source.matchAll(/(?:from\s+|import\s*\(\s*)["']([^"']+)["']/g)) {
-      const target = resolveImport(match[1], file);
-      if (target && !reached.has(target) && !NOT_A_SURFACE.test(target)) {
-        reached.add(target);
-        queue.push(target);
-      }
-    }
+function discoverSurfaceFiles(): string[] {
+  // ONE walk. There were two, with different import patterns: this one was left
+  // on the narrow regex while `reachableFrom` was widened to follow bare
+  // side-effect imports and `require()`. So a module could make a page an ENTRY
+  // and never join the CHECKED set. An audit served a claim through exactly that
+  // gap. Both paths are `reachableFrom` now, so they cannot disagree again.
+  const reached = new Set<string>();
+  for (const entry of listRouteEntrypoints()) {
+    for (const file of reachableFrom(entry)) reached.add(file);
   }
   return [...reached].sort();
 }
@@ -276,6 +326,7 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/ai-app-release-rescue/payment.ts",
   "src/lib/ai.ts",
   "src/lib/auth-cookie.ts",
+  "src/lib/auth-redirect.ts",
   "src/lib/auth.ts",
   "src/lib/capability-registry.ts",
   "src/lib/catalog-evidence-hash.ts",
@@ -306,6 +357,7 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/supabase/admin.ts",
   "src/lib/supabase/env.ts",
   "src/lib/supabase/server.ts",
+  "src/proxy.ts",
 ];
 
 /**
@@ -403,6 +455,78 @@ function concatenatedParts(node: ts.Expression, into: string[]): void {
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) into.push(node.text);
 }
 
+/** How many of a node's direct children are JSX elements that would render adjacently. */
+function jsxChildCount(node: ts.Node): number {
+  const isJsx = (candidate: ts.Node): boolean =>
+    ts.isJsxElement(candidate) || ts.isJsxFragment(candidate) || ts.isJsxSelfClosingElement(candidate);
+  let count = 0;
+  node.forEachChild((child) => {
+    if (isJsx(child)) {
+      count += 1;
+      return;
+    }
+    // An object's values and an array's entries reach JSX one level down, through
+    // a PropertyAssignment. `{ a: <b>…</b>, b: <b>…</b> }` renders adjacently
+    // exactly as `[<b>…</b>, <b>…</b>]` does.
+    if (ts.isPropertyAssignment(child) && isJsx(child.initializer)) count += 1;
+  });
+  return count;
+}
+
+/**
+ * Does this snippet interpolate anything the extractor cannot resolve?
+ *
+ * A residual whose JSX contains `{SOMETHING}` renders text the parser cannot
+ * compute — that is the point of the residual — so its declared `renders` cannot
+ * be checked against its source. Where the JSX is all literals, it can be, and
+ * is: one entry declared a space between two adjacent elements that a browser
+ * does not insert, which made it invisible for the wrong reason.
+ */
+export function interpolatesSomething(source: string): boolean {
+  const parsed = parseSurface("residual.tsx", source);
+  let computed = false;
+  const visit = (node: ts.Node): void => {
+    if (computed) return;
+    if (ts.isJsxExpression(node)) {
+      const inner = node.expression;
+      if (inner && !ts.isStringLiteral(inner) && !ts.isNoSubstitutionTemplateLiteral(inner)) {
+        computed = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+  return computed;
+}
+
+/**
+ * All JSX text under one node, in source order.
+ *
+ * `separated` joins with a space, which is what the run-together reading wants.
+ * `verbatim` concatenates with nothing added, which is what a browser actually
+ * produces — used to check a recorded residual's declared rendered text against
+ * its own source, because one of them declared a space that does not exist.
+ */
+export function jsxTextOf(node: ts.Node, mode: "separated" | "verbatim"): string {
+  const parts: string[] = [];
+  const walk = (child: ts.Node): void => {
+    if (ts.isJsxText(child)) parts.push(child.text);
+    else if (ts.isJsxExpression(child)) {
+      const inner = child.expression;
+      if (inner && (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner))) parts.push(inner.text);
+    }
+    child.forEachChild(walk);
+  };
+  node.forEachChild(walk);
+  return tidy(parts.join(mode === "separated" ? " " : ""));
+}
+
+/** What one source snippet renders as text, with nothing inserted between elements. */
+export function renderedTextVerbatim(source: string): string {
+  return jsxTextOf(parseSurface("residual.tsx", source), "verbatim");
+}
+
 /** All descendant JSX text of one element, run together the way a browser renders it. */
 function renderedTextOf(element: ts.Node): string {
   const parts: string[] = [];
@@ -462,6 +586,13 @@ export function visibleStrings(source: string, file = "surface.tsx"): string[] {
       concatenatedParts(node, parts);
       if (parts.length > 1) found.push(tidy(parts.join("")));
     } else if (ts.isJsxElement(node) || ts.isJsxFragment(node)) {
+      found.push(renderedTextOf(node));
+    } else if (jsxChildCount(node) >= 2) {
+      // Siblings that render adjacently without a JSX parent — an array of
+      // elements returned from a component, or elements in object values. Every
+      // word is a plain literal in a real JsxElement, so it is none of the
+      // recorded residual mechanisms, and the branch above never saw it because
+      // it keys on the PARENT being JSX. An audit served it at HTTP 200.
       found.push(renderedTextOf(node));
     }
     ts.forEachChild(node, visit);
@@ -547,7 +678,7 @@ export const EXTRACTOR_RESIDUALS: readonly ExtractorResidual[] = [
   {
     mechanism: "cross_component",
     source:
-      "const Lead = () => <span>Your application is</span>; const Tail = () => <span>secure.</span>; const P = () => <p><Lead /><Tail /></p>;",
+      "const Lead = () => <span>Your application is </span>; const Tail = () => <span>secure.</span>; const P = () => <p><Lead /><Tail /></p>;",
     renders: "Your application is secure.",
   },
   // Adjacent literals in an element built WITHOUT JSX. The run-together rule
@@ -568,18 +699,13 @@ export const EXTRACTOR_RESIDUALS: readonly ExtractorResidual[] = [
  * checked; and a named human reviewer signs before delivery. None of those is
  * this extractor, and none of them covers marketing copy assembled at runtime —
  * which is why this list exists rather than a reassurance.
+ *
+ * Two constants used to sit here — a NOTE and an ARE_EXECUTABLE flag — exported
+ * and read by nothing, in the file whose figure-binding test exists because "a
+ * figure nothing reads is a figure nothing can keep true". A commit message
+ * claimed one of them had been wired up; it had not. Both are gone: the claims
+ * they made are now assertions in the suite instead of strings in the module.
  */
-export const EXTRACTOR_RESIDUAL_NOTE =
-  "Static extraction reads the text a source states, never the text a program computes.";
-
-/**
- * Two residual entries used to be prose rather than code — `ROWS.map(...)` with
- * no `ROWS`, and a sentence describing two components. Both "passed" the
- * still-invisible assertion because there was no claim in them to see. An audit
- * caught it. Every entry above is now real source that renders the claim, and
- * the test executes each one rather than reading it.
- */
-export const EXTRACTOR_RESIDUALS_ARE_EXECUTABLE = true;
 
 export function readSurface(file: string): string {
   return readFileSync(resolve(process.cwd(), file), "utf8");
