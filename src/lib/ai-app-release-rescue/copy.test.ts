@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CANONICAL_NON_CLAIMS, REPORT_LIMITATIONS_VERBATIM, formatUsd } from "@/lib/ai-app-release-rescue/constants";
 import { RELEASE_RESCUE_RUBRIC_V1, RUBRIC_DIMENSIONS } from "@/lib/release-rescue-rubric";
-import { RELEASE_RESCUE_SURFACE_FILES } from "@/lib/__tests__/release-rescue-surface-files";
+import {
+  DECLARED_CLAIM_BEARING_FILES,
+  RELEASE_RESCUE_SURFACE_FILES,
+  readSurface,
+  visibleStrings,
+} from "@/lib/__tests__/release-rescue-surface-files";
 
 // The SECOND hand-written surface list this workstream kept, found by an audit
 // one directory away from the first. It named four files and applied the
@@ -15,6 +20,7 @@ import { RELEASE_RESCUE_SURFACE_FILES } from "@/lib/__tests__/release-rescue-sur
 //
 // Both now read the same discovered set.
 const SURFACE_FILES = RELEASE_RESCUE_SURFACE_FILES;
+const CHECKED_FILES = SURFACE_FILES.filter((file) => !(file in DECLARED_CLAIM_BEARING_FILES));
 
 describe("rescue customer copy", () => {
   it("keeps the verbatim limitations text in the shared callout", () => {
@@ -25,14 +31,21 @@ describe("rescue customer copy", () => {
   });
 
   it("does not claim certification, guarantees, or paying customers on offer surfaces", () => {
-    for (const file of SURFACE_FILES) {
-      const source = readFileSync(resolve(process.cwd(), file), "utf8");
-      expect(source).not.toMatch(/penetration test of your/i);
-      expect(source).not.toMatch(/we certify/i);
-      expect(source).not.toMatch(/guarantees the absence/i);
-      expect(source).not.toMatch(/trusted by/i);
-      expect(source).not.toMatch(/paying customers/i);
-      expect(source).not.toMatch(/SOC 2 certified/i);
+    // These read the VISIBLE STRINGS, not raw source, for the same reason the
+    // claim guard does. Run over raw source across the whole customer-reachable
+    // graph they fire on `release-rescue-intake.ts` — which holds "soc 2
+    // certified" because it IS the prohibited-claims list — and on markup that
+    // merely contains the characters. A rule that reads code cannot tell a
+    // rendered promise from the vocabulary used to forbid one.
+    for (const file of CHECKED_FILES) {
+      for (const text of visibleStrings(readSurface(file))) {
+        expect(text, file).not.toMatch(/penetration test of your/i);
+        expect(text, file).not.toMatch(/we certify/i);
+        expect(text, file).not.toMatch(/guarantees the absence/i);
+        expect(text, file).not.toMatch(/trusted by/i);
+        expect(text, file).not.toMatch(/paying customers/i);
+        expect(text, file).not.toMatch(/SOC 2 certified/i);
+      }
     }
   });
 
@@ -40,9 +53,13 @@ describe("rescue customer copy", () => {
     // The rubric records an outcome and evidence per check. It has no 1-5 score,
     // and a marketing page that advertised one would be selling a deliverable
     // the pipeline cannot make.
-    for (const file of [...SURFACE_FILES, "src/components/ai-app-release-rescue/offer-pricing.tsx"]) {
-      const source = readFileSync(resolve(process.cwd(), file), "utf8");
-      expect(source, file).not.toMatch(/1\u20135 score|1-5 score|out of 5|\/5\b/i);
+    // `\/5\b` was the original rule and it is too broad for a set this size: it
+    // matches the Tailwind class `hover:bg-black/5`. A score has a digit in
+    // front of the slash, so that is what it asks for now.
+    for (const file of CHECKED_FILES) {
+      for (const text of visibleStrings(readSurface(file))) {
+        expect(text, file).not.toMatch(/1\u20135 score|1-5 score|out of 5|\d\s*\/\s*5\b/i);
+      }
     }
   });
 

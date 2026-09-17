@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
+  DECLARED_CLAIM_BEARING_FILES,
   EXPECTED_SURFACE_FILES,
   RELEASE_RESCUE_SURFACE_FILES,
   readSurface,
@@ -141,7 +142,7 @@ describe("the marketing surface makes no prohibited claim", () => {
     }
   });
 
-  for (const file of SURFACE_FILES) {
+  for (const file of SURFACE_FILES.filter((candidate) => !(candidate in DECLARED_CLAIM_BEARING_FILES))) {
     it(file, () => {
       const source = readSurface(file);
       const offences: Array<{ text: string; claims: string[] }> = [];
@@ -159,6 +160,25 @@ describe("the marketing surface makes no prohibited claim", () => {
     // Without this, a broken extractor would make every file above pass vacuously.
     for (const file of SURFACE_FILES) {
       expect(visibleStrings(readSurface(file)).length, file).toBeGreaterThan(0);
+    }
+  });
+
+  it("declares exactly the files that need a claim-bearing exemption, and no more", () => {
+    // A file reachable from a route is CHECKED unless it is declared, and the
+    // declaration carries a reason. The danger with any exemption list is that
+    // it becomes the place a real hit goes to die, so this asserts the list from
+    // BOTH sides: every declared file must genuinely still need the exemption,
+    // and no undeclared file may need one.
+    //
+    // A stale exemption therefore fails exactly as loudly as a missing one.
+    const needsExemption = SURFACE_FILES.filter((file) =>
+      visibleStrings(readSurface(file)).some((text) => findProhibitedClaims(text).length > 0),
+    );
+
+    expect(needsExemption.sort()).toEqual(Object.keys(DECLARED_CLAIM_BEARING_FILES).sort());
+    for (const [file, why] of Object.entries(DECLARED_CLAIM_BEARING_FILES)) {
+      expect(SURFACE_FILES, `${file} is declared but no longer reachable from a route`).toContain(file);
+      expect(why.length, `${file} needs a reason, not an entry`).toBeGreaterThan(80);
     }
   });
 
@@ -182,6 +202,15 @@ describe("the marketing surface makes no prohibited claim", () => {
           When the review is finished your application is secure and free of vulnerabilities, and we
           deliver a penetration test report you can hand to your enterprise buyer.
         </p>`,
+      // Four more shapes, each planted by an audit in a real file, built, and
+      // served over HTTP while the whole suite stayed green. Three of them are
+      // the SAME defect as the wrapped paragraph — the extractor deciding by
+      // formatting rather than content — surviving one round past the commit
+      // that declared that defect closed.
+      "inline markup splitting a sentence": `<p>Checkout is prepared. We deliver a <strong>penetration test</strong> of your application.</p>`,
+      "a word in an expression container": `<p>Your application is {"secure"} and free of vulnerabilities.</p>`,
+      "a continuation after a line break": `<p>The review confirms that<br />your application is secure and free of vulnerabilities.</p>`,
+      "a claim split across concatenated literals": `<p>{"Your application is " + "secure and audited for release."}</p>`,
     };
 
     for (const [shape, source] of Object.entries(planted)) {

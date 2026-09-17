@@ -496,7 +496,7 @@ const CONTROL_PLANE_PIN: GeneratedFormat = {
   pattern: /^(?:|[A-Za-z0-9][A-Za-z0-9._/-]{0,199})$/,
   notCustomerVisible: true,
   because:
-    "A vendor or control-plane identifier whose shape this codebase does not own — `grok-4.6`, `claude-fable-5-1`, a provider name. Loose by necessity, so the format itself excludes nothing but control characters and length. Two things cover it instead: the claim guard, which reads these values as a typed field, so no word in the value can license a claim elsewhere in it; and non-visibility, which is what covers a vendor string that makes no claim at all. Neither is complete, and this sentence used to say the first one was. A claim word inside an all-caps run is not caught, nor is one split by an inserted word; the recorded residuals are in `release-rescue-claim-guard-residuals.ts`. Five of them fit this very format, so they reach this path: `ACMEISSecure` is accepted here today.",
+    "A vendor or control-plane identifier whose shape this codebase does not own — `grok-4.6`, `claude-fable-5-1`, a provider name. Loose by necessity, so the format itself excludes nothing but control characters and length. Two things cover it instead: the claim guard, which reads these values as a typed field, so no word in the value can license a claim elsewhere in it; and non-visibility, which is what covers a vendor string that makes no claim at all. Neither is complete, and this sentence used to say the first one was. A claim word inside an all-caps run is not caught, nor is one split by an inserted word; the recorded residuals are in `release-rescue-claim-guard-residuals.ts`. Some of them fit this very format, so they reach this path: `ACMEISSecure` is accepted here today. How many, exactly, is a measurement and lives in the test rather than in this sentence, because an unbound number in production prose is the defect this sentence was rewritten to remove.",
 };
 /** The one path whose value is legitimately a sentence. */
 const MODULE_SENTENCE: GeneratedFormat = {
@@ -639,8 +639,12 @@ export function generatedValueIsNotWhatItClaims(normalizedPath: string, value: s
   // license it, so adding a limitation code in that shape bricks report
   // assembly. That is the right trade for a vendor pin and the wrong shape for
   // a limitation code: say what the review DID cover, not what it did not.
-  // Measured by audit 27 across all 101 live catalog codes — none is in that
-  // shape today, so this is a forward hazard rather than a live regression.
+  // Measured across every code the catalog module exposes: none is in that shape
+  // today, so this is a forward hazard rather than a live regression. The count
+  // is deliberately not stated — three sweeps produced 101, 99 and 63 depending
+  // on whether object keys and non-code identifiers were included, and a figure
+  // that changes with the definition of the thing being counted is not evidence.
+  // What every sweep agreed on is the part that matters: zero carry a claim.
   const claims = findProhibitedClaims(value, "typed_field");
   if (claims.length > 0) {
     return `carries a prohibited claim ("${claims[0]}")`;

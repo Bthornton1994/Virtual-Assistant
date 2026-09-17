@@ -2543,12 +2543,18 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // failures must leave a sane passing count.
     //
     // WHAT THIS CANNOT DO, measured rather than guessed. Two audits noted that
-    // `rescue` is bounded only from below, so a mutation of 687 -> 650 survives.
+    // `rescue` is bounded only from below, so a mutation of 717 -> 650 survives.
     // The obvious repair — count the cases statically and compare — does not
-    // work: a static sweep of `it(` across these 30 files yields 538 against a
-    // runtime 687, because 149 cases are GENERATED in loops (one per surface
+    // work: a static sweep of `it(` across these 30 files yields 540 against a
+    // runtime 717, because 177 cases are GENERATED in loops (one per surface
     // file, one per policy path, one per catalog code). A number produced by
     // running the suite cannot be reproduced by reading it.
+    //
+    // The 538 this comment carried was measured at the PARENT commit and
+    // republished here under "verified at this commit" while the same diff added
+    // an `it(`. An audit caught it. The lesson is not about the digit: a figure
+    // inside an argument about measurement has to be measured at the commit that
+    // states it, or the argument is the thing being falsified.
     //
     // So the floor stays, and it is a vacuity guard, not a binding. The suite
     // count and every per-proof database figure below ARE bound exactly. The

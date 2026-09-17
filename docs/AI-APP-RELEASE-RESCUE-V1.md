@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 687 Release Rescue tests across 30 suites (1,363 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 717 Release Rescue tests across 30 suites (1,393 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2393,6 +2393,85 @@ a bound is stated; it cannot judge a second sentence that contradicts it. The
 control is that the category claim is gone and the residuals are derived, not that
 prose is now verifiable.
 
+### Three hand-written lists, and each fix contained the next one
+
+The question "which files can put words in front of a customer?" has now been
+answered wrongly three rounds running, and every answer was a list:
+
+| Round | The list | What it missed |
+| --- | --- | --- |
+| 26 | 11 route and component files | `demo/[id]/page.tsx`, `demo/[id]/not-found.tsx`, `demo/report/download/route.ts` |
+| 27 | a directory walk — containing a hand-pushed list of **2** library files | `intake.ts`, holding `RETENTION_POLICY_COPY` and every intake error string |
+| 28 | the library directory walked — leaving a list of **2 root directories** | `app/actions/ai-app-release-rescue.ts` and `release-rescue-presentation.ts` |
+
+Each fix was written while quoting the lesson of the one before it. The third
+one's own comment claimed the walk covered *"every file that can put words in
+front of a Release Rescue customer"* — and an audit planted a claim in
+`UNAVAILABLE_TEXT`, which renders into the customer's report, and another in the
+intake action's `formError`, which renders into a `role="alert"` div on the
+public form. Both survived the entire suite.
+
+**A directory is not what makes a file customer-facing.** Being reachable from a
+rendered route is. So the set is now the IMPORT GRAPH rooted at the route
+entrypoints — 49 files, derived, with nothing to remember. A module reaches a
+customer the moment a route imports it, and it is checked that moment.
+
+Widening from 19 files to 49 pulls in modules that legitimately contain
+prohibited claim text, so every reachable file is checked *unless* it is declared
+in `DECLARED_CLAIM_BEARING_FILES` with a reason — the same shape as
+`REPORT_FIELD_POLICY`, where an unexplained exemption is how coverage rots.
+Exactly one file needs it: `release-rescue-intake.ts`, which **is** the
+prohibited-claims list. The test asserts that map from both sides, so a stale
+exemption fails exactly as loudly as a missing one and the list cannot quietly
+become the place a real hit goes to die.
+
+### The extractor decided by formatting, and fixing the newline was not fixing that
+
+Round 27 found that the JSX branch stopped at a newline, so wrapped paragraphs
+were invisible while the same sentence on one line was caught. It fixed the
+newline and declared the formatting-dependence closed. It was not closed; only
+that one case was.
+
+The character class still excluded `<`, `>`, `{` and `}`, so inline markup
+FRAGMENTED a sentence, and a `^[A-Z]` filter then discarded every continuation
+segment. An audit planted this in the landing page, built it, and served it:
+
+```jsx
+<p>Checkout is prepared. We deliver a <strong>penetration test</strong> of your application.</p>
+```
+
+**HTTP 200, three occurrences of `penetration test` in the served HTML, suite
+green.** The identical prose with the tags removed was caught. The formatting,
+not the content, still decided whether the guard ran.
+
+Four shapes are closed now, and all four are in the planted-claim test rather
+than described here: inline markup, an expression container (`{"secure"}`), a
+continuation after `<br />`, and a claim split across `"..." + "..."`. The
+extractor no longer pattern-matches the formatting; it normalises it the way a
+browser resolves it — literals folded, expression containers and BLOCK tags
+treated as boundaries, every inline tag transparent so text joins across it.
+Block tags stay boundaries so two unrelated paragraphs cannot be spliced into a
+claim neither one makes.
+
+### Numbers this round got wrong, and one it stopped publishing
+
+Two more published figures were false, both in sentences whose purpose was to
+explain a measurement:
+
+- *"14 files and 47 visible strings"* — the before state was **353**. The 47 was
+  the count of three *newly walked* files at the previous commit.
+- *"a static sweep of `it(` yields 538"* — it was **539** at the commit that
+  published it. The parent's figure was republished under "verified at this
+  commit" while the same diff added one `it(`.
+
+And one figure was withdrawn rather than corrected. A comment claimed "all 101
+live catalog codes" carry no prohibited claim; an audit measured 63; a third
+sweep measured 99. The three disagree because "catalog code" is not pinned —
+whether object keys and non-code identifiers count changes the answer. A number
+that moves with the definition of the thing being counted is not evidence, so
+the count is gone and the claim every sweep agreed on stayed: **zero of them
+carry a claim.**
+
 ### A floor cannot tell a record from a fiction
 
 Converting one floor to an exact set found a false record that had been in the
@@ -2440,11 +2519,12 @@ them: a planted paragraph claiming *"your application is secure and free of
 vulnerabilities, and we deliver a penetration test report"* was invisible to CI,
 while the identical sentence on one line was caught.
 
-Both are closed. The library directory is walked on the same rule as the routes,
-JSX text is read across newlines with its whitespace collapsed as a browser would,
-and the planted-claim test now plants all three shapes rather than the one the
-extractor read most reliably. The set went from 14 files and 47 visible strings to
-**19 files and 516**.
+Both were closed, and both closures were still wrong. That round is recorded in
+the next section; the figure published for it was wrong too. The measured before
+state was **14 files and 353 visible strings** — the "47" this document carried
+was the count of the three *newly walked* files at the previous commit, lifted
+into a sentence about the whole set, two paragraphs from an unrelated "47
+payloads". A number that is right about one thing is not evidence about another.
 
 A second hand-written list survived one directory away, in `copy.test.ts`, exempting
 six files from the certification, guarantee, numeric-score and ready-stamp rules.
