@@ -1,7 +1,13 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
+import {
+  EXPECTED_SURFACE_FILES,
+  RELEASE_RESCUE_SURFACE_FILES,
+  readSurface,
+  visibleStrings,
+} from "./release-rescue-surface-files";
 
 // The claim guard, tested adversarially.
 //
@@ -112,55 +118,24 @@ describe("prohibited claim guard", () => {
 // AGENTS.md states that findProhibitedClaims "is the single list governing both
 // report text and the marketing surface". Before this test, no code path applied
 // it to the marketing surface at all, so that was an aspiration. Now it is CI.
-// DISCOVERED, not listed. The hand-written list named 11 files and three more
-// existed: `demo/[id]/page.tsx` and `demo/[id]/not-found.tsx` are rendered
-// customer-facing routes with visible copy, and `demo/report/download/route.ts`
-// serves an artifact. An audit found the gap — which is the "a list kept in a
-// test is the pattern that failed five audits running" anti-pattern this
-// codebase names elsewhere, in the test that exists to make a governing claim
-// true in CI.
 //
-// A new marketing route is now covered the day it is added, not the day someone
-// remembers to add it here.
-function discoverSurfaceFiles(): string[] {
-  const roots = [
-    "src/app/(marketing)/ai-app-release-rescue",
-    "src/components/ai-app-release-rescue",
-  ];
-  const found: string[] = [];
-
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })) {
-      const child = `${dir}/${entry.name}`;
-      if (entry.isDirectory()) walk(child);
-      else if (/\.(tsx?|ts)$/.test(entry.name)) found.push(child);
-    }
-  };
-  for (const root of roots) walk(root);
-
-  // The two library files that hold customer-visible WORDS rather than markup.
-  found.push("src/lib/ai-app-release-rescue/constants.ts", "src/lib/ai-app-release-rescue/payment.ts");
-  return found.sort();
-}
-
-const SURFACE_FILES = discoverSurfaceFiles();
-
-/** Text inside quotes and JSX text nodes — what a customer actually reads. */
-function visibleStrings(source: string): string[] {
-  const quoted = [...source.matchAll(/"([^"\n]{12,})"|'([^'\n]{12,})'|`([^`]{12,})`/g)].map(
-    (match) => match[1] ?? match[2] ?? match[3] ?? "",
-  );
-  const jsxText = [...source.matchAll(/>\s*([A-Z][^<>{}\n]{12,})\s*</g)].map((match) => match[1]);
-  return [...quoted, ...jsxText];
-}
+// The set is DISCOVERED and the extractor reads wrapped prose; both of those
+// were hand-shaped and wrong, and `release-rescue-surface-files.ts` records
+// exactly how. A new marketing route is covered the day it is added, not the
+// day someone remembers to add it here.
+const SURFACE_FILES = RELEASE_RESCUE_SURFACE_FILES;
 
 describe("the marketing surface makes no prohibited claim", () => {
-  it("discovers every surface file, so the set cannot go stale", () => {
-    // If a directory is renamed the walk would quietly return nothing and every
-    // per-file test below would vanish with it — a suite that passes by having
-    // no cases. This is the floor, and it is above the 11 the hand-written list
-    // carried so that removing the discovery cannot look like success.
-    expect(SURFACE_FILES.length, "the surface walk found too few files").toBeGreaterThan(12);
+  it("discovers exactly the expected surface files, so the set cannot go stale", () => {
+    // This was `toBeGreaterThan(12)` against a set of 14, so the walk could lose
+    // TWO files and still report success — including either of the `demo/[id]`
+    // routes the floor was written immediately after missing. A floor cannot
+    // tell a set from a smaller set. It could not tell 47 payloads from 50
+    // either, which was a blocking finding two rounds ago, and it let a caught
+    // payload sit in the residual corpus for four rounds.
+    //
+    // The set is the assertion. A rename that drops a surface now names it.
+    expect(SURFACE_FILES).toEqual(EXPECTED_SURFACE_FILES);
     for (const file of SURFACE_FILES) {
       expect(existsSync(resolve(process.cwd(), file)), `${file} does not exist`).toBe(true);
     }
@@ -168,7 +143,7 @@ describe("the marketing surface makes no prohibited claim", () => {
 
   for (const file of SURFACE_FILES) {
     it(file, () => {
-      const source = readFileSync(resolve(process.cwd(), file), "utf8");
+      const source = readSurface(file);
       const offences: Array<{ text: string; claims: string[] }> = [];
 
       for (const text of visibleStrings(source)) {
@@ -183,16 +158,38 @@ describe("the marketing surface makes no prohibited claim", () => {
   it("actually finds strings to check, so a passing run means something", () => {
     // Without this, a broken extractor would make every file above pass vacuously.
     for (const file of SURFACE_FILES) {
-      const source = readFileSync(resolve(process.cwd(), file), "utf8");
-      expect(visibleStrings(source).length, file).toBeGreaterThan(0);
+      expect(visibleStrings(readSurface(file)).length, file).toBeGreaterThan(0);
     }
   });
 
-  it("would catch a planted claim", () => {
-    // Proves the extractor reaches the kind of text these files contain.
-    const planted = `export const COPY = "We deliver a penetration test of your application.";`;
+  it("would catch a planted claim, in every shape these files actually write prose", () => {
+    // This test used to plant ONE shape — a single-line quoted string — which is
+    // the shape the extractor read most reliably. Two others were planted by an
+    // audit, served over HTTP from a real build, and killed nothing:
+    //
+    //   1. A quoted string in `lib/ai-app-release-rescue/intake.ts`, which was
+    //      outside the file set entirely.
+    //   2. A JSX paragraph WRAPPED across lines, which the extractor stopped
+    //      reading at the newline. The identical sentence on one line was
+    //      caught, so the formatter decided whether the guard ran.
+    //
+    // Both are here now, so the extractor cannot silently stop reading prose.
+    const planted = {
+      "single-line quoted string": `export const COPY = "We deliver a penetration test of your application.";`,
+      "retention copy in a lib constant": `  purge_on_delivery: "Delete my source material once the report proves my app is secure",`,
+      "wrapped JSX paragraph": `
+        <p className="mt-8 text-sm text-ink-soft">
+          When the review is finished your application is secure and free of vulnerabilities, and we
+          deliver a penetration test report you can hand to your enterprise buyer.
+        </p>`,
+    };
 
-    expect(visibleStrings(planted).flatMap((text) => findProhibitedClaims(text))).toContain("penetration test");
+    for (const [shape, source] of Object.entries(planted)) {
+      expect(
+        visibleStrings(source).flatMap((text) => findProhibitedClaims(text)),
+        `a planted claim in a ${shape} must be read by the extractor`,
+      ).not.toEqual([]);
+    }
   });
 });
 

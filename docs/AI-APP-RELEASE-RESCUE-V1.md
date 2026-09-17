@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 681 Release Rescue tests across 30 suites (1,357 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 687 Release Rescue tests across 30 suites (1,363 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2355,6 +2355,102 @@ detections passed them all. There is a frozen regression corpus now — 52 paylo
 that must never stop being caught. Reinstating the exact regression turns it red
 and names `AcmePENtest`.
 
+### A claim of completeness, asserted in production source, about a guard with recorded residuals
+
+`CONTROL_PLANE_PIN.because` is not a comment. It is production source, and it is
+emitted verbatim in the message a caller sees when a control-plane value is
+refused. It said the claim guard "now catches **every** separated and camelCase
+form (a test measures exactly which forms, in both directions)".
+
+`ACMEISSecure` is a camelCase form. It is not caught. It was **recorded as not
+caught 1,100 lines below the test that said it was**, in the same file. Three
+copies of one fact existed and they disagreed:
+
+| Where | What it said |
+| --- | --- |
+| `CONTROL_PLANE_PIN.because` (production) | catches every separated and camelCase form |
+| the control-plane test's `NOT_CAUGHT` | two payloads, "no word boundary of ANY kind" |
+| `ALL_CAPS_RUN` in the residual test | `ACMEISSecure` is a live evasion |
+
+The first two are the same claim written twice; the third contradicts both. The
+schema's own comment calls these "the paths where the claim guard is the only
+thing standing", so the false one is load-bearing: the next round reads it,
+believes the control-plane paths are covered, and does not look.
+
+**The fix is one list.** A residual is a property of the guard, so it is recorded
+once in `release-rescue-claim-guard-residuals.ts` and consumed everywhere it is
+asked about — by the residual test, and by the control-plane test, which now
+derives its uncaught set by filtering that corpus through the format's own
+pattern rather than naming payloads by hand. Two lists can disagree. One cannot.
+
+The production sentence stops asserting a category. It carries a bound statement
+owned beside the corpus, and a test requires it verbatim, so narrowing the bound
+turns the production text red until it is corrected too.
+
+**What that binding does not do, stated plainly:** a mutant that re-adds a false
+completeness claim *alongside* the required sentence survives. A test can pin that
+a bound is stated; it cannot judge a second sentence that contradicts it. The
+control is that the category claim is gone and the residuals are derived, not that
+prose is now verifiable.
+
+### A floor cannot tell a record from a fiction
+
+Converting one floor to an exact set found a false record that had been in the
+repository for four rounds.
+
+The residual corpus asserted `expect(uncaught.length).toBeGreaterThan(0)` over
+eight payloads — which passes while seven of the eight are wrong. One was:
+`is\u200bsecure` sat in a list titled *"the evasions the claim guard cannot see"*
+while the guard **caught it**, under both sources. A zero-width space is a
+separator, so the tokenizer reads `is|secure` and the claim matches. Nothing was
+wrong with the guard; the record of the guard was wrong, and the assertion over
+that record could not see it.
+
+The same shape had already failed twice — a corpus size that could not tell 47
+payloads from 50, and a surface-file floor of `> 12` against a set of 14, which
+allowed the walk to lose **two** files and still report success, including either
+of the `demo/[id]` routes the floor was written immediately after missing.
+
+Three instances is a pattern, so it was swept rather than patched three times.
+Every one of these quantities is a set the codebase owns, and for a set the set is
+the assertion: the corpus is asserted exactly and by mechanism, the surface walk is
+asserted against its exact file list, and each residual is asserted individually
+so a payload that starts being caught names itself. A floor is the right shape
+only where the quantity is genuinely unbounded above.
+
+### The marketing surface was governed by a hand-written list inside the fix for a hand-written list
+
+`AGENTS.md` makes `findProhibitedClaims` "the single list governing both report
+text and the marketing surface". The round that made that true in CI replaced a
+hand-written list of 11 files with a directory walk — and then, inside the walk,
+pushed two library files by hand as "the two library files that hold
+customer-visible WORDS rather than markup".
+
+That sentence was already false when it was written. `intake.ts` holds
+`RETENTION_POLICY_COPY`, three sentences rendered verbatim as radio labels on the
+public intake form and again on the demo confirmation page, plus every intake
+error string a customer reads. An audit planted a claim in it, built the app, and
+served *"Delete my source material as soon as the report proves my app is secure
+and free of vulnerabilities"* over HTTP with the whole suite green.
+
+**And the extractor decided by formatting, not by content.** The JSX branch was
+`/>\s*([A-Z][^<>{}\n]{12,})\s*</`, which stops at a newline. Every real prose
+paragraph in these files is wrapped by the formatter, so the branch read none of
+them: a planted paragraph claiming *"your application is secure and free of
+vulnerabilities, and we deliver a penetration test report"* was invisible to CI,
+while the identical sentence on one line was caught.
+
+Both are closed. The library directory is walked on the same rule as the routes,
+JSX text is read across newlines with its whitespace collapsed as a browser would,
+and the planted-claim test now plants all three shapes rather than the one the
+extractor read most reliably. The set went from 14 files and 47 visible strings to
+**19 files and 516**.
+
+A second hand-written list survived one directory away, in `copy.test.ts`, exempting
+six files from the certification, guarantee, numeric-score and ready-stamp rules.
+It reads the same discovered set now. Fixing the discovery in one test file and
+leaving the other is how a defect survives its own remedy.
+
 ### Two prohibited claims were unenforceable in the only spelling anyone uses
 
 `soc 2 certified` and `iso 27001 certified` are in the offer's list, and the
@@ -2377,12 +2473,18 @@ more force and was not applied. Prefixing `no-`, `not-`, `never-` or `without-`
 licensed the whole value, so `no-This-app-is-secure-and-free-of-vulnerabilities`
 was accepted as a model id and crossed the persistence boundary.
 
-Two asserted properties were false while that held: the test comment claiming the
-guard catches "every separated form" on the loose control-plane paths, and
-`CONTROL_PLANE_PIN`'s own `because`. A mutation flipping the call site killed
-nothing, because no test pinned which source either site used. Both are pinned
-now, in both directions — the prefixed claims are refused, and `grok-4.6`,
-`software-factory/v1` and the empty string still pass.
+A mutation flipping the `generated` call site killed nothing, because no test
+pinned which source **that** site used. The commit that fixed it said "either
+site", which was false: the `guarded` site had been pinned since the previous
+round by `does not let a word in a typed field switch the guard off for the rest
+of it`, and reverting it kills that test today. One site was unpinned, not two.
+The call site is pinned in both directions now — the prefixed claims are refused,
+and `grok-4.6`, `software-factory/v1` and the empty string still pass.
+
+**The same commit said two false asserted properties were "pinned now, in both
+directions" and edited neither string.** It fixed one of the two causes of their
+falsity and declared the property restored. That is recorded below, because it is
+the failure this document exists to stop repeating.
 
 This is the "one side of a multi-layer contract tightened" shape, occurring
 **inside the diff that created the two sides**.

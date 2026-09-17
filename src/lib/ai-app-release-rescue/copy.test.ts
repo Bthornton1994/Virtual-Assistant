@@ -3,13 +3,18 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CANONICAL_NON_CLAIMS, REPORT_LIMITATIONS_VERBATIM, formatUsd } from "@/lib/ai-app-release-rescue/constants";
 import { RELEASE_RESCUE_RUBRIC_V1, RUBRIC_DIMENSIONS } from "@/lib/release-rescue-rubric";
+import { RELEASE_RESCUE_SURFACE_FILES } from "@/lib/__tests__/release-rescue-surface-files";
 
-const SURFACE_FILES = [
-  "src/app/(marketing)/ai-app-release-rescue/page.tsx",
-  "src/components/ai-app-release-rescue/intake-form.tsx",
-  "src/components/ai-app-release-rescue/report-view.tsx",
-  "src/components/ai-app-release-rescue/non-claims.tsx",
-];
+// The SECOND hand-written surface list this workstream kept, found by an audit
+// one directory away from the first. It named four files and applied the
+// certification / guarantee / numeric-score / ready-stamp rules only to those,
+// so `demo/page.tsx`, `demo/report/page.tsx`, `demo/[id]/page.tsx`,
+// `rubric-checklist.tsx`, `constants.ts` and `payment.ts` were exempt from all
+// of them. Fixing the discovery in one test file and leaving the other is how
+// the same defect survives its own remedy.
+//
+// Both now read the same discovered set.
+const SURFACE_FILES = RELEASE_RESCUE_SURFACE_FILES;
 
 describe("rescue customer copy", () => {
   it("keeps the verbatim limitations text in the shared callout", () => {

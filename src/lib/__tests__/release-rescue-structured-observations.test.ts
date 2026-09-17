@@ -74,6 +74,12 @@ import { SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
 import { branchNameSchema, repositoryRefSchema } from "@/lib/release-rescue-intake";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
 import { validIntakeRecord } from "@/lib/ai-app-release-rescue/intake.test-fixtures";
+import {
+  CLAIM_GUARD_BOUND_SENTENCE,
+  CLAIM_GUARD_RESIDUALS,
+  FRAGMENT_RESIDUALS,
+  STANDALONE_RESIDUALS,
+} from "./release-rescue-claim-guard-residuals";
 const NOW = new Date("2026-09-16T09:00:00.000Z");
 
 import { PATH_SEGMENT_CHARACTERS } from "@/lib/release-rescue-findings";
@@ -1571,13 +1577,15 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // plants — and that walk SKIPS the `notCustomerVisible` paths.
     //
     // Those are the paths where the claim guard is the only thing standing, so
-    // this measures exactly what it catches there. Every separated form, and
-    // now the camelCase form too: the tokenizer treats a lower-to-upper
-    // transition as a word boundary, which it did not when audit 18 found
-    // `ThisAppIsSecure` sitting in a reviewer's display name on a delivered
-    // report. The dotted form is caught for the same reason — a full stop
-    // between two words with no space is a separator, not the end of a
-    // sentence.
+    // this measures what it catches there — and, below, what it does not.
+    //
+    // It catches the separated forms and the ordinary camelCase form: the
+    // tokenizer treats a lower-to-upper transition as a word boundary, which it
+    // did not when audit 18 found `ThisAppIsSecure` in a reviewer's display name
+    // on a delivered report. The dotted form is caught for the same reason — a
+    // full stop between two words with no space is a separator, not the end of a
+    // sentence. It does NOT catch every camelCase form, and the comment here
+    // used to say it did.
     // Every payload here is SPACE-FREE, so the format check cannot refuse it
     // first and take the credit. Only the claim guard can speak.
     const CAUGHT = [
@@ -1602,20 +1610,58 @@ describe("9. a code field holds a code, and nothing else, on the production path
       }
     }
 
-    // And the honest other half. These two have no word boundary of ANY kind —
-    // no separator, no case transition — so the guard cannot see words in them
-    // without searching for claim text inside longer words, which would flag
-    // ordinary values. This is the measurement behind the bound the
-    // documentation states, and it fails if the bound ever becomes wrong in
-    // either direction.
-    const NOT_CAUGHT = ["thisappissecureandfreeofvulnerabilities", "THISAPPISSECURE"];
+    // And the honest other half — DERIVED from the recorded residuals, not
+    // written out here.
+    //
+    // This list used to be two hand-picked payloads, justified as the only
+    // misses because they "have no word boundary of ANY kind". That was false:
+    // `ACMEISSecure` has a case transition, is not caught, and was recorded as
+    // not caught 1,100 lines further down this same file. Two lists of one
+    // fact, and the incomplete one was the one a production `because` string
+    // cited. An audit walked straight through the gap.
+    //
+    // So the uncaught set comes from the residual corpus, filtered to the
+    // payloads this format would actually accept — because a payload the SHAPE
+    // refuses proves nothing about the guard.
+    const shapeLegalResiduals = STANDALONE_RESIDUALS.filter((residual) =>
+      GENERATED_FORMATS[loose[0]]!.pattern.test(residual.value),
+    );
+
+    // Asserted as a set, so adding a residual that reaches these paths has to
+    // be acknowledged here rather than silently widening the bound.
+    expect(shapeLegalResiduals.map((residual) => residual.value).sort()).toEqual([
+      "ACMEISSecure",
+      "AcmeISsecure",
+      "THISAPPISSECURE",
+      "ThisAppISSECURE",
+      "thisappissecureandfreeofvulnerabilities",
+    ]);
+
     for (const path of loose) {
-      for (const uncaught of NOT_CAUGHT) {
+      for (const residual of shapeLegalResiduals) {
         expect(
-          generatedValueIsNotWhatItClaims(path, uncaught),
-          `${path} <- ${uncaught}: if this starts being caught, the doc's bound is understated and should be corrected`,
+          generatedValueIsNotWhatItClaims(path, residual.value),
+          `${path} <- ${residual.value} (${residual.mechanism}): if this starts being caught, the recorded bound is understated and both this test and CONTROL_PLANE_PIN.because should be corrected`,
         ).toBeNull();
       }
+    }
+  });
+
+  it("keeps the control-plane format's stated bound identical to the recorded one", () => {
+    // `CONTROL_PLANE_PIN.because` is production source, and it is emitted
+    // verbatim in the message a caller sees when a value is refused. It claimed
+    // the guard "now catches every separated and camelCase form" — a CATEGORY
+    // claim, which is the shape that cannot be checked, and which was false for
+    // two rounds while `ACMEISSecure` was accepted on exactly these paths.
+    //
+    // It now carries a sentence owned beside the residual corpus. Narrowing the
+    // bound means editing that constant, which turns this red until the
+    // production text is corrected too — so the two cannot drift apart again.
+    const controlPlane = Object.values(GENERATED_FORMATS).filter((format) => format.notCustomerVisible);
+
+    expect(controlPlane.length).toBeGreaterThan(0);
+    for (const format of controlPlane) {
+      expect(format.because, "the stated bound must be the recorded bound").toContain(CLAIM_GUARD_BOUND_SENTENCE);
     }
   });
 
@@ -2495,6 +2541,20 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // Internal consistency, which is what actually broke: the repository total
     // must exceed the Release Rescue total, and the eight known environmental
     // failures must leave a sane passing count.
+    //
+    // WHAT THIS CANNOT DO, measured rather than guessed. Two audits noted that
+    // `rescue` is bounded only from below, so a mutation of 687 -> 650 survives.
+    // The obvious repair — count the cases statically and compare — does not
+    // work: a static sweep of `it(` across these 30 files yields 538 against a
+    // runtime 687, because 149 cases are GENERATED in loops (one per surface
+    // file, one per policy path, one per catalog code). A number produced by
+    // running the suite cannot be reproduced by reading it.
+    //
+    // So the floor stays, and it is a vacuity guard, not a binding. The suite
+    // count and every per-proof database figure below ARE bound exactly. The
+    // Release Rescue and repository totals are correct by measurement at the
+    // commit that published them, and nothing in CI will catch it if a later
+    // round lets them drift. That is a stated limitation, not a covered one.
     expect(repository).toBeGreaterThan(rescue);
     expect(suites).toBe(30);
     expect(rescue).toBeGreaterThan(600);
@@ -2545,7 +2605,7 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   });
 
-  it("reads EVERY policy-checked value as a typed field, not just the guarded ones", () => {
+  it("reads the control-plane generated values as a typed field, not just the guarded one", () => {
     // Audit 26, blocking. `findProhibitedClaims` gained a source, the `guarded`
     // branch was moved onto `"typed_field"`, and the sibling call site one
     // function away — `generatedValueIsNotWhatItClaims` — was left on the
@@ -2668,78 +2728,57 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   });
 
-  it("records the evasions the claim guard cannot see", () => {
-    // RESTORED, and widened with what audit 23 added: invisible characters and
-    // non-ASCII letterforms, alongside the intra-word mutations. Exact stem
-    // matching cannot close this class — each is a different token to the
-    // matcher, and normalising them away would collapse legitimate words.
+  it("records the evasions the claim guard cannot see, as an exact set", () => {
+    // The corpus lives in `release-rescue-claim-guard-residuals.ts` so that one
+    // list answers "what does the guard miss?" everywhere it is asked. Three
+    // copies of this fact existed before, and they disagreed.
     //
     // The surface is one field, `reviewedBy.displayName`, which an operator
-    // controls and a named human reviewer signs. That bounds it; it does not
-    // close it. Recorded here so the bound is a measurement rather than a
-    // silence.
-    const EVASIONS = [
-      "is\u200bsecure",
-      "sec\u00adure",
-      "sec'ure",
-      "sec-ure",
-      "secuure",
-      "is secu re",
-      "ｉｓ ｓｅｃｕｒｅ",
-      "ıs secure",
-    ];
-
-    // A commit message claimed these three were "in the recorded-residual test".
-    // They were not in the repository at all, and an audit found the claim false
-    // — which is worse than an unrecorded hole, because the next round reads the
-    // message, believes the record exists, and does not look. They are here now.
+    // controls and a named human reviewer signs, plus the three control-plane
+    // paths. That bounds it; it does not close it.
     //
-    // A claim word inside an all-caps run cannot be found by casing alone
-    // without a dictionary: `ACMEISSecure` splits as `ACMEIS|Secure`, and
-    // nothing tells the tokenizer that `IS` ends a word. The apostrophe form is
-    // the same class — `'` is a word character that matches neither side of any
-    // boundary rule.
-    const ALL_CAPS_RUN = ["ACMEISSecure Ltd", "ThisAppISSECURE Ltd", "Acme'Is'Secure Ltd"];
-
-    // A THIRD mechanism, found by audit 26 and previously recorded nowhere:
-    // a word inserted BETWEEN the claim's two tokens. Plain ASCII, no casing
-    // trick, no unicode — and `Ops Manager, Your App Is Now Secure` on the
-    // signature line reads to a customer as exactly the guarantee the offer
-    // forbids. The guard matches a contiguous token sequence, so any filler
-    // breaks it, as does a near-synonym the list does not carry.
-    //
-    // Recorded rather than fixed: catching it needs either a gap-tolerant match
-    // (which would flag ordinary prose) or a synonym list (which is an open set,
-    // and an open set is what six rounds of this file are about).
-    const WORD_INSERTION = [
-      "Ops Manager, Your App Is Now Secure",
-      "Dana Okafor, Acme - Your App Is Totally Secure",
-      "Acme 100% Secure Ltd",
-      "Acme Is 2 Secure Ltd",
-      "Zero Vulnerabilities Ltd",
-      "Acme Free From Vulnerabilities Ltd",
-      "Acme Is Secure's Ltd",
-    ];
-    for (const text of [...WORD_INSERTION]) {
+    // WHAT THE OLD ASSERTION HID. This was
+    // `expect(uncaught.length).toBeGreaterThan(0)` over eight payloads, which
+    // passes while seven of them are wrong. One was: `is\u200bsecure` sat in a
+    // list titled "the evasions the claim guard cannot see" for four rounds
+    // while the guard caught it under both sources — a zero-width space is a
+    // separator, so the tokenizer reads `is|secure` and the claim matches. A
+    // floor cannot tell a record from a fiction. Every residual is now asserted
+    // individually, so a payload that starts being caught names itself.
+    for (const residual of STANDALONE_RESIDUALS) {
       expect(
-        findProhibitedClaims(text, "typed_field"),
-        `${text}: if this is now caught, this recorded residual is overstated and should be narrowed`,
+        findProhibitedClaims(residual.value, "typed_field"),
+        `${residual.value} (${residual.mechanism}): if this is now caught, the recorded residual is overstated and should be narrowed`,
       ).toEqual([]);
     }
-    for (const text of ALL_CAPS_RUN) {
+    for (const residual of FRAGMENT_RESIDUALS) {
       expect(
-        findProhibitedClaims(text, "typed_field"),
-        `${text}: if this is now caught, the recorded residual is overstated and should be narrowed`,
+        findProhibitedClaims(`this application ${residual.value}`, "typed_field"),
+        `${residual.value} (${residual.mechanism}): if this is now caught, the recorded residual is overstated and should be narrowed`,
       ).toEqual([]);
     }
 
-    const uncaught = EVASIONS.filter((text) => findProhibitedClaims(`this application ${text}`).length === 0);
-    expect(
-      uncaught.length,
-      "if the guard now catches some of these, this recorded residual is overstated and should be narrowed",
-    ).toBeGreaterThan(0);
+    // The corpus size and its shape, exactly. If a round closes a mechanism the
+    // count moves and this names it; if a round discovers one, it has to be
+    // written down rather than mentioned in a commit message. Audit 25 found a
+    // commit asserting three residuals were recorded when they were absent from
+    // the repository entirely — worse than an unrecorded hole, because the next
+    // round reads the message, believes the record exists, and does not look.
+    expect(CLAIM_GUARD_RESIDUALS.length, "if this changes, correct any published figure").toBe(22);
+    const byMechanism = new Map<string, number>();
+    for (const residual of CLAIM_GUARD_RESIDUALS) {
+      byMechanism.set(residual.mechanism, (byMechanism.get(residual.mechanism) ?? 0) + 1);
+    }
+    expect(Object.fromEntries([...byMechanism].sort())).toEqual({
+      all_caps_run: 6,
+      intra_word: 7,
+      no_boundary: 2,
+      word_insertion: 7,
+    });
 
+    // And the guard is not simply switched off: the plain form is still caught.
     expect(findProhibitedClaims("this application is secure")).not.toEqual([]);
+    expect(findProhibitedClaims("this application is secure", "typed_field")).not.toEqual([]);
   });
 
   it("refuses an unknown mode name instead of quietly reading the baseline", () => {
