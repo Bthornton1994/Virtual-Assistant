@@ -240,6 +240,32 @@ found the second one in seconds. There is now an explicit proof case for a row
 accepted against a body with no `reviewedBy` key, rather than leaving that
 coverage to two older fixtures that could change for unrelated reasons.
 
+### S-008 — three of the intake form's four text boxes were not scanned
+
+| | |
+| --- | --- |
+| Found | by an automated review on the PR |
+| Class | a guard applied to a field instead of to a class |
+| Closed at | the same commit |
+
+`evidenceNotes` was scanned for credential material. `applicationName`,
+`criticalWorkflow` and `criticalWorkflowEntryPoint` were not — they were
+validated for length and shape and then stored. Reproduced before anything was
+changed: `OPENAI_API_KEY=sk-proj-...` pasted into "describe the workflow" was
+**accepted** and carried into the parsed contract, while the identical value in
+`evidenceNotes` was refused with "That looks like a credential."
+
+The form tells a customer it does not accept credentials, and for three of its
+four text boxes that was not true.
+
+This is the same defect the report side has been through four times: a guard
+attached to a hand-picked field rather than to a class of fields. The scanned
+list is declared once now, and a test walks the **stored contract** and fails if
+any string in it is neither scanned, a closed enum, nor an identifier this
+codebase mints. That walk immediately surfaced three strings — the demo
+organization id and two service codes — which are accounted for by name rather
+than by loosening the assertion.
+
 ### S-003 — a loop that varies nothing
 
 | | |

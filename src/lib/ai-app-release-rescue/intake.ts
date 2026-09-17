@@ -259,6 +259,22 @@ function readChecked(source: Record<string, unknown>, key: string): boolean {
   return value === "on" || value === "true" || value === true;
 }
 
+/**
+ * Every field a customer types free text into, scanned for credential material.
+ *
+ * `repositoryUrl` is absent deliberately: it has its own stricter rule, which
+ * refuses userinfo and credential-shaped queries that this check would not call
+ * credential evidence. `defaultBranch` is absent because a branch name is shape
+ * constrained and cannot hold an assignment. Everything else a person can type
+ * prose into belongs here.
+ */
+export const CUSTOMER_AUTHORED_TEXT = [
+  "contactName",
+  "applicationName",
+  "criticalWorkflow",
+  "criticalWorkflowEntryPoint",
+] as const satisfies readonly IntakeFieldName[];
+
 /** Field names that would invite a customer to paste a credential. */
 export function forbiddenIntakeFieldsPresent(source: Record<string, unknown>): string[] {
   return Object.keys(source).filter((key) =>
@@ -347,6 +363,28 @@ export function parseRescueIntake(source: Record<string, unknown>, now: Date = n
     errors.evidenceNotes = "Keep this under 2000 characters.";
   } else if (holdsCredentialEvidence(evidenceNotes)) {
     errors.evidenceNotes = "That looks like a credential. Remove it. Access is granted separately.";
+  }
+
+  // EVERY field a customer types prose into, not just the one named "notes".
+  //
+  // `evidenceNotes` was the only scanned field, and an automated review asked the
+  // obvious next question: what about the other boxes? Measured, and it was
+  // right — `OPENAI_API_KEY=sk-...` pasted into "describe the workflow" was
+  // accepted and carried into the parsed result, while the identical value in
+  // `evidenceNotes` was refused. The form tells the customer it does not accept
+  // credentials, and for three of its four text boxes that was not true.
+  //
+  // This is the same defect the report side has already been through four times:
+  // a guard applied to a hand-picked field rather than to a class. The list is
+  // declared here and a test asserts it covers every customer-authored string
+  // that reaches the stored scope, so adding a box without scanning it fails.
+  for (const [field, value] of CUSTOMER_AUTHORED_TEXT.map(
+    (field) => [field, readString(source, field).trim()] as const,
+  )) {
+    if (errors[field] || value.length === 0) continue;
+    if (holdsCredentialEvidence(value)) {
+      errors[field] = "That looks like a credential. Remove it. Access is granted separately.";
+    }
   }
 
   const evidenceFileNames = readString(source, "evidenceFileNames")

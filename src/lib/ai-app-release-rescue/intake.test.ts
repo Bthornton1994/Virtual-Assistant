@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ATTESTATION_FIELDS,
+  CUSTOMER_AUTHORED_TEXT,
   forbiddenIntakeFieldsPresent,
   parseRepositoryReference,
   parseRescueIntake,
@@ -174,5 +175,109 @@ describe("forbidden intake field names", () => {
 
   it("allows ordinary field names", () => {
     expect(forbiddenIntakeFieldsPresent({ contactName: "x", repositoryUrl: "y", appType: "z" })).toEqual([]);
+  });
+});
+
+describe("a credential is refused in every box a customer types into", () => {
+  // The finding: `evidenceNotes` was scanned and the other three text boxes were
+  // not, so `OPENAI_API_KEY=sk-...` in "describe the workflow" was accepted and
+  // carried into the parsed result while the same value in `evidenceNotes` was
+  // refused. The form promises it does not accept credentials.
+  const SECRET = "OPENAI_API_KEY=sk-proj-Xk92mQvn7LzPr0dAbCdEfGh";
+
+  function validSubmission(): Record<string, unknown> {
+    return {
+      contactName: "Dana Reed",
+      workEmail: "dana@example.com",
+      repositoryHost: "github",
+      repositoryUrl: "https://github.com/acme/ledger",
+      applicationName: "Ledger",
+      defaultBranch: "main",
+      appType: "next_js_web_app",
+      criticalWorkflow: "A customer submits an expense and a manager approves it.",
+      criticalWorkflowEntryPoint: "/expenses/new",
+      accessGrantMethod: "customer_installed_readonly_app",
+      accessWindowDays: "7",
+      retentionPolicy: "minimum_7_day",
+      authorizedToGrantRepositoryAccess: "on",
+      ownsOrIsAuthorisedByOwnerOfTheCode: "on",
+      accessGrantedIsReadOnly: "on",
+      noProductionCredentialsProvided: "on",
+      noEndUserPersonalDataProvided: "on",
+      understandsNotPenetrationTest: "on",
+      understandsNotComplianceCertification: "on",
+      understandsNoSecurityGuarantee: "on",
+      understandsFindingsRequireCustomerAction: "on",
+    };
+  }
+
+  it("accepts the submission when nothing carries a credential", () => {
+    expect(parseRescueIntake(validSubmission()).ok).toBe(true);
+  });
+
+  for (const field of [...CUSTOMER_AUTHORED_TEXT, "evidenceNotes"] as const) {
+    it(`refuses one pasted into ${field}, and stores nothing`, () => {
+      const result = parseRescueIntake({ ...validSubmission(), [field]: SECRET });
+
+      expect(result.ok, `${field} accepted a credential`).toBe(false);
+      // And the value does not come back out in the refusal, which is rendered.
+      expect(JSON.stringify(result)).not.toContain("sk-proj-Xk92mQvn7Lz");
+    });
+  }
+
+  it("covers every customer-authored string that reaches the stored scope", () => {
+    // The guard on the list. Enumerating fields has failed four times on the
+    // report side; this asserts the enumeration is complete rather than trusting
+    // that whoever adds the next text box remembers this file.
+    const result = parseRescueIntake(validSubmission());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+
+    const submitted = validSubmission();
+    const scanned = new Set<string>([
+      ...CUSTOMER_AUTHORED_TEXT.map((field) => String(submitted[field])),
+      String(submitted.evidenceNotes ?? ""),
+    ]);
+
+    // Every string the customer authored that survives into the stored contract,
+    // gathered by walking the contract rather than by listing paths — the same
+    // reason the report side walks its artifact instead of enumerating fields.
+    const closed = new Set<string>([
+      String(submitted.repositoryHost),
+      String(submitted.defaultBranch),
+      String(submitted.appType),
+      String(submitted.accessGrantMethod),
+      String(submitted.retentionPolicy),
+      String(submitted.workEmail),
+      "acme/ledger",
+      "release-rescue-intake/v1",
+      "release-rescue-offer/v1",
+      // Minted by this codebase, never typed by a customer: the demo
+      // organization id, and the two requested-service codes, which are a closed
+      // enum the form does not let anyone write into.
+      "demo-organization",
+      "release_readiness_review",
+      "ai_boundary_review",
+    ]);
+
+    const strings: string[] = [];
+    const walk = (node: unknown): void => {
+      if (typeof node === "string") strings.push(node);
+      else if (Array.isArray(node)) node.forEach(walk);
+      else if (node && typeof node === "object") Object.values(node).forEach(walk);
+    };
+    walk(result.intake);
+
+    const unaccounted = strings.filter(
+      (value) =>
+        value.length > 0 &&
+        !scanned.has(value) &&
+        !closed.has(value) &&
+        // Timestamps and ids this codebase mints, not customer text.
+        !/^\d{4}-\d{2}-\d{2}T/.test(value) &&
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(value),
+    );
+
+    expect(unaccounted, "a customer-authored string reaches the contract unscanned").toEqual([]);
   });
 });
