@@ -81,17 +81,60 @@ function filesUnder(dir: string, found: string[] = []): string[] {
   return found;
 }
 
-/** Any page in the app that sells this offer by name, plus what Next wraps it in. */
-function pagesNamingTheOffer(): string[] {
+/** The modules that belong to this offer. A page that pulls one in is selling it. */
+const OFFER_MODULE = /^src\/(?:lib|components)\/(?:ai-app-release-rescue\/|release-rescue-)/;
+
+/**
+ * Every page in the app that sells this offer, found structurally.
+ *
+ * This used to ask whether the raw SOURCE BYTES contained "Release Rescue" —
+ * the same formatting dependence the extractor was rebuilt to remove, one layer
+ * out. Two pages escaped it and were served at HTTP 200 with prohibited claims:
+ * one rendering `{RESCUE_SERVICE_NAME}` (the name is on screen, not in the
+ * bytes) and one whose `<h1>` the formatter wrapped as `AI App Release` /
+ * `Rescue`. A first attempt to fix it by reading the RENDERED text closed only
+ * the second: an identifier is not a literal, so the name never appears in the
+ * extracted text either. Measured, not assumed — the page stayed undiscovered.
+ *
+ * So the question is not what a page SAYS. It is what a page USES: a page whose
+ * import graph reaches this offer's own modules is one of its surfaces, whatever
+ * words it happens to spell literally. That is a fact about the graph, and no
+ * formatting, constant or interpolation can hide it. The rendered-text check
+ * stays as a second net for a page that names the offer without importing it.
+ */
+function pagesSellingTheOffer(): string[] {
   return filesUnder(APP_DIR)
     .filter((file) => /\/page\.tsx?$/.test(file))
-    .filter((file) => readFileSync(resolve(process.cwd(), file), "utf8").includes(OFFER_NAME));
+    .filter((file) => {
+      if (reachableFrom(file).some((reached) => OFFER_MODULE.test(reached))) return true;
+      const source = readFileSync(resolve(process.cwd(), file), "utf8");
+      if (source.includes(OFFER_NAME)) return true;
+      return visibleStrings(source, file).some((text) => text.includes(OFFER_NAME));
+    });
+}
+
+/** Every repository file reachable from one entrypoint by import. */
+function reachableFrom(entry: string): string[] {
+  const reached = new Set<string>([entry]);
+  const queue = [entry];
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    const source = readFileSync(resolve(process.cwd(), file), "utf8");
+    for (const match of source.matchAll(/(?:from\s+|import\s*\(\s*)["']([^"']+)["']/g)) {
+      const target = resolveImport(match[1], file);
+      if (target && !reached.has(target) && !NOT_A_SURFACE.test(target)) {
+        reached.add(target);
+        queue.push(target);
+      }
+    }
+  }
+  return [...reached];
 }
 
 function listRouteEntrypoints(): string[] {
   const entries = new Set<string>(filesUnder(ROUTE_DIR));
   for (const file of ancestorChainFor(ROUTE_DIR)) entries.add(file);
-  for (const page of pagesNamingTheOffer()) {
+  for (const page of pagesSellingTheOffer()) {
     entries.add(page);
     for (const file of ancestorChainFor(page.slice(0, page.lastIndexOf("/")))) entries.add(file);
   }
@@ -226,31 +269,6 @@ export const DECLARED_CLAIM_BEARING_FILES: Readonly<Record<string, string>> = {
 };
 
 /**
- * Text a customer can actually read: quoted strings and rendered JSX text.
- *
- * Comments are stripped first. A comment is not customer-visible, and this
- * codebase documents its own attack payloads in prose — reading those as copy
- * would make the check fire on its own explanations.
- *
- * TWO FORMATTING DEFECTS, both found by audits, both fixed here:
- *
- *   1. The JSX branch was `/>\s*([A-Z][^<>{}\n]{12,})\s*</`, which stops at a
- *      newline. Every real paragraph is wrapped by the formatter, so none was
- *      read, while the identical sentence on one line was caught.
- *   2. Fixing the newline left the same defect through markup: `{}` and `<>` in
- *      the character class meant inline tags FRAGMENTED a sentence, and the
- *      `^[A-Z]` filter then discarded every continuation. `We deliver a
- *      <strong>penetration test</strong> of your application.` was served over
- *      HTTP with the suite green; the same words without the tags were caught.
- *
- * So the formatting is normalised the way a browser resolves it, rather than
- * pattern-matched: string literals inside expression containers are substituted,
- * other containers and BLOCK-level tags become boundaries, and every remaining
- * (inline) tag is transparent so the text around it joins up. Block tags stay
- * boundaries so two unrelated paragraphs cannot be spliced into a claim neither
- * one makes.
- */
-/**
  * What a customer can actually read: rendered JSX text and string literals,
  * extracted with the TYPESCRIPT PARSER rather than with regular expressions.
  *
@@ -285,6 +303,24 @@ export const DECLARED_CLAIM_BEARING_FILES: Readonly<Record<string, string>> = {
  *
  * Comments are excluded by construction: the grammar knows they are not text,
  * so the codebase can keep documenting its own attack payloads in prose.
+ *
+ * THE TRADE THIS MAKES, stated because the comment it replaced claimed the
+ * opposite and was left standing for a commit. Running an element's descendants
+ * together means a wrapper's children are read as one sentence, so text that
+ * never renders adjacent can still be joined:
+ *
+ *     <h3>What the review is</h3><li>Secure, read-only access…</li>
+ *       -> "…the review is Secure, read-only access…"  flags `is secure`
+ *     <dt>Vulnerabilities found</dt><dd>no</dd>
+ *       -> "Vulnerabilities found no"                  flags `no vulnerabilities`
+ *
+ * Neither child carries a claim. Both are plausible copy for THIS product. The
+ * direction is fail-closed — a false positive stops a build, it never delivers
+ * an overclaim — and the alternative, bounding runs by a list of block-level
+ * tags, is the hand-written list that failed four rounds running. So the join is
+ * deliberate and the cost is a rewording, not a silent pass. An author who hits
+ * it cannot buy their way out with an exemption either: only the module that
+ * defines the claim list may be declared.
  */
 function decodeEntities(text: string): string {
   return text
@@ -323,8 +359,35 @@ function renderedTextOf(element: ts.Node): string {
   return tidy(parts.join(" "));
 }
 
-export function visibleStrings(source: string): string[] {
-  const parsed = ts.createSourceFile("surface.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+/**
+ * A file the parser could not read is not a file with no text in it.
+ *
+ * `createSourceFile` is error-tolerant: it returns a tree for anything. An
+ * unterminated block comment reduces a component to zero strings, and a legacy
+ * `<string>value` type assertion — valid TypeScript that `tsc` and `next build`
+ * both accept — parses under TSX as one enormous JsxText and swallows the file.
+ * Either way the extractor would report "nothing to check" and the per-file test
+ * would pass on silence. The surface test asserts this is empty for every file.
+ */
+export function parseProblems(file: string, source: string): readonly string[] {
+  const parsed = parseSurface(file, source) as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
+  return (parsed.parseDiagnostics ?? []).map((diagnostic) =>
+    ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+  );
+}
+
+function parseSurface(file: string, source: string): ts.SourceFile {
+  return ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+}
+
+export function visibleStrings(source: string, file = "surface.tsx"): string[] {
+  const parsed = parseSurface(file, source);
   const found: string[] = [];
 
   const visit = (node: ts.Node): void => {
@@ -355,8 +418,8 @@ export function visibleStrings(source: string): string[] {
 }
 
 /** Whether the file contains any JSX at all, for the vacuity guard. */
-export function rendersMarkup(source: string): boolean {
-  const parsed = ts.createSourceFile("surface.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+export function rendersMarkup(source: string, file = "surface.tsx"): boolean {
+  const parsed = parseSurface(file, source);
   let hasJsx = false;
   const visit = (node: ts.Node): void => {
     if (hasJsx) return;
@@ -369,6 +432,48 @@ export function rendersMarkup(source: string): boolean {
   visit(parsed);
   return hasJsx;
 }
+
+/**
+ * What the EXTRACTOR cannot see, recorded as an exact set.
+ *
+ * The tokenizer's residuals are kept this way in
+ * `release-rescue-claim-guard-residuals.ts`, under the rule that a bound should
+ * be a measurement rather than a silence. The extractor had no such record, and
+ * an audit found the gap by walking straight through it: the entry set was fixed
+ * to read RENDERED text, which still could not see `{RESCUE_SERVICE_NAME}`,
+ * because an identifier is not a literal. That miss was in this class the whole
+ * time and nobody had written the class down.
+ *
+ * Static extraction reads text the source states. It cannot read text the
+ * program computes. Everything below renders a claim to a customer and is
+ * invisible here — measured, each one, not supposed.
+ */
+export type ExtractorResidual = {
+  readonly mechanism: "identifier" | "computed" | "cross_component";
+  readonly source: string;
+};
+
+export const EXTRACTOR_RESIDUALS: readonly ExtractorResidual[] = [
+  // The sentence exists only after the identifier is resolved.
+  { mechanism: "identifier", source: 'const LEAD = "Your application is"; <p>{LEAD} secure and ready.</p>' },
+  { mechanism: "identifier", source: "const a = 'Your application is'; const b = 'secure'; a + ' ' + b" },
+  // The text is assembled at runtime from data.
+  { mechanism: "computed", source: 'ROWS.map((row) => row.word).join(" ")' },
+  { mechanism: "computed", source: 'String.fromCharCode(105, 115) + " secure"' },
+  // Two components each hold half of it; neither is a claim alone.
+  { mechanism: "cross_component", source: "<Lead /> renders 'Your application is'; <Tail /> renders 'secure'" },
+];
+
+/**
+ * The controls that stand where this one cannot, stated rather than implied:
+ * every customer-facing SENTENCE in a report is resolved from the frozen
+ * observation catalog and never written by a caller; the catalog itself is
+ * checked; and a named human reviewer signs before delivery. None of those is
+ * this extractor, and none of them covers marketing copy assembled at runtime —
+ * which is why this list exists rather than a reassurance.
+ */
+export const EXTRACTOR_RESIDUAL_NOTE =
+  "Static extraction reads the text a source states, never the text a program computes.";
 
 export function readSurface(file: string): string {
   return readFileSync(resolve(process.cwd(), file), "utf8");

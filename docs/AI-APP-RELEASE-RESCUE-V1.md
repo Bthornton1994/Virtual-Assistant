@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 729 Release Rescue tests across 30 suites (1,405 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 731 Release Rescue tests across 30 suites (1,407 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2645,13 +2645,16 @@ are excluded by construction, so this codebase can keep documenting its own
 attack payloads in prose. There is no length floor, no inline-tag list, no
 brace matching and no keyword list left to be wrong about.
 
-Measured against every payload the last four audits produced — eighteen shapes
-spanning newline, inline markup, entities, interpolations, semicolons, English
-keywords, short literals, comparisons inside a text node, template
-interpolations and concatenations — the parser catches **all eighteen**, with
-zero false positives across the 61 files. Every one of those shapes is a case in
-the planted-claim test, and the full accumulated mutant set was re-run before
-this was written: sixteen kills and one correct non-failure, nothing traded.
+Measured against every payload the last four audits produced — **17 planted
+shapes** spanning newline, inline markup, entities, interpolations, semicolons,
+English keywords, short literals, comparisons inside a text node, template
+interpolations and concatenations — the parser catches all of them, with zero
+false positives. Every one is a case in the planted-claim test, and that figure
+is now read out of this sentence and compared to the test's own shape count, so
+it cannot drift: the commit that wrote it published **eighteen**, which was one
+more than the test contained, in the same diff that corrected a different
+unreproducible number. The full accumulated mutant set was re-run before this was
+written: sixteen kills and one correct non-failure, nothing traded.
 
 ### A measurement that counted only what a change added
 
@@ -2670,6 +2673,65 @@ verified against its own new tests rather than against the old implementation's
 catches. The rule now has a companion: when a change alters what gets measured,
 measure the OLD way and the NEW way over the SAME corpus and diff the sets, not
 the counts.
+
+### The guard was pointed at the wrong question
+
+The parser closed the extractor for good — an audit diffed its output against
+three predecessors over 6,174 strings and found **no detection lost**, and every
+accumulated mutant still dies. Then it walked past the whole thing.
+
+`pagesNamingTheOffer` asked whether a page's **raw source bytes** contained
+"Release Rescue". Two pages that sell this offer do not:
+
+- one rendering `{RESCUE_SERVICE_NAME}` — the name is on the screen, not in the
+  bytes;
+- one whose `<h1>` the formatter wrapped as `AI App Release` / `Rescue`.
+
+Both were served at **HTTP 200** with prohibited claims beside the offer's name
+and price, with the whole repository green. It is the same formatting dependence
+the extractor had just been rebuilt to eliminate, sitting one layer out, in the
+code that decides what the extractor is pointed at.
+
+**And the first fix was wrong, which is the part worth keeping.** Reading the
+RENDERED text instead of the bytes closed the wrapped-heading case and left the
+other open: an identifier is not a literal, so `{RESCUE_SERVICE_NAME}` never
+appears in extracted text either. The test said so immediately — the page stayed
+undiscovered — and the fix was only correct after that measurement, not before.
+
+So the question changed. Not *what does a page say*, which is a fact about text,
+but *what does a page use*, which is a fact about the import graph: a page whose
+imports reach this offer's own modules is one of its surfaces, whatever words it
+spells literally. No formatting, constant or interpolation hides that. The
+rendered-text check stays as a second net for a page that names the offer without
+importing it.
+
+### What the extractor cannot see, finally written down
+
+The tokenizer's residuals have been an exact set for several rounds, under the
+rule that a bound should be a measurement rather than a silence. The extractor
+had no such record — and the identifier miss above had been sitting in that
+unrecorded class the whole time.
+
+Static extraction reads the text a source **states**; it cannot read the text a
+program **computes**. Five residuals are recorded now and each is asserted still
+invisible: an identifier holding half a sentence, two identifiers concatenated,
+text assembled by `.join()`, `String.fromCharCode`, and a claim split across two
+components. A future extractor that starts seeing one has to come back and narrow
+the claim.
+
+Two smaller honesty repairs came with it. The comment describing the extractor
+still promised that *"block tags stay boundaries so two unrelated paragraphs
+cannot be spliced into a claim neither one makes"* — a property the parser
+deliberately gave up, 25 lines above the comment that says so. The trade is
+written down now, with the constructions that trip it, because it is fail-closed
+and costs a rewording rather than a silent pass. And a published figure said
+**eighteen** planted shapes where the test had 17, in the very commit that
+corrected a different number for not reproducing; the figure is read out of the
+document and compared to the test's own count now, so it cannot drift again.
+
+Also: `createSourceFile` is error-tolerant and returns a tree for anything, so a
+file that fails to parse yields no strings and looks exactly like a file with
+nothing to check. The suite asks the parser directly now, for every surface file.
 
 ### A floor cannot tell a record from a fiction
 

@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
   DECLARED_CLAIM_BEARING_FILES,
+  EXTRACTOR_RESIDUALS,
+  parseProblems,
   EXPECTED_SURFACE_FILES,
   RELEASE_RESCUE_SURFACE_FILES,
   readSurface,
@@ -179,6 +181,41 @@ describe("the marketing surface makes no prohibited claim", () => {
     expect(total, "the extractor reads almost nothing — it is probably broken").toBeGreaterThan(1500);
   });
 
+  it("parses every surface file cleanly, so 'no text' never means 'did not parse'", () => {
+    // `createSourceFile` is error-tolerant and returns a tree for anything. A
+    // legacy `<string>value` assertion — valid TypeScript that `tsc` and the
+    // build both accept — parses under TSX as one enormous JsxText and swallows
+    // the file; an unterminated comment reduces a component to zero strings and
+    // flips `rendersMarkup` to false, so the per-file check skips it and passes
+    // on silence. The extractor cannot tell "nothing to read" from "could not
+    // read", so the suite asks the parser directly.
+    for (const file of SURFACE_FILES) {
+      expect(parseProblems(file, readSurface(file)), `${file} does not parse cleanly`).toEqual([]);
+    }
+  });
+
+  it("records what the extractor cannot see, as an exact set", () => {
+    // The tokenizer's residuals are an exact set because a bound should be a
+    // measurement rather than a silence. The extractor had no such record, and
+    // an audit walked through the gap: a fix that read RENDERED text still could
+    // not see `{RESCUE_SERVICE_NAME}`, because an identifier is not a literal.
+    // Every entry below is verified STILL invisible, so a future extractor that
+    // starts seeing one has to come here and narrow the claim.
+    for (const residual of EXTRACTOR_RESIDUALS) {
+      expect(
+        visibleStrings(residual.source).some((text) => findProhibitedClaims(text).length > 0),
+        `${residual.mechanism}: ${residual.source} — if this is now seen, the recorded bound is overstated`,
+      ).toBe(false);
+    }
+
+    expect(EXTRACTOR_RESIDUALS.length).toBe(5);
+    expect([...new Set(EXTRACTOR_RESIDUALS.map((r) => r.mechanism))].sort()).toEqual([
+      "computed",
+      "cross_component",
+      "identifier",
+    ]);
+  });
+
   it("declares exactly the files that need a claim-bearing exemption, and no more", () => {
     // A file reachable from a route is CHECKED unless it is declared, and the
     // declaration carries a reason. The danger with any exemption list is that
@@ -304,6 +341,18 @@ describe("the marketing surface makes no prohibited claim", () => {
       "a comparison inside the text node": `<p>{n} pass. Your application is secure.{n > 0 ? " x" : ""}</p>`,
       "a claim split by a template interpolation": "const w = \"secure\"; const s = `Your application is ${w} and free of vulnerabilities`;",
     };
+
+    // The published figure, bound to the thing it counts. A commit wrote
+    // "eighteen shapes" into the architecture doc while this map held 17 — in
+    // the same diff that corrected a different number for not reproducing. A
+    // figure nothing reads is a figure nothing can keep true.
+    const doc = readSurface("docs/AI-APP-RELEASE-RESCUE-V1.md");
+    const published = /\*\*(\d+) planted\s+shapes\*\*/.exec(doc);
+
+    expect(published, "the planted-shape figure could not be located in the doc").not.toBeNull();
+    expect(Number(published![1]), "the doc's planted-shape count must be this map's size").toBe(
+      Object.keys(planted).length,
+    );
 
     for (const [shape, source] of Object.entries(planted)) {
       expect(
