@@ -44,6 +44,12 @@ describe("AI output validation", () => {
     expect(reqs.kinds).toContain("external_email");
   });
 
+  it("drops unknown approval kinds and defaults the customer-decision flag", () => {
+    const reqs = validateApprovalRequirement({ kinds: ["external_email", "not_a_kind"], reasons: ["Outbound"] });
+    expect(reqs.kinds).toEqual(["execution_plan", "external_email"]);
+    expect(reqs.requiresCustomerDecision).toBe(true);
+  });
+
   it("rejects an empty playbook draft", () => {
     expect(() => validatePlaybookDraft({ title: "", steps: [] })).toThrow(DomainError);
   });

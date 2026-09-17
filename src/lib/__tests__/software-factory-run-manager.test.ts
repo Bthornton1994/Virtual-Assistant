@@ -17,15 +17,20 @@ import {
   SOFTWARE_FACTORY_INTAKE_SCHEMA_VERSION,
   SOFTWARE_FACTORY_PACKET_SCHEMA_VERSION,
   SOFTWARE_FACTORY_RECEIPT_SCHEMA_VERSION,
+  SOFTWARE_FACTORY_INSPECTION_SCHEMA_VERSION,
   SOFTWARE_FACTORY_RUN_INPUT,
   canTransitionSoftwareFactory,
+  detectScopeExpansion,
   evaluateAcceptance,
   freezeEvidenceRecord,
   hashSoftwareFactoryPacket,
+  isEmptyAgentReport,
   isSoftwareFactorySpec,
+  missingRequiredEvidence,
   packetClaimsSelfAuthorization,
   softwareFactoryConnectorCatalog,
   softwareFactoryStaffControlsOpen,
+  validatePacketAgainstRun,
   validateSoftwareFactoryPacket,
 } from "@/lib/software-factory-run-manager";
 import {
@@ -452,6 +457,154 @@ describe("Software Factory Run Manager capability", () => {
     );
     expect(expanded.ok).toBe(false);
     expect(expanded.ok ? "" : expanded.failures.join(" ")).toMatch(/expands frozen intake scope/);
+  });
+
+  it("rejects packet identity rewrites, dropped criteria, and foreign inspections", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    const ownerInspect = inspectSoftwareFactoryRepository(
+      store,
+      owner,
+      opened.run.id,
+      {
+        schemaVersion: SOFTWARE_FACTORY_INSPECTION_SCHEMA_VERSION,
+        repository: "Bthornton1994/Loadout",
+        baseBranch: "main",
+        mode: "prepare_only_recorded_input",
+        governingFiles: [{ path: "README.md", summary: "Recorded Loadout readme", source: "recorded_input" }],
+        liveGithubMutation: false,
+        notes: "Owner cannot inspect.",
+      },
+      "evt-owner-inspect",
+      NOW,
+    );
+    expect(ownerInspect.ok).toBe(false);
+    expect(ownerInspect.ok ? "" : ownerInspect.failures.join(" ")).toMatch(/operations staff/);
+
+    transitionSoftwareFactoryRun(store, manager, opened.run.id, "discovery", "d", NOW);
+    const wrongRepo = inspectSoftwareFactoryRepository(
+      store,
+      operator,
+      opened.run.id,
+      {
+        schemaVersion: SOFTWARE_FACTORY_INSPECTION_SCHEMA_VERSION,
+        repository: "evil/repo",
+        baseBranch: "main",
+        mode: "prepare_only_recorded_input",
+        governingFiles: [{ path: "README.md", summary: "Wrong repo", source: "recorded_input" }],
+        liveGithubMutation: false,
+        notes: "Inspection must stay on the frozen repository.",
+      },
+      "evt-wrong-repo",
+      NOW,
+    );
+    expect(wrongRepo.ok).toBe(false);
+    expect(wrongRepo.ok ? "" : wrongRepo.failures.join(" ")).toMatch(/frozen intake repository/);
+
+    transitionSoftwareFactoryRun(store, manager, opened.run.id, "planned", "p", NOW);
+    const wrongTask = produceSoftwareFactoryPacket(
+      store,
+      manager,
+      opened.run.id,
+      packetFor("planned", { TASK_ID: "SF-OTHER-001" }),
+      "evt-wrong-task",
+      NOW,
+    );
+    expect(wrongTask.ok).toBe(false);
+    expect(wrongTask.ok ? "" : wrongTask.failures.join(" ")).toMatch(/TASK_ID/);
+
+    const dropped = produceSoftwareFactoryPacket(
+      store,
+      manager,
+      opened.run.id,
+      packetFor("planned", { ACCEPTANCE_CRITERIA: [LOADOUT_CRITERIA[0]] }),
+      "evt-dropped-criteria",
+      NOW,
+    );
+    expect(dropped.ok).toBe(false);
+    expect(dropped.ok ? "" : dropped.failures.join(" ")).toMatch(/dropped frozen intake criteria/);
+
+    const sameScopeDifferentCase = produceSoftwareFactoryPacket(
+      store,
+      manager,
+      opened.run.id,
+      packetFor("planned", {
+        IN_SCOPE: opened.run.frozenInScope.map((item) => item.toUpperCase()),
+      }),
+      "evt-case-scope",
+      NOW,
+    );
+    expect(sameScopeDifferentCase.ok).toBe(true);
+  });
+});
+
+describe("Software Factory packet and evidence helpers", () => {
+  it("treats trimmed case-insensitive scope as unchanged and flags real expansion", () => {
+    expect(
+      detectScopeExpansion(["Record the Loadout proof."], ["  record the loadout proof.  "]),
+    ).toEqual([]);
+    expect(detectScopeExpansion(["Record the Loadout proof."], ["Rewrite production secrets."])).toEqual([
+      "Rewrite production secrets.",
+    ]);
+  });
+
+  it("treats only empty or no-op agent reports as incomplete", () => {
+    expect(
+      isEmptyAgentReport({
+        kind: "ci",
+        summary: "done",
+        conclusion: "success",
+        satisfiedCriteria: [],
+      }),
+    ).toBe(false);
+    expect(
+      isEmptyAgentReport({
+        kind: "agent_report",
+        summary: "done",
+        conclusion: "success",
+        satisfiedCriteria: [],
+      }),
+    ).toBe(true);
+    expect(
+      isEmptyAgentReport({
+        kind: "agent_report",
+        summary: "Historical PR attached without mutation.",
+        conclusion: "packet_frozen_and_hashed",
+        satisfiedCriteria: ["Task packet is frozen and hashed."],
+      }),
+    ).toBe(false);
+  });
+
+  it("lists required evidence kinds and packet identity mismatches", () => {
+    expect(missingRequiredEvidence(null, [])).toEqual([
+      "repository_inspection",
+      "task_packet",
+      "pull_request",
+      "ci",
+      "test",
+      "task_packet",
+    ]);
+    const packet = packetFor("planned");
+    expect(
+      missingRequiredEvidence(packet, [
+        { kind: "repository_inspection" },
+        { kind: "task_packet" },
+        { kind: "pull_request" },
+        { kind: "ci" },
+        { kind: "test" },
+      ] as never),
+    ).toEqual([]);
+
+    const failures = validatePacketAgainstRun(packetFor("planned", { TASK_ID: "SF-OTHER-001", REPOSITORY: "evil/repo" }), {
+      taskId: "SF-LOAD-001",
+      repository: "Bthornton1994/Loadout",
+      baseBranch: "main",
+      lifecycleStatus: "planned",
+      frozenInScope: packet.IN_SCOPE,
+      frozenAcceptanceCriteria: LOADOUT_CRITERIA,
+    });
+    expect(failures.join(" ")).toMatch(/TASK_ID/);
+    expect(failures.join(" ")).toMatch(/REPOSITORY/);
   });
 });
 
