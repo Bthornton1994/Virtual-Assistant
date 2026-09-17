@@ -54,9 +54,15 @@ const SUITES = [
  * repeated it. The rule this harness exists to enforce — run the OLD
  * implementation against the NEW mutants — was the rule this harness broke.
  *
- * Most `to` values are QUOTED from the commit the mechanism replaced. Two cannot
- * be, and say so rather than passing themselves off as quotes — an audit checked
- * the git history and found the blanket claim that used to stand here untrue:
+ * A `to` value is either VERBATIM from the commit the mechanism replaced, or a
+ * RECONSTRUCTION of it, and each says which. The sentence that used to stand
+ * here claimed all but two were quoted; an audit checked every one against
+ * `git show` for the ten commits that touched the module and found four
+ * verbatim, not thirteen. The rest are functionally faithful but use identifiers
+ * that no longer exist (`NOT_A_SURFACE`, `APP_DIR`, `decodedAssetText` returning
+ * a scalar), so they cannot be quotes.
+ *
+ * Both of the special cases below remain special for their own reasons:
  *
  *   - `M-ASSET-RESIDUAL-SET` guards a pin that has no predecessor at all. Its
  *     `to` MODELS the absence of a pin, which is the state before it existed.
@@ -78,18 +84,21 @@ const MUTANTS = [
     mechanism: "a module a page imports stays in the graph whatever it is called",
     from: "      if (target && !reached.has(target)) {",
     to: "      if (target && !reached.has(target) && !/\\.(test|test-fixtures)\\.(tsx?|jsx?|mjs|cjs)$/.test(target)) {",
+    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
   },
   {
     id: "M-RUNNER-CONFIG",
     mechanism: "test-ness is decided by what the runner collects, not by a name pattern",
     from: "  return RUNNER_PATTERNS.some((pattern) => pattern.test(file));",
     to: "  return /\\.(test|test-fixtures)\\.(tsx?|jsx?|mjs|cjs)$/.test(file);",
+    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
   },
   {
     id: "M-ROUTE-ROOTS",
     mechanism: "the route directories Next resolves are probed, not named",
     from: "const ROUTE_ROOTS = routeRoots();",
     to: 'const ROUTE_ROOTS = ["src/app"];',
+    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
   },
   {
     id: "M-SERVED-APP",
@@ -108,18 +117,21 @@ const MUTANTS = [
     mechanism: "path aliases are read from tsconfig, not assumed to be the one this project uses",
     from: "const ALIASES = tsconfigAliases();",
     to: 'const ALIASES = [{ prefix: "@/", target: "src" }];',
+    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
   },
   {
     id: "M-ENTRYPOINTS",
     mechanism: "framework entrypoints are derived from names x locations x extensions",
     from: "  for (const file of frameworkEntrypoints()) entries.add(file);",
     to: '  for (const file of ["src/proxy.ts", "src/middleware.ts", "src/instrumentation.ts"]) {\n    if (existsSync(resolve(process.cwd(), file))) entries.add(file);\n  }',
+    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
   },
   {
     id: "M-ENTRYPOINT-NAMES",
     mechanism: "the entrypoint filenames are read from Next, not restated here",
     from: "export const FRAMEWORK_ENTRYPOINT_NAMES = frameworkEntrypointNames();",
     to: 'export const FRAMEWORK_ENTRYPOINT_NAMES = ["proxy", "middleware", "instrumentation", "instrumentation-client"];',
+    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
   },
   {
     id: "M-EVERY-ROUTE-FILE",
@@ -139,8 +151,9 @@ const MUTANTS = [
     id: "M-ASSET-DECODING",
     mechanism: "every reading a browser could give an asset is scanned, not just the first that looks printable",
     from:
-      '  for (const encoding of ["utf-8", "windows-1252", declaredEncoding(body)]) {\n    if (!encoding) continue;\n    const text = decode(encoding, body);\n    if (text !== null) readings.add(text);\n  }\n  return [...readings];',
+      '  for (const encoding of ["utf-8", "windows-1252", declaredEncoding(body)]) {\n    if (!encoding) continue;\n    add(decode(encoding, body));\n  }\n  return [...readings];',
     to: '  for (const encoding of ["utf-8", "utf-16le", "utf-16be"]) {\n    const text = decode(encoding, body);\n    if (text !== null) return [text];\n  }\n  return [];',
+    kind: "reconstruction: the predecessor used identifiers this commit removed, so no verbatim quote exists",
   },
   {
     id: "M-SELF-CLOSING",
@@ -165,6 +178,27 @@ const MUTANTS = [
     mechanism: "rendered text follows JSX's whitespace rule, not the source's indentation",
     from: 'if (ts.isJsxText(child)) parts.push(mode === "separated" ? child.text : jsxTextValue(child.text));',
     to: "if (ts.isJsxText(child)) parts.push(child.text);",
+  },
+  {
+    id: "M-SPECIFIER-PARSER",
+    mechanism: "import specifiers are read by the parser, not by a regular expression",
+    from: "export function staticSpecifiersIn(source: string, file = \"specifiers.tsx\"): string[] {\n  const parsed = parseSurface(file, source);",
+    to: 'export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): string[] {\n  void file;\n  const found2: string[] = [];\n  for (const match of source.matchAll(/(?:from\\s+|import\\s*\\(\\s*)["\']([^"\']+)["\']|import\\s+["\']([^"\']+)["\']|require\\s*\\(\\s*["\']([^"\']+)["\']/g)) {\n    const specifier = match[1] ?? match[2] ?? match[3];\n    if (specifier) found2.push(specifier);\n  }\n  return found2;\n  // eslint-disable-next-line no-unreachable\n  const parsed = parseSurface(file, source);',
+    kind: "verbatim: this is the regex the parser replaced",
+  },
+  {
+    id: "M-ASSET-DECODE-ENTITIES",
+    mechanism: "a served asset's entities and CSS escapes are decoded before matching",
+    from: "    const decoded = decodeEntities(text);\n    if (decoded !== text) readings.add(decoded);",
+    to: "    const decoded = text;\n    if (decoded !== text) readings.add(decoded);",
+    kind: "reconstruction: the predecessor decoded nothing on this path",
+  },
+  {
+    id: "M-RESOLVE-ANY-OWN-FILE",
+    mechanism: "the resolver resolves any own-tree file that exists, not only modules",
+    from: "    if (existsSync(full) && statSync(full).isFile()) return candidate.replace(/\\\\/g, \"/\");",
+    to: '    if (existsSync(full) && statSync(full).isFile() && /\\.(tsx?|jsx?|mjs|cjs|json)$/.test(candidate)) return candidate.replace(/\\\\/g, "/");',
+    kind: "verbatim: this is the READABLE filter the predecessor applied",
   },
   {
     id: "FP1",
@@ -352,7 +386,7 @@ if (readFileSync(MODULE, "utf8") !== original) {
 }
 console.log(
   exitCode === 0
-    ? `\nall ${MUTANTS.length - 1} mechanisms are held by a named test (${MUTANTS.filter((m) => m.kind && !m.control).length} against a modelled predecessor rather than a quoted one, marked above), and the control changed nothing`
+    ? `\nall ${MUTANTS.length - 1} mechanisms are held by a named test (${MUTANTS.filter((m) => !m.control && m.kind && !m.kind.startsWith("verbatim")).length} of them against a reconstructed or modelled predecessor rather than a verbatim one, each marked above), and the control changed nothing`
     : "\nsee UNHELD/ANCHOR-MISS above",
 );
 process.exit(exitCode);

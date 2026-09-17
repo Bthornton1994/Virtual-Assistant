@@ -296,16 +296,47 @@ export function assetReadings(bytes: Uint8Array): string[] {
   // A byte-order mark is a declaration, and it is the ONLY thing that makes a
   // browser read UTF-16. When one is present it settles the question alone.
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    const marked = new Set<string>();
     const text = decode("utf-16le", bytes.subarray(2));
-    return text === null ? [] : [text];
+    if (text === null) return [];
+    marked.add(text);
+    for (const variant of [decodeEntities(text), decodeCssEscapes(text), decodeCssEscapes(decodeEntities(text))]) {
+      if (variant !== text) marked.add(variant);
+    }
+    return [...marked];
   }
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const marked = new Set<string>();
     const text = decode("utf-16be", bytes.subarray(2));
-    return text === null ? [] : [text];
+    if (text === null) return [];
+    marked.add(text);
+    for (const variant of [decodeEntities(text), decodeCssEscapes(text), decodeCssEscapes(decodeEntities(text))]) {
+      if (variant !== text) marked.add(variant);
+    }
+    return [...marked];
   }
   const body = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes;
 
   const readings = new Set<string>();
+  const add = (text: string | null): void => {
+    if (text === null) return;
+    readings.add(text);
+    // And what a browser RENDERS from it. An entity is not decoration: `&#32;`
+    // and `&nbsp;` are ordinary ways to write a space, `react/no-unescaped-entities`
+    // is enforced in this repository, and the JSX path has decoded entities
+    // since an audit planted a claim behind them. The asset path did not — so
+    // `penetration&#32;test` was invisible on a served SVG while the identical
+    // shape in JSX was caught, the same "checked in one place, invisible in
+    // another" asymmetry as the stylesheet one layer down. A CSS escape
+    // (`content:"penetration\\000020test"`) is the same trick in the other
+    // format the asset scan reads.
+    const decoded = decodeEntities(text);
+    if (decoded !== text) readings.add(decoded);
+    const unescaped = decodeCssEscapes(text);
+    if (unescaped !== text) readings.add(unescaped);
+    const both = decodeCssEscapes(decoded);
+    if (both !== text) readings.add(both);
+  };
   // UTF-8 is the default for everything the framework serves, and
   // windows-1252 is what a browser falls back to for legacy single-byte
   // content — every byte maps, so it never fails and it covers the whole
@@ -314,8 +345,7 @@ export function assetReadings(bytes: Uint8Array): string[] {
   // bytes is exactly the case where reading only one of them loses the words.
   for (const encoding of ["utf-8", "windows-1252", declaredEncoding(body)]) {
     if (!encoding) continue;
-    const text = decode(encoding, body);
-    if (text !== null) readings.add(text);
+    add(decode(encoding, body));
   }
   return [...readings];
 }
@@ -401,17 +431,7 @@ export function assetResiduals(): ReadonlyArray<{ readonly file: string; readonl
     }));
 }
 
-/**
- * The served assets this suite is allowed not to read, as an EXACT set.
- *
- * `ASSET_RESIDUALS` was the only one of the four residual records that was not
- * pinned — the other three assert their length and their exact mechanisms, and
- * this one asserted only that each entry's prose was long enough. So an asset
- * could join the exemption and nothing failed, which is what made a one-byte
- * classification error free rather than loud. An exemption that costs nothing to
- * take is not an exemption, it is a hole.
- */
-export const EXPECTED_ASSET_RESIDUALS = ["src/app/favicon.ico"];
+
 
 /**
  * The words of one served asset, DECODED.
@@ -427,24 +447,78 @@ export function readServedAsset(file: string): string {
 
 
 /**
- * Every import specifier the graph can resolve statically, from one file's text.
+ * Every import specifier the graph can resolve statically, READ BY THE PARSER.
  *
- * Named and exported so the `computed_import` residual can be EXECUTED rather
- * than described: a residual that nothing runs is the "a record that nothing
- * executes is not evidence" defect, and an earlier commit claimed these were
- * asserted the way the extractor's residuals are when they were only counted.
- * The walk calls this, so a test of it cannot drift from what the walk does.
+ * This was a regular expression, in the one place in this module that still
+ * used one. Seven rounds ago a regex extractor was replaced by the TypeScript
+ * parser because four hand-written rewrites each shipped the next round's
+ * finding; the specifier extractor kept the regex and nobody noticed.
+ *
+ * `import\s*\(\s*["']` requires the quote to follow the parenthesis, so the
+ * idiomatic `import(/* webpackChunkName: "x" *\/ "./panel")` matched nothing,
+ * `import(`./panel`)` matched nothing, and `require.resolve("./panel")` matched
+ * nothing. All three are STATICALLY RESOLVABLE, so the `computed_import`
+ * residual did not cover them either — `resolveImport` was never called, so
+ * `UNRESOLVED_IMPORTS` stayed empty and the exact-set assertion did not move. An
+ * audit pulled a component in through the first form and served three claims at
+ * HTTP 200 from the offer's own landing page.
+ *
+ * The parser reads the syntax the compiler reads. `UNREADABLE_SPECIFIERS`
+ * records import-like calls whose argument is NOT a literal, which is the real
+ * `computed_import` bound and is now measured rather than described.
  */
-export function staticSpecifiersIn(source: string): string[] {
+export const UNREADABLE_SPECIFIERS: string[] = [];
+
+export function staticSpecifiersIn(source: string, file = "specifiers.tsx"): string[] {
+  const parsed = parseSurface(file, source);
   const found: string[] = [];
-  for (const match of source.matchAll(
-    /(?:from\s+|import\s*\(\s*)["']([^"']+)["']|import\s+["']([^"']+)["']|require\s*\(\s*["']([^"']+)["']/g,
-  )) {
-    const specifier = match[1] ?? match[2] ?? match[3];
-    if (specifier) found.push(specifier);
-  }
+
+  const literalText = (node: ts.Node | undefined): string | null => {
+    if (!node) return null;
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+    return null;
+  };
+
+  const visit = (node: ts.Node): void => {
+    // `import x from "y"`, `export … from "y"`, `export * from "y"`.
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+      const text = literalText(node.moduleSpecifier);
+      if (text !== null) found.push(text);
+      else UNREADABLE_SPECIFIERS.push(node.moduleSpecifier.getText(parsed));
+    }
+    // `import("y")`, `require("y")`, `require.resolve("y")`, `import.meta.resolve("y")`.
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const isImportCall = callee.kind === ts.SyntaxKind.ImportKeyword;
+      const calleeText = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee)
+          ? callee.getText(parsed)
+          : "";
+      // A bare identifier named `require` is matched by NAME, which is the
+      // defect class this whole module is about, so it is qualified by ARITY:
+      // CommonJS `require` takes exactly one argument. `skill-qualification.ts`
+      // declares a local `require(condition, code)` assertion helper, and the
+      // first version of this recorded fifteen of its boolean conditions as
+      // unreadable import specifiers — a record full of things that are not
+      // what it says they are.
+      const isRequire =
+        (calleeText === "require" || calleeText === "require.resolve" || calleeText === "import.meta.resolve") &&
+        node.arguments.length === 1;
+      if (isImportCall || isRequire) {
+        const first = node.arguments[0];
+        const text = literalText(first);
+        if (text !== null) found.push(text);
+        else if (first) UNREADABLE_SPECIFIERS.push(first.getText(parsed));
+      }
+    }
+    // `import type … from "y"` is an ImportDeclaration and is handled above.
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
   return found;
 }
+
 
 const reachedFromCache = new Map<string, string[]>();
 
@@ -524,7 +598,7 @@ export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
   },
   {
     mechanism: "computed_import",
-    why: "A dynamic `import(`./${name}`)` specifier cannot be resolved statically, so a module reached only that way is outside every graph this file walks.",
+    why: "A specifier the COMPILER cannot read either — `import(`./${name}`)` — is outside every graph this file walks. The forms a regex could not see but the compiler can (a leading `/* webpackChunkName */` comment, a plain template, `require.resolve`) were in this bound's description and are not in the bound: they are read now, and `UNREADABLE_SPECIFIERS` records anything the parser cannot place.",
     source: "const name = \"panel\"; export const load = () => import(`./${name}`);",
     seenWhenStatic: 'export const load = () => import("./panel");',
   },
@@ -959,6 +1033,20 @@ function decodeEntities(text: string): string {
     .replace(/&(amp|lt|gt|quot|apos|hellip|mdash|ndash|shy|zwnj|zwj);/gi, " ");
 }
 
+/**
+ * CSS character escapes, which render as the character they name.
+ *
+ * `content: "penetration\\000020test"` shows a customer "penetration test".
+ * The asset scan reads stylesheets — `src/app/globals.css` is in its set — so
+ * this is the same evasion as an HTML entity in the other format it reads.
+ */
+function decodeCssEscapes(text: string): string {
+  return text.replace(/\\([0-9a-f]{1,6})[ \t\n]?/gi, (_whole, hex) => {
+    const code = Number.parseInt(hex, 16);
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : " ";
+  });
+}
+
 function tidy(text: string): string {
   return decodeEntities(text).replace(/\s+/g, " ").trim();
 }
@@ -1312,3 +1400,22 @@ export const EXTRACTOR_RESIDUALS: readonly ExtractorResidual[] = [
 export function readSurface(file: string): string {
   return readFileSync(resolve(process.cwd(), file), "utf8");
 }
+
+/**
+ * The served assets this suite is allowed not to read, as an EXACT set.
+ *
+ * `ASSET_RESIDUALS` was the only one of the four residual records that was not
+ * pinned — the other three assert their length and their exact mechanisms, and
+ * this one asserted only that each entry's prose was long enough. So an asset
+ * could join the exemption and nothing failed, which is what made a one-byte
+ * classification error free rather than loud. An exemption that costs nothing to
+ * take is not an exemption, it is a hole.
+ */
+export const EXPECTED_ASSET_RESIDUALS = ["src/app/favicon.ico"];
+
+// Declared HERE, at the end, rather than beside the residual computation.
+// Its mutant replaces it with the computed set, and from the earlier position
+// that referenced `IMPORTED_ASSETS` before initialisation and crashed the module
+// at load — so the proof scored the mechanism HELD on a file that failed to run,
+// which is the exact defect the proof's own header says it corrected for the
+// aliases. Declaration order is what made the evidence wrong.

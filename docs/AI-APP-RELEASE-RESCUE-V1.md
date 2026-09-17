@@ -2527,7 +2527,9 @@ adversarial: `react/no-unescaped-entities` is enforced here, so this codebase
 already writes entities in prose, and a non-breaking space is the ordinary way to
 stop "penetration test" wrapping across two lines.
 
-Entities are decoded before matching now, and both forms are in the planted-claim
+Entities are decoded before matching on the JSX path, and — since an audit served
+five claims written as `&#32;` from a `public/` SVG while the identical shape in
+JSX was caught — on the served-asset path too, CSS escapes with them, and both forms are in the planted-claim
 test with the other four shapes.
 
 ### An exemption that covers vocabulary, not prose
@@ -3463,8 +3465,15 @@ suite green, `UNRESOLVED_IMPORTS` empty and the exact-set assertion unmoved. The
 resolver now resolves any own-tree file that exists, and the walk sorts them:
 a module is parsed and followed, anything else joins `IMPORTED_ASSETS` and is
 read as an asset. Three sources feed the asset scan now — `public/`, the route
-roots' non-source files, and whatever is reached by import — and each is required
-to contribute.
+roots' non-source files, and whatever is reached by import — and a test requires
+each to be non-empty.
+
+That is weaker than it sounds, and is stated as what it is. The import source's
+only current member is `src/app/globals.css`, which the route-root source already
+supplies, so today it adds nothing to the union: the assertion stops the source
+being deleted, it does not demonstrate coverage the other two lack. What
+demonstrates that is the planted stylesheet under `src/components`, which only
+this source reaches.
 
 ### The wiring assertions could be satisfied by a decoy
 
@@ -3486,6 +3495,79 @@ the verdict, and the closing line counts them separately. A mutant that is not
 the predecessor is not worthless, but it must not be counted as though it were.
 
 And the proof measures the WORKING TREE, which it now says out loud on every run.
+
+### Twelfth time: the asset path could not read what a browser renders
+
+The JSX path has decoded HTML entities since an audit planted a claim behind
+them, and two planted shapes pin it. The **asset** path decoded nothing. So
+`penetration&#32;test` in a served SVG was invisible while the identical shape in
+JSX was caught — the same "checked in one place, invisible in another"
+asymmetry as the stylesheet, one layer over. An audit served five claims that
+way at HTTP 200 from the offer's own landing page. A CSS escape
+(`content: "penetration\000020test"`) is the same trick in the other format the
+asset scan reads, and `src/app/globals.css` is in that scan.
+
+Every reading an asset yields now carries its entity-decoded and CSS-unescaped
+variants, and all of them are scanned.
+
+### The last regular expression in the module
+
+`staticSpecifiersIn` was a regex, seven rounds after a regex extractor was
+replaced by the TypeScript parser *because four hand-written rewrites each
+shipped the next round's finding*. Its pattern required the quote to follow the
+parenthesis, so the idiomatic
+`import(/* webpackChunkName: "x" */ "./panel")` matched nothing — and so did
+`import(\`./panel\`)` and `require.resolve("./panel")`. All three are statically
+resolvable, so `resolveImport` was never called, `UNRESOLVED_IMPORTS` stayed
+empty, and the exact-set assertion did not move. An audit pulled a component in
+through the first form and served three claims from the landing page.
+
+The parser reads them now, and `UNREADABLE_SPECIFIERS` records what it cannot
+place. The first version of that matched `require` **by name**, which is the
+defect class this whole module is about: a local `require(condition, code)`
+assertion helper in `skill-qualification.ts` put fifteen boolean conditions into
+the record. CommonJS `require` takes exactly one argument, and that is what
+distinguishes them.
+
+### A licensing hole that a distance rule does not fix, and the measurement that says so
+
+In offer-copy mode a negation **anywhere earlier in the clause** licenses the
+claim, so "We never rest until your application is secure" — an affirmative
+claim with an unrelated denial in front of it — was licensed. An audit served
+three such sentences.
+
+The obvious repair is to require the negation near the claim. It was implemented
+and swept over the whole 174-file surface:
+
+| reach | audit payloads caught | real copy broken |
+| --- | --- | --- |
+| 2-3 | 3 of 3 | none |
+| 4 | 2 of 3 | none |
+| 6-8 | 1 of 3 | none |
+
+At reach 3 it also **rejects two denials this suite requires to pass** — "We
+never claim your application is secure" and "We cannot guarantee your
+application is secure", whose negations sit four tokens out — while the payload
+"Without exception your application is secure" sits three. The legitimate denial
+and the affirmative claim are the same shape at the same distance; the
+difference is what the negation *governs*, which this tokenizer does not model.
+No token-distance rule separates them, so the change was **reverted rather than
+shipped**, and the hole is recorded as
+`unrelated_negation_licenses_offer_copy` with the sweep above and three
+executed payloads.
+
+Closing it means either rejecting denial phrasings the offer currently uses or
+licensing only sentences declared verbatim — both change what marketing copy is
+permitted without a code change. **That is an owner decision and is surfaced
+rather than made quietly.** What stands meanwhile: offer copy is written by this
+repository and reviewed by a person, the four disclaimers are declared and
+literal-true, and anything a customer supplies is read as a typed field, where
+no disclaimer licenses anything.
+
+The first sweep of that table counted the exemption file itself and reported 27
+strings broken at every reach, which would have argued against the change
+outright. Excluding the file whose job is to hold the claim list gave the real
+numbers.
 
 ## What this slice deliberately does not do
 

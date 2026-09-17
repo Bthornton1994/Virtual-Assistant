@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { OFFER_COPY_LICENSING_RESIDUALS } from "./release-rescue-claim-guard-residuals";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
   assetIsItsOwnText,
@@ -16,6 +17,7 @@ import {
   FRAMEWORK_ENTRYPOINT_NAMES,
   frameworkEntrypoints,
   tsconfigAliases,
+  assetReadings,
   assetResiduals,
   EXPECTED_ASSET_RESIDUALS,
   DECLARED_CLAIM_BEARING_FILES,
@@ -298,13 +300,27 @@ describe("the marketing surface makes no prohibited claim", () => {
         `${entry.mechanism}: and the reachable form must be reachable, or the residual proves nothing`,
       ).not.toEqual([]);
 
-      // And the framework-root residual must genuinely be undiscoverable: its
-      // name must not be one the framework declares.
+      // The framework-root residual needs more than "this source imports
+      // nothing" — any import-free file satisfies that, so the assertion did not
+      // demonstrate the stated mechanism at all. What it claims is that a file
+      // the framework loads from the project root under an UNDECLARED name is
+      // invisible to the entry walk, so that is what is run: the file is put on
+      // disk in a scratch tree and the entrypoint derivation is asked for it.
       if (entry.mechanism === "framework_root_file") {
-        expect(
-          FRAMEWORK_ENTRYPOINT_NAMES,
-          "if Next starts declaring this name, the residual is closed and must be removed",
-        ).not.toContain("mdx-components");
+        const scratch = mkdtempSync(join(tmpdir(), "release-rescue-root-"));
+        try {
+          mkdirSync(join(scratch, "src"), { recursive: true });
+          writeFileSync(join(scratch, "mdx-components.tsx"), entry.source);
+          writeFileSync(join(scratch, "src", "proxy.ts"), "export default function proxy() {}\n");
+          const found = frameworkEntrypoints(scratch);
+          expect(found, "the derivation must still find a declared entrypoint beside it").toContain("src/proxy.ts");
+          expect(
+            found.some((file) => file.includes("mdx-components")),
+            "if the derivation now finds this, the residual is closed and must be removed",
+          ).toBe(false);
+        } finally {
+          rmSync(scratch, { recursive: true, force: true });
+        }
       }
     }
 
@@ -840,6 +856,104 @@ describe("the marketing surface makes no prohibited claim", () => {
       renderedTextVerbatim(`const P = () => <p><span>Your application is </span><span>secure.</span></p>;`),
       "a trailing space inside an element is rendered",
     ).toBe("Your application is secure.");
+  });
+
+  it("records the offer-copy licensing residual as a measurement, and executes it", () => {
+    // A bound that nothing runs is not evidence. Each recorded sentence must
+    // ACTUALLY get through as offer copy — otherwise the record describes a hole
+    // that is not there — and must be caught as a typed field, which is what
+    // makes it a licensing residual rather than a detection failure.
+    expect(OFFER_COPY_LICENSING_RESIDUALS.length, "the residual must not be empty").toBeGreaterThan(0);
+    for (const sentence of OFFER_COPY_LICENSING_RESIDUALS) {
+      expect(
+        findProhibitedClaims(sentence, "offer_copy"),
+        `${sentence} is no longer licensed; the residual is closed and must be removed`,
+      ).toEqual([]);
+      expect(
+        findProhibitedClaims(sentence, "typed_field"),
+        `${sentence} must still be caught where no disclaimer licenses anything`,
+      ).not.toEqual([]);
+    }
+
+    // And the denials the offer actually publishes must stay licensed, which is
+    // the constraint that made a distance rule unworkable.
+    for (const denial of [
+      "We never claim your application is secure.",
+      "We cannot guarantee your application is secure.",
+      "This review is not a penetration test.",
+    ]) {
+      expect(findProhibitedClaims(denial, "offer_copy"), `${denial} is a denial and must stay licensed`).toEqual([]);
+    }
+  });
+
+  it("reads a served asset the way a browser renders it, entities and CSS escapes included", () => {
+    // The JSX path has decoded entities since an audit planted a claim behind
+    // them, and two planted shapes pin it. The ASSET path decoded nothing, so
+    // `penetration&#32;test` was invisible on a served SVG while the identical
+    // shape in JSX was caught — the same "checked in one place, invisible in
+    // another" asymmetry as the stylesheet, one layer over. Five prohibited
+    // claims were served at HTTP 200 from the offer's own landing page.
+    const shapes: Record<string, string> = {
+      "numeric entity": "<svg><text>We deliver a penetration&#32;test.</text></svg>",
+      "hex entity": "<svg><text>We deliver a penetration&#x20;test.</text></svg>",
+      "nbsp entity": "<svg><text>We deliver a penetration&nbsp;test.</text></svg>",
+      "entity inside a claim": "<svg><text>Your application is&#32;secure.</text></svg>",
+      "css escape": '.badge::after { content: "penetration\\000020test"; }',
+      "css escape with space": '.badge::after { content: "penetration\\20 test"; }',
+    };
+    for (const [shape, source] of Object.entries(shapes)) {
+      const readings = assetReadings(Buffer.from(source, "utf8"));
+      expect(
+        readings.flatMap((reading) => findProhibitedClaims(reading, "typed_field")),
+        `a claim written as ${shape} must be read`,
+      ).not.toEqual([]);
+    }
+
+    // And an asset that says nothing prohibited stays clean, so the above is a
+    // detection rather than everything matching everything.
+    expect(
+      assetReadings(Buffer.from("<svg><title>Delegation Cloud</title></svg>", "utf8")).flatMap((reading) =>
+        findProhibitedClaims(reading, "typed_field"),
+      ),
+      "an ordinary asset must not be flagged",
+    ).toEqual([]);
+  });
+
+  it("reads every import specifier with the parser, and records the ones it cannot", () => {
+    // This was the one place in the module still using a regular expression,
+    // seven rounds after a regex extractor was replaced by the parser for
+    // exactly this reason. `import\s*\(\s*["']` requires the quote to follow
+    // the parenthesis, so the idiomatic webpackChunkName comment form matched
+    // nothing, `resolveImport` was never called, `UNRESOLVED_IMPORTS` stayed
+    // empty, and an audit pulled a component in that way and served three
+    // claims from the offer's landing page.
+    const forms: Record<string, string> = {
+      "static import": 'import { X } from "./panel";',
+      "type-only import": 'import type { X } from "./panel";',
+      "export from": 'export { X } from "./panel";',
+      "export star": 'export * from "./panel";',
+      "side-effect import": 'import "./panel";',
+      "dynamic import": 'const m = import("./panel");',
+      "dynamic with a leading comment": 'const m = import(/* webpackChunkName: "p" */ "./panel");',
+      "dynamic with a plain template": "const m = import(`./panel`);",
+      "require": 'const m = require("./panel");',
+      "require.resolve": 'const p = require.resolve("./panel");',
+    };
+    for (const [form, source] of Object.entries(forms)) {
+      expect(staticSpecifiersIn(source), `${form} must yield its specifier`).toContain("./panel");
+    }
+
+    // A local helper that happens to be NAMED `require` is not a module load.
+    // Matching by name recorded fifteen boolean conditions from
+    // `skill-qualification.ts` as unreadable specifiers; CommonJS require takes
+    // exactly one argument, and that is what distinguishes them.
+    expect(
+      staticSpecifiersIn('const require = (c: boolean, code: string) => c; require(a >= b, "code");'),
+      "a two-argument local helper named require is not an import",
+    ).toEqual([]);
+
+    // The genuine residual: a specifier the compiler cannot read either.
+    expect(staticSpecifiersIn("const n = 'p'; const m = import(`./${n}`);")).toEqual([]);
   });
 
   it("would read a planted claim out of a served asset", () => {
