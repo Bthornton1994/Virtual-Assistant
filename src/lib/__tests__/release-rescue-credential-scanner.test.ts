@@ -146,8 +146,28 @@ describe("safe text stays readable, because a false positive blocks a delivery",
 
 describe("the scan is near-linear on adversarial input", () => {
   // The shapes that made a previous version quadratic, plus the ones that made
-  // the FIRST version of this scanner quadratic. Each is measured at 20, 40 and
-  // 80KB and must not grow like n^2.
+  // the FIRST version of this scanner quadratic. Each must not grow like n^2.
+  //
+  // TWO DEFECTS IN THIS TEST'S OWN METHOD, both found when CI finally ran it on
+  // a machine slower than the one it was written on.
+  //
+  // It said "measured at 20, 40 and 80KB", and the scanner never saw 80KB:
+  // `MAX_SCAN_LENGTH` is 64,000, so the third input was clipped and the last step
+  // was a 1.6x increase described as a doubling. The sizes below are all inside
+  // that bound, so every step is a real doubling of the text actually read.
+  //
+  // And the per-step ratio check carried `if (timings[index - 1] < 20) continue`,
+  // which skipped the comparison whenever the smallest sample landed under 20ms.
+  // On this machine `<password>` repeated at 20KB ran in 18.65ms — just under —
+  // so the one ratio that would have caught a real defect was silently dropped,
+  // and the suite was green. CI measured 31.88ms for the same input, the check
+  // ran, and it failed at 3.81. The escape hatch was hiding a genuine
+  // near-quadratic path in `collectOpaqueTokensNearCredentialNouns`, since fixed.
+  //
+  // So the assertion is the growth EXPONENT across the whole range rather than
+  // adjacent ratios with a skip. Over three doublings, linear is 1.0 and
+  // quadratic is 2.0; one noisy sample moves the exponent by a fraction where it
+  // could flip a single adjacent ratio outright, and nothing can be skipped.
   const SHAPES: Array<[string, (size: number) => string]> = [
     ["scheme-like run", (n) => `a${".b".repeat(n / 2)}=value12345`],
     ["identifier run", (n) => `${"A".repeat(n)}_PASSWORD=x`],
@@ -158,14 +178,31 @@ describe("the scan is near-linear on adversarial input", () => {
     ["pem prefix", (n) => `-----BEGIN ${"A ".repeat(n / 2)}`],
   ];
 
+  // DERIVED from MAX_SCAN_LENGTH rather than written beside it. The previous
+  // sizes were literals that had drifted past the bound, which is how the last
+  // step came to be a 1.6x increase the comment called a doubling. Derived, they
+  // cannot drift again: every step doubles the text the scanner actually reads.
+  const SCAN_SIZES = [
+    MAX_SCAN_LENGTH / 8,
+    MAX_SCAN_LENGTH / 4,
+    MAX_SCAN_LENGTH / 2,
+    MAX_SCAN_LENGTH,
+  ];
+
   for (const [label, make] of SHAPES) {
     it(`stays linear on ${label}`, () => {
+      const inputs = SCAN_SIZES.map(make);
+
+      // Warmed on every input before any of them is timed. Without this the
+      // smallest input is the one that pays for JIT compilation, which distorts
+      // exactly the sample the growth measurement is most sensitive to.
+      for (const input of inputs) redactSecrets(input);
+
       // Best of three. A single sample under a parallel test runner measures the
       // machine as much as the code, and the fastest run is the one least
       // contaminated by other work — which is what makes this assertion about
       // complexity rather than about load.
-      const timings = [20_000, 40_000, 80_000].map((size) => {
-        const input = make(size);
+      const timings = inputs.map((input) => {
         let best = Number.POSITIVE_INFINITY;
         for (let attempt = 0; attempt < 3; attempt += 1) {
           const started = performance.now();
@@ -175,15 +212,16 @@ describe("the scan is near-linear on adversarial input", () => {
         return best;
       });
 
-      // Quadratic growth is ~4x per doubling. 3x is the line: generous enough for
-      // a noisy machine, far below what a real n^2 produces.
-      for (let index = 1; index < timings.length; index += 1) {
-        // Below 20ms the timer's own resolution dominates the ratio.
-        if (timings[index - 1] < 20) continue;
-        expect(timings[index] / timings[index - 1], `${label}: ${timings.join(" -> ")}ms`).toBeLessThan(3);
-      }
+      const doublings = SCAN_SIZES.length - 1;
+      const exponent = Math.log2(timings[doublings] / timings[0]) / doublings;
+      const detail = `${label}: ${timings.map((t) => t.toFixed(2)).join(" -> ")}ms, exponent ${exponent.toFixed(3)}`;
+
+      // 1.0 is linear and 2.0 is quadratic. 1.5 sits between them with room for a
+      // noisy machine on either side, and every shape here measures at or below
+      // 1.13 once the line index is built once instead of per word.
+      expect(exponent, detail).toBeLessThan(1.5);
       // And an absolute ceiling, so "linear but enormous" still fails.
-      expect(timings[2], `${label} took ${timings[2]}ms at 80KB`).toBeLessThan(2_000);
+      expect(timings[doublings], `${label} took ${timings[doublings]}ms at 64KB`).toBeLessThan(2_000);
     });
   }
 

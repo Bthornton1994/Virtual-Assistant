@@ -772,7 +772,45 @@ function collectOpaqueTokensNearCredentialNouns(
   spans: CredentialSpan[],
 ): void {
   const lineHasNoun = new Map<number, boolean>();
-  const lineStartOf = (offset: number) => text.lastIndexOf("\n", offset) + 1;
+
+  // Line starts, indexed once.
+  //
+  // This was `text.lastIndexOf("\n", offset) + 1`, evaluated once per word in
+  // each of the two loops below. On text with FEW newlines that call scans
+  // backwards from the word to the previous newline — and on text with NO
+  // newlines it scans to offset zero, every time. One long line is not an exotic
+  // input here: it is a pasted note, a minified file, a config value, or an
+  // adversarial payload, and this function only runs when the text contains a
+  // credential noun, which such a payload supplies for free.
+  //
+  // The cost was O(n^2) in the length of the text. Measured on `<password>`
+  // repeated, inside the 64,000-character scan bound and with warm-up, the
+  // growth exponent was 1.771 where linear is 1.0 — and the ratios RISE across
+  // successive doublings (3.10, 3.48, 3.70), which is the signature of
+  // super-linear growth rather than of measurement noise.
+  //
+  // A binary search over the newline offsets answers the same question with the
+  // same result. `lastIndexOf` semantics are preserved exactly, including an
+  // offset that lands ON a newline.
+  const newlineAt: number[] = [];
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    newlineAt.push(index);
+  }
+  const lineStartOf = (offset: number): number => {
+    let low = 0;
+    let high = newlineAt.length - 1;
+    let found = -1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (newlineAt[mid] <= offset) {
+        found = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return found === -1 ? 0 : newlineAt[found] + 1;
+  };
 
   for (const word of words) {
     if (!CREDENTIAL_NOUNS.has(word.text.toLowerCase())) continue;

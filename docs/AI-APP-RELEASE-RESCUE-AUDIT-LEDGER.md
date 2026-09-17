@@ -124,6 +124,71 @@ shape and took the correct path. **The proof was written against the shape the
 author had in mind rather than the shapes that exist**, which is the same failure
 as R-001 one layer down. Both shapes are asserted now.
 
+### S-004 — the credential scanner was near-quadratic on a single long line
+
+| | |
+| --- | --- |
+| Found | by CI, the first time `verify` ran on a real runner |
+| Class | complexity, on the path that reads adversarial input |
+| Closed at | the same commit that records it |
+
+`collectOpaqueTokensNearCredentialNouns` resolved each word's line with
+`text.lastIndexOf("\n", offset)`, once per word, in each of two loops. On text
+with no newlines that scans back to offset zero every time, so the function was
+O(n²) in the length of the text — and one long line is not exotic here: it is a
+pasted note, a minified file, a config value, or an adversarial payload, which
+supplies the credential noun that makes this function run in the first place.
+
+Measured inside the 64,000-character scan bound, with warm-up, before and after,
+on the same harness:
+
+| shape | exponent before | exponent after | 64KB before | 64KB after |
+| --- | --- | --- | --- | --- |
+| `<password>` repeated | **1.771** | 1.037 | 138.31ms | 11.28ms |
+| `password:` repeated | 1.263 | 1.047 | 333.05ms | 189.78ms |
+| `--password ` repeated | 1.132 | 1.134 | 23.98ms | 24.34ms |
+| every other shape | ≈1.0 | ≈1.0 | — | — |
+
+1.0 is linear, 2.0 is quadratic. The before figures rose across successive
+doublings (3.10, 3.48, 3.70 for the worst shape), which is what distinguishes
+super-linear growth from measurement noise. Exactly the three shapes containing a
+credential noun were slow, and every shape that returns early was clean — the
+prediction the diagnosis made before the fix, and the reason it is a root cause
+rather than a guess.
+
+Fixed by indexing the newline offsets once and binary-searching them.
+`lastIndexOf` semantics are preserved exactly.
+
+### S-005 — the test that should have caught S-004 was skipping the check
+
+| | |
+| --- | --- |
+| Found | while root-causing S-004 |
+| Class | an assertion with an escape hatch, and a claim its code did not meet |
+| Closed at | the same commit |
+
+Two defects in one test, `the scan is near-linear on adversarial input`:
+
+1. It said "measured at 20, 40 and 80KB". `MAX_SCAN_LENGTH` is 64,000, so the
+   80KB input was clipped and the final step was a 1.6x increase described as a
+   doubling. The sizes are derived from the constant now, so they cannot drift
+   from it again — a literal beside a constant is how they drifted in the first
+   place.
+2. The ratio check carried `if (timings[index - 1] < 20) continue`. On this
+   machine the decisive input ran in **18.65ms** — just under the floor — so the
+   one comparison that would have caught S-004 was silently skipped and the suite
+   was green. CI's slower machine measured 31.88ms for the same input, the check
+   ran, and it failed at 3.81.
+
+**A skip is not a pass, and this one was indistinguishable from one.** The
+assertion is now the growth exponent across the whole range, which nothing can
+skip and which one noisy sample cannot flip.
+
+The pair is worth stating plainly: a real defect sat behind a threshold for
+several rounds, and it took a *different machine* to cross it. The eight
+`software-context-shunt-cli` failures are the same lesson inverted — those pass
+on CI and fail here.
+
 ### S-003 — a loop that varies nothing
 
 | | |
@@ -166,12 +231,42 @@ Each was bought with a regression in this workstream.
 
 ## Continuous integration
 
-### CI-001 — `verify` has never executed
+### CI-001 — `verify` had never executed, until it did
 
 | | |
 | --- | --- |
-| Status | **unavailable — no run has been demonstrated** |
-| Observed on | `83cda0a`, `11f1661`, `e874c8c`, `148bb31`, `e673271`, `44e825a` — six consecutive heads, each checked |
+| Status | **RESOLVED — `verify` executed on a real runner at 2026-09-17T22:47Z** |
+| Unavailable on | `83cda0a`, `11f1661`, `e874c8c`, `148bb31`, `e673271`, `44e825a` — six consecutive heads, each checked |
+| Executed on | `ea9e81a`, run `35278577643` attempt 2, runner `GitHub Actions 1000001844` |
+
+**The outage lifted.** A re-run the owner started — not this executor; the one
+permitted re-run remains unspent on our side — was assigned a runner and ran
+every step:
+
+```
+Set up job / checkout / setup-node / npm ci   success
+npm run lint                                  success
+npm run typecheck                             success
+npm test                                      FAILURE   1,577 passed / 1 failed
+npm run build                                 skipped
+```
+
+That record settles two questions that had been open:
+
+1. **The eight `software-context-shunt-cli` failures are not failures on CI.**
+   All thirteen tests in that file passed. The runner reports `git version
+   2.55.0`, which carries `--no-lazy-fetch`; this container has 2.43.0, which
+   does not. The D-012 diagnosis is confirmed exactly, and its premise — that
+   those eight failures are what keeps the suite red — is false for CI.
+2. **A different test failed, and it was right to.** That is S-004, a real
+   near-quadratic path in the credential scanner that this container's timings
+   had been hiding behind a threshold. CI found a genuine defect on its first
+   run, which is the strongest argument available for why a check that never
+   ran was never evidence of anything.
+
+What follows was written while the outage stood. It is kept rather than deleted:
+it was true when written, and the investigation it records is what established
+that the failure was account-level rather than a defect in the workflow.
 
 Every run completes in about two seconds with `runner_id` 0, an empty runner
 name, an empty check title, summary and text, and no steps. Representative:
@@ -213,11 +308,14 @@ npm run typecheck exit 0
 npm test          exit 1     <- 8 environmental failures
 ```
 
-So the runner outage and the red suite are two independent blockers, and fixing
-the first would not clear the second. The suite is governed by `DECISION_LOG.md`
-§ D-012, which now names the eight tests, the measured cause (this container's
-Git 2.43.0 has no `--no-lazy-fetch`, which the adapter requires and preflights
-for), the owner, and an expiration date.
+So the runner outage and the red suite were two independent blockers, and fixing
+the first would not have cleared the second. That framing held while the outage
+stood; the run above replaced the second half of it, because on CI those eight
+tests pass. The suite is governed by `DECISION_LOG.md` § D-012, amended in the
+same commit as this entry.
+
+The one permitted re-run was never spent. Actions was not retried by this
+executor at any point, including after the outage lifted.
 
 The one permitted re-run is spent and Actions has not been retried. The
 standing-down comment is on PR #97 (`issuecomment-5682530322`).

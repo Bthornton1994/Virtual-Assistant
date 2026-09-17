@@ -141,6 +141,12 @@ So the adapter's own runtime precondition is unmet and it returns exit 2 for eve
 
 **Owner:** the repository owner, as the only party who may set a verification policy (`AGENTS.md`: an executor may never own verification gates).
 
+**Measured on CI, and the premise did not survive it.** On 2026-09-17 at 22:47Z, `verify` was assigned a runner for the first time and ran on `ea9e81a`. **All thirteen tests in that file passed.** The runner reports `git version 2.55.0`; this container has 2.43.0. The diagnosis above is confirmed exactly — and with it, the claim that these eight failures are what keeps the suite red is **false for CI**. They are a property of the development container, not of the branch.
+
+The suite was still red on that run, for one unrelated test: a near-quadratic path in the credential scanner that this container's timings had been hiding behind a threshold. That is a real defect, it is fixed, and it was never part of this exception. It is recorded as S-004 and S-005 in the audit ledger.
+
+So this exception has narrowed rather than widened. It governs eight failures that are visible only here, and it is no longer the thing standing between this branch and a green CI run.
+
 **Expiration:** this exception expires when any one of these becomes true, whichever is first:
 - the container's Git reaches a version carrying `--no-lazy-fetch` and the eight tests pass unchanged;
 - the eight failures are fixed on `main` and this branch is rebased;
