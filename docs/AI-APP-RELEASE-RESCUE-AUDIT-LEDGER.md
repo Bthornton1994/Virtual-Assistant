@@ -398,6 +398,35 @@ report holding the value fails the property.
 
 No production behaviour changed. S-004 and S-005 are untouched.
 
+**A third vacuity sat under the second, and it was measured rather than
+reasoned about.** The rewritten loop skipped an input whose signature was
+refused, with a bare `continue`. Counted:
+
+```
+total inputs        60
+refused at signing  60
+reached the gate     0
+```
+
+**Every one of the sixty is refused at the signature, so none reaches the
+gate.** The closing assertion — the one that reads as "the delivery gate never
+delivers a credential" — was resolved entirely by `signReleaseRescueReport`
+refusing reviewer text that would have to be redacted (S-006, S-008), a guard
+added to this codebase *after* the test was written. The gate check in the loop
+body is unreachable.
+
+That is not an argument for deleting the test: refusing all sixty forms at the
+signature is a real and strong property. It is an argument for asserting the
+property that holds rather than one that reads better. Both outcomes are tallied
+now, `refused.length` is asserted to be the full sixty, and the delivery list
+stays and becomes live the moment anything stops being refused at the signature.
+
+Three passes were needed to make one sixty-iteration loop mean something, and
+each pass removed a different reason it could not fail. The pattern worth keeping
+is not any of the three fixes — it is that **a loop with a `continue` in it is a
+loop that can quietly test nothing**, and the way to find out is to count both
+branches rather than read the code.
+
 ---
 
 ## Standing lessons

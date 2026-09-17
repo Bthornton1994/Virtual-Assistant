@@ -287,20 +287,52 @@ describe("the outcome the whole workstream exists to prevent", () => {
       true,
     );
 
+    // COUNTED, not skipped.
+    //
+    // `continue` on a refused signature hid the third vacuity in this one test.
+    // Measured: all sixty inputs are refused at the signature and NONE reaches
+    // the gate, so `delivered` was empty no matter what the gate did. The
+    // assertion that read as "the gate never delivers a credential" was resolved
+    // entirely by `signReleaseRescueReport`, which refuses reviewer text that
+    // would have to be redacted (S-006, S-008) — a guard added after this test
+    // was written.
+    //
+    // So both outcomes are tallied and both are asserted. The refusal count is
+    // what carries the property today. The delivery list stays, and becomes live
+    // the moment anything stops being refused at the signature — at which point
+    // the counts move and this test says so instead of passing quietly.
+    const refused: string[] = [];
+    const reachedGate: string[] = [];
     const delivered: string[] = [];
+
     for (const planted of inputs) {
       let report: ReturnType<typeof signWithFixtureReviewer>;
       try {
         report = signWithFixtureReviewer(draft, { displayName: planted });
       } catch {
+        refused.push(planted);
         continue;
       }
+      reachedGate.push(planted);
       const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
       if (gate.deliverable && JSON.stringify(report).includes(SECRET)) {
         delivered.push(planted);
       }
     }
 
+    // Nothing may be silently dropped: every input took one of the two paths.
+    expect(refused.length + reachedGate.length).toBe(inputs.length);
+
+    // The property that actually holds, stated as the number it is. If a future
+    // change lets one of these through the signature, this fails and names it.
+    expect(
+      refused.length,
+      `${reachedGate.length} credential assignment(s) were accepted as a reviewer name: ${reachedGate.slice(0, 3).join(", ")}`,
+    ).toBe(inputs.length);
+
+    // Belt and braces, and currently unreachable BY CONSTRUCTION rather than by
+    // luck — see the count above. Left in deliberately: it is the assertion that
+    // matters if the signature ever stops being the thing that refuses.
     expect(delivered, `${delivered.length} keys produced a deliverable report holding a credential`)
       .toEqual([]);
   });
