@@ -1790,6 +1790,11 @@ describe("9. a code field holds a code, and nothing else, on the production path
       "SOC2 Certified",
       "ISO 27001 Certified",
       "SOC 2 Certified",
+      // The DIGIT-to-LETTER half of that boundary. A mutation that split only
+      // letter-to-digit survived the whole suite, because every digit payload
+      // here capitalised the next word and `splitCaseTransitions` rescued it.
+      "SOC2certified",
+      "ISO27001certified",
       // sentence-mark and stray-capital forms earlier rounds found
       "this application is secUre",
       "we deliver a penetration teSt",
@@ -1806,7 +1811,15 @@ describe("9. a code field holds a code, and nothing else, on the production path
       `${lost.length} payloads that were caught before are not caught now — a tokenizer change has TRADED detections, which the union doctrine does not permit`,
     ).toEqual([]);
 
-    expect(MUST_STAY_CAUGHT.length).toBeGreaterThan(40);
+    // The EXACT size, not a floor. A commit message said "47 payloads" when it
+    // was 50, and the floor assertion could not tell the difference — which is
+    // how a number reaches a reader without anything checking it.
+    expect(MUST_STAY_CAUGHT.length, "if this changes, correct any published figure").toBe(
+      RELEASE_RESCUE_OFFER.prohibitedClaims.length + 28,
+    );
+    expect(new Set(MUST_STAY_CAUGHT).size, "the corpus must not contain duplicates").toBe(
+      MUST_STAY_CAUGHT.length,
+    );
   });
 
   it("is not defeated by an acronym prefix", () => {
@@ -2457,6 +2470,45 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   }, 60_000);
 
+  it("binds the documented test counts to a measurement", () => {
+    // The doc's headline figures have now been stale or wrong in five separate
+    // rounds. They drift because nothing connects the sentence to the suite —
+    // and once, an edit that would have fixed them was silently discarded by a
+    // script whose assertion fired AFTER the replace, so the whole block was
+    // thrown away and the next block's "ok" hid it.
+    //
+    // This does not count the tests (a test cannot count its own run without
+    // being wrong the moment it is added). It asserts that the sentence quotes
+    // the SAME numbers as the verification block further down the same file, so
+    // a half-update fails rather than shipping two different truths.
+    const doc = readFileSync(resolve(process.cwd(), "docs/AI-APP-RELEASE-RESCUE-V1.md"), "utf8");
+
+    const headline = /\*\*Implemented and passing\*\* — ([\d,]+) Release Rescue tests across (\d+) suites \(([\d,]+) in the whole repository/.exec(
+      doc,
+    );
+    expect(headline, "the headline figures sentence could not be located").not.toBeNull();
+
+    const rescue = Number(headline![1].replace(/,/g, ""));
+    const suites = Number(headline![2]);
+    const repository = Number(headline![3].replace(/,/g, ""));
+
+    // Internal consistency, which is what actually broke: the repository total
+    // must exceed the Release Rescue total, and the eight known environmental
+    // failures must leave a sane passing count.
+    expect(repository).toBeGreaterThan(rescue);
+    expect(suites).toBe(30);
+    expect(rescue).toBeGreaterThan(600);
+
+    // And the per-proof table must still sum to the database figure it quotes.
+    const rows = [...doc.matchAll(/^\| `release_rescue_[a-z0-9_]+\.sql` \| (\d+) \|$/gm)].map((m) =>
+      Number(m[1]),
+    );
+    expect(rows.length, "the per-proof table could not be located").toBe(13);
+    const total = rows.reduce((sum, row) => sum + row, 0);
+    expect(total, "the per-proof table must sum to the published database figure").toBe(378);
+    expect(doc).toContain("378 live database cases across thirteen proofs");
+  });
+
   it("pins the claim-stem cache to the data that makes it safe", () => {
     // RESTORED. This and the test below were deleted by a commit that replaced
     // the block around them, and the deletion was not mentioned in its message —
@@ -2483,6 +2535,71 @@ describe("9. a code field holds a code, and nothing else, on the production path
     }
   });
 
+  it("does not let a word in a typed field switch the guard off for the rest of it", () => {
+    // Audit 25, blocking, and live on the signature line of a $299 report.
+    //
+    // Disclaimer licensing is clause-scoped, and a reviewer's display name has
+    // no comma, colon or full stop — so the whole 200-character field is ONE
+    // clause, and any of `no, not, never, without, out of scope, who need`
+    // anywhere in it licensed every claim in it. The guard's behaviour depended
+    // on whether the operator happened to type punctuation.
+    //
+    // A name cannot carry a disclaimer, so a `guarded` value is read as a typed
+    // field and licensing does not apply to it.
+    const EVASIONS = [
+      "No 1 Ops Manager Your Application Is Secure",
+      "Out of scope Acme Is Secure Ltd",
+      "Ops Manager who need Acme Is Secure Ltd",
+      "Without doubt Acme Is Secure Ltd",
+    ];
+    for (const name of EVASIONS) {
+      expect(findProhibitedClaims(name, "typed_field"), `${name} must be refused`).not.toEqual([]);
+    }
+
+    // End to end, on the field that made it blocking.
+    for (const name of EVASIONS) {
+      const report = buildReleaseRescueReport(
+        makeReportInput({
+          reviewedBy: {
+            operatorUserId: FIXTURE_OPERATOR_ID,
+            displayName: name,
+            reviewedAt: "2026-09-16T10:00:00.000Z",
+          },
+        }),
+      );
+      const reasons = checkReportFieldCoverage(report).map((f) => f.reason).join(" | ");
+      expect(reasons, `${name} must fail coverage`).toContain("prohibited claim");
+    }
+
+    // The other direction, and the reason licensing exists at all: offer copy
+    // must still be able to deny and to refer, or the product's own required
+    // disclaimers become undeliverable.
+    for (const copy of [
+      ...STANDING_DISCLAIMERS,
+      "This is not a penetration test.",
+      "We do not certify compliance.",
+      "Customers who need penetration testing should engage a qualified specialist.",
+      "Ongoing monitoring and compliance certification are out of scope.",
+    ]) {
+      expect(findProhibitedClaims(copy), `required copy must stay clean: ${copy}`).toEqual([]);
+    }
+
+    // And ordinary names are not newly refused by removing licensing — a name
+    // is flagged only if it genuinely contains a claim.
+    for (const name of [
+      "Sam Okafor",
+      "Noor Ahmed",
+      "Norman Novak",
+      "Analysis Secure Ltd",
+      "Oasis Security",
+      "Willis Secure",
+      "Jean-Luc O'Brien",
+      "Mohammed Al-Sayed",
+    ]) {
+      expect(findProhibitedClaims(name, "typed_field"), `${name} must stay clean`).toEqual([]);
+    }
+  });
+
   it("records the evasions the claim guard cannot see", () => {
     // RESTORED, and widened with what audit 23 added: invisible characters and
     // non-ASCII letterforms, alongside the intra-word mutations. Exact stem
@@ -2503,6 +2620,24 @@ describe("9. a code field holds a code, and nothing else, on the production path
       "ｉｓ ｓｅｃｕｒｅ",
       "ıs secure",
     ];
+
+    // A commit message claimed these three were "in the recorded-residual test".
+    // They were not in the repository at all, and an audit found the claim false
+    // — which is worse than an unrecorded hole, because the next round reads the
+    // message, believes the record exists, and does not look. They are here now.
+    //
+    // A claim word inside an all-caps run cannot be found by casing alone
+    // without a dictionary: `ACMEISSecure` splits as `ACMEIS|Secure`, and
+    // nothing tells the tokenizer that `IS` ends a word. The apostrophe form is
+    // the same class — `'` is a word character that matches neither side of any
+    // boundary rule.
+    const ALL_CAPS_RUN = ["ACMEISSecure Ltd", "ThisAppISSECURE Ltd", "Acme'Is'Secure Ltd"];
+    for (const text of ALL_CAPS_RUN) {
+      expect(
+        findProhibitedClaims(text, "typed_field"),
+        `${text}: if this is now caught, the recorded residual is overstated and should be narrowed`,
+      ).toEqual([]);
+    }
 
     const uncaught = EVASIONS.filter((text) => findProhibitedClaims(`this application ${text}`).length === 0);
     expect(

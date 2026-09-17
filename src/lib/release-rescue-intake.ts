@@ -979,8 +979,8 @@ function referralLicenses(
  * test") and a referral ("customers who need penetration testing should engage
  * a qualified specialist") are required copy, not violations.
  */
-function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
-  return claimsInTokens(tokenizeClaimText(text, mode), prohibitedClaimStems(mode));
+function claimsUnderMode(text: string, mode: TokenizerMode, disclaimersMayLicense = true): string[] {
+  return claimsInTokens(tokenizeClaimText(text, mode), prohibitedClaimStems(mode), disclaimersMayLicense);
 }
 
 /**
@@ -996,6 +996,7 @@ function claimsUnderMode(text: string, mode: TokenizerMode): string[] {
 function claimsInTokens(
   tokens: readonly ClaimToken[],
   claims: ReadonlyArray<{ claim: string; stems: readonly string[] }>,
+  disclaimersMayLicense: boolean,
 ): string[] {
   if (tokens.length === 0) return [];
 
@@ -1021,8 +1022,10 @@ function claimsInTokens(
         .slice(clauseStartIndex(tokens, start), start)
         .map((token) => token.word)
         .join(" ");
-      if (containsNegation(clauseBefore, BASELINE_MODE)) continue;
-      if (referralLicenses(tokens, start, start + length, claimTokenIndices)) continue;
+      if (disclaimersMayLicense) {
+        if (containsNegation(clauseBefore, BASELINE_MODE)) continue;
+        if (referralLicenses(tokens, start, start + length, claimTokenIndices)) continue;
+      }
       found.push(claim);
       break;
     }
@@ -1138,7 +1141,36 @@ export function findProhibitedClaimsUnderModes(
   return RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => found.has(claim));
 }
 
-export function findProhibitedClaims(text: string): string[] {
+/**
+ * Whether a denial or a referral in this text may license a claim inside it.
+ *
+ * `true` for OFFER COPY — a disclaimer, a report's standing text, a marketing
+ * page — where "this is not a penetration test" and "customers who need
+ * penetration testing should engage a qualified specialist" are required
+ * wording and must not be reported as violations.
+ *
+ * `false` for a value someone TYPED INTO A FIELD. An audit showed why the
+ * distinction is not cosmetic: licensing is clause-scoped, and a reviewer's
+ * display name contains no comma, colon or full stop, so the whole 200-character
+ * field is ONE clause. Any of `no, not, never, without, out of scope, who need`
+ * — anywhere in it — switched the guard off for everything else in it:
+ *
+ *   "Out of scope Acme Is Secure Ltd"            -> delivered
+ *   "No 1 Ops Manager Your Application Is Secure" -> delivered
+ *   "Acme Is Secure Ltd"                          -> correctly refused
+ *   "If you need it, Acme Is Secure Ltd"          -> correctly refused
+ *
+ * The guard's behaviour depended on whether the operator happened to type
+ * punctuation. A name cannot carry a disclaimer, so licensing does not apply to
+ * one, and `$.reviewedBy.displayName` is the signature line of a $299 report.
+ */
+export type ClaimTextSource = "offer_copy" | "typed_field";
+
+export function findProhibitedClaims(
+  text: string,
+  source: ClaimTextSource = "offer_copy",
+): string[] {
+  const disclaimersMayLicense = source === "offer_copy";
   const found = new Set<string>();
 
   // One pass per DISTINCT tokenisation, not per mode. See `claimsInTokens`.
@@ -1148,7 +1180,9 @@ export function findProhibitedClaims(text: string): string[] {
     const key = tokens.map((token) => `${token.breakBefore}:${token.stem}`).join("\u0000");
     if (seen.has(key)) continue;
     seen.add(key);
-    for (const claim of claimsInTokens(tokens, prohibitedClaimStems(mode))) found.add(claim);
+    for (const claim of claimsInTokens(tokens, prohibitedClaimStems(mode), disclaimersMayLicense)) {
+      found.add(claim);
+    }
   }
 
   // Ordered by the offer's own list rather than by which mode spoke first, so

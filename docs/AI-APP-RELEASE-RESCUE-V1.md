@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 673 Release Rescue tests across 30 suites (1,349 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 676 Release Rescue tests across 30 suites (1,352 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2320,6 +2320,76 @@ needs the repository at assembly time, which the pipeline does not have. It is a
 owner-visible gap in the guard's coverage, not something this pass has closed —
 and with `repositoryRef` and `defaultBranch` being customer-supplied, it is a gap
 on customer-controlled values as well as executor-written ones.
+
+### A boundary rule is its own option, never a change to an existing one
+
+This is the most expensive lesson in the file, because it was learned by quoting
+it and then breaking it in the same commit.
+
+The doctrine — *a mode can add a detection and can never remove one* — is true
+when a MODE is added and false when an existing mode's rule changes. A commit
+folded the upper-run boundary into `splitCaseTransitions`, reasoning in its own
+comment that it "can only ADD boundaries within this option". Adding a boundary
+inside a word is exactly how a detection is lost:
+
+```
+AcmePENtest   before:  acme | pentest    -> matches the one-word claim `pentest`
+AcmePENtest   after:   acme | pe | ntest -> matches nothing
+```
+
+There is no separator, so no other mode could fall back. The reviewer signature
+`Ops Manager AcmePENtest Ltd` was **refused by the parent commit and delivered by
+the child** — the same shape as the `secUre` regression two rounds earlier,
+committed while quoting its lesson.
+
+Every boundary rule is a separate option now, so each reading survives in the
+union and no spelling is traded for another. An audit later showed this is
+provable rather than merely measured: the five options with identical shared
+semantics generate a strict superset of both parents' tokenisation functions, and
+a union over a superset is monotone.
+
+**And the test that would have caught it now exists.** Every other test here asks
+*is this caught?* of a payload chosen for the rule under test. None asked *is
+everything that used to be caught still caught?*, so a change that traded
+detections passed them all. There is a frozen regression corpus now — 50 payloads
+that must never stop being caught. Reinstating the exact regression turns it red
+and names `AcmePENtest`.
+
+### Two prohibited claims were unenforceable in the only spelling anyone uses
+
+`soc 2 certified` and `iso 27001 certified` are in the offer's list, and the
+tokenizer never separated letters from digits — so `ISO 27001 Certified` was
+caught while `ISO27001 Certified` and `SOC2 Certified` were not, which is how
+those standards are actually written. A compliance-certification claim, one of
+the three the offer must never make, reached the signature line. The letter/digit
+boundary is its own option now, and the corpus pins both halves: a mutation that
+split only letter-to-digit survived the whole suite, because every digit payload
+in it capitalised the following word and another option rescued it.
+
+### Disclaimer licensing belongs to offer copy, not to a typed field
+
+A denial (*"this is not a penetration test"*) and a referral (*"customers who
+need penetration testing should engage a qualified specialist"*) are required
+copy, so the guard does not report a claim they license. That licensing is
+**clause-scoped** — and a reviewer's display name has no comma, colon or full
+stop, so the whole 200-character field is one clause:
+
+| `$.reviewedBy.displayName` | before |
+| --- | --- |
+| `Out of scope Acme Is Secure Ltd` | **delivered** |
+| `No 1 Ops Manager Your Application Is Secure` | **delivered** |
+| `Acme Is Secure Ltd` | correctly refused |
+| `If you need it, Acme Is Secure Ltd` | correctly refused |
+
+Any of `no, not, never, without, out of scope, who need` anywhere in the field
+switched the guard off for everything else in it, and whether it fired depended
+on whether the operator happened to type punctuation. This was on the signature
+line of a $299 report, and `displayName` is the only non-path guarded prose field
+left, so nothing else would have caught it.
+
+A name cannot carry a disclaimer. The guard now takes the SOURCE of the text: a
+`guarded` field is something a person typed, so licensing does not apply to it;
+offer copy keeps it, and the standing disclaimers are asserted to stay clean.
 
 ### The mode set is generated from its options, and most corners are redundant
 

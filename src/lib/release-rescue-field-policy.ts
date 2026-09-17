@@ -687,7 +687,12 @@ export function checkReportFieldCoverage(report: unknown): CoverageFailure[] {
           const wrong = pathValueIsNotAPath(leaf.value);
           if (wrong) failures.push({ path: leaf.path, reason: `Is not a repository path: ${wrong}.` });
         } else {
-          for (const claim of findProhibitedClaims(leaf.value)) {
+          // "typed_field": a `guarded` value is something a person typed into a
+          // form, not offer copy, so a denial or referral inside it may not
+          // license a claim. See `ClaimTextSource` — a display name is
+          // structurally one clause, and licensing turned the guard off for the
+          // whole field whenever the name contained a word like "no".
+          for (const claim of findProhibitedClaims(leaf.value, "typed_field")) {
             failures.push({
               path: leaf.path,
               reason: `Makes a prohibited claim ("${claim}"): "${leaf.value.slice(0, 120)}".`,
