@@ -6,9 +6,9 @@ import {
   type EngagementStatus,
 } from "@/lib/ai-app-release-rescue/constants";
 import type { RescueIntake } from "@/lib/ai-app-release-rescue/intake";
-import { SAMPLE_CUSTOMER_REPORT, SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
+import { SAMPLE_DELIVERY, SAMPLE_REPORT } from "@/lib/ai-app-release-rescue/demo-fixtures";
 import type { ReleaseRescueReportV1 } from "@/lib/release-rescue-report";
-import type { CustomerReportView } from "@/lib/release-rescue-presentation";
+import type { DeliveryDecision } from "@/lib/release-rescue-delivery";
 
 // In-memory engagement store for the public DEMO only.
 //
@@ -87,8 +87,15 @@ export function getSampleReport(): ReleaseRescueReportV1 {
   return SAMPLE_REPORT;
 }
 
-export function getSampleCustomerReport(): CustomerReportView {
-  return SAMPLE_CUSTOMER_REPORT;
+/**
+ * The sample report as the delivery path decides it: gated, or withheld.
+ *
+ * Returned the customer view directly, which meant every surface reaching for
+ * "the sample report" got something already shaped for rendering, with none of
+ * the three delivery checks having run on it.
+ */
+export function getSampleDelivery(): DeliveryDecision {
+  return SAMPLE_DELIVERY;
 }
 
 export function isSampleReportId(id: string): boolean {

@@ -7,11 +7,26 @@ import { scanForSecrets } from "@/lib/release-rescue-redaction";
 import { severityRank } from "@/lib/release-rescue-findings";
 import { RUBRIC_DIMENSIONS } from "@/lib/release-rescue-rubric";
 import {
-  SAMPLE_CUSTOMER_REPORT,
+  SAMPLE_DELIVERY,
   SAMPLE_REPORT,
   SAMPLE_REPORT_HASH,
 } from "@/lib/ai-app-release-rescue/demo-fixtures";
 import { CANONICAL_NON_CLAIMS, REPORT_LIMITATIONS_VERBATIM } from "@/lib/ai-app-release-rescue/constants";
+
+/**
+ * The sample report's customer view, obtained the way production obtains it.
+ *
+ * These assertions used to read `SAMPLE_CUSTOMER_REPORT`, a bare view built by
+ * calling `toCustomerReportView` directly — so they described bytes no gate had
+ * passed. Going through the decision means a fixture that stops being
+ * deliverable fails here loudly instead of being asserted about anyway.
+ */
+function deliverableView() {
+  if (SAMPLE_DELIVERY.status !== "deliverable") {
+    throw new Error(`the sample fixture is not deliverable: ${SAMPLE_DELIVERY.blockers.join("; ")}`);
+  }
+  return SAMPLE_DELIVERY.view;
+}
 
 describe("the sample report shown to prospective customers", () => {
   it("passes the same validator a real report must pass", () => {
@@ -39,15 +54,15 @@ describe("the sample report shown to prospective customers", () => {
   });
 
   it("keeps internal identifiers out of the customer view", () => {
-    expect(findInternalIdentityLeaks(SAMPLE_CUSTOMER_REPORT, SAMPLE_REPORT)).toEqual([]);
+    expect(findInternalIdentityLeaks(deliverableView(), SAMPLE_REPORT)).toEqual([]);
   });
 
   it("carries no secret material and no prohibited claim", () => {
-    expect(scanForSecrets(SAMPLE_CUSTOMER_REPORT)).toEqual([]);
+    expect(scanForSecrets(deliverableView())).toEqual([]);
     for (const text of [
-      ...SAMPLE_CUSTOMER_REPORT.limitations,
-      ...SAMPLE_CUSTOMER_REPORT.disclaimers,
-      SAMPLE_CUSTOMER_REPORT.verdictExplanation,
+      ...deliverableView().limitations,
+      ...deliverableView().disclaimers,
+      deliverableView().verdictExplanation,
       REPORT_LIMITATIONS_VERBATIM,
       ...CANONICAL_NON_CLAIMS,
     ]) {
@@ -56,10 +71,10 @@ describe("the sample report shown to prospective customers", () => {
   });
 
   it("orders findings from most to least severe", () => {
-    const ranks = SAMPLE_CUSTOMER_REPORT.findings.map((f) => severityRank(f.severity));
+    const ranks = deliverableView().findings.map((f) => severityRank(f.severity));
 
     expect(ranks).toEqual([...ranks].sort((a, b) => b - a));
-    expect(SAMPLE_CUSTOMER_REPORT.findings.length).toBeGreaterThan(1);
+    expect(deliverableView().findings.length).toBeGreaterThan(1);
   });
 
   it("does not inflate the prompt-injection finding to critical", () => {
@@ -72,7 +87,7 @@ describe("the sample report shown to prospective customers", () => {
     // test now checks two things at once: that the demo still shows `high`, and
     // that it gets there by naming the observation that actually matches its
     // scenario rather than by writing a smaller word.
-    const injection = SAMPLE_CUSTOMER_REPORT.findings.find((f) => f.id === "RR-002");
+    const injection = deliverableView().findings.find((f) => f.id === "RR-002");
 
     expect(injection?.severity).toBe("high");
     expect(injection?.blocking).toBe(true);
@@ -85,7 +100,7 @@ describe("the sample report shown to prospective customers", () => {
   });
 
   it("covers every rubric check", () => {
-    expect(SAMPLE_CUSTOMER_REPORT.coverage.notAssessedChecks).toBe(0);
-    expect(SAMPLE_CUSTOMER_REPORT.dimensions).toHaveLength(RUBRIC_DIMENSIONS.length);
+    expect(deliverableView().coverage.notAssessedChecks).toBe(0);
+    expect(deliverableView().dimensions).toHaveLength(RUBRIC_DIMENSIONS.length);
   });
 });

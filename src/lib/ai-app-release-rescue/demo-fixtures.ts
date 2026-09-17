@@ -11,7 +11,7 @@ import {
   type ReleaseRescueReportV1,
   type RubricAssessment,
 } from "@/lib/release-rescue-report";
-import { toCustomerReportView, type CustomerReportView } from "@/lib/release-rescue-presentation";
+import { decideReleaseRescueDelivery, type DeliveryDecision } from "@/lib/release-rescue-delivery";
 import { DEMO_SAMPLE_REPORT_ID } from "@/lib/ai-app-release-rescue/constants";
 import {
   DEMO_ENGAGEMENT_ID,
@@ -218,4 +218,14 @@ export const SAMPLE_REPORT: ReleaseRescueReportV1 = buildReleaseRescueReport({
 });
 
 export const SAMPLE_REPORT_HASH: string = hashReleaseRescueReport(SAMPLE_REPORT);
-export const SAMPLE_CUSTOMER_REPORT: CustomerReportView = toCustomerReportView(SAMPLE_REPORT);
+
+/**
+ * The sample report AS THE PRODUCTION PATH SEES IT: gated, or withheld.
+ *
+ * This used to be `SAMPLE_CUSTOMER_REPORT = toCustomerReportView(SAMPLE_REPORT)`,
+ * a bare view that the report page and its JSON download both rendered under the
+ * heading "Customer-safe report" without any of the three checks having run. The
+ * export is gone rather than supplemented, so a surface cannot reach a view
+ * except through a decision that has already gated it.
+ */
+export const SAMPLE_DELIVERY: DeliveryDecision = decideReleaseRescueDelivery(SAMPLE_REPORT);

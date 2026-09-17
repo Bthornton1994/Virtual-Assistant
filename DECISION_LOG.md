@@ -74,3 +74,49 @@ Decision: Delegation Cloud may sell bounded technical assurance work where the d
 This admits one workstream on stated terms. It does not make Delegation Cloud a security consultancy, and it does not authorize launch, payment activation, production access, or any increase in executor authority.
 
 Source: [VISION.md](VISION.md), [AI App Release Rescue v1](docs/AI-APP-RELEASE-RESCUE-V1.md).
+
+## D-010 — A finding points at customer source and never carries it
+
+Date: 2026-09-16  
+Status: active  
+Decision: Raw customer source excerpts are removed from every persisted artifact and every customer-facing surface of the release-readiness review. A finding carries `path`, `startLine`, `endLine`, `rubricCheckId`, a derived `severity`, and catalog codes that resolve to the observation and the remediation. It carries no `excerpt`, no source window, and no scanner span that exposes source. The customer opens the cited location in their own checkout, where the source already is.
+
+Ten independent audits attacked the credential detector whose only job was making a copied excerpt safe to ship. Five consecutive rounds shipped a regression inside the fix for the previous round's finding, and the tenth reported the detector both leaking credentials and permanently bricking correct reports in the same commit — sixteen real credentials reached a `deliverable: true` report through a span that recorded "I assessed 2 characters and judged them harmless". Removing the copy removes the defect class rather than narrowing it: there is no customer credential in the artifact to leak or to redact wrongly.
+
+The alternative considered and rejected was letting a confident hold be cleared by two named people with an audit record. That is an authority change; this is a product scope change, and it costs the customer nothing diagnostic.
+
+This decision was taken and implemented but was recorded only in `docs/AI-APP-RELEASE-RESCUE-V1.md` for four rounds. An owner decision that governs what reaches a customer belongs in this register.
+
+Source: [AI App Release Rescue v1 § The excerpt decision](docs/AI-APP-RELEASE-RESCUE-V1.md), `src/lib/release-rescue-findings.ts`, `supabase/migrations/20260916050000_release_rescue_excerpt_removal_v8.sql`.
+
+## D-011 — A report carries codes, and a frozen catalog carries the words
+
+Date: 2026-09-16  
+Status: active  
+Decision: Every customer-deliverable sentence in the release-readiness review is composed at render time from `src/lib/release-rescue-observation-catalog.ts`, keyed by a stable code the artifact stores. There is no field on a finding, an assessment, or a report that a caller can write a sentence into.
+
+D-010 removed the customer's source from the artifact. It did not remove the auditor's sentences about it, and four rounds went into whether a rule could tell a description from a quotation. Both directions were measured and both failed: a construct-keyed rule delivered 366 of 366 generated credentials through `DB_PASSWORD is set to <value>`, and a rule strict enough to catch that refused 15 of 21 sentences an auditor legitimately needs to write. There is no rule between those two, because "is this sentence a quotation?" has no decidable answer over arbitrary prose.
+
+The decision removes the question rather than sharpening the rule. An auditor does not write a sentence, so no rule needs to judge one. It costs the narrative quality of the report and was a significant redesign.
+
+Recorded here for the same reason as D-010: it was taken, implemented, and left out of this register.
+
+Source: [AI App Release Rescue v1 § The structured-observation decision](docs/AI-APP-RELEASE-RESCUE-V1.md), `src/lib/release-rescue-observation-catalog.ts`, `supabase/migrations/20260916140000_release_rescue_structured_observations_v10.sql`.
+
+## D-012 — OPEN: the policy required before the release can leave DO_NOT_MERGE
+
+Date: 2026-09-17  
+Status: **open — owner decision required**  
+Decision: **None taken.** This entry records the exact decision that is missing, so that its absence is visible in the register rather than inferred from a PR body.
+
+`npm test` on `remediation/release-rescue-pipeline-authority` reports 1,546 passing and **8 failing**. All eight are in `src/lib/__tests__/software-context-shunt-cli.test.ts`, they fail identically on `main`, and `git diff c3cf4a0..HEAD` is empty for that file and its subject — they are not this branch's to fix. They are nonetheless real failures and the suite is not green.
+
+The release gate as written requires a green suite. Three options exist and none may be taken by an executor:
+
+1. Adopt a written verification policy naming `software-context-shunt-cli` as environmentally excluded, with the exclusion scoped to a named list of tests, an owner, and a review date. The suite would then be green against a policy rather than against zero failures.
+2. Fix the eight failures on `main` first and rebase, which blocks this release on unrelated work.
+3. Merge with a red suite under an explicit, time-bounded owner waiver, as D-008 did for a different unavailability.
+
+Until one is chosen, **`DO_NOT_MERGE` stands**, and no report, commit message, or pull request on this branch may describe the suite as green. An executor may not choose between these, may not silently exclude the failures, and may not reinterpret a red suite as passing.
+
+Source: PR [#97](https://github.com/Bthornton1994/Virtual-Assistant/pull/97), `src/lib/__tests__/software-context-shunt-cli.test.ts`, [D-008](#d-008--bounded-owner-authorized-merge-while-ci-was-unavailable).

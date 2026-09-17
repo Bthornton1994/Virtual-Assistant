@@ -5,6 +5,7 @@ import { RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
 import type { FindingSeverity } from "@/lib/release-rescue-findings";
 import type { ReleaseVerdict } from "@/lib/release-rescue-report";
 import type { CustomerFindingView, CustomerReportView } from "@/lib/release-rescue-presentation";
+import type { DeliveryChecks, DeliveryReviewer } from "@/lib/release-rescue-delivery";
 
 const SEVERITY_TONE: Record<FindingSeverity, "bad" | "warn" | "info" | "neutral"> = {
   critical: "bad",
@@ -24,11 +25,15 @@ const VERDICT_TONE: Record<ReleaseVerdict, "good" | "warn" | "bad"> = {
 export function ReportView({
   report,
   contentHash,
+  reviewer,
+  checks,
   view,
   synthetic,
 }: {
   report: CustomerReportView;
   contentHash: string;
+  reviewer: DeliveryReviewer;
+  checks: DeliveryChecks;
   view: "readable" | "json";
   synthetic: boolean;
 }) {
@@ -55,6 +60,39 @@ export function ReportView({
           {report.rubricVersion}.
         </p>
         <p className="font-mono text-xs text-muted break-all">Report hash {contentHash}</p>
+
+        {/* Delivery status, read from what is stored on the report rather than
+            asserted by this component. `reviewer` comes from the artifact's own
+            `reviewedBy` record and `checks` records that the three gate checks
+            actually ran — the page cannot reach this branch without them having
+            passed, because the withheld decision carries no view to render. */}
+        <dl className="rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink-soft">
+          <div className="flex flex-wrap gap-x-2">
+            <dt className="font-semibold">Released by</dt>
+            {/* The reviewer's DISPLAY NAME and nothing else identifying. The
+                first version of this rendered `operatorUserId` too, and the
+                browser spec that asserts no internal identifier reaches a
+                customer surface caught `demo-operator` on the page. The
+                operator id stays on the decision for operator and audit
+                surfaces; it is not customer-facing. */}
+            <dd>
+              {reviewer.displayName} on{" "}
+              <time dateTime={reviewer.reviewedAt}>{reviewer.reviewedAt}</time>
+            </dd>
+          </div>
+          <div className="flex flex-wrap gap-x-2">
+            <dt className="font-semibold">Approval bound to</dt>
+            <dd className="font-mono break-all">{reviewer.approvedContentHash}</dd>
+          </div>
+          <div className="flex flex-wrap gap-x-2">
+            <dt className="font-semibold">Gate</dt>
+            <dd>
+              validation {checks.validationRan ? "ran" : "did not run"}, field coverage{" "}
+              {checks.coverageRan ? "ran" : "did not run"}, delivery gate{" "}
+              {checks.gateRan ? "ran" : "did not run"}
+            </dd>
+          </div>
+        </dl>
         <p className="text-sm">
           <Link className="underline underline-offset-4" href={view === "json" ? readableHref : jsonHref}>
             {view === "json" ? "Read the report" : "View the JSON"}
