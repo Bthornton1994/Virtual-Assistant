@@ -28,7 +28,34 @@ import ts from "typescript";
  * entrypoints, and no one has to remember anything. A new module reaches a
  * customer the moment a route imports it, and it is checked that moment.
  */
-const APP_DIR = "src/app";
+/**
+ * Where Next looks for routes, PROBED rather than named.
+ *
+ * This was the single string `"src/app"`. Next resolves `app` or `src/app`, and
+ * `pages` or `src/pages`, so a Pages Router page naming the offer sat outside
+ * `filesUnder`, `ancestorChainFor`, `frameworkEntrypoints` and the asset walk
+ * all at once — every walk in this module, missed by one literal. The same
+ * shape as the entrypoint list the previous round replaced, in the constant
+ * directly above it.
+ */
+export function routeRoots(root: string = process.cwd()): string[] {
+  const found: string[] = [];
+  for (const kind of ["app", "pages"]) {
+    for (const parent of ["src", "."]) {
+      const dir = parent === "." ? kind : `${parent}/${kind}`;
+      const full = resolve(root, dir);
+      if (existsSync(full) && statSync(full).isDirectory()) found.push(dir);
+    }
+  }
+  return found;
+}
+
+const ROUTE_ROOTS = routeRoots();
+
+if (ROUTE_ROOTS.length === 0) {
+  throw new Error("no Next route directory found; every route walk would be empty");
+}
+
 const ROUTE_DIR = "src/app/(marketing)/ai-app-release-rescue";
 
 /**
@@ -39,8 +66,70 @@ const ROUTE_DIR = "src/app/(marketing)/ai-app-release-rescue";
  */
 const OFFER_NAME = "Release Rescue";
 
-/** Test files and fixtures are not a customer surface; everything else reachable is. */
-const NOT_A_SURFACE = /\.(test|test-fixtures)\.(tsx?|jsx?|mjs|cjs)$/;
+/**
+ * The files the TEST RUNNER actually collects, read from `vitest.config.ts`.
+ *
+ * This was a name pattern — `/\.(test|test-fixtures)\.(tsx?|jsx?|mjs|cjs)$/` —
+ * and it was a NEGATIVE, LIST-SHAPED rule in the discovery path of the file
+ * whose premise is that such rules fail. It named four spellings. `vitest`
+ * collects only `src/**\/*.test.ts`. So `.test.tsx`, `.test.jsx` and
+ * `.test-fixtures.ts` were excluded from the surface AND never collected as
+ * tests: read by nothing, bundled and rendered by Next. An audit imported a
+ * `release-note.test.tsx` into the offer's own landing page and served two
+ * prohibited claims at HTTP 200 with the whole suite green.
+ *
+ * The question is not "is this named like a test" but "does the runner run
+ * this", and the runner's own config answers it. A file the runner does not run
+ * is not a test, whatever it is called.
+ */
+function vitestIncludeGlobs(): string[] {
+  const config = readFileSync(resolve(process.cwd(), "vitest.config.ts"), "utf8");
+  const parsed = ts.createSourceFile("vitest.config.ts", config, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const globs: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isPropertyAssignment(node) &&
+      (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) &&
+      node.name.text === "include" &&
+      ts.isArrayLiteralExpression(node.initializer)
+    ) {
+      for (const element of node.initializer.elements) {
+        if (ts.isStringLiteral(element) || ts.isNoSubstitutionTemplateLiteral(element)) globs.push(element.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+  return globs;
+}
+
+const COLLECTED_BY_THE_RUNNER = vitestIncludeGlobs();
+
+if (COLLECTED_BY_THE_RUNNER.length === 0) {
+  throw new Error("vitest.config.ts declares no `include` globs; every test file would be read as a surface");
+}
+
+/** One glob from that config as a matcher. The dialect in use is `**`, `*` and literals. */
+function globToPattern(glob: string): RegExp {
+  const source = glob
+    .split(/(\*\*\/|\*\*|\*|\?)/)
+    .map((piece) => {
+      if (piece === "**/") return "(?:[^/]*\\/)*";
+      if (piece === "**") return ".*";
+      if (piece === "*") return "[^/]*";
+      if (piece === "?") return "[^/]";
+      return piece.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    })
+    .join("");
+  return new RegExp(`^${source}$`);
+}
+
+const RUNNER_PATTERNS = COLLECTED_BY_THE_RUNNER.map(globToPattern);
+
+/** Whether the test runner collects this file, so it is a test rather than a surface. */
+export function collectedByTheRunner(file: string): boolean {
+  return RUNNER_PATTERNS.some((pattern) => pattern.test(file));
+}
 
 /**
  * Every extension this project can serve or import.
@@ -86,13 +175,13 @@ const FRAMEWORK_ENTRYPOINT_NAMES = [
  * fails the exact-set assertion". True for deletion and rename; an entrypoint
  * that is ADDED is silent, which is exactly what happened.
  */
-function frameworkEntrypoints(): string[] {
+export function frameworkEntrypoints(root: string = process.cwd()): string[] {
   const found: string[] = [];
   for (const name of FRAMEWORK_ENTRYPOINT_NAMES) {
     for (const directory of ["src", "."]) {
       for (const extension of [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]) {
         const candidate = directory === "." ? `${name}${extension}` : `${directory}/${name}${extension}`;
-        if (existsSync(resolve(process.cwd(), candidate))) found.push(candidate);
+        if (existsSync(resolve(root, candidate))) found.push(candidate);
       }
     }
   }
@@ -120,8 +209,10 @@ export const RENDERED_AROUND_A_PAGE =
 function ancestorChainFor(dir: string): string[] {
   const found: string[] = [];
   const segments = dir.split("/");
-  // Every level from `src/app` down to and including the route directory.
-  for (let depth = APP_DIR.split("/").length; depth <= segments.length; depth += 1) {
+  // Every level from the route root down to and including the route directory.
+  const root = ROUTE_ROOTS.find((candidate) => dir === candidate || dir.startsWith(`${candidate}/`));
+  if (!root) return found;
+  for (let depth = root.split("/").length; depth <= segments.length; depth += 1) {
     const level = segments.slice(0, depth).join("/");
     for (const entry of readdirSync(resolve(process.cwd(), level), { withFileTypes: true })) {
       if (!entry.isDirectory() && RENDERED_AROUND_A_PAGE.test(entry.name)) found.push(`${level}/${entry.name}`);
@@ -134,7 +225,7 @@ function filesUnder(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })) {
     const child = `${dir}/${entry.name}`;
     if (entry.isDirectory()) filesUnder(child, found);
-    else if (SOURCE_EXTENSION.test(entry.name) && !NOT_A_SURFACE.test(entry.name)) found.push(child);
+    else if (SOURCE_EXTENSION.test(entry.name) && !collectedByTheRunner(child)) found.push(child);
   }
   return found;
 }
@@ -152,13 +243,31 @@ function everyFileUnder(dir: string, found: string[] = []): string[] {
 }
 
 /**
- * Asset formats whose bytes ARE their words.
+ * Whether a served asset's bytes ARE its words, decided by READING them.
  *
- * An SVG carries `<text>`; a `.txt`, `.md`, `.json` or `.webmanifest` is read as
- * written. There is no module to parse and no import to follow, so the whole
- * file is the visible string.
+ * This was an extension list — `svgz?|html?|txt|md|json|xml|csv|webmanifest|vtt`
+ * — and everything outside it was recorded as "a binary asset whose words, if
+ * any, are pixels or glyph outlines rather than text". That sentence was false
+ * for `.js`, `.css`, `.yaml`, `.rtf`, `.jsonld`, `.ics` and `.mjs`, all of which
+ * are text and any of which `public/` can hold; a `public/*.js` pulled in by a
+ * `<Script src>` puts words on the page. So the list was both a list and a
+ * RECORD THAT STATED SOMETHING UNTRUE — the inverse of the failure this file
+ * keeps finding, where a record proves nothing because it executes nothing.
+ *
+ * Bytes settle it. A file that decodes as UTF-8 and holds no NUL is text and is
+ * read; anything else genuinely cannot be read as words here, and its recorded
+ * reason is then true of it.
  */
-export const ASSET_IS_ITS_OWN_TEXT = /\.(svgz?|html?|txt|md|json|xml|csv|webmanifest|vtt)$/i;
+export function assetIsItsOwnText(file: string): boolean {
+  const bytes = readFileSync(resolve(process.cwd(), file));
+  if (bytes.includes(0)) return false;
+  const decoded = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  // U+FFFD only appears where a byte sequence was not valid UTF-8, unless the
+  // file genuinely contains the replacement character — which a served text
+  // asset may, so a single one is not enough to call it binary.
+  const undecodable = (decoded.match(/\uFFFD/g) ?? []).length;
+  return undecodable === 0 || undecodable / Math.max(decoded.length, 1) < 0.01;
+}
 
 /**
  * Everything `public/` serves, at the site root, byte for byte.
@@ -171,12 +280,22 @@ export const ASSET_IS_ITS_OWN_TEXT = /\.(svgz?|html?|txt|md|json|xml|csv|webmani
  * not an exemption, simply unconsidered. The offer's own marketing surface is
  * exactly where such an asset would live.
  */
-export const RELEASE_RESCUE_SERVED_ASSETS: string[] = everyFileUnder("public").sort();
+export const RELEASE_RESCUE_SERVED_ASSETS: string[] = [
+  // `public/` is served at the site root byte for byte.
+  ...everyFileUnder("public"),
+  // And so are the route roots' NON-SOURCE files. `robots.txt`,
+  // `manifest.webmanifest`, `sitemap.xml` and their neighbours live in the app
+  // directory and Next serves them at `/robots.txt` and so on. Naming `public`
+  // as THE served-static directory was the same hand-written fact as the
+  // entrypoint list, one directory over: an audit served a manifest whose
+  // `description` — shown at install and in the app switcher — carried two
+  // prohibited claims, at HTTP 200, with the whole suite green. Deriving it as
+  // "not a module the bundler compiles" names none of them.
+  ...ROUTE_ROOTS.flatMap((root) => everyFileUnder(root)).filter((file) => !SOURCE_EXTENSION.test(file)),
+].sort();
 
 /** The served assets whose text this suite reads. */
-export const SCANNABLE_ASSETS: string[] = RELEASE_RESCUE_SERVED_ASSETS.filter((file) =>
-  ASSET_IS_ITS_OWN_TEXT.test(file),
-);
+export const SCANNABLE_ASSETS: string[] = RELEASE_RESCUE_SERVED_ASSETS.filter(assetIsItsOwnText);
 
 /**
  * Served assets this suite does NOT read, with the reason — a raster image, a
@@ -186,9 +305,9 @@ export const SCANNABLE_ASSETS: string[] = RELEASE_RESCUE_SERVED_ASSETS.filter((f
  * control that stands there is human review of what the repository publishes.
  */
 export const ASSET_RESIDUALS: ReadonlyArray<{ readonly file: string; readonly why: string }> =
-  RELEASE_RESCUE_SERVED_ASSETS.filter((file) => !ASSET_IS_ITS_OWN_TEXT.test(file)).map((file) => ({
+  RELEASE_RESCUE_SERVED_ASSETS.filter((file) => !assetIsItsOwnText(file)).map((file) => ({
     file,
-    why: "a binary asset whose words, if any, are pixels or glyph outlines rather than text; no extractor here can read it, and human review of published assets is the control that stands in its place",
+    why: "its bytes are not decodable text, so any words it shows a customer are pixels or glyph outlines that no extractor here can read; human review of what the repository publishes is the control that stands in its place",
   }));
 
 /** The text of one served asset, exactly as the framework would hand it over. */
@@ -238,27 +357,52 @@ function namesTheOffer(file: string): boolean {
   // Case-folded, and the route slug counts too. It was `includes` on the exact
   // casing, so a page saying "release rescue" was not a surface — the audit-33
   // escape again, one case-fold in.
-  const needle = OFFER_NAME.toLowerCase();
-  const slug = OFFER_NAME.toLowerCase().replace(/ /g, "-");
-  const says = (text: string): boolean => {
-    const folded = text.toLowerCase();
-    return folded.includes(needle) || folded.includes(slug);
-  };
-  const answer = says(source) || visibleStrings(source, file).some(says);
+  const answer = sourceStatesTheOffer(source, file);
   statesTheOffer.set(file, answer);
   return answer;
 }
 
 function filesSellingTheOffer(): string[] {
-  return filesUnder(APP_DIR).filter((file) =>
+  return ROUTE_ROOTS.flatMap((root) => filesUnder(root)).filter((file) =>
     reachableFrom(file).some((reached) => OFFER_MODULE.test(reached) || namesTheOffer(reached)),
   );
+}
+
+/**
+ * Every import specifier the graph can resolve statically, from one file's text.
+ *
+ * Named and exported so the `computed_import` residual can be EXECUTED rather
+ * than described: a residual that nothing runs is the "a record that nothing
+ * executes is not evidence" defect, and an earlier commit claimed these were
+ * asserted the way the extractor's residuals are when they were only counted.
+ * The walk calls this, so a test of it cannot drift from what the walk does.
+ */
+export function staticSpecifiersIn(source: string): string[] {
+  const found: string[] = [];
+  for (const match of source.matchAll(
+    /(?:from\s+|import\s*\(\s*)["']([^"']+)["']|import\s+["']([^"']+)["']|require\s*\(\s*["']([^"']+)["']/g,
+  )) {
+    const specifier = match[1] ?? match[2] ?? match[3];
+    if (specifier) found.push(specifier);
+  }
+  return found;
+}
+
+/** Whether any text this file states, or renders, says the offer's name. */
+export function sourceStatesTheOffer(source: string, file = "surface.tsx"): boolean {
+  const needle = OFFER_NAME.toLowerCase();
+  const slug = needle.replace(/ /g, "-");
+  const says = (text: string): boolean => {
+    const folded = text.toLowerCase();
+    return folded.includes(needle) || folded.includes(slug);
+  };
+  return says(source) || visibleStrings(source, file).some(says);
 }
 
 const reachedFromCache = new Map<string, string[]>();
 
 /** Every repository file reachable from one entrypoint by import. */
-function reachableFrom(entry: string): string[] {
+export function reachableFrom(entry: string): string[] {
   const remembered = reachedFromCache.get(entry);
   if (remembered) return remembered;
   const reached = new Set<string>([entry]);
@@ -268,13 +412,14 @@ function reachableFrom(entry: string): string[] {
     const source = readFileSync(resolve(process.cwd(), file), "utf8");
     // Bare side-effect imports and `require` count too: a module reached only
     // that way still renders, and the previous pattern could not see either.
-    for (const match of source.matchAll(
-      /(?:from\s+|import\s*\(\s*)["']([^"']+)["']|import\s+["']([^"']+)["']|require\s*\(\s*["']([^"']+)["']/g,
-    )) {
-      const specifier = match[1] ?? match[2] ?? match[3];
-      if (!specifier) continue;
+    for (const specifier of staticSpecifiersIn(source)) {
       const target = resolveImport(specifier, file);
-      if (target && !reached.has(target) && !NOT_A_SURFACE.test(target)) {
+      // No exclusion here. A module a RENDERED PAGE imports is a surface whatever
+      // it is called: the name pattern that used to sit here deleted a component
+      // from the graph AFTER it resolved, so `UNRESOLVED_IMPORTS` could not fire
+      // and the exact-set assertion did not move. A test file is not imported by
+      // a page in a healthy repository; when one is, it is a surface.
+      if (target && !reached.has(target)) {
         reached.add(target);
         queue.push(target);
       }
@@ -293,16 +438,27 @@ function reachableFrom(entry: string): string[] {
  * The rule reads imports and stated text. It cannot read a name a program
  * computes, and it cannot follow an import whose specifier is computed.
  */
-export type EntryResidual = { readonly mechanism: "computed_name" | "computed_import"; readonly why: string };
+export type EntryResidual = {
+  readonly mechanism: "computed_name" | "computed_import";
+  readonly why: string;
+  /** Source that DEMONSTRATES the miss, so the bound is run rather than asserted. */
+  readonly source: string;
+  /** The same shape written so the rule CAN see it, so the test is not vacuous. */
+  readonly seenWhenStatic: string;
+};
 
 export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
   {
     mechanism: "computed_name",
     why: "A served file that reaches no offer module and assembles the offer's name at runtime — `[\"AI App\", \"Release\", \"Rescue\"].join(\" \")` — states it nowhere a parser can read.",
+    source: 'const parts = ["AI App", "Release", "Rescue"]; export const Title = () => <h1>{parts.join(" ")}</h1>;',
+    seenWhenStatic: 'export const Title = () => <h1>AI App Release Rescue</h1>;',
   },
   {
     mechanism: "computed_import",
     why: "A dynamic `import(`./${name}`)` specifier cannot be resolved statically, so a module reached only that way is outside every graph this file walks.",
+    source: "const name = \"panel\"; export const load = () => import(`./${name}`);",
+    seenWhenStatic: 'export const load = () => import("./panel");',
   },
 ];
 
@@ -330,14 +486,16 @@ function listRouteEntrypoints(): string[] {
  * The aliases are a fact about this project, written down in one place by the
  * project itself. Reading them is not a list; assuming them was.
  */
-function tsconfigAliases(): Array<{ readonly prefix: string; readonly target: string }> {
+export function tsconfigAliases(
+  configPathInput?: string,
+): Array<{ readonly prefix: string; readonly target: string }> {
   // TypeScript reads its own config. The first attempt at this stripped comments
   // with a regex before `JSON.parse`, and the block-comment pattern matched the
   // `/*` INSIDE the alias key `"@/*"` — it ate the paths map and threw. A
   // hand-rolled parser for a format the compiler already parses is the same
   // mistake as a hand-written list, one layer down. `parseJsonConfigFileContent`
   // also resolves `extends`, so an alias inherited from a base config counts.
-  const configPath = resolve(process.cwd(), "tsconfig.json");
+  const configPath = configPathInput ?? resolve(process.cwd(), "tsconfig.json");
   const read = ts.readConfigFile(configPath, ts.sys.readFile);
   if (read.error) throw new Error(`tsconfig.json is unreadable: ${ts.flattenDiagnosticMessageText(read.error.messageText, " ")}`);
   const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configPath));
@@ -350,7 +508,7 @@ function tsconfigAliases(): Array<{ readonly prefix: string; readonly target: st
     // Targets are relative to baseUrl (or the config's own directory); the rest
     // of this module speaks repository-relative paths, so convert once here.
     const absolute = resolve(baseUrl, first.replace(/\*$/, ""));
-    const target = relative(process.cwd(), absolute).replace(/\\/g, "/");
+    const target = relative(configPathInput ? dirname(configPath) : process.cwd(), absolute).replace(/\\/g, "/");
     return target ? [{ prefix, target }] : [];
   });
 }
@@ -762,7 +920,7 @@ export function parseProblems(file: string, source: string): readonly string[] {
   );
 }
 
-function parseSurface(file: string, source: string): ts.SourceFile {
+export function parseSurface(file: string, source: string): ts.SourceFile {
   return ts.createSourceFile(
     file,
     source,

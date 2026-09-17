@@ -2529,41 +2529,39 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // a half-update fails rather than shipping two different truths.
     const doc = readFileSync(resolve(process.cwd(), "docs/AI-APP-RELEASE-RESCUE-V1.md"), "utf8");
 
-    const headline = /\*\*Implemented and passing\*\* — ([\d,]+) Release Rescue tests across (\d+) suites \(([\d,]+) in the whole repository/.exec(
-      doc,
+    // The headline sentence used to quote a Release Rescue total, a suite count
+    // and a repository total, and this test parsed them. It never BOUND them: a
+    // test cannot count its own run without being wrong the moment a case is
+    // added, so `rescue` was checked only against a floor of 600. A commit
+    // published 738 across 30 suites, "1,414 in the whole repository", where the
+    // measured numbers were 743 and 1,419 — and the pull request for the same
+    // commit said 741 across 29. Three sources, three numbers, one commit, in
+    // the paragraph that already recorded this figure being miscounted twice.
+    //
+    // Five rounds of drift is enough evidence about the mechanism: a number that
+    // changes with almost every commit cannot be kept true in prose, and a weak
+    // consistency check on it reads as coverage while catching nothing. So the
+    // volatile figures are GONE from the document, and what is asserted here is
+    // that they stay gone and that the commands which produce them are offered
+    // instead. The figures that CAN be kept true — the database convention and
+    // one spec file's own count — remain, and are bound exactly below.
+    // Scoped to the SENTENCE, not to a window of characters around it: the
+    // paragraph below it quotes the old wrong figures in order to explain them,
+    // and a cruder pattern flagged that quotation as a republication.
+    const headlineStart = doc.indexOf("**Implemented and passing**");
+    expect(headlineStart, "the headline sentence could not be located").toBeGreaterThan(-1);
+    const headlineSentence = doc.slice(headlineStart, doc.indexOf("\n", headlineStart));
+    expect(
+      /[\d,]+ Release Rescue tests/.test(headlineSentence),
+      "the doc must not republish a unit-test count that nothing can keep true",
+    ).toBe(false);
+    expect(
+      /in the whole repository/.test(headlineSentence),
+      "nor a repository total in the same sentence",
+    ).toBe(false);
+    expect(doc, "the doc must offer the command instead of a stale number").toContain(
+      "npx vitest run $(find src -name '*.test.ts' | grep -i release-rescue | sort)",
     );
-    expect(headline, "the headline figures sentence could not be located").not.toBeNull();
-
-    const rescue = Number(headline![1].replace(/,/g, ""));
-    const suites = Number(headline![2]);
-    const repository = Number(headline![3].replace(/,/g, ""));
-
-    // Internal consistency, which is what actually broke: the repository total
-    // must exceed the Release Rescue total, and the eight known environmental
-    // failures must leave a sane passing count.
-    //
-    // WHAT THIS CANNOT DO, measured rather than guessed. Two audits noted that
-    // `rescue` is bounded only from below, so a mutation of 729 -> 650 survives.
-    // The obvious repair — count the cases statically and compare — does not
-    // work: a static sweep of `it(` across these 30 files yields 540 against a
-    // runtime 729, because 189 cases are GENERATED in loops (one per surface
-    // file, one per policy path, one per catalog code). A number produced by
-    // running the suite cannot be reproduced by reading it.
-    //
-    // The 538 this comment carried was measured at the PARENT commit and
-    // republished here under "verified at this commit" while the same diff added
-    // an `it(`. An audit caught it. The lesson is not about the digit: a figure
-    // inside an argument about measurement has to be measured at the commit that
-    // states it, or the argument is the thing being falsified.
-    //
-    // So the floor stays, and it is a vacuity guard, not a binding. The suite
-    // count and every per-proof database figure below ARE bound exactly. The
-    // Release Rescue and repository totals are correct by measurement at the
-    // commit that published them, and nothing in CI will catch it if a later
-    // round lets them drift. That is a stated limitation, not a covered one.
-    expect(repository).toBeGreaterThan(rescue);
-    expect(suites).toBe(30);
-    expect(rescue).toBeGreaterThan(600);
 
     // And the per-proof table must still sum to the database figure it quotes.
     const rows = [...doc.matchAll(/^\| `release_rescue_[a-z0-9_]+\.sql` \| (\d+) \|$/gm)].map((m) =>

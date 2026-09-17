@@ -30,7 +30,7 @@
  *
  *   node scripts/claim-guard-mutation-proof.mjs
  */
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,8 +41,72 @@ const SUITES = [
   "src/lib/ai-app-release-rescue/copy.test.ts",
 ];
 
-/** @type {ReadonlyArray<{id: string, mechanism: string, from: string, to: string, control?: boolean}>} */
+/**
+ * Each entry reverts ONE mechanism to THE IMPLEMENTATION IT REPLACED.
+ *
+ * Two entries used to substitute the EMPTY set instead — `.slice(0, 0)` for the
+ * aliases and for the framework entrypoints. That is strictly weaker than the
+ * predecessor, and for the aliases it merely tripped an explicit `throw`, so the
+ * printed evidence was a module that failed to load rather than a test that
+ * caught anything. Reverted to the real predecessors, both suites stayed green:
+ * neither mechanism was held, while this script reported "all eight are held"
+ * and the commit message, the architecture document and the pull request all
+ * repeated it. The rule this harness exists to enforce — run the OLD
+ * implementation against the NEW mutants — was the rule this harness broke.
+ *
+ * Every `to` below is now quoted from the commit that the mechanism replaced.
+ *
+ * @type {ReadonlyArray<{id: string, mechanism: string, from: string, to: string, control?: boolean}>}
+ */
 const MUTANTS = [
+  {
+    id: "M-GRAPH-EXCLUSION",
+    mechanism: "a module a page imports stays in the graph whatever it is called",
+    from: "      if (target && !reached.has(target)) {",
+    to: "      if (target && !reached.has(target) && !/\\.(test|test-fixtures)\\.(tsx?|jsx?|mjs|cjs)$/.test(target)) {",
+  },
+  {
+    id: "M-RUNNER-CONFIG",
+    mechanism: "test-ness is decided by what the runner collects, not by a name pattern",
+    from: "  return RUNNER_PATTERNS.some((pattern) => pattern.test(file));",
+    to: "  return /\\.(test|test-fixtures)\\.(tsx?|jsx?|mjs|cjs)$/.test(file);",
+  },
+  {
+    id: "M-ROUTE-ROOTS",
+    mechanism: "the route directories Next resolves are probed, not named",
+    from: "const ROUTE_ROOTS = routeRoots();",
+    to: 'const ROUTE_ROOTS = ["src/app"];',
+  },
+  {
+    id: "M-SERVED-APP",
+    mechanism: "the route roots' non-source files are served static too, not only public/",
+    from: "  ...ROUTE_ROOTS.flatMap((root) => everyFileUnder(root)).filter((file) => !SOURCE_EXTENSION.test(file)),",
+    to: "",
+  },
+  {
+    id: "M-PUBLIC",
+    mechanism: "everything public/ serves is enumerated",
+    from: '  ...everyFileUnder("public"),',
+    to: "",
+  },
+  {
+    id: "M-ASSET-TEXT",
+    mechanism: "a served asset's text-ness is decided by its bytes, not by its extension",
+    from: "  if (bytes.includes(0)) return false;",
+    to: "  if (!/\\.(svgz?|html?|txt|md|json|xml|csv|webmanifest|vtt)$/i.test(file)) return false;\n  if (bytes.includes(0)) return false;",
+  },
+  {
+    id: "M-ALIASES",
+    mechanism: "path aliases are read from tsconfig, not assumed to be the one this project uses",
+    from: "const ALIASES = tsconfigAliases();",
+    to: 'const ALIASES = [{ prefix: "@/", target: "src" }];',
+  },
+  {
+    id: "M-ENTRYPOINTS",
+    mechanism: "framework entrypoints are derived from names x locations x extensions",
+    from: "  for (const file of frameworkEntrypoints()) entries.add(file);",
+    to: '  for (const file of ["src/proxy.ts", "src/middleware.ts", "src/instrumentation.ts"]) {\n    if (existsSync(resolve(process.cwd(), file))) entries.add(file);\n  }',
+  },
   {
     id: "M-SELF-CLOSING",
     mechanism: "JSX passed as a prop on an outermost element is read",
@@ -68,24 +132,6 @@ const MUTANTS = [
     to: "if (ts.isJsxText(child)) parts.push(child.text);",
   },
   {
-    id: "M-ENTRYPOINTS",
-    mechanism: "files the framework loads are derived, not listed",
-    from: "  for (const file of frameworkEntrypoints()) entries.add(file);",
-    to: "  for (const file of frameworkEntrypoints().slice(0, 0)) entries.add(file);",
-  },
-  {
-    id: "M-ALIASES",
-    mechanism: "path aliases are read from tsconfig, not assumed",
-    from: "const ALIASES = tsconfigAliases();",
-    to: "const ALIASES = tsconfigAliases().slice(0, 0);",
-  },
-  {
-    id: "M-PUBLIC",
-    mechanism: "everything public/ serves is enumerated",
-    from: 'export const RELEASE_RESCUE_SERVED_ASSETS: string[] = everyFileUnder("public").sort();',
-    to: "export const RELEASE_RESCUE_SERVED_ASSETS: string[] = [];",
-  },
-  {
     id: "M-PAGE-ADJACENT",
     mechanism: "every file Next renders around a page counts, including ones this repo has none of",
     from:
@@ -104,18 +150,44 @@ const MUTANTS = [
 const workDir = mkdtempSync(join(tmpdir(), "claim-guard-mutation-"));
 const reportPath = join(workDir, "report.json");
 
+/**
+ * Run the two suites once, ASYNCHRONOUSLY.
+ *
+ * This used `execFileSync`, which blocks the event loop for the whole child
+ * run — so the `SIGINT` handler below could not fire during the 99 seconds that
+ * actually matter, and an interrupt left the discovery module mutated on disk.
+ * The first attempt at fixing that added the handler and measured nothing: the
+ * process ran to completion because the signal could not be delivered until the
+ * event loop was free. Spawning asynchronously keeps the loop free, so the
+ * handler runs and the child is killed with it.
+ */
+function runSuites() {
+  return new Promise((resolveRun) => {
+    child = spawn("npx", ["vitest", "run", "--reporter=json", `--outputFile=${reportPath}`, ...SUITES], {
+      stdio: "pipe",
+    });
+    // A run that never finishes used to hang the script with the module still
+    // mutated. Ten minutes is far longer than these two suites need.
+    const bound = setTimeout(() => child?.kill("SIGKILL"), 600_000);
+    child.on("close", () => {
+      clearTimeout(bound);
+      child = null;
+      resolveRun();
+    });
+    child.on("error", () => {
+      clearTimeout(bound);
+      child = null;
+      resolveRun();
+    });
+  });
+}
+
 /** The set of tests that fail right now. Files that fail to RUN count too. */
-function failingSet() {
+async function failingSet() {
   // Delete the report first. vitest writes no outputFile when collection
   // throws, so reading it unconditionally returns the PREVIOUS run's result.
   if (existsSync(reportPath)) unlinkSync(reportPath);
-  try {
-    execFileSync("npx", ["vitest", "run", "--reporter=json", `--outputFile=${reportPath}`, ...SUITES], {
-      stdio: "pipe",
-    });
-  } catch {
-    // A non-zero exit is expected for a mutant. The report, not the code, decides.
-  }
+  await runSuites();
   if (!existsSync(reportPath)) return new Set(["<no report written>"]);
   let data;
   try {
@@ -134,11 +206,58 @@ function failingSet() {
   return names;
 }
 
+const SENTINEL = `${MODULE}.mutation-proof-original`;
+
+// Belt and braces. A signal handler cannot run through a `SIGKILL`, a power cut
+// or an OOM kill, and any of those would leave the guard silently weakened in
+// the working tree. The untouched original is parked beside the module for the
+// duration; if a previous run died, THIS run restores from it before doing
+// anything else and says so.
+if (existsSync(SENTINEL)) {
+  writeFileSync(MODULE, readFileSync(SENTINEL, "utf8"));
+  rmSync(SENTINEL, { force: true });
+  console.error(`a previous run of this script died with ${MODULE} mutated; it has been restored from ${SENTINEL}`);
+}
+
 const original = readFileSync(MODULE, "utf8");
+writeFileSync(SENTINEL, original);
+let child = null;
 let exitCode = 0;
 
+/**
+ * Restore on a signal as well as on the normal path.
+ *
+ * `finally` does not unwind on a default-terminating signal, so a Ctrl-C — or a
+ * hung `vitest` run, which nothing used to bound — left the discovery module
+ * MUTATED on disk, with the operator's last visible output being a clean
+ * baseline line. An audit interrupted this script and found the guard silently
+ * weakened in the working tree.
+ */
+const restore = () => {
+  try {
+    child?.kill("SIGKILL");
+    writeFileSync(MODULE, original);
+    rmSync(SENTINEL, { force: true });
+  } catch {
+    // Nothing useful to do while dying; the byte-for-byte check below is the
+    // backstop for the normal path.
+  }
+};
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    restore();
+    console.error(`\ninterrupted by ${signal}; ${MODULE} restored`);
+    process.exit(130);
+  });
+}
+process.on("uncaughtException", (error) => {
+  restore();
+  console.error(`\nuncaught: ${error instanceof Error ? error.message : String(error)}; ${MODULE} restored`);
+  process.exit(2);
+});
+
 try {
-  const baseline = failingSet();
+  const baseline = await failingSet();
   console.log(`baseline failing tests: ${baseline.size === 0 ? "(none)" : [...baseline].join(", ")}`);
 
   for (const mutant of MUTANTS) {
@@ -151,7 +270,7 @@ try {
     writeFileSync(MODULE, original.replace(mutant.from, mutant.to));
     let newly;
     try {
-      newly = [...failingSet()].filter((name) => !baseline.has(name)).sort();
+      newly = [...(await failingSet())].filter((name) => !baseline.has(name)).sort();
     } finally {
       writeFileSync(MODULE, original);
     }
@@ -164,6 +283,7 @@ try {
   }
 } finally {
   writeFileSync(MODULE, original);
+  rmSync(SENTINEL, { force: true });
   rmSync(workDir, { recursive: true, force: true });
 }
 
@@ -171,5 +291,9 @@ if (readFileSync(MODULE, "utf8") !== original) {
   console.error("FATAL: the module was not restored; restore it from git before continuing");
   process.exit(2);
 }
-console.log(exitCode === 0 ? "\nevery mechanism is held by a test, and the control changed nothing" : "\nsee UNHELD/ANCHOR-MISS above");
+console.log(
+  exitCode === 0
+    ? `\nall ${MUTANTS.length - 1} mechanisms are held by a named test, each reverted to the implementation it replaced, and the control changed nothing`
+    : "\nsee UNHELD/ANCHOR-MISS above",
+);
 process.exit(exitCode);

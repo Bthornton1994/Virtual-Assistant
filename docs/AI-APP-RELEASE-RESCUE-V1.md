@@ -259,7 +259,25 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 738 Release Rescue tests across 30 suites (1,414 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+
+The unit-test counts that used to open this sentence are gone from it. They read
+"738 Release Rescue tests across 30 suites (1,414 in the whole repository)" at a
+commit where the measured numbers were 743 and 1,419, and the pull request for
+the same commit said 741 across 29 — three sources, three numbers, one commit, in
+the paragraph whose next lines record this same figure being miscounted twice
+before. A number that changes with almost every commit cannot be kept true in
+prose, and the two below can: the database figure is a counting convention
+applied to committed proof output, and the browser figure is one spec file's own
+count. For the current unit numbers, run them:
+
+```
+npx vitest run $(find src -name '*.test.ts' | grep -i release-rescue | sort)   # this offer
+npx vitest run                                                                 # the repository
+```
+
+The pull request states both, measured, at the commit it describes — which is
+the right place for a figure whose truth is bounded by a SHA.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -3236,6 +3254,89 @@ change extracts an identical set of 4,287 strings and flags an identical set of
 previous implementation and read by this one. Counting only what a change *adds*
 is how an earlier round published "zero new findings" for a diff that had
 silently removed 1,087 strings, so both directions are diffed as sets.
+
+### Ninth time: three hand-written facts left in the function that derived the other three
+
+The eighth round derived the framework's entrypoints, the path aliases and
+`public/`. It left three literals untouched in the same file, and an audit served
+a prohibited claim at HTTP 200 through each of them, with both guard suites green
+every time.
+
+- **`NOT_A_SURFACE`**, a negative name pattern, was applied INSIDE the import
+  graph. A checked page could import a component and the component was deleted
+  from the walk *after* its specifier resolved — so `UNRESOLVED_IMPORTS` could
+  not fire and the exact-set assertion did not move. `vitest` collects
+  `src/**/*.test.ts` only, so a `.test.tsx` was excluded from the surface AND
+  never run as a test: read by nothing, bundled and rendered by Next. The audit
+  imported one into the offer's own landing page and served two claims.
+
+  The question was never "is this named like a test" but "does the runner run
+  this", and the runner's config answers it. The globs are read from
+  `vitest.config.ts` now, and the import graph excludes nothing at all: a module
+  a rendered page imports is a surface whatever it is called.
+
+- **`public`** was named as *the* served-static directory. Next also serves
+  `robots.txt`, `manifest.webmanifest` and `sitemap.xml` from the app directory,
+  and a web-app manifest's `description` is shown at install and in the app
+  switcher. The audit served two claims from there. The served set is derived as
+  "not a module the bundler compiles, under a directory the framework serves",
+  which names none of them.
+
+- **`APP_DIR = "src/app"`** was the only tree walked. Next resolves `app` or
+  `src/app`, and `pages` or `src/pages`. The route roots are probed now.
+
+Two more went with them. A served asset was scanned as **offer copy**, which lets
+a disclaimer license a claim in the same clause — right for prose a person wrote,
+wrong for markup, where an SVG's tag names, `id`s and `aria-label`s all enter the
+same token stream and any of them lands between a denial and the claim. A badge
+reading "This is not a penetration test" beside "We deliver a penetration test"
+was served at HTTP 200. Assets are read as typed fields now: an asset cannot
+carry a scoped disclaimer, so it does not get the benefit of one. And the
+asset-text classification was an extension list whose recorded reason —
+"a binary asset whose words are pixels or glyph outlines" — was **false** for
+`.js`, `.css`, `.yaml` and `.rtf`, every one of which `public/` can hold. Bytes
+decide it now, so the recorded reason is true of what it describes.
+
+### The evidence artifact was itself composed inside its own premise
+
+The worst finding of the round was not a served claim. `npm run proof:claim-guard`
+reported **HELD** for two mechanisms that were not held.
+
+Its own header says each entry reverts a mechanism to "the implementation it
+replaced". Two entries substituted the **empty set** instead — `.slice(0, 0)` —
+which is strictly weaker than the predecessor, and which for the aliases merely
+tripped an explicit `throw`, so the printed evidence was a module that failed to
+load rather than a test that caught anything. Reverted to the real predecessors
+(the literal `@/` prefix, and the three literal entrypoint strings), both suites
+stayed green. The rule the harness exists to enforce — *run the OLD
+implementation against the NEW mutants* — was the rule the harness broke, and
+"all eight are held" went into the commit message, this document and the pull
+request.
+
+Every mutant now quotes the commit it reverts to. Fixing that exposed the real
+gap underneath: this project declares ONE alias, has ONE entrypoint on disk and
+ONE route root, so the derived answer and a hard-coded literal agree here and no
+behavioural test can separate them. Three of the derivations are therefore
+exercised against inputs this repository does not have — a config with three
+aliases, a tree with `instrumentation-client.js` at the root and `proxy.tsx`
+under `src/` — and the **wiring** is asserted from the module's own source, so
+pasting a derivation's current output back in as a literal fails a named test.
+Thirteen mechanisms, thirteen held, one control that must change nothing.
+
+### An interrupt used to leave the guard weakened on disk, and the first fix for it measured nothing
+
+`execFileSync` blocks the event loop, so the `SIGINT` handler added to fix this
+could not run during the ninety-nine seconds that actually matter. The first
+attempt was tested by interrupting a run that had already finished, which proved
+nothing — the same "a record that nothing executes is not evidence" failure, in
+the fix for it. The suites are spawned asynchronously now, the child is killed
+with the parent, and the untouched original is parked beside the module for the
+duration so that a `SIGKILL`, an OOM kill or a power cut is recovered by the next
+run, which says so loudly. All three paths were measured: interrupted mid-mutant,
+killed mid-mutant, and recovered on the following run.
+
+`npm run verify` runs the proof now. An artifact that exists to be the evidence
+can rot if nothing runs it.
 
 ## What this slice deliberately does not do
 

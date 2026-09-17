@@ -1,9 +1,21 @@
+import ts from "typescript";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
-  ASSET_IS_ITS_OWN_TEXT,
+  assetIsItsOwnText,
+  collectedByTheRunner,
+  parseSurface,
+  sourceStatesTheOffer,
+  staticSpecifiersIn,
+  reachableFrom,
+  routeRoots,
+  frameworkEntrypoints,
+  tsconfigAliases,
   RENDERED_AROUND_A_PAGE,
   ASSET_RESIDUALS,
   DECLARED_CLAIM_BEARING_FILES,
@@ -234,6 +246,30 @@ describe("the marketing surface makes no prohibited claim", () => {
     ]);
     for (const entry of ENTRY_RESIDUALS) {
       expect(entry.why.length, `${entry.mechanism} needs a reason, not an entry`).toBeGreaterThan(80);
+
+      // And the bound is RUN, the way the extractor's residuals are. A commit
+      // claimed these were "asserted the way EXTRACTOR_RESIDUALS is" when the
+      // suite only counted them and measured the length of their prose — a
+      // record that nothing executes, in the record added to stop exactly that.
+      if (entry.mechanism === "computed_name") {
+        expect(
+          sourceStatesTheOffer(entry.source, "residual.tsx"),
+          "the computed_name residual must actually be invisible to the entry rule",
+        ).toBe(false);
+        expect(
+          sourceStatesTheOffer(entry.seenWhenStatic, "residual.tsx"),
+          "and the same shape written statically must be seen, or the residual proves nothing",
+        ).toBe(true);
+      } else {
+        expect(
+          staticSpecifiersIn(entry.source),
+          "the computed_import residual must actually be unresolvable by the walk",
+        ).toEqual([]);
+        expect(
+          staticSpecifiersIn(entry.seenWhenStatic),
+          "and the static form must be resolvable, or the residual proves nothing",
+        ).not.toEqual([]);
+      }
     }
 
     expect(EXTRACTOR_RESIDUALS.length).toBe(6);
@@ -454,13 +490,189 @@ describe("the marketing surface makes no prohibited claim", () => {
     ).toEqual([...RELEASE_RESCUE_SERVED_ASSETS].sort());
 
     for (const file of SCANNABLE_ASSETS) {
-      expect(findProhibitedClaims(readServedAsset(file), "offer_copy"), `${file} serves a prohibited claim`).toEqual([]);
+      expect(findProhibitedClaims(readServedAsset(file), "typed_field"), `${file} serves a prohibited claim`).toEqual([]);
     }
 
     // The unreadable ones carry a reason, not an entry — the rule the tokenizer
     // and extractor residuals already follow.
     for (const residual of ASSET_RESIDUALS) {
       expect(residual.why.length, `${residual.file} needs a reason, not an entry`).toBeGreaterThan(80);
+    }
+  });
+
+  it("wires each derivation into the module, rather than pasting the answer it happens to give", () => {
+    // This project declares ONE alias, has ONE framework entrypoint on disk and
+    // ONE route root. So the derived answer and a hard-coded literal agree on
+    // this repository, and no behavioural test can tell them apart — which is
+    // exactly how the mutation proof came to report two mechanisms HELD while
+    // reverting either to its literal predecessor changed nothing.
+    //
+    // What can be checked is the WIRING: that the constant is initialised by
+    // calling the derivation rather than by restating its current output. That
+    // is the property a regression would break, and it is a fact about this
+    // module's own source, so it is read from that source.
+    const moduleSource = readSurface("src/lib/__tests__/release-rescue-surface-files.ts");
+    const parsed = parseSurface("release-rescue-surface-files.ts", moduleSource);
+
+    const initialiserOf = (name: string): string | null => {
+      let found: string | null = null;
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.name.text === name &&
+          node.initializer
+        ) {
+          found = node.initializer.getText(parsed);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+      return found;
+    };
+
+    expect(initialiserOf("ALIASES"), "ALIASES must be read from tsconfig, not restated").toBe("tsconfigAliases()");
+    expect(initialiserOf("ROUTE_ROOTS"), "ROUTE_ROOTS must be probed, not named").toBe("routeRoots()");
+    expect(initialiserOf("COLLECTED_BY_THE_RUNNER"), "the runner's globs must be read from its config").toBe(
+      "vitestIncludeGlobs()",
+    );
+    expect(
+      moduleSource.includes("for (const file of frameworkEntrypoints()) entries.add(file);"),
+      "the entry set must come from the derived entrypoints",
+    ).toBe(true);
+  });
+
+  it("serves assets from every directory the framework serves them from", () => {
+    // The served set is the union of `public/` and the route roots' non-source
+    // files. Dropping either source left every assertion about the set still
+    // true — the union still held, the length was still non-zero — so the
+    // mutation proof reported both sources UNHELD. Each source is now required
+    // to contribute, which is a true statement about this repository: five SVGs
+    // under `public/`, and `favicon.ico` and `globals.css` under `src/app`.
+    const fromPublic = RELEASE_RESCUE_SERVED_ASSETS.filter((file) => file.startsWith("public/"));
+    const fromRouteRoots = RELEASE_RESCUE_SERVED_ASSETS.filter((file) =>
+      routeRoots().some((root) => file.startsWith(`${root}/`)),
+    );
+    expect(fromPublic.length, "public/ must contribute to the served set").toBeGreaterThan(0);
+    expect(
+      fromRouteRoots.length,
+      "the route roots' non-source files are served at the site root and must contribute too",
+    ).toBeGreaterThan(0);
+    expect(
+      [...fromPublic, ...fromRouteRoots].sort(),
+      "the served set is exactly those two sources",
+    ).toEqual([...RELEASE_RESCUE_SERVED_ASSETS].sort());
+  });
+
+  it("derives path aliases from a config, not from the one prefix this project happens to use", () => {
+    // This project declares exactly one alias, `@/`, and exactly one framework
+    // entrypoint exists on disk. So NOTHING in the repository distinguishes
+    // "read the aliases from tsconfig" from "assume the literal `@/`" — the
+    // mutation proof reported both mechanisms HELD only because its mutant
+    // substituted the EMPTY set, which trips an explicit throw, rather than the
+    // implementation each one replaced. Reverted to the real predecessors, both
+    // suites stayed green: the mechanisms were not held at all.
+    //
+    // The derivation is exercised here against a config this project does not
+    // have, which is the only way a derivation can be told from an assumption.
+    const scratch = mkdtempSync(join(tmpdir(), "release-rescue-tsconfig-"));
+    try {
+      writeFileSync(
+        join(scratch, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            // A second alias, and a comment, and a trailing comma — all of which
+            // tsconfig permits and `JSON.parse` does not. A hand-rolled stripper
+            // for this format ate the paths map on its own `"@/*"` key.
+            paths: { "@/*": ["./src/*"], "~/*": ["./src/*"], "#shared/*": ["./packages/shared/*"] },
+          },
+        }),
+      );
+      const aliases = tsconfigAliases(join(scratch, "tsconfig.json"));
+      expect(
+        aliases.map((alias) => alias.prefix).sort(),
+        "every alias the config declares must be read, not only the one this project uses",
+      ).toEqual(["#shared/", "@/", "~/"]);
+      expect(aliases.find((alias) => alias.prefix === "#shared/")?.target).toBe("packages/shared");
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("finds a framework entrypoint in either location and any servable extension", () => {
+    // The predecessor was three literal strings with the `src/` spelling only.
+    // It missed `instrumentation-client`, which runs in the BROWSER on every
+    // route and is imported by nothing. This repository has one entrypoint, so
+    // only a tree it does not have can tell the derivation from the list.
+    const scratch = mkdtempSync(join(tmpdir(), "release-rescue-entry-"));
+    try {
+      mkdirSync(join(scratch, "src"), { recursive: true });
+      writeFileSync(join(scratch, "instrumentation-client.js"), "export function onRouterTransitionStart() {}\n");
+      writeFileSync(join(scratch, "src", "proxy.tsx"), "export default function proxy() {}\n");
+      writeFileSync(join(scratch, "src", "middleware.mjs"), "export default function middleware() {}\n");
+      writeFileSync(join(scratch, "src", "not-an-entrypoint.ts"), "export const x = 1;\n");
+
+      expect(frameworkEntrypoints(scratch).sort(), "every location and extension the framework resolves").toEqual([
+        "instrumentation-client.js",
+        "src/middleware.mjs",
+        "src/proxy.tsx",
+      ]);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a module a page imports in the graph, whatever the module is called", () => {
+    // The exclusion used to be applied INSIDE the import graph, so a component
+    // was deleted from the walk AFTER its specifier resolved: `UNRESOLVED_IMPORTS`
+    // could not fire, the exact-set assertion did not move, and the file was
+    // read by nothing while Next bundled and rendered it. Two prohibited claims
+    // were served at HTTP 200 from the offer's own landing page with the whole
+    // suite green.
+    const reached = reachableFrom("src/lib/__tests__/surface-fixtures/imports-it.ts");
+    expect(
+      reached,
+      "a module reached by import stays in the graph even when its name looks like a test",
+    ).toContain("src/lib/__tests__/surface-fixtures/renders-prose.test.tsx");
+  });
+
+  it("probes for the route directories Next resolves, rather than naming one", () => {
+    // `APP_DIR` was the single string "src/app". Next resolves `app` or
+    // `src/app`, and `pages` or `src/pages`, so a Pages Router page naming the
+    // offer sat outside every walk in the module at once.
+    const scratch = mkdtempSync(join(tmpdir(), "release-rescue-roots-"));
+    try {
+      mkdirSync(join(scratch, "src", "app"), { recursive: true });
+      mkdirSync(join(scratch, "src", "pages"), { recursive: true });
+      mkdirSync(join(scratch, "pages"), { recursive: true });
+      expect(routeRoots(scratch).sort(), "every route directory the framework resolves").toEqual([
+        "pages",
+        "src/app",
+        "src/pages",
+      ]);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a file as a test only when the runner actually collects it", () => {
+    // The predecessor was a name pattern naming four spellings. `vitest`
+    // collects only `src/**/*.test.ts`, so `.test.tsx` and `.test-fixtures.ts`
+    // were excluded from the surface AND never run as tests — read by nothing,
+    // while Next bundled and rendered them. An audit imported a
+    // `release-note.test.tsx` into the offer's own landing page and served two
+    // prohibited claims at HTTP 200 with the whole suite green.
+    expect(collectedByTheRunner("src/lib/__tests__/release-rescue-claim-guard.test.ts")).toBe(true);
+    for (const notCollected of [
+      "src/components/x/release-note.test.tsx",
+      "src/components/x/banner.test.jsx",
+      "src/lib/y/demo.test-fixtures.ts",
+      "src/components/x/banner.tsx",
+    ]) {
+      expect(
+        collectedByTheRunner(notCollected),
+        `${notCollected} is not run by the test runner, so it is a surface`,
+      ).toBe(false);
     }
   });
 
@@ -543,15 +755,40 @@ describe("the marketing surface makes no prohibited claim", () => {
     // never matches passes exactly as loudly as one that works. `public/` today
     // holds five SVGs with no text at all.
     const asset = `<svg xmlns="http://www.w3.org/2000/svg"><text x="0" y="0">We deliver a penetration test.</text></svg>`;
-    expect(ASSET_IS_ITS_OWN_TEXT.test("public/badge.svg"), "an SVG must count as readable text").toBe(true);
-    expect(findProhibitedClaims(asset, "offer_copy"), "a claim in an SVG must be read").not.toEqual([]);
+    expect(findProhibitedClaims(asset, "typed_field"), "a claim in an SVG must be read").not.toEqual([]);
 
-    // And the other direction. `public/` holds five SVGs today and nothing
-    // else, so `ASSET_RESIDUALS` is empty and its loop asserts nothing — a
-    // classification exercised one way only is half a classification. A raster
-    // image must land in the residual set rather than be scanned as text.
-    for (const binary of ["public/hero.png", "public/logo.jpg", "public/brand.woff2", "public/promo.mp4"]) {
-      expect(ASSET_IS_ITS_OWN_TEXT.test(binary), `${binary} is not readable as text`).toBe(false);
+    // A served asset is scanned as a TYPED FIELD, not as offer copy. Offer copy
+    // lets a disclaimer license a claim in the same clause, which is right for
+    // prose a person wrote and wrong for markup: an SVG's tag names, `id`s and
+    // `aria-label`s all enter the same token stream, so any of them lands
+    // between a denial and the claim and licenses it. An audit served a badge
+    // reading "This is not a penetration test" beside "We deliver a penetration
+    // test" at HTTP 200 with the suite green. An asset cannot carry a scoped
+    // disclaimer, so it does not get to benefit from one.
+    const licensed = `<svg xmlns="http://www.w3.org/2000/svg"><desc>This is not a penetration test</desc><text x="10" y="30">We deliver a penetration test</text></svg>`;
+    expect(
+      findProhibitedClaims(licensed, "typed_field"),
+      "a disclaimer elsewhere in an asset must not license the claim",
+    ).not.toEqual([]);
+    expect(
+      findProhibitedClaims(licensed, "offer_copy"),
+      "this payload is disarmed under offer_copy, which is why assets are not read as offer copy",
+    ).toEqual([]);
+
+    // And the classification in both directions, decided by BYTES rather than by
+    // a name. `public/` holds five SVGs today, so `ASSET_RESIDUALS` is empty and
+    // its loop asserts nothing; these two files make the decision run.
+    const scratch = mkdtempSync(join(tmpdir(), "release-rescue-asset-"));
+    try {
+      const text = join(scratch, "notice.js");
+      writeFileSync(text, 'export const NOTE = "we deliver a penetration test";\n');
+      expect(assetIsItsOwnText(text), "a .js asset is text and must be read").toBe(true);
+
+      const binary = join(scratch, "badge.png");
+      writeFileSync(binary, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]));
+      expect(assetIsItsOwnText(binary), "a PNG is not readable as text").toBe(false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
     }
   });
 });
