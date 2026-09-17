@@ -259,7 +259,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 717 Release Rescue tests across 30 suites (1,393 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 729 Release Rescue tests across 30 suites (1,405 in the whole repository, of which 8 fail for an environmental reason recorded below), 378 live database cases across thirteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The browser figure was **16** in three previous revisions of this sentence and that was misleading. Sixteen is the number of browser tests that were *run* — the 13 in `e2e/ai-app-release-rescue.spec.ts` plus three in two neighbouring specs. In a sentence whose other three figures are Release Rescue totals, "16 browser tests" reads as sixteen Release Rescue browser tests, and there have never been more than 13. An audit caught it in a revision that updated the other three numbers and left this one. The figure is now the spec's own count.
 
@@ -2471,6 +2471,80 @@ whether object keys and non-code identifiers count changes the answer. A number
 that moves with the definition of the thing being counted is not evidence, so
 the count is gone and the claim every sweep agreed on stayed: **zero of them
 carry a claim.**
+
+### A fourth list, and the brace that ate a footer
+
+The import graph looked derived and was not, because its ENTRY SET was still a
+hand-written answer: one directory. Next wraps every page in the ancestor
+`layout.tsx` chain, and `(marketing)/layout.tsx` renders the site header and
+footer on every Release Rescue page. An audit put a claim in the footer, built
+the app, and served it at **HTTP 200 on three Release Rescue routes** with the
+whole suite green. A second instance needed no layout at all: `pricing/page.tsx`
+sells this offer by name and both prices, and sat outside a set rooted at one
+directory.
+
+The chain is derived from the filesystem now, the way the framework derives it —
+every `layout`, `template`, `error`, `not-found` and `loading` from `src/app`
+down — plus any page in the app that names the offer. 49 files became **61**.
+
+**But the file was already in the set when the mutant survived**, and that was
+the more serious half. The extractor dropped expression containers with
+`\{[^{}]*\}`, which cannot tell a JSX container from a JavaScript block: any
+component whose body contains no nested braces had its **entire body deleted**
+before a single word was read. `MarketingFooter` was one. Adding the file to the
+set changed nothing until the extraction changed.
+
+Reading only what sits between a `>` and a `<` needs no brace handling at all.
+Inline tags are removed first so a sentence they split joins back up; block-level
+tags stay in place so each run is one element's text and two unrelated paragraphs
+are never spliced into a claim neither one makes.
+
+### The third round of "formatting decides, not content"
+
+Newline (round 27), inline markup (round 28), and now **HTML entities**. JSX
+resolves `&#32;` before a customer reads the page; the extractor read raw source,
+so `penetration&#32;test` matched nothing while the page served the words. Proven
+at HTTP 200 from a real build. `&nbsp;` behaved the same — and that one is not
+adversarial: `react/no-unescaped-entities` is enforced here, so this codebase
+already writes entities in prose, and a non-breaking space is the ordinary way to
+stop "penetration test" wrapping across two lines.
+
+Entities are decoded before matching now, and both forms are in the planted-claim
+test with the other four shapes.
+
+### An exemption that covers vocabulary, not prose
+
+"Checked unless declared" shipped with a both-sides assertion and the claim that
+it "cannot quietly become a place to silence a real hit". An audit disproved that
+in one edit: plant a claim in a file **and** add that file to the map, and both
+sides move together, so nothing fails. Nothing validates that a written reason is
+true — it was a governance control wearing a technical one's clothes.
+
+What is checkable is why an exemption can ever be legitimate: the only honest
+reason to hold claim text is to BE the vocabulary. So every flagged string in a
+declared file must now be one of the offer's own phrases standing alone, in prose
+form or as an identifier. A sentence that merely contains a claim can no longer be
+exempted — which is exactly the shape the audit used.
+
+### What the widening cost, and what it bought back
+
+Reaching general-purpose modules made the extractor read plain `.ts` source as
+prose: `["fully", "secure", "partial"]` in a rubric constant failed CI as the
+claim "fully secure". It failed **closed**, so nothing overclaimed shipped, but
+ordinary code was being judged as copy. The rendered branch now runs only on
+files that actually contain markup; their quoted strings are still read, which is
+where a logic module's customer-visible words live.
+
+Widening also forced a product-copy rule to be loosened — `\/5\b` matched the
+Tailwind class `hover:bg-black/5`, and requiring a digit before the slash lost
+"rated x/5", "Rated N/5 overall" and "readiness: /5". The rule is a union now: a
+digit before the slash, or a slash-5 near a word that means a rating. All three
+lost catches are back and the utility classes stay clean.
+
+One more thing the widening surfaced: the boundary sentinel was a literal NUL
+byte, which made `grep` classify the file as binary and made `ripgrep` **drop it
+from directory-wide results entirely** — the module defining the whole customer
+surface was invisible to the codebase's own search tool. It is plain ASCII now.
 
 ### A floor cannot tell a record from a fiction
 

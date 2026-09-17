@@ -27,18 +27,74 @@ import { dirname, join, resolve } from "node:path";
  * entrypoints, and no one has to remember anything. A new module reaches a
  * customer the moment a route imports it, and it is checked that moment.
  */
-const ROUTE_ENTRY_DIR = "src/app/(marketing)/ai-app-release-rescue";
+const APP_DIR = "src/app";
+const ROUTE_DIR = "src/app/(marketing)/ai-app-release-rescue";
+
+/**
+ * The offer's own name. A page anywhere in the app that sells this offer is a
+ * Release Rescue surface wherever it lives — `(marketing)/pricing/page.tsx`
+ * names it and quotes both prices, and it sat outside a set that was rooted at
+ * one directory.
+ */
+const OFFER_NAME = "Release Rescue";
 
 /** Test files and fixtures are not a customer surface; everything else reachable is. */
 const NOT_A_SURFACE = /\.(test|test-fixtures)\.tsx?$/;
 
-function listRouteEntrypoints(dir: string, found: string[] = []): string[] {
+/**
+ * The files Next renders AROUND a page, by its own routing rules rather than by
+ * anyone's memory.
+ *
+ * This is the fourth time the "which files" question has been answered wrongly,
+ * and the third mechanism to fail at it. Rooting the import graph at the route
+ * directory looked derived, but the ENTRY SET was still a hand-written answer:
+ * Next wraps every page in the ancestor `layout.tsx` chain from `src/app` down,
+ * and `(marketing)/layout.tsx` renders `<MarketingHeader />` and
+ * `<MarketingFooter />` on every Release Rescue page. An audit put a claim in
+ * the footer and served it at HTTP 200 on three Release Rescue routes with the
+ * whole suite green.
+ *
+ * So the chain is derived from the filesystem the way the framework derives it.
+ */
+const RENDERED_AROUND_A_PAGE = /^(layout|template|error|global-error|not-found|loading)\.tsx?$/;
+
+function ancestorChainFor(dir: string): string[] {
+  const found: string[] = [];
+  const segments = dir.split("/");
+  // Every level from `src/app` down to and including the route directory.
+  for (let depth = APP_DIR.split("/").length; depth <= segments.length; depth += 1) {
+    const level = segments.slice(0, depth).join("/");
+    for (const entry of readdirSync(resolve(process.cwd(), level), { withFileTypes: true })) {
+      if (!entry.isDirectory() && RENDERED_AROUND_A_PAGE.test(entry.name)) found.push(`${level}/${entry.name}`);
+    }
+  }
+  return found;
+}
+
+function filesUnder(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })) {
     const child = `${dir}/${entry.name}`;
-    if (entry.isDirectory()) listRouteEntrypoints(child, found);
+    if (entry.isDirectory()) filesUnder(child, found);
     else if (/\.tsx?$/.test(entry.name) && !NOT_A_SURFACE.test(entry.name)) found.push(child);
   }
   return found;
+}
+
+/** Any page in the app that sells this offer by name, plus what Next wraps it in. */
+function pagesNamingTheOffer(): string[] {
+  return filesUnder(APP_DIR)
+    .filter((file) => /\/page\.tsx?$/.test(file))
+    .filter((file) => readFileSync(resolve(process.cwd(), file), "utf8").includes(OFFER_NAME));
+}
+
+function listRouteEntrypoints(): string[] {
+  const entries = new Set<string>(filesUnder(ROUTE_DIR));
+  for (const file of ancestorChainFor(ROUTE_DIR)) entries.add(file);
+  for (const page of pagesNamingTheOffer()) {
+    entries.add(page);
+    for (const file of ancestorChainFor(page.slice(0, page.lastIndexOf("/")))) entries.add(file);
+  }
+  return [...entries];
 }
 
 /** Resolve an import specifier to a repository-relative file, or null if it leaves the tree. */
@@ -56,7 +112,7 @@ function resolveImport(specifier: string, fromFile: string): string | null {
 
 function discoverSurfaceFiles(): string[] {
   const reached = new Set<string>();
-  const queue = listRouteEntrypoints(ROUTE_ENTRY_DIR);
+  const queue = listRouteEntrypoints();
   queue.forEach((file) => reached.add(file));
 
   while (queue.length > 0) {
@@ -98,12 +154,23 @@ export const EXPECTED_SURFACE_FILES = [
   "src/app/(marketing)/ai-app-release-rescue/demo/report/page.tsx",
   "src/app/(marketing)/ai-app-release-rescue/intake/page.tsx",
   "src/app/(marketing)/ai-app-release-rescue/page.tsx",
+  "src/app/(marketing)/layout.tsx",
+  "src/app/(marketing)/pricing/page.tsx",
   "src/app/actions/ai-app-release-rescue.ts",
+  "src/app/actions/auth.ts",
+  "src/app/error.tsx",
+  "src/app/layout.tsx",
+  "src/app/not-found.tsx",
   "src/components/ai-app-release-rescue/intake-form.tsx",
   "src/components/ai-app-release-rescue/non-claims.tsx",
   "src/components/ai-app-release-rescue/offer-pricing.tsx",
   "src/components/ai-app-release-rescue/report-view.tsx",
   "src/components/ai-app-release-rescue/rubric-checklist.tsx",
+  "src/components/brand.tsx",
+  "src/components/marketing/chrome.tsx",
+  "src/components/marketing/skip-to-content.tsx",
+  "src/components/nav-link.tsx",
+  "src/components/shells.tsx",
   "src/components/ui.tsx",
   "src/lib/ai-app-release-rescue/constants.ts",
   "src/lib/ai-app-release-rescue/demo-cookie.ts",
@@ -121,6 +188,7 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/catalog-evidence-shared.ts",
   "src/lib/catalog-evidence-validator.ts",
   "src/lib/cn.ts",
+  "src/lib/deployment-origin.ts",
   "src/lib/domain.ts",
   "src/lib/executor-envelope.ts",
   "src/lib/release-rescue-credential-scanner.ts",
@@ -181,13 +249,66 @@ export const DECLARED_CLAIM_BEARING_FILES: Readonly<Record<string, string>> = {
  * boundaries so two unrelated paragraphs cannot be spliced into a claim neither
  * one makes.
  */
-const BLOCK_LEVEL_TAG =
-  /<\/?(?:p|div|li|ul|ol|h[1-6]|section|article|header|footer|main|nav|form|label|button|option|td|th|tr|table|blockquote|dl|dt|dd|figure|figcaption|aside|pre)\b[^>]*>/gi;
+/**
+ * Tags that do NOT interrupt a sentence. Everything else — every block-level
+ * element — is left in place so it bounds its own text.
+ */
+const INLINE_TAG =
+  /<\/?(?:strong|em|b|i|u|s|span|code|kbd|abbr|small|sup|sub|mark|cite|q|time|var|samp|wbr|br|a|Link|Wordmark)\b[^>]*\/?>/gi;
 
-const TEXT_BOUNDARY = " ";
 
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:"'`\\])\/\/[^\n]*/g, "$1 ");
+}
+
+/**
+ * Resolve HTML entities, because JSX resolves them before a customer reads the
+ * page and the extractor's whole contract is to see what the customer sees.
+ *
+ * This was the THIRD consecutive round of "formatting decides, not content":
+ * a newline stopped the match, then inline markup fragmented it, then
+ * `penetration&#32;test` hid it. All three passed the suite; the last two were
+ * served at HTTP 200 from a real build. `&nbsp;` is not adversarial either —
+ * `react/no-unescaped-entities` is enforced here, so this codebase already
+ * writes entities in prose, and a non-breaking space is the ordinary way to
+ * stop "penetration test" wrapping across two lines.
+ */
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-f]+);/gi, (_whole, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_whole, dec) => String.fromCodePoint(Number.parseInt(dec, 10)))
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&(amp|lt|gt|quot|apos|hellip|mdash|ndash|shy|zwnj|zwj);/gi, (_whole, name) => {
+      const named: Record<string, string> = {
+        amp: "&",
+        lt: "<",
+        gt: ">",
+        quot: '"',
+        apos: "'",
+        hellip: "...",
+        mdash: "-",
+        ndash: "-",
+        shy: "",
+        zwnj: "",
+        zwj: "",
+      };
+      return named[String(name).toLowerCase()] ?? " ";
+    });
+}
+
+/**
+ * Does this file render markup at all?
+ *
+ * The `rendered` branch below splits on tags. In a plain `.ts` module there are
+ * no tags, so the whole file collapses into one run and ordinary code is read as
+ * prose: an audit showed `["fully", "secure", "partial"]` in a rubric constant
+ * failing CI as the claim "fully secure". It fails CLOSED, so it never shipped
+ * an overclaim — but the surface now includes general-purpose modules, and their
+ * code is not customer text. Quoted strings in those files are still read; that
+ * is where their customer-visible words actually live.
+ */
+export function rendersMarkup(source: string): boolean {
+  return /<\/[A-Za-z]|\/>/.test(source);
 }
 
 export function visibleStrings(source: string): string[] {
@@ -207,20 +328,33 @@ export function visibleStrings(source: string): string[] {
   }
 
   const quoted = [...code.matchAll(/"([^"\n]{12,})"|'([^'\n]{12,})'|`([^`]{12,})`/g)].map(
-    (match) => match[1] ?? match[2] ?? match[3] ?? "",
+    (match) => decodeEntities(match[1] ?? match[2] ?? match[3] ?? ""),
   );
 
-  const rendered = code
-    // `{"secure"}` renders as the word; keep it in the sentence it sits in.
+  if (!rendersMarkup(code)) return quoted;
+
+  // Anchor on TAGS, never on braces.
+  //
+  // The previous version deleted `{...}` spans to drop expression containers.
+  // `\{[^{}]*\}` cannot tell a JSX container from a JavaScript block, so any
+  // component whose body happens to contain no nested braces had its ENTIRE
+  // body deleted before a single word was read — `MarketingFooter` among them.
+  // A planted claim in the site footer, rendered on every Release Rescue page,
+  // was invisible for that reason and served at HTTP 200.
+  //
+  // Reading only what sits between a `>` and a `<` needs no brace handling at
+  // all: inline tags are removed first so a sentence they split joins back up,
+  // and block-level tags stay in place so each run is the text of one element
+  // and two unrelated paragraphs are never spliced into a claim neither makes.
+  const markup = code
     .replace(/\{\s*(["'`])((?:(?!\1).)*)\1\s*\}/g, "$2")
-    .replace(/\{[^{}]*\}/g, ` ${TEXT_BOUNDARY} `)
-    .replace(BLOCK_LEVEL_TAG, TEXT_BOUNDARY)
-    .replace(/<[^>]*>/g, "")
-    .split(TEXT_BOUNDARY)
-    .map((text) => text.replace(/\s+/g, " ").trim())
-    // A run of prose has a space in it. Requiring a leading capital is what let
-    // a continuation segment through.
-    .filter((text) => text.length >= 12 && text.includes(" "));
+    .replace(INLINE_TAG, "");
+
+  const rendered = [...markup.matchAll(/>([^<>]*)</g)]
+    .map((match) => decodeEntities(match[1]).replace(/\s+/g, " ").trim())
+    // Prose has a space in it. A run carrying `;` or `=>` is the code between
+    // two elements, not words anyone reads.
+    .filter((text) => text.length >= 12 && text.includes(" ") && !/[;{}]|=>/.test(text));
 
   return [...quoted, ...rendered];
 }

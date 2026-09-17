@@ -54,11 +54,14 @@ describe("rescue customer copy", () => {
     // and a marketing page that advertised one would be selling a deliverable
     // the pipeline cannot make.
     // `\/5\b` was the original rule and it is too broad for a set this size: it
-    // matches the Tailwind class `hover:bg-black/5`. A score has a digit in
-    // front of the slash, so that is what it asks for now.
+    // matches the Tailwind class `hover:bg-black/5`. Requiring a digit before
+    // the slash fixed that but lost real catches — an audit measured
+    // "rated x/5", "Rated N/5 overall" and "readiness: /5" all going
+    // unchallenged. So the rule is a union: a digit before the slash, OR a
+    // slash-5 near a word that means a rating. A utility class carries neither.
     for (const file of CHECKED_FILES) {
       for (const text of visibleStrings(readSurface(file))) {
-        expect(text, file).not.toMatch(/1\u20135 score|1-5 score|out of 5|\d\s*\/\s*5\b/i);
+        expect(text, file).not.toMatch(/1\u20135 score|1-5 score|out of 5|\d\s*\/\s*5\b|\b(?:rated|scores?|scored|scoring|readiness|overall)\b[^.]{0,24}\/\s*5\b/i);
       }
     }
   });

@@ -2543,10 +2543,10 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // failures must leave a sane passing count.
     //
     // WHAT THIS CANNOT DO, measured rather than guessed. Two audits noted that
-    // `rescue` is bounded only from below, so a mutation of 717 -> 650 survives.
+    // `rescue` is bounded only from below, so a mutation of 729 -> 650 survives.
     // The obvious repair — count the cases statically and compare — does not
     // work: a static sweep of `it(` across these 30 files yields 540 against a
-    // runtime 717, because 177 cases are GENERATED in loops (one per surface
+    // runtime 729, because 189 cases are GENERATED in loops (one per surface
     // file, one per policy path, one per catalog code). A number produced by
     // running the suite cannot be reproduced by reading it.
     //

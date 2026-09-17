@@ -7,6 +7,7 @@ import {
   EXPECTED_SURFACE_FILES,
   RELEASE_RESCUE_SURFACE_FILES,
   readSurface,
+  rendersMarkup,
   visibleStrings,
 } from "./release-rescue-surface-files";
 
@@ -158,9 +159,24 @@ describe("the marketing surface makes no prohibited claim", () => {
 
   it("actually finds strings to check, so a passing run means something", () => {
     // Without this, a broken extractor would make every file above pass vacuously.
+    // Per-file, only for files that actually render markup. The set now reaches
+    // general-purpose modules — a cookie helper, an env reader — whose customer
+    // words, if any, live in quoted strings; requiring prose from every one of
+    // them would assert something untrue.
     for (const file of SURFACE_FILES) {
-      expect(visibleStrings(readSurface(file)).length, file).toBeGreaterThan(0);
+      const source = readSurface(file);
+      if (!rendersMarkup(source)) continue;
+      expect(visibleStrings(source).length, file).toBeGreaterThan(0);
     }
+
+    // And across the set, a floor — which IS the right shape here, by the same
+    // test the rest of this suite applies: a floor belongs where the quantity is
+    // genuinely unbounded above. Copy grows; an exact count would go red on every
+    // wording change while proving nothing. What it catches is the failure it is
+    // for: an extractor that silently returns nothing.
+    const total = SURFACE_FILES.reduce((sum, file) => sum + visibleStrings(readSurface(file)).length, 0);
+
+    expect(total, "the extractor reads almost nothing — it is probably broken").toBeGreaterThan(1500);
   });
 
   it("declares exactly the files that need a claim-bearing exemption, and no more", () => {
@@ -179,6 +195,31 @@ describe("the marketing surface makes no prohibited claim", () => {
     for (const [file, why] of Object.entries(DECLARED_CLAIM_BEARING_FILES)) {
       expect(SURFACE_FILES, `${file} is declared but no longer reachable from a route`).toContain(file);
       expect(why.length, `${file} needs a reason, not an entry`).toBeGreaterThan(80);
+    }
+
+    // AND the exemption covers VOCABULARY, never prose.
+    //
+    // Both-sides was not enough on its own: an audit planted a claim in the
+    // intake action and added that file to the map in the SAME edit, and both
+    // sides moved together, so nothing failed. Nothing validates that a written
+    // reason is true — that was a governance control wearing a technical one's
+    // clothes.
+    //
+    // What IS checkable: the only legitimate reason to hold claim text is to BE
+    // the vocabulary. So every flagged string in a declared file must be one of
+    // the offer's own phrases standing alone, in prose form or as an identifier.
+    // A sentence that merely contains a claim can no longer be exempted, which
+    // is exactly the shape the audit used to slip one through.
+    const vocabulary = new Set(
+      RELEASE_RESCUE_OFFER.prohibitedClaims.flatMap((claim) => [claim, claim.replace(/[ -]/g, "_")]).map((entry) => entry.toLowerCase()),
+    );
+    for (const file of Object.keys(DECLARED_CLAIM_BEARING_FILES)) {
+      for (const text of visibleStrings(readSurface(file)).filter((candidate) => findProhibitedClaims(candidate).length > 0)) {
+        expect(
+          vocabulary.has(text.trim().toLowerCase()),
+          `${file}: ${JSON.stringify(text.slice(0, 80))} is prose carrying a claim, not the offer's own vocabulary. An exemption cannot cover it.`,
+        ).toBe(true);
+      }
     }
   });
 
@@ -211,6 +252,14 @@ describe("the marketing surface makes no prohibited claim", () => {
       "a word in an expression container": `<p>Your application is {"secure"} and free of vulnerabilities.</p>`,
       "a continuation after a line break": `<p>The review confirms that<br />your application is secure and free of vulnerabilities.</p>`,
       "a claim split across concatenated literals": `<p>{"Your application is " + "secure and audited for release."}</p>`,
+      // The third round of this same defect. JSX resolves entities before a
+      // customer reads the page; the extractor was reading raw source, so
+      // `penetration&#32;test` matched nothing while the page served the words.
+      // `&nbsp;` is the ordinary way to stop a two-word phrase wrapping, and
+      // `react/no-unescaped-entities` is enforced here, so this is a shape this
+      // codebase would reach for rather than an adversarial one.
+      "a claim hidden behind numeric entities": `<p>We deliver a penetration&#32;test and your application is&#32;secure.</p>`,
+      "a claim hidden behind &nbsp;": `<p>We deliver a penetration&nbsp;test and your application is&nbsp;secure.</p>`,
     };
 
     for (const [shape, source] of Object.entries(planted)) {
