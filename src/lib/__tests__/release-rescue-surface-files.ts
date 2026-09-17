@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
 
@@ -56,15 +57,7 @@ if (ROUTE_ROOTS.length === 0) {
   throw new Error("no Next route directory found; every route walk would be empty");
 }
 
-const ROUTE_DIR = "src/app/(marketing)/ai-app-release-rescue";
 
-/**
- * The offer's own name. A page anywhere in the app that sells this offer is a
- * Release Rescue surface wherever it lives — `(marketing)/pricing/page.tsx`
- * names it and quotes both prices, and it sat outside a set that was rooted at
- * one directory.
- */
-const OFFER_NAME = "Release Rescue";
 
 /**
  * The files the TEST RUNNER actually collects, read from `vitest.config.ts`.
@@ -153,12 +146,44 @@ const SOURCE_EXTENSION = /\.(tsx?|jsx?|mjs|cjs)$/;
  * own entrypoint names, not a judgement about which of our files matter, and a
  * name that stops existing is caught by the exact-set assertion.
  */
-const FRAMEWORK_ENTRYPOINT_NAMES = [
-  "proxy",
-  "middleware",
-  "instrumentation",
-  "instrumentation-client",
-];
+/**
+ * The framework's entrypoint filenames, READ FROM THE FRAMEWORK.
+ *
+ * These were four literal strings. An audit deleted `"instrumentation"` — a real
+ * Next entrypoint — and both guard suites stayed green and the mutation proof
+ * reported every mechanism held, because nothing exercised the list's contents.
+ * The first repair made the test fixture write one file per name, which is
+ * derived from the list and therefore shrinks with it: self-consistent, and
+ * vacuous about exactly the thing in question. That is this project's signature
+ * failure — evidence composed inside its own premise — rebuilt inside the fix
+ * for an instance of it.
+ *
+ * Next declares these itself, as `*FILENAME` string constants, and at the
+ * installed version those three are precisely the entrypoint filenames and
+ * nothing else. `instrumentation-client` is the hook's browser half, spelled by
+ * the framework as the hook's name with `-client` appended. So the set is taken
+ * from there: a name Next adds arrives on its own, a name Next renames changes
+ * the discovered surface and trips the exact-set assertion, and there is no list
+ * left for anybody to quietly shorten.
+ *
+ * This reaches into a private path. If Next moves it the import throws, which is
+ * the right failure: loud, at load, rather than a silently empty entry set.
+ */
+function frameworkEntrypointNames(): string[] {
+  const load = createRequire(import.meta.url);
+  const constants = load("next/dist/lib/constants.js") as Record<string, unknown>;
+  const declared = Object.entries(constants)
+    .filter(([key, value]) => typeof value === "string" && key.endsWith("FILENAME"))
+    .map(([, value]) => value as string);
+  if (declared.length === 0) {
+    throw new Error("next/dist/lib/constants.js declares no *FILENAME constants; the entry set would be empty");
+  }
+  const hook = constants.INSTRUMENTATION_HOOK_FILENAME;
+  const browserHalf = typeof hook === "string" ? [`${hook}-client`] : [];
+  return [...new Set([...declared, ...browserHalf])];
+}
+
+export const FRAMEWORK_ENTRYPOINT_NAMES = frameworkEntrypointNames();
 
 /**
  * Next resolves each of these from the project root OR `src/`, in any servable
@@ -183,39 +208,6 @@ export function frameworkEntrypoints(root: string = process.cwd()): string[] {
         const candidate = directory === "." ? `${name}${extension}` : `${directory}/${name}${extension}`;
         if (existsSync(resolve(root, candidate))) found.push(candidate);
       }
-    }
-  }
-  return found;
-}
-
-/**
- * The files Next renders AROUND a page, by its own routing rules rather than by
- * anyone's memory.
- *
- * This is the fourth time the "which files" question has been answered wrongly,
- * and the third mechanism to fail at it. Rooting the import graph at the route
- * directory looked derived, but the ENTRY SET was still a hand-written answer:
- * Next wraps every page in the ancestor `layout.tsx` chain from `src/app` down,
- * and `(marketing)/layout.tsx` renders `<MarketingHeader />` and
- * `<MarketingFooter />` on every Release Rescue page. An audit put a claim in
- * the footer and served it at HTTP 200 on three Release Rescue routes with the
- * whole suite green.
- *
- * So the chain is derived from the filesystem the way the framework derives it.
- */
-export const RENDERED_AROUND_A_PAGE =
-  /^(layout|template|error|global-error|global-not-found|not-found|forbidden|unauthorized|loading|default)\.(tsx?|jsx?|mjs|cjs)$/;
-
-function ancestorChainFor(dir: string): string[] {
-  const found: string[] = [];
-  const segments = dir.split("/");
-  // Every level from the route root down to and including the route directory.
-  const root = ROUTE_ROOTS.find((candidate) => dir === candidate || dir.startsWith(`${candidate}/`));
-  if (!root) return found;
-  for (let depth = root.split("/").length; depth <= segments.length; depth += 1) {
-    const level = segments.slice(0, depth).join("/");
-    for (const entry of readdirSync(resolve(process.cwd(), level), { withFileTypes: true })) {
-      if (!entry.isDirectory() && RENDERED_AROUND_A_PAGE.test(entry.name)) found.push(`${level}/${entry.name}`);
     }
   }
   return found;
@@ -258,15 +250,72 @@ function everyFileUnder(dir: string, found: string[] = []): string[] {
  * read; anything else genuinely cannot be read as words here, and its recorded
  * reason is then true of it.
  */
+/**
+ * Read a served asset as the words a customer sees, or null if it has none.
+ *
+ * The predecessor called any file containing a NUL byte "not decodable text",
+ * which is the same defect as the extension list it replaced, one encoding out.
+ * **UTF-16 text is full of NULs.** A `.svg` saved as "Unicode" by an ordinary
+ * Windows editor — no hostile byte anywhere — was classified as binary, exempted
+ * from the scan, and served at HTTP 200 carrying two prohibited claims with the
+ * suite green. An adversarial single NUL inside an HTML comment did the same for
+ * a `text/html` document.
+ *
+ * Worse, the recorded reason said those files' words were "pixels or glyph
+ * outlines". A record that states something untrue about what it covers is the
+ * inverse of a record that executes nothing, and this module has now shipped
+ * both — the second inside the fix for the first.
+ *
+ * So the encodings a browser honours are TRIED. A byte-order mark is a
+ * declaration and is believed; otherwise UTF-8 is attempted strictly, then
+ * UTF-16 in both orders, and a decoding counts only if what comes back is
+ * overwhelmingly printable. Anything that survives none of that has no words
+ * this extractor can read, and the residual reason is then true of it.
+ */
+export function decodedAssetText(bytes: Uint8Array): string | null {
+  const readable = (text: string): string | null => {
+    // Measured POSITIVELY, as the share of characters a reader would see. A
+    // noise ratio with a small epsilon was the first attempt, and it called a
+    // fifty-character HTML document with one stray NUL binary — one in fifty is
+    // two per cent — while the whole point is that such a document is plainly
+    // text. What separates a document from a PNG is that almost all of a
+    // document is readable, not that none of it is odd.
+    if (text.length === 0) return null;
+    const noise = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g) ?? []).length;
+    return (text.length - noise) / text.length >= 0.95 ? text : null;
+  };
+  const decode = (encoding: string, from: Uint8Array): string | null => {
+    try {
+      return readable(new TextDecoder(encoding, { fatal: false }).decode(from));
+    } catch {
+      return null;
+    }
+  };
+
+  // A byte-order mark is a declaration, so it is believed rather than guessed at.
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return decode("utf-16le", bytes.subarray(2));
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return decode("utf-16be", bytes.subarray(2));
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return decode("utf-8", bytes.subarray(3));
+  }
+
+  // With no mark, every candidate is TRIED and the first readable one wins.
+  //
+  // The first version returned whatever UTF-8 gave and only fell through to
+  // UTF-16 when UTF-8 THREW. UTF-16LE of ASCII is a valid UTF-8 byte sequence —
+  // NUL is a legal UTF-8 character — so UTF-8 succeeded, produced a string that
+  // was half NULs, failed the readability check, and the UTF-16 branch was never
+  // reached. Measured: a BOM-less UTF-16 SVG read as binary. Decoding succeeding
+  // is not the same as decoding correctly.
+  for (const encoding of ["utf-8", "utf-16le", "utf-16be"]) {
+    const text = decode(encoding, bytes);
+    if (text !== null) return text;
+  }
+  return null;
+}
+
 export function assetIsItsOwnText(file: string): boolean {
-  const bytes = readFileSync(resolve(process.cwd(), file));
-  if (bytes.includes(0)) return false;
-  const decoded = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-  // U+FFFD only appears where a byte sequence was not valid UTF-8, unless the
-  // file genuinely contains the replacement character — which a served text
-  // asset may, so a single one is not enough to call it binary.
-  const undecodable = (decoded.match(/\uFFFD/g) ?? []).length;
-  return undecodable === 0 || undecodable / Math.max(decoded.length, 1) < 0.01;
+  return decodedAssetText(readFileSync(resolve(process.cwd(), file))) !== null;
 }
 
 /**
@@ -307,66 +356,33 @@ export const SCANNABLE_ASSETS: string[] = RELEASE_RESCUE_SERVED_ASSETS.filter(as
 export const ASSET_RESIDUALS: ReadonlyArray<{ readonly file: string; readonly why: string }> =
   RELEASE_RESCUE_SERVED_ASSETS.filter((file) => !assetIsItsOwnText(file)).map((file) => ({
     file,
-    why: "its bytes are not decodable text, so any words it shows a customer are pixels or glyph outlines that no extractor here can read; human review of what the repository publishes is the control that stands in its place",
+    why: "its bytes decode as text in no encoding a browser honours, so any words it shows a customer are pixels or glyph outlines that no extractor here can read; human review of what the repository publishes is the control that stands in its place",
   }));
 
-/** The text of one served asset, exactly as the framework would hand it over. */
-export function readServedAsset(file: string): string {
-  return readFileSync(resolve(process.cwd(), file), "utf8");
-}
-
-/** The modules this offer owns outright. */
-const OFFER_MODULE = /^src\/(?:lib|components)\/(?:ai-app-release-rescue\/|release-rescue-)/;
+/**
+ * The served assets this suite is allowed not to read, as an EXACT set.
+ *
+ * `ASSET_RESIDUALS` was the only one of the four residual records that was not
+ * pinned — the other three assert their length and their exact mechanisms, and
+ * this one asserted only that each entry's prose was long enough. So an asset
+ * could join the exemption and nothing failed, which is what made a one-byte
+ * classification error free rather than loud. An exemption that costs nothing to
+ * take is not an exemption, it is a hole.
+ */
+export const EXPECTED_ASSET_RESIDUALS = ["src/app/favicon.ico"];
 
 /**
- * Every file the app serves that sells this offer, found structurally.
+ * The words of one served asset, DECODED.
  *
- * FIFTH AND SIXTH TIME. This question has been answered with a hand-written
- * list five times, and each fix contained the next one. The last two were both
- * inside the repair for the one before:
- *
- *   - the entry filter was `/\/page\.tsx?$/`. Next serves `route.ts`,
- *     `default.tsx`, `opengraph-image.tsx`, `sitemap.ts` and more from the same
- *     tree, so a route handler importing this offer's own constants, printing
- *     its name and price beside a prohibited claim, was never even a candidate;
- *   - "reaches an offer module" was a DIRECTORY pattern, so a page whose only
- *     tie to the offer was its name held in a shared copy module fell through
- *     every test. That page was served at HTTP 200 with the claim beside the
- *     price, whole suite green.
- *
- * Both are the shape the previous commit was written to remove, one notch in.
- * So the rule is stated with its DIRECTORY disjunct named rather than described
- * away — saying "neither NAME nor DIRECTORY decides anything" was false in two
- * commit messages, and this comment carried it for one more:
- *
- *   a served file is a surface when anything it can reach either belongs to
- *   this offer or says this offer's name.
- *
- * Saying the name counts whether it is a literal in the source or text the page
- * renders, so a shared copy module pulls in every page that reaches it. What is
- * still outside: a file that reaches neither, and names the offer only through a
- * value computed at runtime. That bound is recorded in ENTRY_RESIDUALS below
- * rather than left to be found by the next audit.
+ * This read `utf8` unconditionally. Even once a UTF-16 asset is correctly
+ * classified as text, scanning its raw UTF-8 reading finds nothing — every
+ * character is separated by a NUL — so the claim would still have been served.
+ * Classifying it and reading it have to agree, and they now share one decoder.
  */
-const statesTheOffer = new Map<string, boolean>();
-
-function namesTheOffer(file: string): boolean {
-  const remembered = statesTheOffer.get(file);
-  if (remembered !== undefined) return remembered;
-  const source = readFileSync(resolve(process.cwd(), file), "utf8");
-  // Case-folded, and the route slug counts too. It was `includes` on the exact
-  // casing, so a page saying "release rescue" was not a surface — the audit-33
-  // escape again, one case-fold in.
-  const answer = sourceStatesTheOffer(source, file);
-  statesTheOffer.set(file, answer);
-  return answer;
+export function readServedAsset(file: string): string {
+  return decodedAssetText(readFileSync(resolve(process.cwd(), file))) ?? "";
 }
 
-function filesSellingTheOffer(): string[] {
-  return ROUTE_ROOTS.flatMap((root) => filesUnder(root)).filter((file) =>
-    reachableFrom(file).some((reached) => OFFER_MODULE.test(reached) || namesTheOffer(reached)),
-  );
-}
 
 /**
  * Every import specifier the graph can resolve statically, from one file's text.
@@ -386,17 +402,6 @@ export function staticSpecifiersIn(source: string): string[] {
     if (specifier) found.push(specifier);
   }
   return found;
-}
-
-/** Whether any text this file states, or renders, says the offer's name. */
-export function sourceStatesTheOffer(source: string, file = "surface.tsx"): boolean {
-  const needle = OFFER_NAME.toLowerCase();
-  const slug = needle.replace(/ /g, "-");
-  const says = (text: string): boolean => {
-    const folded = text.toLowerCase();
-    return folded.includes(needle) || folded.includes(slug);
-  };
-  return says(source) || visibleStrings(source, file).some(says);
 }
 
 const reachedFromCache = new Map<string, string[]>();
@@ -435,11 +440,17 @@ export function reachableFrom(entry: string): string[] {
  * residuals are: the miss that produced this round had been sitting in an
  * unrecorded class, and nobody had written the class down.
  *
- * The rule reads imports and stated text. It cannot read a name a program
- * computes, and it cannot follow an import whose specifier is computed.
+ * The rule reads imports. It cannot follow an import whose specifier is
+ * computed.
+ *
+ * `computed_name` used to sit beside this one: a served file that assembled the
+ * offer's name at runtime was invisible because membership was decided by
+ * whether a file SAID the offer's name. Nothing reads a name now — every file
+ * under a route root is an entry — so the residual is gone rather than
+ * reworded. A bound that stops existing should be deleted, not kept as decor.
  */
 export type EntryResidual = {
-  readonly mechanism: "computed_name" | "computed_import";
+  readonly mechanism: "computed_import";
   readonly why: string;
   /** Source that DEMONSTRATES the miss, so the bound is run rather than asserted. */
   readonly source: string;
@@ -449,12 +460,6 @@ export type EntryResidual = {
 
 export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
   {
-    mechanism: "computed_name",
-    why: "A served file that reaches no offer module and assembles the offer's name at runtime — `[\"AI App\", \"Release\", \"Rescue\"].join(\" \")` — states it nowhere a parser can read.",
-    source: 'const parts = ["AI App", "Release", "Rescue"]; export const Title = () => <h1>{parts.join(" ")}</h1>;',
-    seenWhenStatic: 'export const Title = () => <h1>AI App Release Rescue</h1>;',
-  },
-  {
     mechanism: "computed_import",
     why: "A dynamic `import(`./${name}`)` specifier cannot be resolved statically, so a module reached only that way is outside every graph this file walks.",
     source: "const name = \"panel\"; export const load = () => import(`./${name}`);",
@@ -462,14 +467,38 @@ export const ENTRY_RESIDUALS: readonly EntryResidual[] = [
   },
 ];
 
+/**
+ * EVERY file the framework serves from a route root, plus the entrypoints it
+ * loads outside the route tree. No judgement about which of them matter.
+ *
+ * This used to be the offer's own directory, its ancestor chain, and whatever
+ * `filesSellingTheOffer()` picked out — a file that reached an offer module or
+ * said the offer's name. That question, "does this file sell the offer", is the
+ * one that has now been answered wrongly ten times.
+ *
+ * The tenth was an ASYMMETRY the previous round introduced while closing the
+ * ninth. `robots.txt` and `manifest.webmanifest` were scanned unconditionally as
+ * served static files, but `manifest.ts` — a source file producing the SAME
+ * response at the SAME URL, whose `description` a customer reads at install and
+ * in the app switcher — sold nothing and named nothing, so it was in neither
+ * set. An audit served three prohibited claims through it at HTTP 200 with the
+ * surface set unchanged and the suite green.
+ *
+ * So the question is dropped rather than answered again. Everything under a
+ * route root is an entry, and the import graph does the rest. Measured before
+ * committing to it: the surface goes from 68 files to 172, and the only
+ * prohibited claims anywhere in it are the 27 inside the one declared
+ * exemption — the whole application already says nothing it should not, so this
+ * is a widening of what is CHECKED and not a relaxation of anything.
+ *
+ * `filesSellingTheOffer`, `namesTheOffer`, `OFFER_MODULE`, `ancestorChainFor`
+ * and `ROUTE_DIR` are gone with it, and so is the `computed_name` entry
+ * residual: a file that assembles the offer's name at runtime was invisible only
+ * because names decided membership. Nothing reads a name now.
+ */
 function listRouteEntrypoints(): string[] {
-  const entries = new Set<string>(filesUnder(ROUTE_DIR));
+  const entries = new Set<string>(ROUTE_ROOTS.flatMap((root) => filesUnder(root)));
   for (const file of frameworkEntrypoints()) entries.add(file);
-  for (const file of ancestorChainFor(ROUTE_DIR)) entries.add(file);
-  for (const served of filesSellingTheOffer()) {
-    entries.add(served);
-    for (const file of ancestorChainFor(served.slice(0, served.lastIndexOf("/")))) entries.add(file);
-  }
   return [...entries];
 }
 
@@ -591,7 +620,28 @@ export const RELEASE_RESCUE_SURFACE_FILES = discoverSurfaceFiles();
  * is worth a look rather than a silent pass.
  */
 export const EXPECTED_SURFACE_FILES = [
+  "src/app/(app)/app/analytics/page.tsx",
+  "src/app/(app)/app/approvals/page.tsx",
+  "src/app/(app)/app/billing/page.tsx",
+  "src/app/(app)/app/dashboard/page.tsx",
+  "src/app/(app)/app/integrations/page.tsx",
+  "src/app/(app)/app/page.tsx",
+  "src/app/(app)/app/playbooks/[id]/page.tsx",
+  "src/app/(app)/app/playbooks/page.tsx",
+  "src/app/(app)/app/requests/[id]/page.tsx",
+  "src/app/(app)/app/requests/new/page.tsx",
+  "src/app/(app)/app/requests/page.tsx",
+  "src/app/(app)/app/settings/export/route.ts",
+  "src/app/(app)/app/settings/page.tsx",
+  "src/app/(app)/app/team/page.tsx",
+  "src/app/(app)/app/workstreams/[id]/page.tsx",
+  "src/app/(app)/app/workstreams/page.tsx",
   "src/app/(app)/layout.tsx",
+  "src/app/(auth)/demo/page.tsx",
+  "src/app/(auth)/login/forgot/page.tsx",
+  "src/app/(auth)/login/page.tsx",
+  "src/app/(auth)/login/reset/page.tsx",
+  "src/app/(auth)/signup/page.tsx",
   "src/app/(marketing)/ai-app-release-rescue/demo/[id]/not-found.tsx",
   "src/app/(marketing)/ai-app-release-rescue/demo/[id]/page.tsx",
   "src/app/(marketing)/ai-app-release-rescue/demo/page.tsx",
@@ -599,12 +649,49 @@ export const EXPECTED_SURFACE_FILES = [
   "src/app/(marketing)/ai-app-release-rescue/demo/report/page.tsx",
   "src/app/(marketing)/ai-app-release-rescue/intake/page.tsx",
   "src/app/(marketing)/ai-app-release-rescue/page.tsx",
+  "src/app/(marketing)/book/page.tsx",
+  "src/app/(marketing)/book/thanks/page.tsx",
+  "src/app/(marketing)/contact/page.tsx",
+  "src/app/(marketing)/delegation-audit/page.tsx",
+  "src/app/(marketing)/for-assistants/page.tsx",
+  "src/app/(marketing)/how-it-works/page.tsx",
   "src/app/(marketing)/layout.tsx",
+  "src/app/(marketing)/page.tsx",
   "src/app/(marketing)/pricing/page.tsx",
+  "src/app/(marketing)/security/page.tsx",
+  "src/app/(marketing)/solutions/[slug]/page.tsx",
+  "src/app/(marketing)/solutions/page.tsx",
   "src/app/(ops)/layout.tsx",
+  "src/app/(ops)/ops/analytics/page.tsx",
+  "src/app/(ops)/ops/capabilities/page.tsx",
+  "src/app/(ops)/ops/clients/[id]/page.tsx",
+  "src/app/(ops)/ops/clients/page.tsx",
+  "src/app/(ops)/ops/dashboard/page.tsx",
+  "src/app/(ops)/ops/execution/page.tsx",
+  "src/app/(ops)/ops/execution/runs/[id]/loading.tsx",
+  "src/app/(ops)/ops/execution/runs/[id]/page.tsx",
+  "src/app/(ops)/ops/gauntlet/cycles/[id]/page.tsx",
+  "src/app/(ops)/ops/gauntlet/page.tsx",
+  "src/app/(ops)/ops/operators/page.tsx",
+  "src/app/(ops)/ops/page.tsx",
+  "src/app/(ops)/ops/playbooks/page.tsx",
+  "src/app/(ops)/ops/qa/page.tsx",
+  "src/app/(ops)/ops/queue/page.tsx",
+  "src/app/(ops)/ops/requests/[id]/page.tsx",
+  "src/app/(ops)/ops/skills/page.tsx",
   "src/app/actions/ai-app-release-rescue.ts",
   "src/app/actions/auth.ts",
+  "src/app/actions/execution.ts",
+  "src/app/actions/gauntlet-recovery.ts",
+  "src/app/actions/gauntlet.ts",
+  "src/app/actions/leads.ts",
+  "src/app/actions/requests.ts",
+  "src/app/actions/software-factory.ts",
+  "src/app/actions/supplier-sourcing.ts",
+  "src/app/actions/twl-prepare-proof.ts",
+  "src/app/actions/work-cell.ts",
   "src/app/api/internal/release-rescue/retention-sweep/route.ts",
+  "src/app/auth/callback/route.ts",
   "src/app/error.tsx",
   "src/app/layout.tsx",
   "src/app/not-found.tsx",
@@ -614,31 +701,60 @@ export const EXPECTED_SURFACE_FILES = [
   "src/components/ai-app-release-rescue/report-view.tsx",
   "src/components/ai-app-release-rescue/rubric-checklist.tsx",
   "src/components/brand.tsx",
+  "src/components/live-request-status.tsx",
   "src/components/marketing/chrome.tsx",
+  "src/components/marketing/home-interactive.tsx",
   "src/components/marketing/skip-to-content.tsx",
   "src/components/nav-link.tsx",
+  "src/components/new-request-form.tsx",
+  "src/components/product.tsx",
   "src/components/shells.tsx",
+  "src/components/software-factory-run.tsx",
+  "src/components/supplier-sourcing.tsx",
+  "src/components/twl-prepare-proof-assign-fields.tsx",
+  "src/components/twl-prepare-proof.tsx",
   "src/components/ui.tsx",
+  "src/components/work-cell-action-form.tsx",
+  "src/components/work-cell.tsx",
   "src/lib/ai-app-release-rescue/constants.ts",
   "src/lib/ai-app-release-rescue/demo-cookie.ts",
   "src/lib/ai-app-release-rescue/demo-fixtures.ts",
   "src/lib/ai-app-release-rescue/engagement.ts",
   "src/lib/ai-app-release-rescue/intake.ts",
   "src/lib/ai-app-release-rescue/payment.ts",
+  "src/lib/ai-validate.ts",
   "src/lib/ai.ts",
+  "src/lib/assignment-to-envelope.ts",
   "src/lib/auth-cookie.ts",
   "src/lib/auth-redirect.ts",
   "src/lib/auth.ts",
+  "src/lib/capability-performance-ledger.ts",
   "src/lib/capability-registry.ts",
   "src/lib/catalog-evidence-hash.ts",
+  "src/lib/catalog-evidence-input.ts",
   "src/lib/catalog-evidence-packet.ts",
   "src/lib/catalog-evidence-review.ts",
   "src/lib/catalog-evidence-shared.ts",
   "src/lib/catalog-evidence-validator.ts",
   "src/lib/cn.ts",
+  "src/lib/data/supabase-workspace.ts",
   "src/lib/deployment-origin.ts",
   "src/lib/domain.ts",
+  "src/lib/economic-envelope.ts",
+  "src/lib/execution-context-enforcement.ts",
+  "src/lib/execution-context.ts",
+  "src/lib/execution-policy.ts",
+  "src/lib/execution-primitives.ts",
+  "src/lib/execution-runtime.ts",
   "src/lib/executor-envelope.ts",
+  "src/lib/gauntlet-policy.ts",
+  "src/lib/gauntlet-recovery.ts",
+  "src/lib/gauntlet.ts",
+  "src/lib/leads.ts",
+  "src/lib/native-skill-registry.ts",
+  "src/lib/ops-metrics.ts",
+  "src/lib/public-github-pr.ts",
+  "src/lib/public-web-researcher.ts",
   "src/lib/release-rescue-credential-scanner.ts",
   "src/lib/release-rescue-demo-identity.ts",
   "src/lib/release-rescue-field-policy.ts",
@@ -654,10 +770,29 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/release-rescue-retention-schedule.ts",
   "src/lib/release-rescue-rubric.ts",
   "src/lib/release-rescue-secret-classification.ts",
+  "src/lib/skill-qualification.ts",
+  "src/lib/software-factory-persist.ts",
+  "src/lib/software-factory-run-manager.ts",
+  "src/lib/solutions.ts",
   "src/lib/store.ts",
+  "src/lib/stripe.ts",
   "src/lib/supabase/admin.ts",
   "src/lib/supabase/env.ts",
   "src/lib/supabase/server.ts",
+  "src/lib/supplier-communication.ts",
+  "src/lib/supplier-outreach-approval.ts",
+  "src/lib/supplier-sourcing-run.ts",
+  "src/lib/supplier-sourcing.ts",
+  "src/lib/tool-invocation-trace.ts",
+  "src/lib/twl-prepare-proof-run.ts",
+  "src/lib/twl-prepare-proof.ts",
+  "src/lib/work-cell-json.ts",
+  "src/lib/work-cell-ledger-persistence.ts",
+  "src/lib/work-cell-ledger.ts",
+  "src/lib/work-cell-operator.ts",
+  "src/lib/work-cell-policy.ts",
+  "src/lib/work-cell.ts",
+  "src/lib/workspace.ts",
   "src/proxy.ts",
 ];
 

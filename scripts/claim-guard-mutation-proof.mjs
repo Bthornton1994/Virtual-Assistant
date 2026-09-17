@@ -90,12 +90,6 @@ const MUTANTS = [
     to: "",
   },
   {
-    id: "M-ASSET-TEXT",
-    mechanism: "a served asset's text-ness is decided by its bytes, not by its extension",
-    from: "  if (bytes.includes(0)) return false;",
-    to: "  if (!/\\.(svgz?|html?|txt|md|json|xml|csv|webmanifest|vtt)$/i.test(file)) return false;\n  if (bytes.includes(0)) return false;",
-  },
-  {
     id: "M-ALIASES",
     mechanism: "path aliases are read from tsconfig, not assumed to be the one this project uses",
     from: "const ALIASES = tsconfigAliases();",
@@ -106,6 +100,30 @@ const MUTANTS = [
     mechanism: "framework entrypoints are derived from names x locations x extensions",
     from: "  for (const file of frameworkEntrypoints()) entries.add(file);",
     to: '  for (const file of ["src/proxy.ts", "src/middleware.ts", "src/instrumentation.ts"]) {\n    if (existsSync(resolve(process.cwd(), file))) entries.add(file);\n  }',
+  },
+  {
+    id: "M-ENTRYPOINT-NAMES",
+    mechanism: "the entrypoint filenames are read from Next, not restated here",
+    from: "export const FRAMEWORK_ENTRYPOINT_NAMES = frameworkEntrypointNames();",
+    to: 'export const FRAMEWORK_ENTRYPOINT_NAMES = ["proxy", "middleware", "instrumentation", "instrumentation-client"];',
+  },
+  {
+    id: "M-EVERY-ROUTE-FILE",
+    mechanism: "every file under a route root is an entry, not only those that sell the offer",
+    from: "  const entries = new Set<string>(ROUTE_ROOTS.flatMap((root) => filesUnder(root)));",
+    to: '  const entries = new Set<string>(filesUnder("src/app/(marketing)/ai-app-release-rescue"));',
+  },
+  {
+    id: "M-ASSET-RESIDUAL-SET",
+    mechanism: "the served assets exempt from the scan are an exact set",
+    from: 'export const EXPECTED_ASSET_RESIDUALS = ["src/app/favicon.ico"];',
+    to: "export const EXPECTED_ASSET_RESIDUALS = ASSET_RESIDUALS.map((residual) => residual.file);",
+  },
+  {
+    id: "M-ASSET-DECODING",
+    mechanism: "a served asset is decoded in every encoding a browser honours",
+    from: "  for (const encoding of [\"utf-8\", \"utf-16le\", \"utf-16be\"]) {\n    const text = decode(encoding, bytes);\n    if (text !== null) return text;\n  }\n  return null;",
+    to: "  if (bytes.includes(0)) return null;\n  return decode(\"utf-8\", bytes);",
   },
   {
     id: "M-SELF-CLOSING",
@@ -130,13 +148,6 @@ const MUTANTS = [
     mechanism: "rendered text follows JSX's whitespace rule, not the source's indentation",
     from: 'if (ts.isJsxText(child)) parts.push(mode === "separated" ? child.text : jsxTextValue(child.text));',
     to: "if (ts.isJsxText(child)) parts.push(child.text);",
-  },
-  {
-    id: "M-PAGE-ADJACENT",
-    mechanism: "every file Next renders around a page counts, including ones this repo has none of",
-    from:
-      "RENDERED_AROUND_A_PAGE =\n  /^(layout|template|error|global-error|global-not-found|not-found|forbidden|unauthorized|loading|default)\\.(tsx?|jsx?|mjs|cjs)$/;",
-    to: "RENDERED_AROUND_A_PAGE = /^(layout|template|error|global-error|not-found|loading)\\.tsx?$/;",
   },
   {
     id: "FP1",
@@ -211,12 +222,37 @@ const SENTINEL = `${MODULE}.mutation-proof-original`;
 // Belt and braces. A signal handler cannot run through a `SIGKILL`, a power cut
 // or an OOM kill, and any of those would leave the guard silently weakened in
 // the working tree. The untouched original is parked beside the module for the
-// duration; if a previous run died, THIS run restores from it before doing
-// anything else and says so.
+// duration, so a died-mid-run state is RECOVERABLE.
+//
+// It is not recovered automatically any more. The previous version copied the
+// sentinel over the module unconditionally, before reading `original` — so a
+// sentinel holding ANY content silently replaced the committed guard, and the
+// run then measured its thirteen mutants against the replacement, passed its own
+// byte-for-byte check against it, printed "13/13 held" and exited 0. An audit
+// planted a sentinel with a real Next entrypoint name deleted and got exactly
+// that. A script that writes to a source file must not decide by itself which
+// content is the right one, and `.gitignore` hides this file, so nobody would
+// see it arrive.
+//
+// Refusing is the whole fix: the operator is told what to compare and restores
+// deliberately. Recovery stays possible; it stops being silent.
 if (existsSync(SENTINEL)) {
-  writeFileSync(MODULE, readFileSync(SENTINEL, "utf8"));
-  rmSync(SENTINEL, { force: true });
-  console.error(`a previous run of this script died with ${MODULE} mutated; it has been restored from ${SENTINEL}`);
+  console.error(
+    [
+      `${MODULE} may have been left mutated by an earlier run of this script.`,
+      `The untouched copy is at ${SENTINEL}.`,
+      "",
+      "This script will not restore it for you: it cannot tell a genuine rescue copy",
+      "from one that was placed there, and restoring the wrong bytes would weaken the",
+      "guard while the proof reported success. Compare and restore deliberately:",
+      "",
+      `    git diff -- ${MODULE}`,
+      `    diff ${SENTINEL} ${MODULE}`,
+      `    git checkout -- ${MODULE}   # or copy the sentinel back, having looked at it`,
+      `    rm ${SENTINEL}`,
+    ].join("\n"),
+  );
+  process.exit(2);
 }
 
 const original = readFileSync(MODULE, "utf8");

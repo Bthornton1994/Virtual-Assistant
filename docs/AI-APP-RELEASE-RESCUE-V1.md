@@ -3338,6 +3338,82 @@ killed mid-mutant, and recovered on the following run.
 `npm run verify` runs the proof now. An artifact that exists to be the evidence
 can rot if nothing runs it.
 
+### Tenth time, and the question is dropped rather than answered again
+
+The ninth round derived the exclusion, the served-static set and the route
+roots. It introduced an **asymmetry** while doing so, and an audit walked
+through it: static non-source files under a route root were scanned
+unconditionally, but a *source* file under a route root was a surface only if
+`filesSellingTheOffer()` picked it out. So `manifest.ts` — producing the same
+response, at the same URL, with the same `description` a customer reads at
+install — sold nothing and named nothing, and was in neither set. Three
+prohibited claims served at HTTP 200, surface set unchanged, suite green.
+
+"Does this file sell the offer" is the question that has now been answered
+wrongly ten times, so it is no longer asked. **Every file under a route root is
+an entry**, and the import graph does the rest. Measured before committing to
+it: the surface goes from 68 files to 174, and the only prohibited claims
+anywhere in it are the ones inside the single declared exemption — the whole
+application already says nothing it should not, so this widens what is CHECKED
+without relaxing anything.
+
+`filesSellingTheOffer`, `namesTheOffer`, `OFFER_MODULE`, `OFFER_NAME`,
+`ROUTE_DIR`, `ancestorChainFor` and `RENDERED_AROUND_A_PAGE` are gone with it,
+and so is the `computed_name` entry residual — a file that assembled the offer's
+name at runtime was invisible only because a name decided membership. Nothing
+reads a name now, so the bound is deleted rather than reworded.
+
+### A one-byte classification error was a free exemption
+
+The ninth round replaced an extension list with a byte sniff, because the list's
+recorded reason was false of the files it covered. The replacement called **any
+file containing a NUL** "not decodable text" — and UTF-16 text is full of NULs.
+A `.svg` saved as "Unicode" by an ordinary Windows editor, with no hostile byte
+anywhere, was exempted from the scan and served at HTTP 200 carrying two
+prohibited claims. One NUL inside an HTML comment did the same for a `text/html`
+document. The recorded reason then said those files' words were "pixels or glyph
+outlines", which was untrue of both: **a record that states something false about
+what it covers**, shipped inside the fix for a record that stated something false
+about what it covered.
+
+Two things were wrong and both are fixed. The encodings a browser honours are
+tried — a byte-order mark is believed, then UTF-8, then UTF-16 in both orders,
+and a decoding counts only if what comes back is overwhelmingly printable — and
+`readServedAsset` shares that decoder, because classifying a UTF-16 file as text
+while still reading it as UTF-8 would have changed nothing. The first attempt at
+the readability test measured NOISE against a small epsilon and called a
+fifty-character document with one stray NUL binary at two per cent; it is the
+readable SHARE that matters, not the absence of oddity. The second attempt still
+failed for UTF-16 without a mark, because UTF-8 *succeeds* on those bytes — NUL
+is a legal UTF-8 character — so the fallback was never reached. Decoding
+succeeding is not decoding correctly.
+
+`ASSET_RESIDUALS` was also the only one of the four residual records not pinned
+as an exact set; it asserted only that each entry's prose was long enough. An
+exemption that costs nothing to take is not an exemption. It is pinned now.
+
+### The proof restored from a file it did not check, and certified the result
+
+`proof:claim-guard` copied its recovery sentinel over the guard module
+unconditionally, before reading the original. An audit planted a sentinel with a
+real Next entrypoint name deleted; the script overwrote the committed module with
+it, measured every mutant against the replacement, passed its own byte-for-byte
+check against the replacement, printed that all mechanisms were held, and exited
+zero. `.gitignore` hides the sentinel, so nothing would have shown it arriving.
+
+It refuses now. Recovery stays possible and stops being automatic: the operator
+is handed the three commands and decides. A script that writes to a source file
+must not also decide which content is the right one.
+
+The same audit found `FRAMEWORK_ENTRYPOINT_NAMES` carried an entry no test
+exercised — `"instrumentation"` could be deleted with both suites green and the
+proof clean. The first repair derived the test fixture from the list, which
+shrinks with the list: self-consistent, and vacuous about exactly the thing in
+question. That is this project's signature failure, rebuilt inside the fix for an
+instance of it, and caught only by re-running the audit's own attack against the
+repair. The names are read from Next's own `*FILENAME` constants now. There is no
+list left to shorten.
+
 ## What this slice deliberately does not do
 
 No payment activation, no executor adapter, no snapshot extractor, no live checkout, and no deployment. The customer surface, the marketing routes, the scheduled sweep configuration, and the `VISION.md` amendment ARE part of this branch.

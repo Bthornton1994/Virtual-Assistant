@@ -10,14 +10,14 @@ import {
   assetIsItsOwnText,
   collectedByTheRunner,
   parseSurface,
-  sourceStatesTheOffer,
   staticSpecifiersIn,
   reachableFrom,
   routeRoots,
+  FRAMEWORK_ENTRYPOINT_NAMES,
   frameworkEntrypoints,
   tsconfigAliases,
-  RENDERED_AROUND_A_PAGE,
   ASSET_RESIDUALS,
+  EXPECTED_ASSET_RESIDUALS,
   DECLARED_CLAIM_BEARING_FILES,
   ENTRY_RESIDUALS,
   RELEASE_RESCUE_SERVED_ASSETS,
@@ -239,11 +239,11 @@ describe("the marketing surface makes no prohibited claim", () => {
     // The ENTRY rule's residuals, asserted the same way. They were recorded and
     // then read by nothing — the "a figure nothing reads is a figure nothing can
     // keep true" defect, in the record added to prevent the next round of it.
-    expect(ENTRY_RESIDUALS.length).toBe(2);
-    expect([...new Set(ENTRY_RESIDUALS.map((entry) => entry.mechanism))].sort()).toEqual([
-      "computed_import",
-      "computed_name",
-    ]);
+    // One, not two. `computed_name` is gone because nothing reads a name any
+    // more: every file under a route root is an entry, so a file that assembles
+    // the offer's name at runtime is no longer invisible to anything.
+    expect(ENTRY_RESIDUALS.length).toBe(1);
+    expect([...new Set(ENTRY_RESIDUALS.map((entry) => entry.mechanism))].sort()).toEqual(["computed_import"]);
     for (const entry of ENTRY_RESIDUALS) {
       expect(entry.why.length, `${entry.mechanism} needs a reason, not an entry`).toBeGreaterThan(80);
 
@@ -251,25 +251,14 @@ describe("the marketing surface makes no prohibited claim", () => {
       // claimed these were "asserted the way EXTRACTOR_RESIDUALS is" when the
       // suite only counted them and measured the length of their prose — a
       // record that nothing executes, in the record added to stop exactly that.
-      if (entry.mechanism === "computed_name") {
-        expect(
-          sourceStatesTheOffer(entry.source, "residual.tsx"),
-          "the computed_name residual must actually be invisible to the entry rule",
-        ).toBe(false);
-        expect(
-          sourceStatesTheOffer(entry.seenWhenStatic, "residual.tsx"),
-          "and the same shape written statically must be seen, or the residual proves nothing",
-        ).toBe(true);
-      } else {
-        expect(
-          staticSpecifiersIn(entry.source),
-          "the computed_import residual must actually be unresolvable by the walk",
-        ).toEqual([]);
-        expect(
-          staticSpecifiersIn(entry.seenWhenStatic),
-          "and the static form must be resolvable, or the residual proves nothing",
-        ).not.toEqual([]);
-      }
+      expect(
+        staticSpecifiersIn(entry.source),
+        "the computed_import residual must actually be unresolvable by the walk",
+      ).toEqual([]);
+      expect(
+        staticSpecifiersIn(entry.seenWhenStatic),
+        "and the static form must be resolvable, or the residual proves nothing",
+      ).not.toEqual([]);
     }
 
     expect(EXTRACTOR_RESIDUALS.length).toBe(6);
@@ -493,8 +482,17 @@ describe("the marketing surface makes no prohibited claim", () => {
       expect(findProhibitedClaims(readServedAsset(file), "typed_field"), `${file} serves a prohibited claim`).toEqual([]);
     }
 
-    // The unreadable ones carry a reason, not an entry — the rule the tokenizer
-    // and extractor residuals already follow.
+    // The unreadable ones are an EXACT set, like the other three residual
+    // records. This asserted only that each entry's prose was long enough, so an
+    // asset could join the exemption and nothing failed — which made a one-byte
+    // classification error free rather than loud. An audit exempted an HTML page
+    // with one NUL in a comment, and a UTF-16 SVG with no hostile byte at all,
+    // and served prohibited claims from both at HTTP 200 with the suite green.
+    expect(
+      ASSET_RESIDUALS.map((residual) => residual.file).sort(),
+      "a served asset joined or left the exemption; look at it rather than re-pinning",
+    ).toEqual([...EXPECTED_ASSET_RESIDUALS].sort());
+
     for (const residual of ASSET_RESIDUALS) {
       expect(residual.why.length, `${residual.file} needs a reason, not an entry`).toBeGreaterThan(80);
     }
@@ -535,6 +533,16 @@ describe("the marketing surface makes no prohibited claim", () => {
     expect(initialiserOf("ROUTE_ROOTS"), "ROUTE_ROOTS must be probed, not named").toBe("routeRoots()");
     expect(initialiserOf("COLLECTED_BY_THE_RUNNER"), "the runner's globs must be read from its config").toBe(
       "vitestIncludeGlobs()",
+    );
+
+    // The opposite direction, for the one constant that must NOT be derived.
+    // `EXPECTED_ASSET_RESIDUALS` is a pin: the whole point is that it disagrees
+    // with the computed set when an asset joins or leaves the exemption. Written
+    // as `ASSET_RESIDUALS.map(...)` it would agree with anything, which is how a
+    // mutant doing exactly that survived.
+    const assetPin = initialiserOf("EXPECTED_ASSET_RESIDUALS");
+    expect(assetPin, "the asset-residual pin must be a literal, not computed from what it checks").toMatch(
+      /^\[\s*(?:"[^"]*"\s*,?\s*)*\]$/,
     );
     expect(
       moduleSource.includes("for (const file of frameworkEntrypoints()) entries.add(file);"),
@@ -604,19 +612,48 @@ describe("the marketing surface makes no prohibited claim", () => {
     // It missed `instrumentation-client`, which runs in the BROWSER on every
     // route and is imported by nothing. This repository has one entrypoint, so
     // only a tree it does not have can tell the derivation from the list.
+    // The names come from NEXT, not from this repository. An audit deleted
+    // `"instrumentation"` from what used to be a four-string literal and both
+    // suites stayed green. The first repair derived the test fixture from that
+    // literal, which shrinks with it — self-consistent and vacuous about the one
+    // thing in question, which is this project's signature failure rebuilt
+    // inside the fix for an instance of it. There is no list to shorten now.
+    expect(
+      [...FRAMEWORK_ENTRYPOINT_NAMES].sort(),
+      "the framework's entrypoint filenames changed; check what Next added or renamed",
+    ).toEqual(["instrumentation", "instrumentation-client", "middleware", "proxy"]);
+
+    // And they are read rather than restated, asserted from this module's source
+    // for the same reason the alias and route-root wirings are: on this
+    // repository a derivation and its current output agree, so only the source
+    // can tell them apart.
+    expect(
+      readSurface("src/lib/__tests__/release-rescue-surface-files.ts"),
+      "the entrypoint names must be read from the framework",
+    ).toContain("export const FRAMEWORK_ENTRYPOINT_NAMES = frameworkEntrypointNames();");
+
+    // The fixture below is one file per name, alternating locations and cycling
+    // extensions, which proves the RESOLVER covers both locations and every
+    // servable extension. It does not prove the set is complete; the assertion
+    // above does that, against the framework.
     const scratch = mkdtempSync(join(tmpdir(), "release-rescue-entry-"));
     try {
       mkdirSync(join(scratch, "src"), { recursive: true });
-      writeFileSync(join(scratch, "instrumentation-client.js"), "export function onRouterTransitionStart() {}\n");
-      writeFileSync(join(scratch, "src", "proxy.tsx"), "export default function proxy() {}\n");
-      writeFileSync(join(scratch, "src", "middleware.mjs"), "export default function middleware() {}\n");
+      const extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+      const expected = FRAMEWORK_ENTRYPOINT_NAMES.map((name, index) => {
+        const directory = index % 2 === 0 ? "src" : ".";
+        const extension = extensions[index % extensions.length];
+        const relativePath = directory === "." ? `${name}${extension}` : `${directory}/${name}${extension}`;
+        writeFileSync(join(scratch, relativePath), "export default function entry() {}\n");
+        return relativePath;
+      });
       writeFileSync(join(scratch, "src", "not-an-entrypoint.ts"), "export const x = 1;\n");
 
-      expect(frameworkEntrypoints(scratch).sort(), "every location and extension the framework resolves").toEqual([
-        "instrumentation-client.js",
-        "src/middleware.mjs",
-        "src/proxy.tsx",
-      ]);
+      expect(
+        frameworkEntrypoints(scratch).sort(),
+        "every NAME in the list, in either location and any servable extension",
+      ).toEqual([...expected].sort());
+      expect(expected.length, "the entrypoint list must not be empty").toBeGreaterThan(0);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
@@ -676,34 +713,12 @@ describe("the marketing surface makes no prohibited claim", () => {
     }
   });
 
-  it("counts every file Next renders around a page, including the ones this repo has none of yet", () => {
-    // This pattern was widened to Next 16's full set — `global-not-found`,
-    // `forbidden`, `unauthorized`, `default`, and the `.jsx`/`.mjs`/`.cjs`
-    // extensions. The repository has an instance of none of them, so narrowing
-    // it back changed no discovered file and failed no test: a widening nothing
-    // exercises is a widening nothing keeps. The pattern is asserted directly.
-    for (const name of [
-      "layout.tsx",
-      "template.tsx",
-      "error.tsx",
-      "global-error.tsx",
-      "global-not-found.tsx",
-      "not-found.tsx",
-      "forbidden.tsx",
-      "unauthorized.tsx",
-      "loading.tsx",
-      "default.tsx",
-      "layout.jsx",
-      "not-found.js",
-    ]) {
-      expect(RENDERED_AROUND_A_PAGE.test(name), `${name} is rendered around a page`).toBe(true);
-    }
-
-    // And it must not swallow an ordinary module that merely starts the same way.
-    for (const name of ["layout-helpers.tsx", "errors.ts", "default-theme.ts"]) {
-      expect(RENDERED_AROUND_A_PAGE.test(name), `${name} is not a page-adjacent file`).toBe(false);
-    }
-  });
+  // The "counts every file Next renders around a page" test is gone with the
+  // rule it guarded. `RENDERED_AROUND_A_PAGE` existed so that a layout or an
+  // error boundary joined the entry set beside the offer's own directory. Every
+  // file under a route root is an entry now, so the pattern had no job left, and
+  // a constant plus a test for a rule the module no longer applies is precisely
+  // the "record that nothing executes" defect this file catalogues.
 
   it("does not invent a sentence out of two arms that never render together", () => {
     // The run-together rule joins JSX siblings because a browser concatenates
@@ -787,6 +802,37 @@ describe("the marketing surface makes no prohibited claim", () => {
       const binary = join(scratch, "badge.png");
       writeFileSync(binary, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]));
       expect(assetIsItsOwnText(binary), "a PNG is not readable as text").toBe(false);
+
+      // UTF-16, which is what an ordinary Windows editor writes when told
+      // "Unicode". Every other character is a NUL, and the predecessor called
+      // any file containing one binary — so this was exempted from the scan and
+      // served at HTTP 200 with two prohibited claims in it. No hostile byte is
+      // involved; this is a file someone saves by accident.
+      const utf16 = join(scratch, "trust-badge.svg");
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>We deliver a penetration test.</text></svg>';
+      writeFileSync(utf16, Buffer.from(`\ufeff${svg}`, "utf16le"));
+      expect(assetIsItsOwnText(utf16), "UTF-16 is text, and is full of NULs").toBe(true);
+      expect(
+        findProhibitedClaims(readServedAsset(utf16), "typed_field"),
+        "and reading it must decode it, or classifying it correctly changes nothing",
+      ).not.toEqual([]);
+
+      // And with no mark at all, which is where the first fix still failed:
+      // UTF-16LE of ASCII is a VALID UTF-8 byte sequence, so UTF-8 decoding
+      // succeeded, produced a string that was half NULs, and the UTF-16 branch
+      // was never reached. Decoding succeeding is not decoding correctly.
+      const utf16NoMark = join(scratch, "badge-no-bom.svg");
+      writeFileSync(utf16NoMark, Buffer.from(svg, "utf16le"));
+      expect(assetIsItsOwnText(utf16NoMark), "UTF-16 without a byte-order mark is still text").toBe(true);
+      expect(
+        findProhibitedClaims(readServedAsset(utf16NoMark), "typed_field"),
+        "and its words must be read",
+      ).not.toEqual([]);
+
+      // One NUL inside an HTML comment, which leaves the rendered text intact.
+      const sneaky = join(scratch, "claims.html");
+      writeFileSync(sneaky, Buffer.from(`<p>We deliver a penetration test.</p><!-- \u0000 -->`, "utf8"));
+      expect(assetIsItsOwnText(sneaky), "one stray NUL does not make a document unreadable").toBe(true);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
