@@ -373,16 +373,30 @@ convenience.
 | --- | --- |
 | Found | while reducing fixture cost in `release-rescue-audit7-properties.test.ts` |
 | Class | a corpus that cannot disagree |
-| Status | **open — recorded, not fixed** |
+| Status | **closed** — the generated assignments are distinct, and a clean signature on the same draft is deliverable |
+| Closed at | this commit (SHA recorded with the verify run that measures it) |
 
-`never delivers a report carrying a credential from any lexicon key` iterates 6
-qualifiers × 5 carriers × 2 spellings = 60 keys, and builds **the same report
-every time**: the loop variable `key` is used only to label a failure, never to
+`never delivers a report carrying a credential from any lexicon key` iterated 6
+qualifiers × 5 carriers × 2 spellings = 60 keys, and built **the same report
+every time**: the loop variable `key` was used only to label a failure, never to
 compose the input. Sixty iterations of one case.
 
-Not fixed here. It is outside this slice, and rewriting a property test's corpus
-in the same commit that speeds it up is how a measurement gets quietly replaced
-by a different one. Recorded so the next audit has it.
+The corpus is now the assignments themselves: each qualifier, carrier and
+spelling produce `${KEY}=${SECRET}` in both separated and run-together form.
+The test asserts `inputs.length === 60` and `new Set(inputs).size === 60`
+before signing any of them onto `reviewedBy.displayName`, the one free-text
+string a report still holds. `ACCESS_TOKEN=` and `ACCESSTOKEN=`, `PG_PASSWORD=`
+and `PGPASSWORD=` are all present.
+
+A second vacuity sat under that one. The finding lived on an all-pass
+assessment sheet, so the delivery gate was false for every input and
+`includes(SECRET)` never ran. The matching check is now marked fail, and a
+clean signature on that draft is asserted deliverable before the planted
+names are tried. Signing still refuses a credential-shaped display name
+rather than rewriting it; a name that nevertheless reaches a deliverable
+report holding the value fails the property.
+
+No production behaviour changed. S-004 and S-005 are untouched.
 
 ---
 

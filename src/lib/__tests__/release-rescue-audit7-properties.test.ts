@@ -15,6 +15,8 @@ import {
 import {
   makeFinding,
   makeReportInput,
+  passingAssessments,
+  setAssessment,
   signWithFixtureReviewer,
 } from "@/lib/__tests__/release-rescue-fixtures";
 
@@ -232,35 +234,70 @@ describe("the outcome the whole workstream exists to prevent", () => {
   // report. Driven from the same lexicon product, so a key nobody thought of is
   // covered by construction.
   it("never delivers a report carrying a credential from any lexicon key", () => {
-    const delivered: string[] = [];
+    const QUALIFIERS = ["access", "pg", "mysql", "github", "session", "client"] as const;
+    const CARRIERS = ["token", "password", "secret", "pwd", "apikey"] as const;
+    const SPELLINGS = ["separated", "runTogether"] as const;
 
-    for (const qualifier of ["access", "pg", "mysql", "github", "session", "client"]) {
-      for (const carrier of ["token", "password", "secret", "pwd", "apikey"]) {
-        for (const key of [
-          `${qualifier}_${carrier}`.toUpperCase(),
-          `${qualifier}${carrier}`.toUpperCase(),
-        ]) {
-          // Assembled unsigned and signed by splice, which is one assembly
-          // rather than two. `makeReportInput` signs by assembling a draft to
-          // read its subject hash off, and this loop runs sixty times.
-          const report = signWithFixtureReviewer(
-            buildReleaseRescueReport(
-              makeReportInput({
-                reviewedBy: null,
-                findings: [
-                  makeFinding({
-                    locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
-                  }),
-                ],
-              }),
-            ),
-          );
-          const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
-
-          if (gate.deliverable && JSON.stringify(report).includes(SECRET)) {
-            delivered.push(key);
-          }
+    // The generated input is the assignment itself. Qualifier, carrier and
+    // spelling each change the key that sits in front of the value; a corpus
+    // that only labelled failures with those names was sixty copies of one case.
+    const inputs: string[] = [];
+    for (const qualifier of QUALIFIERS) {
+      for (const carrier of CARRIERS) {
+        for (const spelling of SPELLINGS) {
+          const key =
+            spelling === "separated"
+              ? `${qualifier}_${carrier}`.toUpperCase()
+              : `${qualifier}${carrier}`.toUpperCase();
+          inputs.push(`${key}=${SECRET}`);
         }
+      }
+    }
+
+    expect(inputs).toHaveLength(QUALIFIERS.length * CARRIERS.length * SPELLINGS.length);
+    expect(new Set(inputs).size, "generated inputs must be distinct").toBe(inputs.length);
+    expect(inputs).toContain(`ACCESS_TOKEN=${SECRET}`);
+    expect(inputs).toContain(`ACCESSTOKEN=${SECRET}`);
+    expect(inputs).toContain(`PG_PASSWORD=${SECRET}`);
+    expect(inputs).toContain(`PGPASSWORD=${SECRET}`);
+    expect(inputs.every((planted) => planted.includes("=") && planted.endsWith(SECRET))).toBe(true);
+
+    // Assembled unsigned once, then signed by splice. `makeReportInput` signs by
+    // assembling a draft to read its subject hash off; doing that sixty times
+    // was the reason the loop never planted the key. The finding's check is
+    // marked fail so a clean signature is actually deliverable — otherwise the
+    // gate is false for every input and `includes(SECRET)` never runs.
+    const draft = buildReleaseRescueReport(
+      makeReportInput({
+        reviewedBy: null,
+        assessments: setAssessment(passingAssessments(), "authz.object_level_authorization", {
+          outcome: "fail",
+          rationaleCode: "control_missing_on_a_reachable_path",
+        }),
+        findings: [
+          makeFinding({
+            locations: [{ path: "config/app.env", startLine: 1, endLine: 1 }],
+          }),
+        ],
+      }),
+    );
+    const clean = signWithFixtureReviewer(draft);
+    expect(validateReleaseRescueReport(clean).hardFailures).toEqual([]);
+    expect(releaseRescueDeliveryGate(clean, validateReleaseRescueReport(clean)).deliverable).toBe(
+      true,
+    );
+
+    const delivered: string[] = [];
+    for (const planted of inputs) {
+      let report: ReturnType<typeof signWithFixtureReviewer>;
+      try {
+        report = signWithFixtureReviewer(draft, { displayName: planted });
+      } catch {
+        continue;
+      }
+      const gate = releaseRescueDeliveryGate(report, validateReleaseRescueReport(report));
+      if (gate.deliverable && JSON.stringify(report).includes(SECRET)) {
+        delivered.push(planted);
       }
     }
 
