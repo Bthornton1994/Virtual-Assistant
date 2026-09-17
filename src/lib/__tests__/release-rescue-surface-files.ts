@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { RELEASE_RESCUE_OFFER } from "@/lib/release-rescue-intake";
+import ts from "typescript";
 
 /**
  * Every file that can put words in front of a Release Rescue customer, DERIVED
@@ -251,175 +251,123 @@ export const DECLARED_CLAIM_BEARING_FILES: Readonly<Record<string, string>> = {
  * one makes.
  */
 /**
- * Tags that do NOT interrupt a sentence. Everything else — every block-level
- * element — is left in place so it bounds its own text.
- */
-const INLINE_TAG =
-  /<\/?(?:strong|em|b|i|u|s|span|code|kbd|abbr|small|sup|sub|mark|cite|q|time|var|samp|wbr|br|a|Link|Wordmark)\b[^>]*\/?>/gi;
-
-
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:"'`\\])\/\/[^\n]*/g, "$1 ");
-}
-
-/**
- * Resolve HTML entities, because JSX resolves them before a customer reads the
- * page and the extractor's whole contract is to see what the customer sees.
+ * What a customer can actually read: rendered JSX text and string literals,
+ * extracted with the TYPESCRIPT PARSER rather than with regular expressions.
  *
- * This was the THIRD consecutive round of "formatting decides, not content":
- * a newline stopped the match, then inline markup fragmented it, then
- * `penetration&#32;test` hid it. All three passed the suite; the last two were
- * served at HTTP 200 from a real build. `&nbsp;` is not adversarial either —
- * `react/no-unescaped-entities` is enforced here, so this codebase already
- * writes entities in prose, and a non-breaking space is the ordinary way to
- * stop "penetration test" wrapping across two lines.
+ * FOUR CONSECUTIVE ROUNDS of this were hand-rolled JSX parsing, and every one
+ * of them lost detections it did not know it had:
+ *
+ *   - `/>\s*([A-Z][^<>{}\n]{12,})\s*</` stopped at a NEWLINE, so every wrapped
+ *     paragraph was invisible while the same sentence on one line was caught.
+ *   - Its replacement excluded `<>{}` from the class, so INLINE MARKUP
+ *     fragmented a sentence and a leading-capital filter dropped the rest.
+ *   - Dropping `\{[^{}]*\}` could not tell a JSX container from a JavaScript
+ *     block, so any component body without nested braces was deleted whole.
+ *   - Anchoring on tags and rejecting runs with `;` `{` `}` `=>` threw away any
+ *     sentence containing an interpolation or a semicolon, then a keyword list
+ *     threw away sentences containing the English words "return", "export" and
+ *     "function", and a length floor of 7 mis-paired quote delimiters so that a
+ *     literal after a short one went unread.
+ *
+ * Three of those were served at HTTP 200 from a real build with the whole suite
+ * green. Each fix was a new heuristic, and each new heuristic was the next
+ * round's finding. The parser is not a better heuristic — it removes the
+ * category. A `JsxText` node is text because the grammar says so, a
+ * `StringLiteral` is a string because the grammar says so, and neither
+ * punctuation, nor formatting, nor an English word can change that.
+ *
+ * What is emitted:
+ *   - every string literal and template literal part, and the concatenation of
+ *     a `+` chain or a template's literal parts, so a claim split across pieces
+ *     is read as the sentence it renders as;
+ *   - for every JSX element and fragment, the text of all its descendants run
+ *     together, which is what the browser shows and which no markup can split.
+ *
+ * Comments are excluded by construction: the grammar knows they are not text,
+ * so the codebase can keep documenting its own attack payloads in prose.
  */
 function decodeEntities(text: string): string {
   return text
     .replace(/&#x([0-9a-f]+);/gi, (_whole, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_whole, dec) => String.fromCodePoint(Number.parseInt(dec, 10)))
+    .replace(/&#(\d+);/g, (_whole, decimal) => String.fromCodePoint(Number.parseInt(decimal, 10)))
     .replace(/&nbsp;/gi, " ")
-    .replace(/&(amp|lt|gt|quot|apos|hellip|mdash|ndash|shy|zwnj|zwj);/gi, (_whole, name) => {
-      const named: Record<string, string> = {
-        amp: "&",
-        lt: "<",
-        gt: ">",
-        quot: '"',
-        apos: "'",
-        hellip: "...",
-        mdash: "-",
-        ndash: "-",
-        shy: "",
-        zwnj: "",
-        zwj: "",
-      };
-      return named[String(name).toLowerCase()] ?? " ";
-    });
+    .replace(/&(amp|lt|gt|quot|apos|hellip|mdash|ndash|shy|zwnj|zwj);/gi, " ");
 }
 
-/**
- * Does this file render markup at all?
- *
- * The `rendered` branch below splits on tags. In a plain `.ts` module there are
- * no tags, so the whole file collapses into one run and ordinary code is read as
- * prose: an audit showed `["fully", "secure", "partial"]` in a rubric constant
- * failing CI as the claim "fully secure". It fails CLOSED, so it never shipped
- * an overclaim — but the surface now includes general-purpose modules, and their
- * code is not customer text. Quoted strings in those files are still read; that
- * is where their customer-visible words actually live.
- */
-export function rendersMarkup(source: string): boolean {
-  return /<\/[A-Za-z]|\/>/.test(source);
+function tidy(text: string): string {
+  return decodeEntities(text).replace(/\s+/g, " ").trim();
 }
 
-/**
- * The literal words of one JSX text node, with its expressions removed — or
- * `null` when the run is code between two elements rather than text inside one.
- *
- * THIS REPLACED A HEURISTIC THAT COST COVERAGE. The previous version discarded
- * any run containing `;`, `{`, `}` or `=>` as "code". A JSX text node and the
- * expression inside it are ONE run between `>` and `<`, so a single `{price}`
- * threw the whole sentence away — and that is the dominant prose shape here. An
- * audit measured 14 runs of live customer copy going unread, including the
- * offer's own `<h1>`, and served four overclaims at HTTP 200 with the suite
- * green. A semicolon did the same thing to any sentence containing one.
- *
- * Worse, the commit before it caught all three of those shapes. Deleting
- * expressions and reading the words around them is what it did; this restores
- * that and keeps the tag-anchored reading that fixed the footer.
- *
- * Balanced braces are an expression and are removed. An UNBALANCED brace means
- * the run spans a function body or a `.map()` — that is code, and code is the
- * only thing dropped.
- */
-function literalTextOf(run: string): string | null {
-  let text = "";
-  let depth = 0;
-  for (const character of run) {
-    if (character === "{") {
-      depth += 1;
-      continue;
-    }
-    if (character === "}") {
-      if (depth === 0) return null;
-      depth -= 1;
-      continue;
-    }
-    if (depth === 0) text += character;
+/** Every string literal in a `+` chain, so `"a " + "b"` reads as `"a b"`. */
+function concatenatedParts(node: ts.Expression, into: string[]): void {
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    concatenatedParts(node.left, into);
+    concatenatedParts(node.right, into);
+    return;
   }
-  if (depth !== 0) return null;
-  // What survives with an arrow or a declaration keyword in it is a fragment of
-  // source, not a sentence. Prose keeps its semicolons.
-  if (/=>|\b(?:function|return|export|import|const|await)\b/.test(text)) return null;
-  return text;
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) into.push(node.text);
 }
 
-/**
- * The shortest string that could possibly BE a prohibited claim, derived from
- * the claim list rather than chosen.
- *
- * Both branches used a flat 12 characters, which is longer than five of the 24
- * claims — `pen test`, `pen testing`, `pentest`, `pentesting` and `is secure`
- * were invisible standing alone in an element, and an audit found that none of
- * them was recorded as a residual either. Measuring the alternative cost
- * nothing: dropping to this floor across all 61 files adds 22 runs and produces
- * zero new findings, so there was no precision being bought by the larger
- * number.
- */
-const SHORTEST_POSSIBLE_CLAIM = Math.min(...RELEASE_RESCUE_OFFER.prohibitedClaims.map((claim) => claim.length));
+/** All descendant JSX text of one element, run together the way a browser renders it. */
+function renderedTextOf(element: ts.Node): string {
+  const parts: string[] = [];
+  const walk = (node: ts.Node): void => {
+    if (ts.isJsxText(node)) parts.push(node.text);
+    else if (ts.isJsxExpression(node)) {
+      const inner = node.expression;
+      if (inner && (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner))) parts.push(inner.text);
+    }
+    node.forEachChild(walk);
+  };
+  element.forEachChild(walk);
+  return tidy(parts.join(" "));
+}
 
 export function visibleStrings(source: string): string[] {
-  let code = stripComments(source);
+  const parsed = ts.createSourceFile("surface.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const found: string[] = [];
 
-  // `"Your application is " + "secure and audited."` renders as one sentence and
-  // read as two literals carries no claim. Fold adjacent literals before
-  // matching. Bounded rather than `while (true)`: a chain longer than this is
-  // not prose anyone wrote by hand.
-  for (let pass = 0; pass < 8; pass += 1) {
-    const folded = code.replace(
-      /(["'`])((?:(?!\1)[^\\])*)\1\s*\+\s*(["'`])((?:(?!\3)[^\\])*)\3/g,
-      (_whole, _open, left, _open2, right) => `"${left}${right}"`,
-    );
-    if (folded === code) break;
-    code = folded;
-  }
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      found.push(tidy(node.text));
+    } else if (ts.isTemplateExpression(node)) {
+      const parts = [node.head.text, ...node.templateSpans.map((span) => span.literal.text)];
+      for (const part of parts) found.push(tidy(part));
+      // And the sentence the template renders as, minus its interpolations.
+      found.push(tidy(parts.join(" ")));
+    } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const parts: string[] = [];
+      concatenatedParts(node, parts);
+      if (parts.length > 1) found.push(tidy(parts.join("")));
+    } else if (ts.isJsxElement(node) || ts.isJsxFragment(node)) {
+      found.push(renderedTextOf(node));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
 
-  const quotedPattern = new RegExp(
-    `"([^"\\n]{${SHORTEST_POSSIBLE_CLAIM},})"|'([^'\\n]{${SHORTEST_POSSIBLE_CLAIM},})'|\`([^\`]{${SHORTEST_POSSIBLE_CLAIM},})\``,
-    "g",
-  );
-  const quoted = [...code.matchAll(quotedPattern)].map((match) =>
-    decodeEntities(match[1] ?? match[2] ?? match[3] ?? ""),
-  );
+  // No length floor. One was introduced at 12 characters, which was longer than
+  // five of the 24 prohibited claims, and lowering it to 7 mis-paired quote
+  // delimiters and blinded 73 positions the previous commit could see. The
+  // parser returns text, so there is nothing to filter for — an empty string is
+  // the only thing dropped.
+  return found.filter((text) => text.length > 0);
+}
 
-  if (!rendersMarkup(code)) return quoted;
-
-  // Anchor on TAGS, never on braces.
-  //
-  // The previous version deleted `{...}` spans to drop expression containers.
-  // `\{[^{}]*\}` cannot tell a JSX container from a JavaScript block, so any
-  // component whose body happens to contain no nested braces had its ENTIRE
-  // body deleted before a single word was read — `MarketingFooter` among them.
-  // A planted claim in the site footer, rendered on every Release Rescue page,
-  // was invisible for that reason and served at HTTP 200.
-  //
-  // Reading only what sits between a `>` and a `<` needs no brace handling at
-  // all: inline tags are removed first so a sentence they split joins back up,
-  // and block-level tags stay in place so each run is the text of one element
-  // and two unrelated paragraphs are never spliced into a claim neither makes.
-  const markup = code
-    .replace(/\{\s*(["'`])((?:(?!\1).)*)\1\s*\}/g, "$2")
-    .replace(INLINE_TAG, "");
-
-  const rendered = [...markup.matchAll(/>([^<>]*)</g)]
-    .map((match) => literalTextOf(match[1]))
-    .filter((text): text is string => text !== null)
-    .map((text) => decodeEntities(text).replace(/\s+/g, " ").trim())
-    // No space requirement: `pentest` alone in an element is the claim, and the
-    // structural rules above already exclude code.
-    .filter((text) => text.length >= SHORTEST_POSSIBLE_CLAIM);
-
-  return [...quoted, ...rendered];
+/** Whether the file contains any JSX at all, for the vacuity guard. */
+export function rendersMarkup(source: string): boolean {
+  const parsed = ts.createSourceFile("surface.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let hasJsx = false;
+  const visit = (node: ts.Node): void => {
+    if (hasJsx) return;
+    if (ts.isJsxElement(node) || ts.isJsxFragment(node) || ts.isJsxSelfClosingElement(node)) {
+      hasJsx = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+  return hasJsx;
 }
 
 export function readSurface(file: string): string {

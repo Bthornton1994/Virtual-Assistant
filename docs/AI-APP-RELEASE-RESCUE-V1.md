@@ -2612,6 +2612,65 @@ consumes rather than renders. Only that file can be declared now, checked by
 identity and by the definition being present. Every other file is a rendering
 surface, and the door is shut rather than narrowed.
 
+### Four rewrites of a JSX parser made of regular expressions
+
+Each round fixed the previous extractor and introduced the next round's finding.
+The whole sequence, measured by running each implementation against the others'
+mutants:
+
+| The rule | What it lost |
+| --- | --- |
+| `>\s*([A-Z][^<>{}\n]{12,})\s*<` | stopped at a NEWLINE — every wrapped paragraph |
+| same, minus `<>{}` from the class | inline markup fragmented a sentence; a leading-capital filter dropped the rest |
+| delete `\{[^{}]*\}` | could not tell a JSX container from a JS block — whole component bodies |
+| anchor on tags, reject `;` `{` `}` `=>` | any sentence with an interpolation or a semicolon |
+| ...then reject `return`/`export`/`function` | sentences containing those ENGLISH WORDS |
+| ...with a length floor of 7 | mis-paired quote delimiters; 73 positions the previous commit could see |
+
+Three of those were served at **HTTP 200 from a real build with the whole suite
+green**. Two were caught only because an audit ran the PARENT's implementation
+against the new mutants — the check the author had not run.
+
+**The pattern is not "the regex was wrong" six times. It is that a regular
+expression cannot parse a context-free grammar, and every fix was another
+heuristic standing in for a parser.** A heuristic guesses from punctuation, from
+formatting, from capitalisation, from English words. Each guess is a new way to
+be wrong, and the next audit finds it.
+
+So the extractor is the TypeScript parser now. `ts.createSourceFile` with
+`ScriptKind.TSX` returns the real tree: a `JsxText` node is text because the
+grammar says so, a `StringLiteral` is a string because the grammar says so, and
+neither punctuation nor formatting nor an English word can change that. Comments
+are excluded by construction, so this codebase can keep documenting its own
+attack payloads in prose. There is no length floor, no inline-tag list, no
+brace matching and no keyword list left to be wrong about.
+
+Measured against every payload the last four audits produced — eighteen shapes
+spanning newline, inline markup, entities, interpolations, semicolons, English
+keywords, short literals, comparisons inside a text node, template
+interpolations and concatenations — the parser catches **all eighteen**, with
+zero false positives across the 61 files. Every one of those shapes is a case in
+the planted-claim test, and the full accumulated mutant set was re-run before
+this was written: sixteen kills and one correct non-failure, nothing traded.
+
+### A measurement that counted only what a change added
+
+The floor change published this, in source: *"dropping to this floor across all
+61 files adds 22 runs and produces zero new findings."* Neither number
+reproduced — the delta was **+1,087 strings and +5 flagged**, and the rendered
+delta was 19, not 22.
+
+The defect is not the digits. The measurement asked what the change ADDED and
+never asked what it REMOVED, and what it removed was 73 positions where a planted
+claim had been visible and no longer was. A before-and-after that only looks
+forward is not a before-and-after.
+
+This is the same shape as the regression two rounds earlier, where a rewrite was
+verified against its own new tests rather than against the old implementation's
+catches. The rule now has a companion: when a change alters what gets measured,
+measure the OLD way and the NEW way over the SAME corpus and diff the sets, not
+the counts.
+
 ### A floor cannot tell a record from a fiction
 
 Converting one floor to an exact set found a false record that had been in the

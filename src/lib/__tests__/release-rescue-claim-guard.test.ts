@@ -294,6 +294,15 @@ describe("the marketing surface makes no prohibited claim", () => {
       // they were invisible standing alone in an element — and were not recorded
       // as residuals either. The floor is derived from the claim list now.
       "a short claim standing alone": `<li>pentest</li>`,
+      // The shapes a KEYWORD heuristic and a LENGTH FLOOR let through. Each fix
+      // in this file was a new heuristic and each new heuristic was the next
+      // round's finding, so the regex extractor was replaced by the TypeScript
+      // parser. These stay as cases because they are cheap and because they are
+      // what a future rewrite has to keep.
+      "English words that are also keywords": `<p>We return the report and export your findings once your application is secure.</p>`,
+      "a claim after a short sibling literal": `const row = { id: "sk", name: "We deliver a penetration test", tier: "x" };`,
+      "a comparison inside the text node": `<p>{n} pass. Your application is secure.{n > 0 ? " x" : ""}</p>`,
+      "a claim split by a template interpolation": "const w = \"secure\"; const s = `Your application is ${w} and free of vulnerabilities`;",
     };
 
     for (const [shape, source] of Object.entries(planted)) {
