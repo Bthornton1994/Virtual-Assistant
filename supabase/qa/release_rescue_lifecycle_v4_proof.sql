@@ -335,13 +335,13 @@ select rrl4.expect_refusal(
     (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
      rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
      coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by,
-     review_reason_code, review_approved_content_hash,
+     reviewed_at, review_reason_code, review_approved_content_hash,
      reviewed_commit_sha)
   values ('bbbb4000-0000-0000-0000-000000000001', 'ffff4000-0000-0000-0000-000000000001',
           'eeee4000-0000-0000-0000-000000000001', '2222a000-0000-0000-0000-000000000001',
           'release-rescue-report/v1', repeat('3', 64), 'release-rescue-rubric/v1', repeat('4', 64),
           repeat('a', 64), 'conditional_release', 0, 32, 32, 'auditor',
-          'aaaa4000-0000-0000-0000-000000000002',
+          'aaaa4000-0000-0000-0000-000000000002', '2026-09-17T10:00:00.000Z',
           -- v13: the row's attestation must match the one in the artifact, and a
           -- report without one cannot reach step 7's delivery stamp at all.
           'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('c', 64),
@@ -368,14 +368,15 @@ select rrl4.expect_ok('the report is issued, and the commit is filled in from th
     (id, organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
      rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
      coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key, reviewed_by,
-     review_reason_code, review_approved_content_hash)
+     reviewed_at, review_reason_code, review_approved_content_hash)
   values ('3333a000-0000-0000-0000-000000000001', 'bbbb4000-0000-0000-0000-000000000001',
           'ffff4000-0000-0000-0000-000000000001', 'eeee4000-0000-0000-0000-000000000001',
           '2222a000-0000-0000-0000-000000000001', 'release-rescue-report/v1', repeat('6', 64),
           'release-rescue-rubric/v1', repeat('4', 64), repeat('a', 64), 'conditional_release', 0,
           32, 32, 'auditor', 'aaaa4000-0000-0000-0000-000000000002',
-          -- v13: matches the signature in artifact 2222a000-...-0001. Without it
-          -- this row cannot be stamped delivered in step 7.
+          -- v13: matches the signature in artifact 2222a000-...-0001, identity and
+          -- timestamp included. Without it this row cannot be stamped delivered.
+          '2026-09-17T10:00:00.000Z',
           'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('c', 64));
 $q$);
 

@@ -276,7 +276,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 400 live database cases across fourteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 404 live database cases across fourteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The unit-test counts that used to open this sentence are gone from it. They read
 "738 Release Rescue tests across 30 suites (1,414 in the whole repository)" at a
@@ -330,8 +330,8 @@ no cases and removed none.
 | `release_rescue_structured_observations_v10_proof.sql` | 30 |
 | `release_rescue_code_fields_v11_proof.sql` | 29 |
 | `release_rescue_identifier_shape_v12_proof.sql` | 17 |
-| `release_rescue_reviewer_attestation_v13_proof.sql` | 22 |
-| **Total** | **400** |
+| `release_rescue_reviewer_attestation_v13_proof.sql` | 26 |
+| **Total** | **404** |
 
 Three of the six Playwright specs need live preview credentials (`E2E_PASSWORD`) and a deployed preview, neither of which this environment has or should have. They are not run here, and the 13 above does not include them.
 

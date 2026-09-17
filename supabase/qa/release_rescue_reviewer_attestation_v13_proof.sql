@@ -34,6 +34,13 @@ begin
   raise notice 'PASS state    | %', p_label;
 end $$;
 
+create or replace function rrv13.expect_ok(p_label text, p_sql text)
+returns void language plpgsql as $$
+begin
+  execute p_sql;
+  raise notice 'PASS accepted | %', p_label;
+end $$;
+
 create or replace function rrv13.expect_refusal(p_label text, p_expect text, p_sql text)
 returns void language plpgsql as $$
 begin
@@ -95,8 +102,13 @@ $$;
 
 insert into auth.users (id, email) values
   ('da000000-0000-0000-0000-0000000000d1', 'v13.admin@example.test');
+insert into auth.users (id, email) values
+  ('da000000-0000-0000-0000-0000000000d2', 'v13.second@example.test');
 insert into public.operators (user_id, name, platform_role) values
-  ('da000000-0000-0000-0000-0000000000d1', 'Ops Manager', 'ops_manager');
+  ('da000000-0000-0000-0000-0000000000d1', 'Ops Manager', 'ops_manager'),
+  -- A SECOND authorised manager, so the identity-binding case below fails on the
+  -- binding rather than on the authority check it is not about.
+  ('da000000-0000-0000-0000-0000000000d2', 'Second Manager', 'ops_manager');
 insert into public.organizations (id, name, slug) values
   ('db000000-0000-0000-0000-0000000000d1', 'V13 Co', 'v13-co');
 insert into public.organization_members (organization_id, user_id, role, status) values
@@ -248,6 +260,11 @@ $q$);
 -- Two places holding one fact is two places for them to disagree.
 
 insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
+values ('d5000000-0000-0000-0000-0000000000d1', 'db000000-0000-0000-0000-0000000000d1',
+        'de000000-0000-0000-0000-0000000000d1', 'observation', 'body with no reviewedBy key',
+        repeat('4', 63) || '0', rrv13.report() - 'reviewedBy');
+
+insert into public.evidence_artifacts (id, organization_id, run_id, kind, summary, content_hash, payload)
 values ('d3000000-0000-0000-0000-0000000000d1', 'db000000-0000-0000-0000-0000000000d1',
         'de000000-0000-0000-0000-0000000000d1', 'observation', 'row subject',
         repeat('8', 64), rrv13.report());
@@ -313,6 +330,73 @@ select rrv13.expect_refusal(
           'da000000-0000-0000-0000-0000000000d1', '2026-09-17T10:00:00Z',
           'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('d', 64));
 $q$);
+
+-- A report row pointing at a body with NO `reviewedBy` KEY, which is what two
+-- older proofs' fixtures carry and what the trigger's draft branch initially
+-- failed to recognise: `jsonb_typeof` of an absent key is SQL NULL, so the branch
+-- did not fire and every such row was judged against a signature that was not
+-- there. Asserted here explicitly rather than left to those two proofs to cover
+-- incidentally, because incidental coverage disappears when a fixture changes.
+select rrv13.expect_ok(
+  'a row is accepted against a body that carries no reviewedBy key',
+  $q$
+  insert into public.release_rescue_reports
+    (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+     rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key,
+     reviewed_by, reviewed_at)
+  values ('db000000-0000-0000-0000-0000000000d1', 'd2000000-0000-4000-8000-0000000000d2',
+          'de000000-0000-0000-0000-0000000000d1', 'd5000000-0000-0000-0000-0000000000d1',
+          'release-rescue-report/v1', repeat('3', 63) || '0', 'release-rescue-rubric/v1',
+          repeat('b', 64), repeat('c', 64), 'release_blocked', 1, 1, 32, 'release-rescue-auditor',
+          'da000000-0000-0000-0000-0000000000d1', '2026-09-17T10:00:00.000Z');
+$q$);
+
+select rrv13.expect_refusal(
+  'a row naming a DIFFERENT reviewer than the artifact is refused',
+  'is not the reviewer recorded on this report row',
+  $q$
+  insert into public.release_rescue_reports
+    (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+     rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key,
+     reviewed_by, reviewed_at, review_reason_code, review_approved_content_hash)
+  values ('db000000-0000-0000-0000-0000000000d1', 'd2000000-0000-4000-8000-0000000000d2',
+          'de000000-0000-0000-0000-0000000000d1', 'd3000000-0000-0000-0000-0000000000d1',
+          'release-rescue-report/v1', repeat('a', 64), 'release-rescue-rubric/v1',
+          repeat('b', 64), repeat('c', 64), 'release_blocked', 1, 1, 32, 'release-rescue-auditor',
+          -- A second authorised manager. The artifact names the first one, and the
+          -- customer's report shows the artifact's name -- so without this check
+          -- the authority verified on the row and the attribution the customer
+          -- reads are about two different people.
+          'da000000-0000-0000-0000-0000000000d2', '2026-09-17T10:00:00.000Z',
+          'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('c', 64));
+$q$);
+
+select rrv13.expect_refusal(
+  'a row whose review TIME differs from the artifact is refused',
+  'does not match the one on this report row',
+  $q$
+  insert into public.release_rescue_reports
+    (organization_id, engagement_id, run_id, report_artifact_id, schema_version, report_hash,
+     rubric_version, rubric_hash, scope_hash, verdict, blocking_finding_count,
+     coverage_assessed_checks, coverage_total_checks, prepared_by_executor_key,
+     reviewed_by, reviewed_at, review_reason_code, review_approved_content_hash)
+  values ('db000000-0000-0000-0000-0000000000d1', 'd2000000-0000-4000-8000-0000000000d2',
+          'de000000-0000-0000-0000-0000000000d1', 'd3000000-0000-0000-0000-0000000000d1',
+          'release-rescue-report/v1', repeat('a', 64), 'release-rescue-rubric/v1',
+          repeat('b', 64), repeat('c', 64), 'release_blocked', 1, 1, 32, 'release-rescue-auditor',
+          'da000000-0000-0000-0000-0000000000d1', '2026-09-17T18:30:00.000Z',
+          'reviewed_findings_and_verdict_match_the_recorded_observations', repeat('c', 64));
+$q$);
+
+do $$
+begin
+  -- The SAME instant written with a different offset and precision is not a
+  -- disagreement, and refusing it would be a guard that refuses correct data.
+  perform rrv13.assert('an equal instant in another timezone is not a mismatch',
+    ('2026-09-17T10:00:00.000Z'::timestamptz = '2026-09-17T05:00:00-05:00'::timestamptz));
+end $$;
 
 \echo ''
 \echo '=== 5. An un-attested row cannot be marked delivered ==='

@@ -25,6 +25,11 @@
 --                        from the artifact they were shown, and verified against
 --                        the stored report.
 --
+-- Section 3 binds all four signature fields on the artifact to the accounting
+-- row, identity included. Binding only the two new ones would have left the
+-- customer-visible attribution free to name someone other than the manager whose
+-- authority was actually checked.
+--
 -- EXISTING RECORDS ARE NOT BACKFILLED, and that is the substance of this file
 -- rather than an omission in it. A reason and an attestation are things a human
 -- did or did not record. Writing a default into either would manufacture an
@@ -230,6 +235,7 @@ as $$
 declare
   v_payload jsonb;
   v_signature jsonb;
+  v_reviewed_at timestamptz;
 begin
   if new.report_artifact_id is null then return new; end if;
 
@@ -243,7 +249,15 @@ begin
   if v_payload is null then return new; end if;
 
   v_signature := v_payload->'reviewedBy';
-  if jsonb_typeof(v_signature) <> 'object' then
+  -- `v_signature is null` FIRST, for the reason recorded on the payload guard
+  -- above: `jsonb_typeof` of an absent key is SQL NULL, so the comparison alone
+  -- is NULL rather than true and this branch does not fire.
+  --
+  -- That defect was fixed in the guard and left here, in the same file, in the
+  -- same expression. Two existing QA proofs caught it — their report bodies carry
+  -- no `reviewedBy` key at all — and it is worth stating plainly: fixing one
+  -- occurrence of a defect is not fixing the defect.
+  if v_signature is null or jsonb_typeof(v_signature) <> 'object' then
     -- A draft. The row's attestation columns must be empty too, or the row
     -- claims an approval the artifact does not carry.
     if new.review_reason_code is not null or new.review_approved_content_hash is not null then
@@ -257,6 +271,41 @@ begin
      or new.review_approved_content_hash is distinct from (v_signature->>'approvedContentHash') then
     raise exception
       'The reviewer attestation on this report row does not match the one in the report artifact';
+  end if;
+
+  -- ALL FOUR signature fields, not two.
+  --
+  -- The first version of this trigger bound the reason and the hash and left the
+  -- IDENTITY unbound, which an automated review caught before this migration had
+  -- run anywhere. `reviewed_by` on the row is the field v1's trigger checks for
+  -- manager authority; `reviewedBy.operatorUserId` and `displayName` in the
+  -- artifact are what a customer's report shows as the signature. Binding only
+  -- two of the four let those disagree: a row naming an authorized manager could
+  -- point at an artifact attributing the review to any id, any name and any
+  -- time, and the database and the delivery gate would both accept it.
+  --
+  -- The authority check and the customer-visible attribution have to be about
+  -- the same person, or the authority check is decoration.
+  if new.reviewed_by::text is distinct from (v_signature->>'operatorUserId') then
+    raise exception
+      'The reviewer named in the report artifact is not the reviewer recorded on this report row';
+  end if;
+
+  -- Parsed rather than compared as text, so the same instant written with a
+  -- different offset or precision is not a spurious refusal. A value that is not
+  -- a timestamp at all is refused by name instead of as a cast error.
+  begin
+    v_reviewed_at := (v_signature->>'reviewedAt')::timestamptz;
+  exception when others then
+    raise exception 'The review timestamp in the report artifact is not a timestamp';
+  end;
+
+  -- `reviewed_at` defaults to now(), which is exactly how a row and its artifact
+  -- drift apart without anyone choosing to let them. A signed report has to state
+  -- its own review time.
+  if new.reviewed_at is distinct from v_reviewed_at then
+    raise exception
+      'The review timestamp in the report artifact does not match the one on this report row';
   end if;
 
   return new;

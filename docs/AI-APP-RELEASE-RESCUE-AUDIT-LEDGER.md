@@ -189,6 +189,57 @@ several rounds, and it took a *different machine* to cross it. The eight
 `software-context-shunt-cli` failures are the same lesson inverted — those pass
 on CI and fail here.
 
+### S-006 — the v13 trigger bound two of four signature fields
+
+| | |
+| --- | --- |
+| Found | by an automated review on the PR, before this migration had run anywhere |
+| Class | a binding that covers part of what it claims to bind |
+| Closed at | the same commit |
+
+The `v13` row/artifact trigger compared `reasonCode` and `approvedContentHash`
+and said nothing about `operatorUserId` or `reviewedAt`. The row's `reviewed_by`
+is the field checked for manager authority; the artifact's
+`reviewedBy.operatorUserId` and `displayName` are what a customer's report shows
+as the signature. Binding two of four let those disagree — a row naming an
+authorised manager could point at an artifact attributing the review to any id,
+any name and any time, and the database and the delivery gate both accepted it.
+
+**The authority check and the customer-visible attribution have to be about the
+same person, or the authority check is decoration.** All four fields are bound
+now, with the timestamp parsed rather than string-compared so that the same
+instant in another offset is not a spurious refusal. `reviewed_at` defaults to
+`now()`, which is how a row and its artifact drift apart without anyone choosing
+it, so a signed report must now state its own review time.
+
+Worth naming: this is the reviewer-attestation slice's own mechanism, and the
+defect is the same shape as the one the slice was written to fix — a record that
+looks like a binding and does not bind the thing that matters.
+
+### S-007 — the same absent-key defect, fixed once and left in place twice
+
+| | |
+| --- | --- |
+| Found | by two existing QA proofs, on the run after S-006's fix |
+| Class | a defect fixed at one occurrence and not at the other |
+| Closed at | the same commit |
+
+S-002 was `jsonb_typeof` of an ABSENT key returning SQL NULL, so
+`jsonb_typeof(x) <> 'object'` is NULL rather than true and an early return does
+not fire. It was fixed in `release_rescue_payload_unattested_signature`.
+
+**The identical expression sat in the row/artifact trigger, in the same file, and
+was not fixed.** It stayed invisible until the S-006 binding gave the signed
+branch something new to reject: two proofs whose report bodies carry no
+`reviewedBy` key were then judged against a signature that was not there, and
+both went red.
+
+The lesson is cheap to state and was not free to learn: **fixing one occurrence
+of a defect is not fixing the defect.** A grep for the expression would have
+found the second one in seconds. There is now an explicit proof case for a row
+accepted against a body with no `reviewedBy` key, rather than leaving that
+coverage to two older fixtures that could change for unrelated reasons.
+
 ### S-003 — a loop that varies nothing
 
 | | |
