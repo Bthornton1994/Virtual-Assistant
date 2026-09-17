@@ -155,6 +155,9 @@ export function MarketingFooter() {
             <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/book">
               Start Delegating
             </Link>
+            <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/ai-app-release-rescue">
+              AI App Release Rescue
+            </Link>
           </div>
           <div className="space-y-2">
             <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">Company</p>
