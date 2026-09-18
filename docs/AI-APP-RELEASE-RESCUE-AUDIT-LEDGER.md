@@ -100,7 +100,7 @@ are a merge gate this entry can lift.
 | ID | Finding | Class |
 | --- | --- | --- |
 | 45-M1 | PR #97 body is stale — stamped `907ba22`, still says D-012 records disagree and lists S-009 / S-010 / S-011 / reviewer bind as "not addressed", cites 404 cases / 14 proofs. | Medium, record |
-| 45-M2 | `verify.yml` does not run the SQL proofs or `proof:claim-guard`. Under D-012 the authoritative gate therefore never executes the DB half of S-009 / S-010 / S-013; that evidence is local-only (and this audit's). Owner decision whether proofs belong in CI. **Closed 2026-09-18 PT** by owner decision D-018: the complete SQL proof suite and `proof:claim-guard` were added to GitHub Actions `verify`. This does not resolve D-009. Independently verified **PASS** by Audit 46 at `cc9a3c6`, GHA run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507). | Medium, gate coverage |
+| 45-M2 | `verify.yml` does not run the SQL proofs or `proof:claim-guard`. Under D-012 the authoritative gate therefore never executes the DB half of S-009 / S-010 / S-013; that evidence is local-only (and this audit's). Owner decision whether proofs belong in CI. **Closed 2026-09-18 PT** by owner decision D-018: the complete SQL proof suite and `proof:claim-guard` were added to GitHub Actions `verify`. This does not resolve D-009. Independently verified **PASS** by Audit 46 at `cc9a3c6`, GHA run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507), and by Audit 47 at `ccb3dc3`, GHA run [35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839). | Medium, gate coverage |
 | 45-O1 | Artifact trigger skips non-object `reviewedBy` (undeliverable anyway, proven). | Low |
 | 45-O2 | Normal-path role gating is RLS-only by design. | Low |
 | 45-O3 | DB shape-checks the recovery reason code; the app catalog-checks it. | Low |
@@ -205,6 +205,61 @@ this recording); D-018 condition 3 wording (46-L3); any abnormal path
 out of `delivered` (D-014, still open).
 
 This entry records Audit 46 against the SHA it judged. It does not
+close D-009, lift `DO_NOT_MERGE`, authorize a merge, or seed a further
+audit.
+
+### Audit 47 — subject `ccb3dc3f51b1c8a98991f2f4a3236edae1fd084b`, verdict KEEP_DRAFT / DO_NOT_MERGE
+
+Independent QA, 2026-09-18 07:51 PT. `audit_id` Audit 47. reviewer_id
+`0a6ccc21-0b0c-4c00-82b3-61bb01c77d01`. Independent RO
+`bc-60423ecb-923f-5af6-8d3c-27ad25de4742` (Fable 5.1). Prior audit
+Audit 46 @ `cc9a3c6dd6cd56bb7495ab88a99b69383305a62c`. The docs-only
+delta from `cc9a3c6` to this SHA, and GitHub Actions `verify` run
+35357121839, were independently verified by reading the job log.
+Nothing in this slice lifts `DO_NOT_MERGE`; D-009 remains owner-only
+and open. Disposition: **KEEP_DRAFT / DO_NOT_MERGE**.
+
+| Item | Verdict |
+| --- | --- |
+| HEAD `ccb3dc3f`, PR #97 draft | **PASS** — HEAD exact; [PR #97](https://github.com/Bthornton1994/Virtual-Assistant/pull/97) is `OPEN`, `isDraft=true`, base `main`, `headRefOid` matches. |
+| Diff `cc9a3c6..ccb3dc3` docs-only | **PASS** — 2 files, **+23 / −0**, zero non-`.md` paths. Ledger +8 (authoritative CI gate / 55 of 60 table row); architecture doc +15 ("Two bases"). |
+| GHA run [35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839) | **PASS** — `headSha` = target, `pull_request`, `completed` / `success`. All 12 steps success including `proof:claim-guard` and `proof:sql`. Run was in-progress at audit start; the auditor waited and read the final state. |
+| `proof:claim-guard` | **PASS** — **39 `M-*` mutants, 39 distinct ids, 39 HELD, 0 non-HELD, 1 control (FP1 ok)**; baseline failing tests: none. |
+| `proof:sql` | **PASS** — **15 `proof ok` rows, 0 mismatch/FAIL, Σ live = 495 / Σ expected = 495**. Migrations: 54 `applied` + 1 `apply workaround` (cs4) + 5 `skip` (4 named, 1 pg_net) = **60 = repo migration count**. CI proof file set == repo `supabase/qa/release_rescue_*_proof.sql` (15/15). Postgres service log shows exactly one `ERROR: extension "pg_net" is not available`. |
+| Other gate steps | **PASS** — lint, typecheck, `npm test` (**1,657 / 1,657** in 88 files), build — all success. |
+| D-018 / 45-M2 recorded; D-009 open | **PASS** — `DECISION_LOG.md` § D-018 decided, owner-directed, "does NOT resolve D-009". Ledger 45-M2 closed by D-018; payment activation / production access / executor authority still open, sourced to D-009. |
+| Disposition | **KEEP_DRAFT / DO_NOT_MERGE** — D-018 lift conditions: (1) CI runs all proofs — met on this SHA; (2) exact SHA independently audited — this audit, for `ccb3dc3f` only; (3) D-009 resolved by owner — **not met**. |
+
+One High finding, an owner decision rather than a defect. Two Low,
+one Info. None of them is a merge gate this entry can lift. D-009 is
+still open and is the sole remaining lift blocker.
+
+| ID | Finding | Class |
+| --- | --- | --- |
+| 47-H1 | D-009 launch/payment/production authorization remains open. Sole remaining blocker under D-018. | High, blocking — owner decision, not a defect |
+| 47-L1 | D-018 condition 3 wording ("remains explicitly resolved") already flagged in the ledger (~S-017 / 46-L3); unchanged at this SHA. | Low, info |
+| 47-L2 | `mergeStateStatus: UNSTABLE` at audit start reflected the in-progress run; the run subsequently passed. | Low, info |
+| 47-I1 | The docs' "55 of 60" CI figure was runner-reported; this audit independently recounted it and confirmed the pg_net mechanism from the container log. | Info |
+
+GitHub Actions `verify` run
+[35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839):
+`headSha ccb3dc3f…`, `success`; claim-guard **39 held / 0 escaped**;
+SQL **15 / 15 proofs, 495 cases, 0 failures**; tests **1,657 / 1,657
+in 88 files**; lint, typecheck, and build success.
+
+READ-ONLY. The auditor took no code, PR, merge, deploy, payment, or
+production action. MERGE_OK was not issued.
+
+Remaining owner decisions, none of them this recording's to take:
+D-009 (open, owner-only — payment activation, production access,
+executor-authority increase — **47-H1**, sole remaining D-018 lift
+blocker); D-018 condition 2 (independent audit of the exact final
+SHA — met for `ccb3dc3f` only; any later commit, including `6a25ab3`
+and this recording, invalidates it); D-018 condition 3 wording
+(47-L1 / 46-L3); any abnormal path out of `delivered` (D-014, still
+open).
+
+This entry records Audit 47 against the SHA it judged. It does not
 close D-009, lift `DO_NOT_MERGE`, authorize a merge, or seed a further
 audit.
 
@@ -608,7 +663,7 @@ channel still refuses a plain operator.
 | Found | while verifying `bc99f14` rather than accepting it |
 | Class | a claim with no control behind it, and a path that was not rerunnable |
 | Closed at | this commit |
-| Independently verified | Audit 46 at `cc9a3c6dd6cd56bb7495ab88a99b69383305a62c`, **PASS** on the CI gate and harness completeness. Failure paths not re-driven (read-only). |
+| Independently verified | Audit 46 at `cc9a3c6dd6cd56bb7495ab88a99b69383305a62c`, **PASS** on the CI gate and harness completeness. Failure paths not re-driven (read-only). Audit 47 at `ccb3dc3f51b1c8a98991f2f4a3236edae1fd084b`, **PASS** on GHA run [35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839): claim-guard 39 held, SQL 15/15 proofs 495 cases. Docs-only delta vs Audit 46 subject. |
 
 D-018 put the SQL proof suite and `proof:claim-guard` on the authoritative
 `verify` gate, closing Audit 45's `45-M2`. The gate itself was checked before it
@@ -658,7 +713,8 @@ explicitly resolved by the owner"*, which contradicts the paragraph below it
 register carries the owner's words and this executor chose none of them, so the
 wording is **flagged, not edited** — the rule that settled D-012 applies to its
 neighbours too. Audit 46 independently recorded the same tension as **46-L3**
-and likewise did not edit it.
+and likewise did not edit it. Audit 47 recorded it again as **47-L1**,
+unchanged at `ccb3dc3`.
 
 ### S-014 — a ratio threshold that sat above quadratic, and failed on noise
 
@@ -1017,6 +1073,7 @@ Each was bought with a regression in this workstream.
 | Passed on | `4fcbbba`, run [35308531433](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308531433) attempt 1 — **1,654 / 1,654 across 88 files**, every step, 04:51:07Z → 04:53:07Z |
 | Independently confirmed on | `dec0633`, run [35308776223](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308776223) — Audit 45, `success`, **1,654 / 1,654 across 88 files**, lint 0 errors / 13 warnings, typecheck clean, build ok, runner Git 2.55.0. Only run on that commit. `pull_request` checked out the merge ref; the tested tree differed from the tip by six non-code skill files from `main`. |
 | Independently confirmed on | `cc9a3c6`, run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507) — Audit 46, `success`, **1,657 / 1,657 across 88 files**, lint 0 errors / 13 warnings, typecheck clean, build compiled, claim-guard **39 held / 0 escaped / 1 control ok**, SQL **15 / 15 proofs, 495 cases, 0 failures**, 55 of 60 migrations applied. Only run on that commit. `pull_request` checked out merge ref `6f5e81a`; the tested tree differed from the tip by six non-code skill files from `main` (46-L4). |
+| Independently confirmed on | `ccb3dc3`, run [35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839) — Audit 47, `success`, **1,657 / 1,657 across 88 files**, claim-guard **39 held / 0 escaped / 1 control ok**, SQL **15 / 15 proofs, 495 cases, 0 failures**, 55 of 60 migrations applied (54 applied + 1 cs4 workaround + 5 skip). Docs-only delta vs `cc9a3c6`. |
 
 **Measured on `4fcbbba`, the owner-order head (D-012, D-014 to D-017, S-009 to
 S-011, S-013, S-014):**
@@ -1062,6 +1119,14 @@ directly rather than reproducing locally. CI: **1,657 / 1,657 across 88
 files**; claim-guard **39 held / 0 escaped / 1 control ok**; SQL **15 /
 15 proofs, 495 cases, 0 failures**; 55 of 60 migrations applied. The
 45-M2 / D-018 gates **PASS**. D-009 remains open.
+
+**Independently confirmed on `ccb3dc3` by Audit 47**, run
+[35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839).
+READ-ONLY. Docs-only delta vs `cc9a3c6` (**+23 / −0**, two `.md`
+files). CI: **1,657 / 1,657 across 88 files**; claim-guard **39 held /
+0 escaped / 1 control ok**; SQL **15 / 15 proofs, 495 cases, 0
+failures**. D-018 conditions 1–2 met at this SHA; D-009 remains open
+(**47-H1**, sole remaining lift blocker).
 
 **Green, measured, every step:**
 
@@ -1218,11 +1283,11 @@ its own.
 | D-015 | **Decided 2026-09-18.** A run belongs to one engagement; the sweep is scoped to it. Closes S-010. | `DECISION_LOG.md` § D-015, migration `v14` |
 | D-016 | **Decided 2026-09-18.** Demo submissions expire in 24 hours; the store has a fixed ceiling. Closes S-011. | `DECISION_LOG.md` § D-016 |
 | D-017 | **Decided 2026-09-18.** Interactive reviewer actions are bound to the authenticated user. Closes S-013. | `DECISION_LOG.md` § D-017, migration `v14` |
-| D-018 | **Decided 2026-09-18 PT.** "Add the complete SQL proof suite and `proof:claim-guard` to GitHub Actions `verify`. The authoritative CI gate must execute the database and claim-guard proofs, not only lint, typecheck, unit tests, and build." Closes 45-M2. Does **not** resolve D-009. Does **not** authorize merge or deploy. PR #97 remains draft / DO_NOT_MERGE. Recording independently verified **PASS** (CI gates) by Audit 46 at `cc9a3c6`, run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507). D-018 conditions 2 and 3 of the hold are not met. | `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
+| D-018 | **Decided 2026-09-18 PT.** "Add the complete SQL proof suite and `proof:claim-guard` to GitHub Actions `verify`. The authoritative CI gate must execute the database and claim-guard proofs, not only lint, typecheck, unit tests, and build." Closes 45-M2. Does **not** resolve D-009. Does **not** authorize merge or deploy. PR #97 remains draft / DO_NOT_MERGE. Recording independently verified **PASS** (CI gates) by Audit 46 at `cc9a3c6`, run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507), and by Audit 47 at `ccb3dc3`, run [35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839). Condition 2 is met for `ccb3dc3` only; later commits including this recording are unaudited. Condition 3 (D-009) is not met (**47-H1**). | `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
-| — | Payment activation, production access, and any increase in executor authority. **Still open**, and not this branch's to take. Audit 46 records it still open. | `VISION.md` § D-009 |
-| ~~—~~ | ~~Whether GitHub Actions `verify` must execute the SQL proofs and `proof:claim-guard`.~~ **Closed 2026-09-18 PT** as D-018 / 45-M2. The gate runs lint, typecheck, unit tests, build, `proof:claim-guard`, and the complete SQL proof suite. Independently verified **PASS** by Audit 46 at `cc9a3c6`. | Audit 45, Audit 46, `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
-| — | Any abnormal path out of `delivered`. **Still open**; D-014 defined none. | `DECISION_LOG.md` § D-014, Audit 45, Audit 46 |
+| — | Payment activation, production access, and any increase in executor authority. **Still open**, and not this branch's to take. Audit 47 records it still open (**47-H1**, sole remaining D-018 lift blocker). | `VISION.md` § D-009 |
+| ~~—~~ | ~~Whether GitHub Actions `verify` must execute the SQL proofs and `proof:claim-guard`.~~ **Closed 2026-09-18 PT** as D-018 / 45-M2. The gate runs lint, typecheck, unit tests, build, `proof:claim-guard`, and the complete SQL proof suite. Independently verified **PASS** by Audit 46 at `cc9a3c6` and Audit 47 at `ccb3dc3`. | Audit 45, Audit 46, Audit 47, `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
+| — | Any abnormal path out of `delivered`. **Still open**; D-014 defined none. | `DECISION_LOG.md` § D-014, Audit 45, Audit 46, Audit 47 |
 
 > **The D-012 disagreement is resolved, and this is how.** From `f214f0b` to
 > `907ba22` this table and `DECISION_LOG.md` § D-012 disagreed: the table
