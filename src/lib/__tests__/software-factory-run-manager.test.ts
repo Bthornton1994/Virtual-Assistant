@@ -23,7 +23,10 @@ import {
   freezeEvidenceRecord,
   hashSoftwareFactoryPacket,
   isSoftwareFactorySpec,
+  isSoftwareFactoryTerminal,
+  latestOwnerAcceptance,
   packetClaimsSelfAuthorization,
+  projectSoftwareFactoryWorkstreamStatus,
   softwareFactoryConnectorCatalog,
   softwareFactoryStaffControlsOpen,
   validateSoftwareFactoryPacket,
@@ -1016,3 +1019,216 @@ describe("Software Factory reserved-writer accept gates", () => {
     ).toMatch(/packet hash/);
   });
 });
+
+describe("Software Factory database-boundary alignment", () => {
+  it("fails acceptance when only some frozen criteria are evidenced", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    advanceToAwaitingOwner(store, opened.run.id);
+    const run = getSoftwareFactoryRun(store, manager, opened.run.id);
+    const evidence = (store.evidenceByRun.get(opened.run.id) ?? []).map((row) => ({
+      ...row,
+      satisfiedCriteria: row.satisfiedCriteria.slice(0, 1),
+    }));
+    const approvals = [...store.approvals.values()].filter((row) => row.factoryRunId === opened.run.id);
+    const ownerDecision = recordSoftwareFactoryOwnerDecision(
+      store,
+      owner,
+      opened.run.id,
+      {
+        kind: "owner_acceptance",
+        status: "approved",
+        rationale: "Owner accepts the frozen packet.",
+        sourceRefs: ["governance:owner-acceptance"],
+      },
+      "evt-owner-partial-criteria",
+      NOW,
+    );
+    expect(ownerDecision.ok).toBe(true);
+    const afterOwner = [...store.approvals.values()].filter((row) => row.factoryRunId === opened.run.id);
+    const partial = evaluateAcceptance({
+      run,
+      evidence,
+      approvals: afterOwner.length ? afterOwner : approvals,
+      now: NOW,
+      actorRole: "ops_manager",
+      verifierId: manager.id,
+    });
+    expect(partial.ok).toBe(false);
+    expect(partial.failures.join(" ")).toMatch(/Acceptance criterion is not evidenced/);
+  });
+
+  it("requires the latest owner_acceptance for the current packet hash to be approved", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    advanceToAwaitingOwner(store, opened.run.id);
+    expect(
+      recordSoftwareFactoryOwnerDecision(
+        store,
+        owner,
+        opened.run.id,
+        {
+          kind: "owner_acceptance",
+          status: "approved",
+          rationale: "Owner accepts the frozen packet.",
+          sourceRefs: ["governance:owner-acceptance"],
+        },
+        "evt-owner-first-approve",
+        NOW,
+      ).ok,
+    ).toBe(true);
+    const laterReject = "2026-09-04T13:00:00.000Z";
+    expect(
+      recordSoftwareFactoryOwnerDecision(
+        store,
+        owner,
+        opened.run.id,
+        {
+          kind: "owner_acceptance",
+          status: "rejected",
+          rationale: "Owner later rejects the same packet hash.",
+          sourceRefs: ["governance:owner-rejection"],
+        },
+        "evt-owner-later-reject",
+        laterReject,
+      ).ok,
+    ).toBe(true);
+
+    const run = getSoftwareFactoryRun(store, manager, opened.run.id);
+    const evidence = store.evidenceByRun.get(opened.run.id) ?? [];
+    const approvals = [...store.approvals.values()].filter((row) => row.factoryRunId === opened.run.id);
+    const latest = latestOwnerAcceptance(approvals, run.packetHash);
+    expect(latest?.status).toBe("rejected");
+    const rejected = evaluateAcceptance({
+      run,
+      evidence,
+      approvals,
+      now: laterReject,
+      actorRole: "ops_manager",
+      verifierId: manager.id,
+    });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.failures.join(" ")).toMatch(/latest owner decision/);
+
+    expect(
+      recordSoftwareFactoryOwnerDecision(
+        store,
+        owner,
+        opened.run.id,
+        {
+          kind: "owner_acceptance",
+          status: "approved",
+          rationale: "Owner re-approves after the later rejection.",
+          sourceRefs: ["governance:owner-reapproval"],
+        },
+        "evt-owner-reapprove",
+        "2026-09-04T14:00:00.000Z",
+      ).ok,
+    ).toBe(true);
+    const reapprovedApprovals = [...store.approvals.values()].filter((row) => row.factoryRunId === opened.run.id);
+    expect(latestOwnerAcceptance(reapprovedApprovals, run.packetHash)?.status).toBe("approved");
+    expect(
+      evaluateAcceptance({
+        run: getSoftwareFactoryRun(store, manager, opened.run.id),
+        evidence: store.evidenceByRun.get(opened.run.id) ?? [],
+        approvals: reapprovedApprovals,
+        now: "2026-09-04T14:00:00.000Z",
+        actorRole: "ops_manager",
+        verifierId: manager.id,
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("projects rejected, deferred, and cancelled overlays onto closed workstreams", () => {
+    expect(projectSoftwareFactoryWorkstreamStatus("awaiting_verification", "rejected")).toBe("failed");
+    expect(projectSoftwareFactoryWorkstreamStatus("awaiting_verification", "deferred")).toBe("cancelled");
+    expect(projectSoftwareFactoryWorkstreamStatus("awaiting_verification", "cancelled")).toBe("cancelled");
+    expect(projectSoftwareFactoryWorkstreamStatus("verified", "rejected")).toBe("verified");
+
+    for (const status of ["rejected", "deferred"] as const) {
+      const store = createSoftwareFactoryStore();
+      const opened = openRun(store);
+      advanceToAwaitingOwner(store, opened.run.id);
+      const result = transitionSoftwareFactoryRun(store, manager, opened.run.id, status, `evt-close-${status}`, NOW);
+      expect(result.ok).toBe(true);
+      const run = getSoftwareFactoryRun(store, manager, opened.run.id);
+      expect(run.lifecycleStatus).toBe(status);
+      expect(isSoftwareFactoryTerminal(run.lifecycleStatus)).toBe(true);
+      const workstream = store.workstreamRuns.get(opened.workstreamRun.id);
+      expect(workstream?.status).toBe(status === "rejected" ? "failed" : "cancelled");
+      expect(
+        softwareFactoryStaffControlsOpen({
+          workstreamStatus: workstream?.status ?? "running",
+          lifecycleStatus: run.lifecycleStatus,
+        }),
+      ).toBe(false);
+      expect(["running", "awaiting_verification"]).not.toContain(workstream?.status);
+    }
+  });
+
+  it("rejects secret-like packet fields through validateSoftwareFactoryPacket", () => {
+    const secretPacket = validateSoftwareFactoryPacket(
+      packetFor("planned", { OBJECTIVE: "Use token ghp_abcdefghijklmnopqrstuv" }),
+    );
+    expect(secretPacket.ok).toBe(false);
+    expect(secretPacket.ok ? "" : secretPacket.failures.join(" ")).toMatch(/credential/);
+  });
+
+  it("versions a changed freeze and keeps the previous packet hash invalid", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    expect(transitionSoftwareFactoryRun(store, manager, opened.run.id, "discovery", "evt-rf-d", NOW).ok).toBe(true);
+    expect(transitionSoftwareFactoryRun(store, manager, opened.run.id, "planned", "evt-rf-p", NOW).ok).toBe(true);
+    const first = produceSoftwareFactoryPacket(store, manager, opened.run.id, packetFor("planned"), "evt-rf-1", NOW);
+    expect(first.ok).toBe(true);
+    const firstHash = getSoftwareFactoryRun(store, manager, opened.run.id).packetHash;
+    expect(getSoftwareFactoryRun(store, manager, opened.run.id).packetFreezeVersion).toBe(1);
+
+    const same = produceSoftwareFactoryPacket(store, manager, opened.run.id, packetFor("planned"), "evt-rf-same", NOW);
+    expect(same.ok).toBe(true);
+    expect(getSoftwareFactoryRun(store, manager, opened.run.id).packetFreezeVersion).toBe(1);
+
+    const second = produceSoftwareFactoryPacket(
+      store,
+      manager,
+      opened.run.id,
+      packetFor("planned", { OBJECTIVE: "Govern the same request with a revised freeze-time objective." }),
+      "evt-rf-2",
+      NOW,
+    );
+    expect(second.ok).toBe(true);
+    const after = getSoftwareFactoryRun(store, manager, opened.run.id);
+    expect(after.packetFreezeVersion).toBe(2);
+    expect(after.packetHash).not.toBe(firstHash);
+    expect(hashSoftwareFactoryPacket(after.packet!)).toBe(after.packetHash);
+    const staleHashRun = { ...after, packetHash: firstHash };
+    expect(
+      evaluateAcceptance({
+        run: staleHashRun,
+        evidence: store.evidenceByRun.get(opened.run.id) ?? [],
+        approvals: [],
+        now: NOW,
+      }).failures.join(" "),
+    ).toMatch(/packet hash/);
+  });
+
+  it("records a forbidden-action audit event and still rejects the action", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    const blocked = attemptSoftwareFactoryForbiddenAction(
+      store,
+      manager,
+      opened.run.id,
+      "merge_pr",
+      "evt-forbidden-audit",
+      NOW,
+    );
+    expect(blocked.ok).toBe(false);
+    expect(getSoftwareFactoryRun(store, manager, opened.run.id).mergePerformed).toBe(false);
+    expect(getSoftwareFactoryRun(store, manager, opened.run.id).lifecycleStatus).toBe("intake");
+    expect(
+      softwareFactoryAuditHistory(store, opened.run.id).some((event) => event.type === "forbidden_action_blocked"),
+    ).toBe(true);
+  });
+});
+
