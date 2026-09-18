@@ -144,6 +144,50 @@ describe("safe text stays readable, because a false positive blocks a delivery",
   }
 });
 
+// Growth over real doublings. Linear is a 2x step (exponent 1); quadratic is a
+// 4x step (exponent 2). S-005 replaced skippable per-step ratios with the
+// whole-range exponent so a 20ms floor could not hide S-004. S-018 is the
+// inverse: the exponent ceiling of 1.5 sat inside runner noise. The shape
+// that distinguishes a near-quadratic path (S-004: 3.10, 3.48, 3.70) from a
+// single descheduled sample (fb3110e: 2.18, 2.32, 4.68) is the median of
+// those adjacent doubling ratios.
+function doublingGrowth(timings: number[]) {
+  const doublings = timings.length - 1;
+  const ratios = timings.slice(1).map((value, index) => value / timings[index]);
+  const ordered = [...ratios].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  const medianRatio =
+    ordered.length % 2 === 0
+      ? (ordered[middle - 1] + ordered[middle]) / 2
+      : ordered[middle];
+  const exponent = Math.log2(timings[doublings] / timings[0]) / doublings;
+  return { ratios, medianRatio, exponent };
+}
+
+describe("the growth assertion still fails quadratic and ignores one spike", () => {
+  it("rejects a pure n^2 series", () => {
+    const growth = doublingGrowth([1, 4, 16, 64]);
+    expect(growth.exponent).toBeCloseTo(2, 5);
+    expect(growth.medianRatio).toBe(4);
+    expect(growth.medianRatio).toBeGreaterThanOrEqual(3);
+  });
+
+  it("rejects the S-004 rising-ratio series", () => {
+    // Recorded before the line-index fix: 3.10, 3.48, 3.70 on `<password>`.
+    const growth = doublingGrowth([10, 31, 107.88, 399.156]);
+    expect(growth.ratios[0]).toBeCloseTo(3.1, 5);
+    expect(growth.medianRatio).toBeCloseTo(3.48, 5);
+    expect(growth.medianRatio).toBeGreaterThanOrEqual(3);
+  });
+
+  it("accepts the fb3110e CI spike that flipped exponent 1.522", () => {
+    const growth = doublingGrowth([12.73, 27.75, 64.32, 301.28]);
+    expect(growth.exponent).toBeGreaterThan(1.5);
+    expect(growth.exponent).toBeCloseTo(1.522, 2);
+    expect(growth.medianRatio).toBeLessThan(3);
+  });
+});
+
 describe("the scan is near-linear on adversarial input", () => {
   // The shapes that made a previous version quadratic, plus the ones that made
   // the FIRST version of this scanner quadratic. Each must not grow like n^2.
@@ -164,10 +208,16 @@ describe("the scan is near-linear on adversarial input", () => {
   // ran, and it failed at 3.81. The escape hatch was hiding a genuine
   // near-quadratic path in `collectOpaqueTokensNearCredentialNouns`, since fixed.
   //
-  // So the assertion is the growth EXPONENT across the whole range rather than
-  // adjacent ratios with a skip. Over three doublings, linear is 1.0 and
-  // quadratic is 2.0; one noisy sample moves the exponent by a fraction where it
-  // could flip a single adjacent ratio outright, and nothing can be skipped.
+  // S-005 therefore asserted the growth EXPONENT across the whole range rather
+  // than adjacent ratios with a skip. That closed the skip. It did not close
+  // the threshold: on fb3110e, `repeated assignments` measured
+  // 12.73 → 27.75 → 64.32 → 301.28ms, exponent 1.522 against a 1.5 ceiling.
+  // The first two doublings were 2.18× and 2.32× (the 1.25 residual S-014
+  // recorded); the last was 4.68× — a spike, not the rising 3.10, 3.48, 3.70
+  // of S-004. The assertion is now the median adjacent-doubling ratio against
+  // 3, the midpoint of linear (2) and quadratic (4) on a real doubling. One
+  // noisy sample cannot flip it, a quadratic series still does, and nothing
+  // is skipped. The exponent stays in the failure detail.
   const SHAPES: Array<[string, (size: number) => string]> = [
     ["scheme-like run", (n) => `a${".b".repeat(n / 2)}=value12345`],
     ["identifier run", (n) => `${"A".repeat(n)}_PASSWORD=x`],
@@ -178,8 +228,8 @@ describe("the scan is near-linear on adversarial input", () => {
     ["pem prefix", (n) => `-----BEGIN ${"A ".repeat(n / 2)}`],
     // The four shapes that release-rescue-scanner-value-properties.test.ts
     // measured with an adjacent-ratio check at a clipped size (S-014). They are
-    // measured here, by the exponent, and the ratio check is gone. Measured on
-    // 2026-09-18: 1.25, 1.10, 1.01 and 1.00.
+    // measured here, by the median doubling-ratio (S-018), and the ratio check
+    // is gone. Measured on 2026-09-18: exponents 1.25, 1.10, 1.01 and 1.00.
     ["repeated assignments", (n) => "password=".repeat(Math.ceil(n / 9)).slice(0, n)],
     ["repeated flags with values", (n) => "--password x ".repeat(Math.ceil(n / 13)).slice(0, n)],
     ["credential nouns in prose", (n) => "the password is not stored here. ".repeat(Math.ceil(n / 33)).slice(0, n)],
@@ -220,16 +270,19 @@ describe("the scan is near-linear on adversarial input", () => {
         return best;
       });
 
-      const doublings = SCAN_SIZES.length - 1;
-      const exponent = Math.log2(timings[doublings] / timings[0]) / doublings;
-      const detail = `${label}: ${timings.map((t) => t.toFixed(2)).join(" -> ")}ms, exponent ${exponent.toFixed(3)}`;
+      const growth = doublingGrowth(timings);
+      const detail = `${label}: ${timings.map((t) => t.toFixed(2)).join(" -> ")}ms, ratios ${growth.ratios.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")}, median ${growth.medianRatio.toFixed(2)}x, exponent ${growth.exponent.toFixed(3)}`;
 
-      // 1.0 is linear and 2.0 is quadratic. 1.5 sits between them with room for a
-      // noisy machine on either side, and every shape here measures at or below
-      // 1.13 once the line index is built once instead of per word.
-      expect(exponent, detail).toBeLessThan(1.5);
+      // On a real doubling, linear is 2x and quadratic is 4x. The median of
+      // those per-step ratios is the shape: S-004's near-quadratic path was
+      // 3.10, 3.48, 3.70 (median 3.48); the fb3110e CI failure was 2.18, 2.32,
+      // 4.68 (median 2.32) with a whole-range exponent of 1.522 that crossed
+      // the old 1.5 line because the last sample was descheduled. 3 sits
+      // between linear and quadratic on a doubling, and one noisy sample
+      // cannot move the median across it.
+      expect(growth.medianRatio, detail).toBeLessThan(3);
       // And an absolute ceiling, so "linear but enormous" still fails.
-      expect(timings[doublings], `${label} took ${timings[doublings]}ms at 64KB`).toBeLessThan(2_000);
+      expect(timings[timings.length - 1], `${label} took ${timings[timings.length - 1]}ms at 64KB`).toBeLessThan(2_000);
     });
   }
 

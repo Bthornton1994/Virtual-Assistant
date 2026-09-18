@@ -772,6 +772,49 @@ ratio that sat above the complexity it claimed to bound and below the noise it
 did not. Each was a threshold the machine decided, on a test that meant to
 measure something else. There is now one growth test, and it measures growth.
 
+### S-018 — the growth-exponent ceiling sat inside the noise, and failed a linear scan
+
+| | |
+| --- | --- |
+| Found | by CI, on `fb3110e`: `verify` failed `npm test` on a file none of that head's commits touch |
+| Class | a threshold nobody meant to assert — S-005, S-012, S-014, a fourth time |
+| Closed at | the same commit that records it |
+
+`release-rescue-credential-scanner.test.ts` › *stays linear on repeated
+assignments* asserted `exponent < 1.5` after three real doublings. On GitHub
+Actions run [35359389107](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35359389107)
+at tip `fb3110e35f25ccf0fd534ec2675e195423a2c324`:
+
+```
+12.73 → 27.75 → 64.32 → 301.28ms   exponent 1.522
+```
+
+Lint and typecheck were green. Claim-guard, build, and SQL proofs did not run
+because the job stopped at `npm test`. The commit that produced `fb3110e` is a
+ledger recording of Audit 47 — markdown this test never reads.
+
+**The exponent could not tell complexity from a descheduled sample.** The first
+two doublings were 2.18× and 2.32×, the same mild super-linear residual S-014
+recorded on this shape as exponent 1.25 with ratios 2.22, 2.35, 2.57. The last
+was 4.68×. S-004's genuine near-quadratic path rose together (3.10, 3.48, 3.70)
+to exponent 1.771. A single spike that pushes the whole-range exponent from
+1.25 to 1.522 is the loaded-runner case S-014 already named; the 1.5 ceiling
+sat inside that noise, with no room on the high side.
+
+**Closed the way the S-014 lesson says to.** The assertion is the median of the
+three adjacent doubling ratios, against 3 — the midpoint of linear (2×) and
+quadratic (4×) on a real doubling, which these sizes are, because they are
+derived from `MAX_SCAN_LENGTH`. One noisy sample cannot move the median. A
+pure n² series (1, 4, 16, 64) still fails, and so does the S-004 before-series.
+The whole-range exponent remains in the failure detail. The 64KB absolute
+ceiling is unchanged. The scanner is not the cause and is not changed.
+
+The pattern, stated for the fourth time: **S-005** was a 20ms floor that skipped
+a real defect; **S-012** a 5s ceiling that failed a correct test; **S-014** a
+ratio that sat above quadratic on a clipped step; **S-018** a 1.5 exponent
+ceiling that sat inside runner noise on a real doubling. Each was a threshold
+the machine decided, on a test that meant to measure growth.
+
 ### S-015 — the proof-base paragraph counted a chain that had since grown
 
 | | |
@@ -1070,6 +1113,7 @@ Each was bought with a regression in this workstream.
 | First passed on | `7969a76`, run `35285958590` attempt 1, runner `GitHub Actions 1000001848` |
 | Also passed on | `35706a4`, run `35286805441` attempt 1 — S-003 head, 1,585/1,585 |
 | Failed on | `df93008`, run [35308044742](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308044742) — `npm test` 1,648 / 1,650, the two S-014 ratio assertions; lint and typecheck green, build skipped |
+| Failed on | `fb3110e`, run [35359389107](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35359389107) — `npm test`, `stays linear on repeated assignments` exponent **1.522** against 1.5 (12.73 → 27.75 → 64.32 → 301.28ms); lint and typecheck green, claim-guard/build/SQL skipped |
 | Passed on | `4fcbbba`, run [35308531433](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308531433) attempt 1 — **1,654 / 1,654 across 88 files**, every step, 04:51:07Z → 04:53:07Z |
 | Independently confirmed on | `dec0633`, run [35308776223](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308776223) — Audit 45, `success`, **1,654 / 1,654 across 88 files**, lint 0 errors / 13 warnings, typecheck clean, build ok, runner Git 2.55.0. Only run on that commit. `pull_request` checked out the merge ref; the tested tree differed from the tip by six non-code skill files from `main`. |
 | Independently confirmed on | `cc9a3c6`, run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507) — Audit 46, `success`, **1,657 / 1,657 across 88 files**, lint 0 errors / 13 warnings, typecheck clean, build compiled, claim-guard **39 held / 0 escaped / 1 control ok**, SQL **15 / 15 proofs, 495 cases, 0 failures**, 55 of 60 migrations applied. Only run on that commit. `pull_request` checked out merge ref `6f5e81a`; the tested tree differed from the tip by six non-code skill files from `main` (46-L4). |
@@ -1102,7 +1146,8 @@ Under D-012 as decided, the eight local failures do not block: their sole cause
 is the container's Git 2.43 lacking `--no-lazy-fetch`, and CI `verify` passed on
 the exact SHA. The `df93008` failure was a GitHub Actions failure and did block,
 by the same decision, until its cause was found and closed as S-014; it was not
-re-run.
+re-run. The `fb3110e` failure is the same class on the replacement assertion,
+closed as S-018 rather than re-run.
 
 **Independently confirmed on `dec0633` by Audit 45**, run
 [35308776223](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308776223),
