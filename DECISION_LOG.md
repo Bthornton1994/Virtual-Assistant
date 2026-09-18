@@ -211,3 +211,43 @@ What was decided, and the constraints that decided it:
 This decision changes an artifact contract and a database schema. It does not lift `DO_NOT_MERGE`, does not make the suite green, and does not authorize a merge, a deployment, payment activation, production access, or any increase in executor authority.
 
 Source: `supabase/migrations/20260917200000_release_rescue_reviewer_attestation_v13.sql`, `supabase/qa/release_rescue_reviewer_attestation_v13_proof.sql`, `src/lib/release-rescue-report.ts`, `src/lib/__tests__/release-rescue-review-attestation.test.ts`, PR [#97](https://github.com/Bthornton1994/Virtual-Assistant/pull/97).
+
+---
+
+## D-014 — The engagement lifecycle is an ordered graph, and reopening is a manager's decision
+
+Date: 2026-09-18  
+Status: **decided — owner-directed**  
+Decision: The engagement lifecycle is `intake → scoped → access_granted → auditing → report_ready → delivered`. Cancellation is allowed from every state before delivery. Reopening a cancelled engagement requires an explicit manager-authorized recovery. A delivered engagement cannot reopen on the normal path. The order is enforced in the database and in the application, with tests for the illegal transitions.
+
+This closes S-009 in the audit ledger, which had measured `intake → access_granted` with no grant, `access_granted → intake`, and `cancelled → scoped` all succeeding: the states that carry the customer's source were well defended at their entrances, and nothing enforced an order between states. The ledger recorded the fix as an owner decision because a graph that is too strict blocks a legitimate operator recovering a mis-set engagement. The owner chose the graph above and named the recovery as the one way back.
+
+How the recovery is shaped, and why: it returns the engagement to `intake` — it restarts, it does not resume — so every gate between intake and a review applies again. It records a reason as a **code** from a frozen catalog, not a sentence, for the same reason a review decision (D-013) and a clearance are codes. The authorizer is the **caller**: an interactive recovery forces `recovery_authorized_by` to `auth.uid()` and refuses a mismatch, and the server channel must name a real manager, exactly as v5 shaped ownership confirmation. Every status change is written to a transition log that only the trigger can write, so a recovery is attributable after the engagement is cancelled again. `purged` is reachable from every state by the retention sweep and by nothing else. No abnormal path out of `delivered` is defined; one would be a further owner decision, not a code change.
+
+It does not lift `DO_NOT_MERGE` and authorizes no merge, deployment, payment activation, production access, or increase in executor authority.
+
+Source: `supabase/migrations/20260918090000_release_rescue_lifecycle_graph_v14.sql` § 2, `supabase/qa/release_rescue_lifecycle_graph_v14_proof.sql`, `src/lib/release-rescue-lifecycle.ts`, `src/lib/__tests__/release-rescue-lifecycle-graph.test.ts`, audit ledger § S-009.
+
+## D-015 — A workstream run belongs to one engagement
+
+Date: 2026-09-18  
+Status: **decided — owner-directed**  
+Decision: A run belongs to one engagement. This is enforced in the database, and the retention sweep's evidence cleanup is scoped to that engagement. Tests.
+
+This closes S-010. The sweep deleted Release Rescue evidence by `(run_id, organization_id)`, and nothing made a run exclusive to one engagement, so purging one engagement could delete another's unexpired evidence. The ledger recorded both repairs as changing a privacy commitment — deleting only what a report row references would leave un-referenced artifacts behind — and left the choice to the owner. The owner chose exclusivity: with the run exclusive to the engagement, "this run's evidence in this organization" *is* "this engagement's evidence", and the sweep's reach is exactly the engagement it is purging.
+
+A unique partial index enforces it; the migration counts shared runs first and fails rather than apply over a violation. A report must name the run pinned on its engagement. The sweep additionally checks the invariant before each delete and **fails closed** — it refuses to delete rather than reach a second engagement — so that dropping the index can never quietly widen a destructive operation. The proof drops the index in a transaction, manufactures the shared run, and asserts the refusal.
+
+Source: `supabase/migrations/20260918090000_release_rescue_lifecycle_graph_v14.sql` § 1, `supabase/qa/release_rescue_lifecycle_graph_v14_proof.sql`, audit ledger § S-010.
+
+## D-017 — An interactive reviewer action is attributed to the authenticated user
+
+Date: 2026-09-18  
+Status: **decided — owner-directed**  
+Decision: Interactive reviewer actions are bound to the authenticated user. Caller-supplied reviewer identity is not trusted. Tests.
+
+This closes the fourth outstanding item on PR #97. `reviewed_by` had been checked for manager authority since v1 and never compared to the caller, so an interactive caller could sign a report as a different manager — the same shape v5 closed for ownership confirmation. The trust model is v5's, applied to the signature: a manager signs for themselves only and `reviewed_by` must be `auth.uid()`; the server may name a reviewer because it has authenticated the operator by other means, and the named person must still hold manager authority; the channel is recorded as `reviewed_via`. The same binding applies to a report artifact a staff member writes directly — its signature and its clearances must name the writer.
+
+In the application, an interactive signing goes through `signReleaseRescueReportAs(actor, report, submission)`: the reviewer's identity and display name are read from the authenticated session, the time from the server clock, and the submission may carry only a reason code and the approved content hash. A submission that tries to carry an identity is refused as malformed rather than ignored.
+
+Source: `supabase/migrations/20260918090000_release_rescue_lifecycle_graph_v14.sql` § 3, `supabase/qa/release_rescue_lifecycle_graph_v14_proof.sql`, `src/lib/release-rescue-review-session.ts`, `src/lib/__tests__/release-rescue-review-session.test.ts`.

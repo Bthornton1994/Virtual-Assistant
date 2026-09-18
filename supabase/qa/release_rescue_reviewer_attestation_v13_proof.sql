@@ -269,9 +269,12 @@ values ('d3000000-0000-0000-0000-0000000000d1', 'db000000-0000-0000-0000-0000000
         'de000000-0000-0000-0000-0000000000d1', 'observation', 'row subject',
         repeat('8', 64), rrv13.report());
 
+-- v14: a report names the run pinned on its engagement, so the engagement is
+-- created on the run its report rows below reference.
 insert into public.release_rescue_engagements
-  (id, organization_id, scope, scope_hash, retention_policy, retention_days, access_mode)
+  (id, organization_id, run_id, scope, scope_hash, retention_policy, retention_days, access_mode)
 values ('d2000000-0000-4000-8000-0000000000d2', 'db000000-0000-0000-0000-0000000000d1',
+        'de000000-0000-0000-0000-0000000000d1',
         '{"repository":{"repositoryRef":"acme/ledger"}}'::jsonb, repeat('c', 64),
         'minimum_7_day', 7, 'customer_installed_readonly_app');
 

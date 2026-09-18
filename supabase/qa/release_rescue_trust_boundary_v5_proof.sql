@@ -106,9 +106,15 @@ insert into public.workstream_runs (id, organization_id, workstream_id, delegati
   ('5e000000-0000-0000-0000-00000000aa01', '5b000000-0000-0000-0000-00000000aa01',
    '5c000000-0000-0000-0000-00000000aa01', '5d000000-0000-0000-0000-00000000aa01', 'planned'),
   ('5e000000-0000-0000-0000-00000000aa02', '5b000000-0000-0000-0000-00000000aa01',
+   '5c000000-0000-0000-0000-00000000aa01', '5d000000-0000-0000-0000-00000000aa01', 'planned'),
+  -- v14: a run belongs to one engagement, so each engagement below has its own.
+  ('5e000000-0000-0000-0000-00000000aa03', '5b000000-0000-0000-0000-00000000aa01',
+   '5c000000-0000-0000-0000-00000000aa01', '5d000000-0000-0000-0000-00000000aa01', 'planned'),
+  ('5e000000-0000-0000-0000-00000000aa04', '5b000000-0000-0000-0000-00000000aa01',
    '5c000000-0000-0000-0000-00000000aa01', '5d000000-0000-0000-0000-00000000aa01', 'planned');
 update public.workstream_runs set status = 'running'
- where id in ('5e000000-0000-0000-0000-00000000aa01', '5e000000-0000-0000-0000-00000000aa02');
+ where id in ('5e000000-0000-0000-0000-00000000aa01', '5e000000-0000-0000-0000-00000000aa02',
+              '5e000000-0000-0000-0000-00000000aa03', '5e000000-0000-0000-0000-00000000aa04');
 
 \echo ''
 \echo '=== B3-1. An engagement cannot name another organization''s run ==='
@@ -485,7 +491,7 @@ $q$);
 insert into public.release_rescue_engagements
   (id, organization_id, run_id, scope, scope_hash, retention_policy, retention_days, access_mode)
 values ('5aa00000-0000-0000-0000-000000000004', '5b000000-0000-0000-0000-00000000aa01',
-        '5e000000-0000-0000-0000-00000000aa02',
+        '5e000000-0000-0000-0000-00000000aa03',
         '{"repository":{"repositoryRef":"attacker/third","accessMode":"customer_installed_readonly_app"}}'::jsonb,
         repeat('5', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app');
 
@@ -565,13 +571,18 @@ $q$);
 -- Engagement ...0002 has a named repository, a confirmed owner (by a real manager
 -- acting as themselves) and a live-grant requirement still unmet, so it isolates
 -- the ownership-adjacent gates rather than tripping on a missing scope field.
+--
+-- v14: the first state that consults the grant is access_granted, and the graph
+-- admits no jump past it, so that is where the missing grant is refused.
 select rrv5.expect_refusal(
-  'the attacker cannot start a review without a live grant naming their repository',
+  'the attacker cannot record access as granted without a live grant naming their repository',
   'live, unrevoked read-only grant',
   $q$
   set local role authenticated;
   set local request.jwt.claim.sub = '5a000000-0000-0000-0000-00000000aa01';
-  update public.release_rescue_engagements set status = 'auditing'
+  update public.release_rescue_engagements set status = 'scoped'
+   where id = '5aa00000-0000-0000-0000-000000000002';
+  update public.release_rescue_engagements set status = 'access_granted'
    where id = '5aa00000-0000-0000-0000-000000000002';
 $q$);
 
@@ -580,13 +591,17 @@ $q$);
 insert into public.release_rescue_engagements
   (id, organization_id, run_id, scope, scope_hash, retention_policy, retention_days, access_mode)
 values ('5aa00000-0000-0000-0000-000000000005', '5b000000-0000-0000-0000-00000000aa01',
-        '5e000000-0000-0000-0000-00000000aa02',
+        '5e000000-0000-0000-0000-00000000aa04',
         '{"repository":{"repositoryRef":"attacker/fourth","accessMode":"customer_installed_readonly_app"}}'::jsonb,
         repeat('6', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app');
 insert into public.release_rescue_repository_grants
   (organization_id, engagement_id, provider, repository_ref, grant_method, expires_at)
 values ('5b000000-0000-0000-0000-00000000aa01', '5aa00000-0000-0000-0000-000000000005',
         'github', 'attacker/fourth', 'customer_installed_readonly_app', now() + interval '7 days');
+update public.release_rescue_engagements set status = 'scoped'
+ where id = '5aa00000-0000-0000-0000-000000000005';
+update public.release_rescue_engagements set status = 'access_granted'
+ where id = '5aa00000-0000-0000-0000-000000000005';
 
 select rrv5.expect_refusal(
   'with access settled, the unconfirmed ownership is what blocks the review',

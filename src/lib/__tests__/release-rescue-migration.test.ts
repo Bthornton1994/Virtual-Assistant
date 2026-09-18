@@ -228,6 +228,103 @@ describe("release rescue migration: lifecycle vocabulary", () => {
   });
 });
 
+// v14: the lifecycle graph, run exclusivity, and the reviewer-is-caller binding
+// (DECISION_LOG.md D-014, D-015, D-017). The graph's edge list is compared with
+// the application's in release-rescue-lifecycle-graph.test.ts; this section
+// guards the shape of the enforcement around it.
+describe("release rescue migration v14: lifecycle graph, run exclusivity, reviewer binding", () => {
+  const V14_PATH = "supabase/migrations/20260918090000_release_rescue_lifecycle_graph_v14.sql";
+  const v14 = readFileSync(resolve(process.cwd(), V14_PATH), "utf8");
+
+  function functionHeader(name: string): string {
+    const start = v14.indexOf(`create or replace function public.${name}(`);
+    expect(start, `${name} should be declared`).toBeGreaterThan(-1);
+    return v14.slice(start, v14.indexOf("as $$", start));
+  }
+
+  it("makes a run exclusive to one engagement, and counts before it assumes", () => {
+    expect(v14).toContain(
+      "create unique index if not exists release_rescue_engagements_run_unique_idx\n  on public.release_rescue_engagements (run_id) where run_id is not null;",
+    );
+    expect(v14).toContain("drop index if exists public.release_rescue_engagements_run_idx;");
+    expect(v14).toContain("are referenced by more than one engagement");
+  });
+
+  it("binds a report to the run pinned on its engagement", () => {
+    expect(v14).toContain("Report run does not match the run pinned on its engagement");
+    expect(v14).toContain("A report cannot be issued for an engagement whose workstream run was never pinned");
+    expect(functionHeader("enforce_release_rescue_report_run_binding")).toContain("security definer");
+  });
+
+  it("keeps the sweep organization-scoped and makes it fail closed on a shared run", () => {
+    const sweep = v14.slice(v14.indexOf("create or replace function public.purge_expired_release_rescue_data"));
+    const body = sweep.slice(0, sweep.indexOf("$$;"));
+    expect(body).toContain("Retention sweep refused");
+    expect(body).toContain("and organization_id = v_engagement.organization_id\n         and coalesce(payload->>'schemaVersion', '') like 'release-rescue-%'");
+    expect(body).not.toMatch(/reviewed_commit_sha\s*=/);
+    expect(v14).toContain("revoke all on function public.purge_expired_release_rescue_data(text) from anon, authenticated;");
+    expect(v14).toContain("grant execute on function public.purge_expired_release_rescue_data(text) to service_role;");
+  });
+
+  it("decides who may make which move with invoker rights, and preconditions with definer rights", () => {
+    // `caller_is_server()` reads current_user, which under definer rights is the
+    // owner: the graph trigger must be invoker or every caller is the server.
+    expect(functionHeader("enforce_release_rescue_lifecycle_graph")).not.toContain("security definer");
+    expect(functionHeader("enforce_release_rescue_lifecycle_graph")).toContain("set search_path = public");
+    expect(functionHeader("enforce_release_rescue_lifecycle_preconditions")).toContain("security definer");
+    expect(functionHeader("record_release_rescue_engagement_transition")).toContain("security definer");
+    expect(v14).toContain("A caller-deciding function is SECURITY DEFINER and would answer for the wrong role");
+  });
+
+  it("fires the graph before every other engagement trigger", () => {
+    expect(v14).toContain("create trigger trg_release_rescue_0_lifecycle_graph");
+    expect(v14).toContain("create trigger trg_release_rescue_1_lifecycle_preconditions");
+    expect(v14).toContain("t.tgname < 'trg_release_rescue_0_lifecycle_graph'");
+  });
+
+  it("makes recovery a manager's move, attributed to the caller, with a server-written record", () => {
+    expect(v14).toContain("if new.recovery_authorized_by is distinct from auth.uid() then");
+    expect(v14).toContain("Recovery records the caller. It cannot be attributed to another person");
+    expect(v14).toContain("new.recovery_authorized_at := now();");
+    expect(v14).toContain("new.recovery_count := old.recovery_count + 1;");
+    expect(v14).toContain("recovery_reason_code is null or public.release_rescue_is_code_shaped(recovery_reason_code)");
+  });
+
+  it("lets nothing signed in write the transition log", () => {
+    const grants = v14.match(/grant [^;]*on public\.release_rescue_engagement_transitions[^;]*to authenticated;/g) ?? [];
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toBe("grant select on public.release_rescue_engagement_transitions to authenticated;");
+    expect(v14).toContain("alter table public.release_rescue_engagement_transitions enable row level security;");
+    expect(v14).toMatch(
+      /create policy release_rescue_engagement_transitions_select on public\.release_rescue_engagement_transitions[\s\S]*?using \(organization_id in \(select public\.my_org_ids\(\)\) or public\.is_platform_staff\(\)\);/,
+    );
+  });
+
+  it("binds the reviewer to the caller on the row and on the artifact", () => {
+    expect(functionHeader("enforce_release_rescue_reviewer_is_caller")).not.toContain("security definer");
+    expect(functionHeader("enforce_release_rescue_artifact_signature_is_caller")).not.toContain("security definer");
+    expect(v14).toContain("if new.reviewed_by is distinct from auth.uid() then");
+    expect(v14).toContain("A report records the reviewer who signs it. It cannot be attributed to another person");
+    expect(v14).toContain("(v_signature->>'operatorUserId') is distinct from auth.uid()::text");
+    expect(v14).toContain("(v_hold->>'clearedBy') is distinct from auth.uid()::text");
+    expect(v14).toContain("new.reviewed_via := 'authenticated_operator';");
+  });
+
+  it("re-runs the column census with the new columns registered", () => {
+    expect(v14).toContain("or column_name like 'recover%'");
+    for (const column of [
+      "recovery_reason_code",
+      "recovery_authorized_by",
+      "recovery_authorized_at",
+      "recovery_authorized_via",
+      "recovery_count",
+      "reviewed_via",
+    ]) {
+      expect(v14, column).toMatch(new RegExp(`'${column}'`));
+    }
+  });
+});
+
 describe("release rescue migration: report integrity", () => {
   it("constrains hashes to sha256 hex", () => {
     const body = tableBody("release_rescue_reports");

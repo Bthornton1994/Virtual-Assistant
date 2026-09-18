@@ -17,6 +17,10 @@
 --
 --   intake -> grant -> snapshot -> commit pin -> review -> report -> delivery -> purge
 --
+-- and, since v14, through every status the lifecycle graph requires on the way:
+--
+--   intake -> scoped -> access_granted -> auditing -> report_ready -> delivered -> purged
+--
 -- NEVER apply this file to a real Supabase project.
 --
 -- Usage (disposable local Postgres with the full migration chain applied):
@@ -141,15 +145,31 @@ select rrl4.expect_refusal(
           repeat('c', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app', repeat('d', 40));
 $q$);
 
--- At intake nothing is in place yet, so the FIRST gate refuses: there is no
+-- v14: the lifecycle is an ordered graph. A review starts from access_granted
+-- and nowhere else, so a jump from intake is refused as an illegal move before
+-- any precondition is consulted.
+select rrl4.expect_refusal(
+  'no review starts from intake: the lifecycle graph admits no jump to auditing',
+  'not a permitted transition',
+  $q$
+  update public.release_rescue_engagements set status = 'auditing'
+   where id = 'ffff4000-0000-0000-0000-000000000001';
+$q$);
+
+select rrl4.expect_ok('the engagement is scoped', $q$
+  update public.release_rescue_engagements set status = 'scoped'
+   where id = 'ffff4000-0000-0000-0000-000000000001';
+$q$);
+
+-- At scoped nothing is in place yet, so the FIRST gate refuses: there is no
 -- grant. The commit-specific gate is exercised in step 3, once everything else
 -- is satisfied and the missing commit is the only thing left. Asserting the
 -- commit message here would have asserted the wrong guard.
 select rrl4.expect_refusal(
-  'and no review starts at intake, because nothing has been granted yet',
+  'and access is not recorded as granted, because nothing has been granted yet',
   'live, unrevoked read-only grant',
   $q$
-  update public.release_rescue_engagements set status = 'auditing'
+  update public.release_rescue_engagements set status = 'access_granted'
    where id = 'ffff4000-0000-0000-0000-000000000001';
 $q$);
 
@@ -165,6 +185,11 @@ select rrl4.expect_ok('the customer grants time-boxed read-only access', $q$
           'ffff4000-0000-0000-0000-000000000001', 'github', 'acme/checkout',
           'customer_installed_readonly_app', now() + interval '7 days',
           'aaaa4000-0000-0000-0000-000000000001');
+$q$);
+
+select rrl4.expect_ok('with a live grant naming the repository, access is recorded as granted', $q$
+  update public.release_rescue_engagements set status = 'access_granted'
+   where id = 'ffff4000-0000-0000-0000-000000000001';
 $q$);
 
 select rrl4.expect_ok('an ops manager records how ownership was established', $q$
@@ -401,6 +426,20 @@ select rrl4.expect_refusal(
    where id = '3333a000-0000-0000-0000-000000000001';
 $q$);
 
+-- v14: the engagement records that a report exists, and may not skip the state.
+select rrl4.expect_refusal(
+  'the engagement cannot go straight from auditing to delivered',
+  'not a permitted transition',
+  $q$
+  update public.release_rescue_engagements set status = 'delivered', delivered_at = now()
+   where id = 'ffff4000-0000-0000-0000-000000000001';
+$q$);
+
+select rrl4.expect_ok('with a report issued, the engagement is report_ready', $q$
+  update public.release_rescue_engagements set status = 'report_ready'
+   where id = 'ffff4000-0000-0000-0000-000000000001';
+$q$);
+
 \echo ''
 \echo '=== STEP 6. Tenant isolation, at the step where the commit now exists ==='
 
@@ -450,12 +489,51 @@ end $$;
 \echo ''
 \echo '=== STEP 7. Delivery ==='
 
-select rrl4.expect_ok('delivery is stamped once', $q$
-  update public.release_rescue_reports set delivered_at = now()
-   where id = '3333a000-0000-0000-0000-000000000001';
+-- v14: the engagement is delivered only once its report has been stamped, and
+-- only with its own retention clock started.
+select rrl4.expect_refusal(
+  'the engagement is not delivered before its report is',
+  'only once its report has been stamped delivered',
+  $q$
   update public.release_rescue_engagements set status = 'delivered', delivered_at = now()
    where id = 'ffff4000-0000-0000-0000-000000000001';
 $q$);
+
+select rrl4.expect_ok('the report is stamped delivered', $q$
+  update public.release_rescue_reports set delivered_at = now()
+   where id = '3333a000-0000-0000-0000-000000000001';
+$q$);
+
+select rrl4.expect_refusal(
+  'and the engagement is not delivered without its own delivered_at',
+  'must stamp delivered_at',
+  $q$
+  update public.release_rescue_engagements set status = 'delivered'
+   where id = 'ffff4000-0000-0000-0000-000000000001';
+$q$);
+
+select rrl4.expect_ok('delivery is stamped once', $q$
+  update public.release_rescue_engagements set status = 'delivered', delivered_at = now()
+   where id = 'ffff4000-0000-0000-0000-000000000001';
+$q$);
+
+select rrl4.expect_refusal(
+  'a delivered engagement does not reopen',
+  'does not reopen',
+  $q$
+  update public.release_rescue_engagements set status = 'report_ready'
+   where id = 'ffff4000-0000-0000-0000-000000000001';
+$q$);
+
+do $$
+declare v_path text;
+begin
+  select string_agg(from_status || '>' || to_status, ' ' order by sequence_no) into v_path
+    from public.release_rescue_engagement_transitions
+   where engagement_id = 'ffff4000-0000-0000-0000-000000000001';
+  perform rrl4.assert('every step was logged, in order: ' || v_path,
+                      v_path = 'intake>scoped scoped>access_granted access_granted>auditing auditing>report_ready report_ready>delivered');
+end $$;
 
 \echo ''
 \echo '=== STEP 8. Retention. Content goes; the accounting evidence stays ==='

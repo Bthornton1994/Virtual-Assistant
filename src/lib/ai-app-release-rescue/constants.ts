@@ -42,32 +42,15 @@ export const RESCUE_GRANT_WINDOW_DAYS = MAX_GRANT_WINDOW_DAYS;
 export const RESCUE_RETENTION_DAYS = RETENTION_DAYS;
 
 /**
- * Mirrors the status check constraint on public.release_rescue_engagements.
- * The database is authoritative for lifecycle vocabulary; a value here that the
- * schema rejects is drift that only shows up when something tries to persist.
+ * The lifecycle vocabulary and graph live in the contract, beside the database
+ * mirror that is authoritative for them. Re-exported here so the surface has one
+ * place to import from.
  */
-export const ENGAGEMENT_STATUSES = [
-  "intake",
-  "scoped",
-  "access_granted",
-  "auditing",
-  "report_ready",
-  "delivered",
-  "cancelled",
-  "purged",
-] as const;
-export type EngagementStatus = (typeof ENGAGEMENT_STATUSES)[number];
-
-export const ENGAGEMENT_TRANSITIONS: Record<EngagementStatus, readonly EngagementStatus[]> = {
-  intake: ["scoped", "cancelled"],
-  scoped: ["access_granted", "cancelled"],
-  access_granted: ["auditing", "cancelled"],
-  auditing: ["report_ready", "cancelled"],
-  report_ready: ["delivered", "cancelled"],
-  delivered: ["purged"],
-  cancelled: ["purged"],
-  purged: [],
-};
+export {
+  ENGAGEMENT_STATUSES,
+  ENGAGEMENT_TRANSITIONS,
+  type EngagementStatus,
+} from "@/lib/release-rescue-lifecycle";
 
 /** The access modes the schema permits. Read-only, every one of them. */
 export const ACCESS_GRANT_METHODS = REPOSITORY_ACCESS_MODES;

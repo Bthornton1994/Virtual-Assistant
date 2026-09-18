@@ -117,18 +117,24 @@ update public.release_rescue_engagements set reviewed_commit_sha = repeat('3', 4
 \echo ''
 \echo '=== 1. An uploaded archive is not evidence of ownership ==='
 
+-- Lifecycle graph (v14). A review starts from access_granted and nowhere else,
+-- and access_granted is reached through scoped with a live grant recorded. The
+-- three engagements walk there first, so the ownership cases below test
+-- ownership rather than tripping over the order.
+select rrh.expect_ok('engagements may be scoped, and have access recorded, before ownership is established', $q$
+  update public.release_rescue_engagements set status = 'scoped'
+   where organization_id = 'bbbb0000-0000-0000-0000-000000000001';
+  update public.release_rescue_engagements set status = 'access_granted'
+   where organization_id = 'bbbb0000-0000-0000-0000-000000000001';
+$q$);
+
 select rrh.expect_error('an archive engagement cannot start a review without ownership confirmation', $q$
   update public.release_rescue_engagements set status = 'auditing'
    where id = 'cccc0000-0000-0000-0000-000000000001';
 $q$);
 
-select rrh.expect_error('nor can it reach report_ready or delivered', $q$
+select rrh.expect_error('nor jump to delivered, which the lifecycle graph refuses from access_granted', $q$
   update public.release_rescue_engagements set status = 'delivered'
-   where id = 'cccc0000-0000-0000-0000-000000000001';
-$q$);
-
-select rrh.expect_ok('an archive engagement may still be scoped before ownership is established', $q$
-  update public.release_rescue_engagements set status = 'scoped'
    where id = 'cccc0000-0000-0000-0000-000000000001';
 $q$);
 

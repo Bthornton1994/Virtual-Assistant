@@ -104,6 +104,11 @@ begin
                  then 'customer_added_readonly_collaborator' else v_mode end,
             now() + interval '7 days');
 
+    -- v14: a review starts from access_granted only. The walk there needs the
+    -- grant and nothing else, so it is the ownership gate this case reaches.
+    update public.release_rescue_engagements set status = 'scoped' where id = v_id;
+    update public.release_rescue_engagements set status = 'access_granted' where id = v_id;
+
     v_started := true;
     begin
       update public.release_rescue_engagements set status = 'auditing' where id = v_id;
@@ -256,9 +261,15 @@ begin
               case when v_case = 'revoked' then 'Customer revoked access.' else '' end);
     end if;
 
+    -- v14: the first state that depends on the grant is access_granted, and the
+    -- lifecycle graph admits no jump past it. So the unusable grant is tried
+    -- where it is first consulted; the v3 gate on auditing is exercised below,
+    -- on a grant revoked AFTER access was recorded.
+    update public.release_rescue_engagements set status = 'scoped' where id = v_id;
+
     v_started := true;
     begin
-      update public.release_rescue_engagements set status = 'auditing' where id = v_id;
+      update public.release_rescue_engagements set status = 'access_granted' where id = v_id;
     exception when others then
       if position('live, unrevoked read-only grant' in lower(sqlerrm)) = 0 then
         raise exception 'WRONG-REFUSAL for case "%": %', v_case, sqlerrm;
@@ -267,26 +278,76 @@ begin
     end;
 
     if v_started then
-      raise exception 'CASE "%" STARTED A REVIEW ON AN UNUSABLE GRANT', v_case;
+      raise exception 'CASE "%" RECORDED ACCESS AS GRANTED ON AN UNUSABLE GRANT', v_case;
     end if;
 
     v_checked := v_checked + 1;
-    raise notice 'PASS property | a "%" grant does not license a review', v_case;
+    raise notice 'PASS property | a "%" grant does not license progress', v_case;
   end loop;
 
   if v_checked <> 4 then raise exception 'ONLY % GRANT CASES CHECKED', v_checked; end if;
 end $$;
 
+-- The v3 gate itself: a grant that was live when access was recorded and has
+-- since been revoked does not start the review.
+do $$
+declare
+  v_id uuid := gen_random_uuid();
+  v_started boolean := true;
+begin
+  insert into public.release_rescue_engagements
+    (id, organization_id, scope, scope_hash, retention_policy, retention_days, access_mode,
+     ownership_confirmation, ownership_confirmed_by, ownership_confirmation_note)
+  values (v_id, '22220000-0000-0000-0000-000000000001',
+          '{"repository":{"repositoryRef":"acme/revoked-later","accessMode":"customer_installed_readonly_app"}}'::jsonb,
+          repeat('3', 64), 'minimum_7_day', 7, 'customer_installed_readonly_app',
+          'provider_ownership_verified_by_operator', '11110000-0000-0000-0000-000000000002',
+          'Owner confirmed against the provider organisation record.');
+  insert into public.release_rescue_repository_grants
+    (organization_id, engagement_id, provider, repository_ref, grant_method, expires_at)
+  values ('22220000-0000-0000-0000-000000000001', v_id, 'github', 'acme/revoked-later',
+          'customer_installed_readonly_app', now() + interval '7 days');
+
+  update public.release_rescue_engagements set status = 'scoped' where id = v_id;
+  update public.release_rescue_engagements set status = 'access_granted' where id = v_id;
+  update public.release_rescue_engagements
+     set snapshot_limits_version = 'release-rescue-snapshot-limits/v1' where id = v_id;
+  update public.release_rescue_engagements set reviewed_commit_sha = repeat('d', 40) where id = v_id;
+
+  update public.release_rescue_repository_grants
+     set revoked_at = now(), revocation_reason = 'Customer revoked access.'
+   where engagement_id = v_id;
+
+  begin
+    update public.release_rescue_engagements set status = 'auditing' where id = v_id;
+  exception when others then
+    if position('live, unrevoked read-only grant' in lower(sqlerrm)) = 0 then
+      raise exception 'WRONG-REFUSAL for a grant revoked after access was recorded: %', sqlerrm;
+    end if;
+    v_started := false;
+  end;
+
+  if v_started then
+    raise exception 'A REVIEW STARTED ON A GRANT REVOKED AFTER ACCESS WAS RECORDED';
+  end if;
+  raise notice 'PASS property | a grant revoked after access_granted does not start the review';
+end $$;
+
 select rrv3.expect_refusal(
-  'a scope that names no repository cannot start a review',
+  'a scope that names no repository cannot have access recorded as granted',
   'must name the repository',
   $q$
   insert into public.release_rescue_engagements
-    (organization_id, scope, scope_hash, retention_policy, retention_days, access_mode, status,
+    (id, organization_id, scope, scope_hash, retention_policy, retention_days, access_mode,
      ownership_confirmation, ownership_confirmed_by, ownership_confirmation_note)
-  values ('22220000-0000-0000-0000-000000000001', '{}'::jsonb, repeat('4', 64),
-          'minimum_7_day', 7, 'customer_installed_readonly_app', 'auditing',
+  values ('44440000-0000-0000-0000-000000000001', '22220000-0000-0000-0000-000000000001',
+          '{}'::jsonb, repeat('4', 64),
+          'minimum_7_day', 7, 'customer_installed_readonly_app',
           'existing_contracted_customer_of_record', '11110000-0000-0000-0000-000000000002', 'On file.');
+  update public.release_rescue_engagements set status = 'scoped'
+   where id = '44440000-0000-0000-0000-000000000001';
+  update public.release_rescue_engagements set status = 'access_granted'
+   where id = '44440000-0000-0000-0000-000000000001';
 $q$);
 
 do $$
@@ -311,6 +372,8 @@ begin
      set snapshot_limits_version = 'release-rescue-snapshot-limits/v1' where id = v_id;
   update public.release_rescue_engagements
      set reviewed_commit_sha = repeat('c', 40) where id = v_id;
+  update public.release_rescue_engagements set status = 'scoped' where id = v_id;
+  update public.release_rescue_engagements set status = 'access_granted' where id = v_id;
   update public.release_rescue_engagements set status = 'auditing' where id = v_id;
   raise notice 'PASS allowed  | a live grant naming the reviewed repository does start the review';
 

@@ -509,7 +509,7 @@ describe("the marketing surface makes no prohibited claim", () => {
 
   // EXPLICIT TIMEOUT, because the default is a performance assertion nobody
   // wrote on purpose. This case parses every file reachable from the marketing
-  // route — 176 of them — and takes ~3.9s on an unloaded machine against
+  // route — 176 of them when this was measured, 177 since v14 — and takes ~3.9s on an unloaded machine against
   // vitest's 5s default. That is 78% of the budget, so a loaded runner or one
   // more surface file decides the outcome, and CI proved it: this timed out at
   // 5000ms on `f214f0b`, a commit that changed only markdown this test never

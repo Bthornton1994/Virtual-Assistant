@@ -86,6 +86,13 @@ update public.release_rescue_engagements
    set reviewed_commit_sha = repeat('7', 40)
  where id = 'ffff0000-0000-0000-0000-000000000001';
 
+-- Lifecycle graph (v14): a review starts from access_granted only, so the
+-- engagement walks there first and the cases below exercise the gates they name.
+update public.release_rescue_engagements set status = 'scoped'
+ where id = 'ffff0000-0000-0000-0000-000000000001';
+update public.release_rescue_engagements set status = 'access_granted'
+ where id = 'ffff0000-0000-0000-0000-000000000001';
+
 \echo ''
 \echo '=== B1. Relabelling the access mode no longer opens the ownership gate ==='
 
@@ -126,7 +133,9 @@ $q$);
 
 select rrv2.expect_refusal(
   'a direct insert at auditing with no grant row is refused',
-  'the frozen scope must name the repository',
+  -- v14: the lifecycle graph has one entry, and it refuses the row before the
+  -- v3 scope check ("the frozen scope must name the repository") is reached.
+  'enters the lifecycle at intake',
   $q$
   set local role authenticated;
   set local request.jwt.claim.sub = 'dddd0000-0000-0000-0000-000000000001';
@@ -185,6 +194,11 @@ insert into public.workstream_runs (id, organization_id, workstream_id, delegati
 values ('aaaa1111-0000-0000-0000-000000000001', 'eeee0000-0000-0000-0000-000000000001',
         '8888aaaa-0000-0000-0000-000000000001', '9999aaaa-0000-0000-0000-000000000001', 'planned');
 update public.workstream_runs set status = 'running' where id = 'aaaa1111-0000-0000-0000-000000000001';
+
+-- v14: a report names the run pinned on its engagement, so the engagement pins
+-- this run first (null -> value, once, per v5).
+update public.release_rescue_engagements set run_id = 'aaaa1111-0000-0000-0000-000000000001'
+ where id = 'ffff0000-0000-0000-0000-000000000001';
 
 insert into public.evidence_artifacts
   (id, organization_id, run_id, kind, summary, content_hash, payload)

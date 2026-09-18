@@ -164,6 +164,12 @@ Most validation triggers run `security definer`. The two that make a privilege d
 
 **What the purge removes, and what survives.** The sweep deletes the Release Rescue evidence artifacts, clears the engagement's scope content and attestations, and revokes any live grant. The `release_rescue_reports` **accounting row survives** with its hashes, verdict, and counts. After a purge we can still prove an engagement happened and what verdict was issued while holding none of the customer's source-derived content.
 
+**A run belongs to one engagement** (D-015, `v14`). The sweep deletes evidence by `(run_id, organization_id)`, and until `v14` nothing made a run exclusive to one engagement, so purging one engagement could delete another's unexpired evidence (S-010). A unique partial index on `run_id` now enforces exclusivity, a report must name the run pinned on its engagement, and the sweep checks the invariant before each delete and **fails closed** — it refuses rather than deletes — so that dropping the index can never quietly widen a destructive operation. `release_rescue_lifecycle_graph_v14_proof.sql` drops the index inside a transaction, manufactures the shared run, and asserts the refusal.
+
+**The lifecycle is an ordered graph** (D-014, `v14`). `intake → scoped → access_granted → auditing → report_ready → delivered`, with cancellation from every state before delivery. Until `v14` the states that carry the customer's source were defended at their entrances and nothing enforced an order between states: `intake → access_granted` with no grant, `access_granted → intake`, and `cancelled → scoped` all succeeded (S-009). Now every engagement enters at `intake`; `access_granted` requires a live, unrevoked read-only grant naming the repository in the frozen scope; `report_ready` requires an issued report; `delivered` requires the report stamped delivered and the engagement's own `delivered_at`. A cancelled engagement is reopened only by a **manager-authorized recovery** — to `intake`, with a reason code from a frozen catalog, attributed to the caller the way ownership confirmation is — and `purged` is entered by the retention sweep alone. A delivered engagement does not reopen. Every status change is written to `release_rescue_engagement_transitions`, which only the trigger can write. The application mirrors the graph in `src/lib/release-rescue-lifecycle.ts`, and a static test reads the migration's edge list and fails if the two disagree. The proof tries all 56 off-diagonal cells of the state matrix from real engagements and asserts that exactly the ten normal-path edges succeed.
+
+**The reviewer is the caller** (D-017, `v14`). `reviewed_by` had been checked for manager authority since `v1` and never compared to the caller. An interactive `INSERT` on `release_rescue_reports` now requires `reviewed_by = auth.uid()`; the server channel may name a reviewer, who must still hold manager authority; the channel is recorded as `reviewed_via`. A report artifact a staff member writes directly must name the writer in its signature and its clearances. In the application, `signReleaseRescueReportAs(actor, report, submission)` reads the reviewer from the authenticated session and accepts only a reason code and the approved hash from the request.
+
 Evidence artifacts are otherwise immutable, which is right for evidence and wrong for a customer's report body after their retention window closes. The migration adds one narrow carve-out to `enforce_evidence_artifact_invariants`: a `DELETE` is permitted only when a transaction-local GUC is set **and** the artifact's `schemaVersion` starts with `release-rescue-`. Both conditions are required, the flag is set only inside the purge function, and `authenticated` holds no `DELETE` grant on that table at all. The proof fixture verifies that a caller who forges the flag still cannot touch another workstream's evidence.
 
 ## Report schema
@@ -276,7 +282,7 @@ Defence in depth: `validateReleaseRescueReport` scans the **entire assembled rep
 
 ## Test plan
 
-**Implemented and passing** — 404 live database cases across fourteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
+**Implemented and passing** — 495 live database cases across fifteen proofs, and **13** Release Rescue browser tests in real Chromium against the production build.
 
 The unit-test counts that used to open this sentence are gone from it. They read
 "738 Release Rescue tests across 30 suites (1,414 in the whole repository)" at a
@@ -315,13 +321,25 @@ sentence here instead of a retraction in the ledger. The figures below are
 from the 378 table — which is itself the check that the `v13` fixture edits added
 no cases and removed none.
 
+The `v14` pass changed two existing figures on purpose and left the rest alone.
+The lifecycle graph made the review-start gates reachable only from
+`access_granted`, so five proofs (`hardening_v1` to `v3`, `lifecycle_v4`,
+`trust_boundary_v5`) now walk `intake → scoped → access_granted` before they
+test a gate, and two (`hardening_v2`, `reviewer_attestation_v13`) pin a run on
+the engagement their reports name. Most of those edits are fixture steps and
+print nothing. `hardening_v3` gained one case (a grant revoked *after* access was
+recorded still does not start the review, which is the v3 gate exercised at its
+new position), and `lifecycle_v4` gained ten (the graph's refusals and the
+transition log, asserted on the same engagement the proof already walked). Every
+other pre-existing proof's number is unchanged, counted by the same command.
+
 | Proof | Cases |
 | --- | --- |
 | `release_rescue_v1_isolation_proof.sql` | 45 |
 | `release_rescue_hardening_v1_proof.sql` | 25 |
 | `release_rescue_hardening_v2_proof.sql` | 17 |
-| `release_rescue_hardening_v3_proof.sql` | 14 |
-| `release_rescue_lifecycle_v4_proof.sql` | 41 |
+| `release_rescue_hardening_v3_proof.sql` | 15 |
+| `release_rescue_lifecycle_v4_proof.sql` | 51 |
 | `release_rescue_trust_boundary_v5_proof.sql` | 45 |
 | `release_rescue_timestamp_authority_v6_proof.sql` | 29 |
 | `release_rescue_destructive_authority_v7_proof.sql` | 41 |
@@ -331,7 +349,8 @@ no cases and removed none.
 | `release_rescue_code_fields_v11_proof.sql` | 29 |
 | `release_rescue_identifier_shape_v12_proof.sql` | 17 |
 | `release_rescue_reviewer_attestation_v13_proof.sql` | 26 |
-| **Total** | **404** |
+| `release_rescue_lifecycle_graph_v14_proof.sql` | 80 |
+| **Total** | **495** |
 
 Three of the six Playwright specs need live preview credentials (`E2E_PASSWORD`) and a deployed preview, neither of which this environment has or should have. They are not run here, and the 13 above does not include them.
 

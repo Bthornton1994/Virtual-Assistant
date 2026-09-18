@@ -1058,6 +1058,7 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/release-rescue-findings-model.ts",
   "src/lib/release-rescue-findings.ts",
   "src/lib/release-rescue-intake.ts",
+  "src/lib/release-rescue-lifecycle.ts",
   "src/lib/release-rescue-observation-catalog.ts",
   "src/lib/release-rescue-pipeline.ts",
   "src/lib/release-rescue-presentation.ts",
