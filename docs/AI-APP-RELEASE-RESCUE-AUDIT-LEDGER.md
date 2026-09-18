@@ -275,7 +275,8 @@ than by loosening the assertion.
 | --- | --- |
 | Found | by an automated review on the PR |
 | Class | a state machine enforced at its entrances only |
-| Status | **CONFIRMED by execution — not fixed, owner decision** |
+| Status | **CLOSED** — decided by the owner as D-014, enforced in `v14` |
+| Closed at | `9617920` |
 
 Reproduced against the real migration chain on a disposable Postgres. All three
 of the reviewer's examples succeed:
@@ -310,13 +311,38 @@ negative: the engagement fixture had failed to insert, so every `UPDATE` matched
 zero rows and reported success by matching nothing. The result above is from a
 run where the baseline `select` shows the row actually exists.
 
+**How it was closed.** The owner decided the graph (D-014): `intake → scoped →
+access_granted → auditing → report_ready → delivered`, cancellation from every
+state before delivery, a manager-authorized recovery as the only way back from
+`cancelled` (to `intake`, with a reason code, attributed to the caller the way
+v5 attributes ownership confirmation), the sweep as the only way to `purged`,
+and no way out of `delivered`. `v14` enforces it in two triggers that fire ahead
+of every existing gate — one invoker-rights function that decides WHO may make
+WHICH move, one definer-rights function that checks what must be TRUE to enter a
+state — and logs every status change to a table only the trigger can write.
+`src/lib/release-rescue-lifecycle.ts` mirrors the graph, and a static test reads
+the migration's edge list and fails if the two disagree.
+
+Measured rather than listed: the proof drives a fresh engagement to each of the
+eight states through the real lifecycle and tries all **56** off-diagonal cells.
+Exactly the ten normal-path edges succeed; the other 46 are refused by the
+graph's own message, not by a precondition tripping first. The three
+reproductions above are three of those 46, asserted by name. On the application
+side the same 56 cells are decided under each of three authorities.
+
+Five earlier proofs jumped `intake → auditing` to test the review-start gates.
+They now walk to `access_granted` first, so each still exercises the gate it
+names; `hardening_v3` gained a case for the v3 grant gate at its new position (a
+grant revoked *after* access was recorded still does not start the review).
+
 ### S-010 — the retention sweep deletes artifacts by run, not by engagement
 
 | | |
 | --- | --- |
 | Found | by an automated review on the PR |
 | Class | a destructive operation scoped wider than the thing it acts on |
-| Status | **CONFIRMED by reading the migration and the live schema — not fixed** |
+| Status | **CLOSED** — decided by the owner as D-015, enforced in `v14` |
+| Closed at | `9617920` |
 
 The sweep updates reports with `where engagement_id = ... and organization_id = ...`
 and then deletes evidence with:
@@ -341,11 +367,35 @@ release_rescue_engagements_run_idx                btree (run_id) WHERE run_id IS
 So two engagements in one organization may share a run, and purging the first
 deletes the second's unexpired artifacts.
 
-**Not fixed, because both repairs change a privacy commitment.** Deleting only
-artifacts referenced by this engagement's report rows would leave any artifact
-with no report row behind — which for a retention promise may be the worse
-failure. Enforcing one engagement per run constrains a relationship this schema
-currently allows. That is the owner's call, not an executor's.
+**Not fixed there, because both repairs change a privacy commitment.** Deleting
+only artifacts referenced by this engagement's report rows would leave any
+artifact with no report row behind — which for a retention promise may be the
+worse failure. Enforcing one engagement per run constrains a relationship this
+schema currently allows. That is the owner's call, not an executor's.
+
+**How it was closed.** The owner chose exclusivity (D-015). `v14` replaces the
+plain index with a unique partial index on `run_id`, after counting shared runs
+and failing the migration if any exist rather than applying over a violation. A
+report must name the run pinned on its engagement. The sweep is redefined with
+one addition: before each evidence delete it checks that no other engagement
+holds the run, and if one does it **refuses** — the sweep aborts rather than
+reaches the second engagement. The unique index makes that branch unreachable;
+it is there so that dropping the index can never quietly widen a destructive
+operation. The proof drops the index inside a transaction, manufactures the
+shared run, and asserts the refusal, then rolls back and asserts the index is
+back.
+
+The v7 property proof caught this pass's first version of the sharing check:
+it read `release_rescue_engagements` without an `organization_id` conjunct,
+which is exactly the class v7 exists to catch. The composite key already
+confines every engagement on a run to the run's organization, so the conjunct
+loses nothing; it was added and the v7 proof passes again. A property proof that
+has been seen to fail is evidence; that one now has.
+
+Two earlier proofs (`hardening_v2`, `reviewer_attestation_v13`) issued reports
+for engagements with no pinned run; both now pin the run their reports name.
+`trust_boundary_v5` created three engagements on two runs; it now creates four
+runs.
 
 ### S-011 — the public demo store has no retention bound
 
@@ -353,7 +403,8 @@ currently allows. That is the owner's call, not an executor's.
 | --- | --- |
 | Found | by an automated review on the PR (P2) |
 | Class | customer data with no expiry on a path open to the public |
-| Status | **CONFIRMED by reading — not fixed** |
+| Status | **CLOSED** — decided by the owner as D-016 |
+| Closed at | `e50611c` |
 
 `createDemoEngagement` writes into a process-global `Map` and nothing ever
 removes an entry: `engagement.ts` contains no delete, eviction, expiry, TTL,
@@ -369,6 +420,54 @@ Scope worth stating: this is the demo path, which takes no payment and grants no
 repository access. It is still customer-supplied contact data on a route anyone
 can reach, and `VISION.md` treats retention as a commitment rather than a
 convenience.
+
+**How it was closed.** The owner set a 24-hour TTL and a fixed ceiling (D-016).
+Every record now carries an absolute `expiresAt`; a record at or past it is
+unreadable and is removed the next time the store is touched. The TTL is one
+constant shared with the cookie's `maxAge`, so the record cannot outlive the
+only thing that can reach it and the cookie cannot point at a record that is
+gone. The store holds at most `DEMO_STORE_MAX_ENTRIES` (200) records; a
+submission that would exceed it evicts the oldest, after expired records are
+pruned, so a live record is never evicted while a dead one holds a slot. No
+timer: expiry is checked on read and on write, so nothing depends on a
+background task or on the process staying up between two ticks. The store is a
+factory with an injected clock and bounds, so the tests drive the boundary
+exactly — a record is served one second before it expires and refused at the
+instant — rather than waiting on wall-clock time.
+
+### S-013 — an interactive caller could sign a report as someone else
+
+| | |
+| --- | --- |
+| Found | listed as the fourth outstanding item on PR #97; the same shape v5 closed for ownership confirmation |
+| Class | a validity check on a value in `NEW`, where the property needs a privilege check on the caller |
+| Status | **CLOSED** — decided by the owner as D-017, enforced in `v14` |
+| Closed at | `9617920` |
+
+`reviewed_by` has been `NOT NULL` and checked for manager authority since `v1`.
+Nothing compared it to the caller, so an ops manager signed in through the API
+could insert a report row naming a *different* manager as its reviewer, and the
+v13 row/artifact binding — which holds the row to the artifact — would hold it
+to an artifact carrying the same wrong name. The customer-visible signature and
+the authority check agreed with each other and with nobody who had actually
+acted.
+
+**How it was closed.** The v5 trust model, applied to the signature. An
+interactive `INSERT` on `release_rescue_reports` requires `reviewed_by =
+auth.uid()` and refuses a mismatch rather than correcting it; the server channel
+may name a reviewer, who must still hold manager authority; `reviewed_via`
+records which. The same binding applies to a report artifact a staff member
+writes directly: its `reviewedBy.operatorUserId` and every `clearedBy` must be
+the writer. In the application, `signReleaseRescueReportAs(actor, report,
+submission)` reads the reviewer's identity and display name from the
+authenticated session and the time from the server clock; the submission is a
+strict schema of a reason code and the approved hash, and one that carries an
+identity is refused as malformed, naming the field and never the value.
+
+Proven from both sides: the first manager cannot issue a report signed by the
+second, the second issues it as themselves and the row records
+`authenticated_operator` whatever channel the caller claimed, and the server
+channel still refuses a plain operator.
 
 ### S-012 — a 5-second default decided whether the claim guard's own test passed
 
@@ -632,6 +731,10 @@ standing-down comment is on PR #97 (`issuecomment-5682530322`).
 | | Decision | Recorded |
 | --- | --- | --- |
 | D-012 | **Decided 2026-09-18.** "GitHub Actions `verify` on the exact candidate SHA is the authoritative release environment. Local failures caused solely by unsupported Git 2.43 do not block when CI `verify` passes. Any GitHub Actions failure remains a blocker." Review by 2026-10-17. | `DECISION_LOG.md` § D-012, amended to this wording from the owner's implementation order |
+| D-014 | **Decided 2026-09-18.** The lifecycle is an ordered graph; reopening a cancelled engagement is a manager-authorized recovery; delivered does not reopen. Closes S-009. | `DECISION_LOG.md` § D-014, migration `v14` |
+| D-015 | **Decided 2026-09-18.** A run belongs to one engagement; the sweep is scoped to it. Closes S-010. | `DECISION_LOG.md` § D-015, migration `v14` |
+| D-016 | **Decided 2026-09-18.** Demo submissions expire in 24 hours; the store has a fixed ceiling. Closes S-011. | `DECISION_LOG.md` § D-016 |
+| D-017 | **Decided 2026-09-18.** Interactive reviewer actions are bound to the authenticated user. Closes S-013. | `DECISION_LOG.md` § D-017, migration `v14` |
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
 | — | Payment activation, production access, and any increase in executor authority. **Still open**, and not this branch's to take. | `VISION.md` § D-009 |
 
