@@ -524,6 +524,73 @@ ratio that sat above the complexity it claimed to bound and below the noise it
 did not. Each was a threshold the machine decided, on a test that meant to
 measure something else. There is now one growth test, and it measures growth.
 
+### S-015 — the proof-base paragraph counted a chain that had since grown
+
+| | |
+| --- | --- |
+| Found | while re-measuring the v14 work rather than accepting it |
+| Class | a published figure nothing read |
+| Closed at | this commit |
+
+The architecture doc said the proof base *"applies 55 of 59 migrations"* and that
+*"all fourteen Release Rescue proofs run against the result"*. Measured on a
+freshly rebuilt base at `df93008`: the directory holds **60** migrations, **56**
+apply, and there are **fifteen** Release Rescue proofs. Both figures went stale
+in the commit that added `v14` and its proof, and nothing said so, because
+nothing read them.
+
+The headline figure two hundred lines above it — *"495 live database cases across
+fifteen proofs"* — was correct, and correct for a reason: a test sums the
+doc's per-proof table, compares it to the headline, counts the proof directory
+from disk and requires the headline to name that number in words. The paragraph
+that drifted was the one with no test on it.
+
+So it has one now, in `release-rescue-migration.test.ts`: the denominator must
+equal the migration directory, every migration the paragraph names as not
+applying must exist in the chain, and the arithmetic
+`stated_total - stated_applied` must equal the number of migrations named.
+Both halves were mutation-checked — restoring "55 of 59" fails the first,
+deleting one named migration fails the second.
+
+Also recorded there, because it costs an hour to rediscover: the v14 proof stops
+with `function extensions.digest(text, unknown) does not exist` on a base built
+in this container, because `pgcrypto` ships in `template1` and is therefore
+already installed in `public`, which makes
+`create extension ... with schema extensions` a no-op. On Supabase the extension
+is in `extensions` and the proof is correct as written. The local base declares
+two delegating wrappers. **This reads like a proof failure and is an environment
+gap** — the distinction is the reason it is written down rather than worked
+around silently.
+
+### S-016 — the interactive signing path S-013 closes has no production caller yet
+
+| | |
+| --- | --- |
+| Found | while verifying `9617920` |
+| Class | scope of a closed finding, stated precisely |
+| Closed at | not a defect; recorded so the closure is not read as wider than it is |
+
+S-013 is closed correctly and the control is real: `release_rescue_reports` has a
+`before insert or update` trigger that refuses any interactive INSERT whose
+`reviewed_by` is not `auth.uid()`, and `evidence_artifacts` has one that refuses
+a report artifact attributing its signature or a secret-hold clearance to anyone
+else. Both were exercised live in the `v14` proof.
+
+What is worth stating plainly: **the application half has no production caller.**
+`signReleaseRescueReportAs` is reached only from its own test file, and no route
+or server action in `src/` inserts into `release_rescue_reports`. There is no
+reviewer console yet. The finding was prospective — the shape that would have
+been wrong the first time someone wrote that handler — not a live path a
+customer's report could have travelled. Closing it before the handler exists is
+the right order; describing it as a hole that was open is not.
+
+The artifact-side trigger fires `before insert` only, where the other Release
+Rescue artifact guards fire on insert **or** update. That is sufficient rather
+than an oversight, and it was checked rather than assumed: a real row was fetched
+from the `v14` proof database and updated, and
+`trg_evidence_artifact_invariants` refused it with *"Evidence artifacts are
+immutable"*. There is no update path for the insert-only trigger to miss.
+
 ### S-012 — a 5-second default decided whether the claim guard's own test passed
 
 | | |
@@ -643,6 +710,56 @@ each pass removed a different reason it could not fail. The pattern worth keepin
 is not any of the three fixes — it is that **a loop with a `continue` in it is a
 loop that can quietly test nothing**, and the way to find out is to count both
 branches rather than read the code.
+
+---
+
+## Local verification, re-measured rather than inherited
+
+The `v14` work (`4a1a084` … `df93008`) and the two commits after it arrived from
+a second executor. They were re-run here from a freshly rebuilt proof base rather
+than accepted, on the argument this ledger has made about every other
+executor-produced change. Every figure below was measured on this branch; none is
+quoted from a commit message.
+
+| Gate | Result |
+| --- | --- |
+| Unit suite | **1,648 passed / 8 failed.** The eight are exactly the `software-context-shunt-cli` cases governed by `DECISION_LOG.md` § D-012. **The suite is not green, and is not described as green.** |
+| Typecheck | 0 errors |
+| Lint | 0 errors, 13 warnings, all pre-existing and outside Release Rescue |
+| Production build | succeeds |
+| Claim-guard mutation proof | 39 of 39 mechanisms held, control unchanged |
+| Database proofs | **495 cases across 15 proofs, all passing**, counted with `grep -cE "PASS [a-z_]+ +\|"` — never `grep -c "PASS "`, which has inflated this figure twice. Measured at `df93008`; no migration or proof file has changed since |
+| Browser | **16 passed, 1 skipped** across the four specs that need no credential — the 13 Release Rescue cases, delivery authorization, and two demo-lifecycle cases; `production-golden-path` skips itself without a preview environment |
+
+`persistent-login.spec.ts` and `preview-golden-path.spec.ts` throw at load
+without `E2E_PASSWORD`. They target preview and production, this branch holds no
+such credential, and none was obtained. They are **not run**, and not counted
+above. An earlier draft of this block said four specs were blocked this way;
+two of them are not, and were run.
+
+Two things were mutation-checked rather than read, because both are the kind of
+check that passes while asserting nothing:
+
+- **The TypeScript-to-SQL edge binding.** Adding `('intake', 'access_granted')`
+  to the migration's edge list fails
+  *"declares exactly the edges the application declares"*. The two graphs cannot
+  drift apart quietly.
+- **The 56-cell transition matrix.** Pointing its fixture at an id naming no row
+  — the vacuous-fixture defect this workstream has now made three times — makes
+  every one of the 56 cells report *accepted*, and the proof stops with
+  *"exactly the ten normal-path edges are accepted"* listing all 56. The matrix
+  cannot pass on an empty table.
+
+**One figure in this ledger disagrees with another, and neither is being quietly
+dropped.** CI-001's local row for `4fcbbba` records the proof base as *54 of 60
+migrations applied*; the base built for the run above applied **56 of 60**. The
+two agree on everything that bears on the result — 60 migrations in the chain, 15
+proofs, 495 cases, 0 failures, and no Release Rescue table touched by anything
+skipped — and differ in how each base handles the migrations that cannot replay
+onto an empty database. The architecture document now **names** the four that do
+not apply here, and a test requires that list to match the chain and the
+arithmetic, so this figure is checkable rather than asserted. Which base
+composition is right is not settled by this entry.
 
 ---
 

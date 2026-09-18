@@ -940,10 +940,34 @@ empty database:
   public.execution_plans`, which collides with the differently-shaped table
   `0004_production_auth.sql` creates earlier in the chain.
 
-The proof base applies 55 of 59 migrations: the two above, one that needs the
-`http` extension this sandbox does not have, and one that fails only because a
-function the `http` migration would have created is missing. None of the four touch Release
-Rescue tables, and all fourteen Release Rescue proofs run against the result.
+The proof base applies 56 of 60 migrations. The first defect above is worked
+around rather than skipped — the base feeds `psql` lines 1-197 of that file, which
+are the complete definition — so it is not one of the four. The four that do not
+apply are:
+
+- `20260903090000_execution_runtime_v1.sql`, the second defect above;
+- `20260906191128_twl_prepare_proof_database_hardening.sql`, which needs the
+  `http` extension this sandbox does not have;
+- `20260906210000_software_factory_control_plane_hardening.sql`, which needs
+  `public.twl_prepare_proof_sha256`, a function the `http` migration would have
+  created;
+- `20260909180000_execution_context_enforcement_v1.sql`, which needs
+  `public.execution_plan_steps`, a table the first of these would have created.
+
+None of the four touch Release Rescue tables, and all fifteen Release Rescue
+proofs run against the result.
+
+One further sandbox difference is worth recording, because it fails as a proof
+error rather than as a proof failure. On Supabase, `pgcrypto` lives in the
+`extensions` schema, and Release Rescue's migrations and proofs qualify it that
+way (`extensions.digest`). In this container the extension ships in `template1`
+and is therefore already installed in `public`, so
+`create extension if not exists pgcrypto with schema extensions` is a no-op and
+`extensions.digest` does not exist. The proof base declares two
+`extensions.digest` wrappers that delegate to `public.digest`. Without them the
+v14 proof stops at its first hash with `function extensions.digest(text,
+unknown) does not exist` — an environment gap, not a defect in the proof, but one
+that reads like a failure if you have not seen it before.
 
 ## Sixth independent audit: the axis was the key, and the fix was the regression
 

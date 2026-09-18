@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ENGAGEMENT_STATUSES } from "@/lib/ai-app-release-rescue/constants";
@@ -362,5 +362,40 @@ describe("release rescue migration: report integrity", () => {
     expect(sql).toMatch(
       /create unique index release_rescue_engagements_active_scope_idx[\s\S]*?where status not in \('delivered', 'cancelled', 'purged'\);/,
     );
+  });
+});
+
+describe("the documented proof base", () => {
+  // The architecture doc states how many migrations the local proof base applies
+  // and names the ones it does not. Both figures went stale the round the chain
+  // grew and the v14 proof arrived: the doc still said "55 of 59" and "fourteen
+  // proofs" after the directory held 60 and fifteen. Nothing read it, so nothing
+  // said so. The count is taken from disk here for the same reason the headline
+  // case figure is: a number nobody measures is a number that drifts.
+  const doc = readFileSync(resolve(process.cwd(), "docs/AI-APP-RELEASE-RESCUE-V1.md"), "utf8");
+  const migrations = readdirSync(resolve(process.cwd(), "supabase/migrations")).filter((file) =>
+    file.endsWith(".sql"),
+  );
+
+  it("states the size of the migration chain it actually has", () => {
+    const stated = /The proof base applies (\d+) of (\d+) migrations/.exec(doc);
+    expect(stated, "the proof-base sentence could not be located").not.toBeNull();
+    expect(Number(stated![2]), "the denominator must be the migration directory").toBe(migrations.length);
+  });
+
+  it("names every migration it says does not apply, and the arithmetic agrees", () => {
+    const section = doc.slice(doc.indexOf("The proof base applies"), doc.indexOf("## Sixth independent audit"));
+    const named = [...section.matchAll(/`(\d{14}_[a-z0-9_]+\.sql)`/g)].map((match) => match[1]);
+    expect(named.length, "the skipped migrations must be named, not counted").toBeGreaterThan(0);
+
+    for (const file of named) {
+      expect(migrations, `${file} is named as skipped but is not in the chain`).toContain(file);
+    }
+
+    const stated = /The proof base applies (\d+) of (\d+) migrations/.exec(doc)!;
+    expect(
+      Number(stated![2]) - Number(stated![1]),
+      "the number said not to apply must be the number named",
+    ).toBe(new Set(named).size);
   });
 });
