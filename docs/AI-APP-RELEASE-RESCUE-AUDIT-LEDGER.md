@@ -76,9 +76,65 @@ are *records* rather than code: the `FUNCTION_WORDS` set was published as
 40 words in four places and had 41, and the mutation proof's closing sentence
 counted four `wiring:` mutants inside its "reconstructed or modelled" total.
 
-### Audit 45 — not yet run
+### Audit 45 — subject `dec063373930d5fac8ad572cfb7ecf42748acd16`, verdict KEEP_DRAFT / DO_NOT_MERGE
 
-Subject will be the head at the time it is seeded. Not seeded as of this entry.
+Independent QA, 2026-09-17 22:20 PT. `audit_id` Audit 45. reviewer_id
+`0a6ccc21-0b0c-4c00-82b3-61bb01c77d01`. Independent RO
+`bc-8f25675f-e09f-5d87-af1d-559a7d006383` (Fable 5.1). The owner-ordered
+slice landed correctly and every item was independently verified by
+execution. Nothing in this slice lifts `DO_NOT_MERGE`; D-009 remains
+owner-only and open. Disposition: **KEEP_DRAFT / DO_NOT_MERGE**.
+
+| Item | Verdict |
+| --- | --- |
+| D-012 recorded with owner policy | **PASS** — verbatim wording in `DECISION_LOG.md` § D-012; this ledger's table agrees; review by 2026-10-17; prior disagreement resolved in the same commit |
+| S-009 lifecycle graph | **PASS** — 56-cell matrix: exactly 10 edges accepted, 46 refused; recovery manager-bound to `auth.uid()`; `delivered` has no exit (even for a manager or server) |
+| S-010 run exclusivity + scoped retention | **PASS** — unique partial index; report↔engagement run binding; sweep fails closed on a shared run (proven with the index dropped in a transaction) |
+| S-011 demo TTL + cap | **PASS** — 86400s shared with cookie `maxAge`; cap 200; expired pruned before oldest evicted; 13 tests |
+| Authenticated reviewer bind | **PASS** — DB refuses forged `reviewed_by` and forged artifact signatures/clearances; app refuses identity in a submission as malformed. Limitation: no interactive signing route exists yet, so the trigger is the live enforcement |
+| S-014 | **PASS, diagnosis verified** — re-read the failing run's numbers (3.63, 3.18); confirmed `MAX_SCAN_LENGTH=64000` clipping made the step 1.6× so the `<3` ratio could not detect quadratic; 3.63 exceeds even the quadratic bound, hence noise. Replaced by the exponent test with four added shapes |
+
+No Critical or High findings. Medium and Low recorded below; none of them
+are a merge gate this entry can lift.
+
+| ID | Finding | Class |
+| --- | --- | --- |
+| 45-M1 | PR #97 body is stale — stamped `907ba22`, still says D-012 records disagree and lists S-009 / S-010 / S-011 / reviewer bind as "not addressed", cites 404 cases / 14 proofs. | Medium, record |
+| 45-M2 | `verify.yml` does not run the SQL proofs or `proof:claim-guard`. Under D-012 the authoritative gate therefore never executes the DB half of S-009 / S-010 / S-013; that evidence is local-only (and this audit's). Owner decision whether proofs belong in CI. | Medium, gate coverage |
+| 45-O1 | Artifact trigger skips non-object `reviewedBy` (undeliverable anyway, proven). | Low |
+| 45-O2 | Normal-path role gating is RLS-only by design. | Low |
+| 45-O3 | DB shape-checks the recovery reason code; the app catalog-checks it. | Low |
+| 45-O4 | Cancel silently clears recovery fields. | Low |
+| 45-O5 | D-012 "exact SHA" vs merge-ref wording: a `pull_request` check-out is the merge ref. | Low |
+| 45-O6 | Stale `1.13` comment vs measured 1.25. | Low |
+| 45-O7 | Ledger CI-001 has two contradictory re-run sentences. | Low |
+| 45-O8 | Review-session module has no app importer. | Low |
+| 45-O9 | Demo store starts at `scoped`. | Low |
+
+GitHub Actions `verify` run
+[35308776223](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308776223):
+`headSha dec0633…`, `success`; lint 0 errors / 13 warnings, typecheck
+clean, **1,654 / 1,654 tests in 88 files**, build ok, runner Git 2.55.0.
+It is the only run on this commit. Nuance (45-O5): `pull_request` checks
+out the merge ref; the tested tree differs from the tip by six non-code
+skill files from `main`.
+
+Local reproduction (Git 2.43.0): `--no-lazy-fetch` rejected (exit 129);
+lint / typecheck clean; **1,646 passed / 8 failed** — exactly the eight
+D-012 tests. Slice suites 121 / 121.
+
+DB proofs independently rebuilt on disposable Postgres 16: **54 / 60
+migrations applied** (same as this ledger; all six failures are
+non-Release-Rescue `pg_net` / `http` dependents); **15 / 15 proofs pass,
+495 cases**, every per-proof figure matching the V1 doc table.
+
+Remaining owner decisions, none of them this recording's to take: D-009
+(open, owner-only); D-012 review by 2026-10-17; whether the CI gate must
+execute the DB proofs (45-M2); any abnormal path out of `delivered`
+(explicitly undefined).
+
+This entry records Audit 45 against the SHA it judged. It does not seed
+a further audit, lift `DO_NOT_MERGE`, or authorize a merge.
 
 ---
 
@@ -277,6 +333,7 @@ than by loosening the assertion.
 | Class | a state machine enforced at its entrances only |
 | Status | **CLOSED** — decided by the owner as D-014, enforced in `v14` |
 | Closed at | `9617920` |
+| Independently verified | Audit 45 at `dec063373930d5fac8ad572cfb7ecf42748acd16`, **PASS** |
 
 Reproduced against the real migration chain on a disposable Postgres. All three
 of the reviewer's examples succeed:
@@ -343,6 +400,7 @@ grant revoked *after* access was recorded still does not start the review).
 | Class | a destructive operation scoped wider than the thing it acts on |
 | Status | **CLOSED** — decided by the owner as D-015, enforced in `v14` |
 | Closed at | `9617920` |
+| Independently verified | Audit 45 at `dec063373930d5fac8ad572cfb7ecf42748acd16`, **PASS** |
 
 The sweep updates reports with `where engagement_id = ... and organization_id = ...`
 and then deletes evidence with:
@@ -405,6 +463,7 @@ runs.
 | Class | customer data with no expiry on a path open to the public |
 | Status | **CLOSED** — decided by the owner as D-016 |
 | Closed at | `e50611c` |
+| Independently verified | Audit 45 at `dec063373930d5fac8ad572cfb7ecf42748acd16`, **PASS** |
 
 `createDemoEngagement` writes into a process-global `Map` and nothing ever
 removes an entry: `engagement.ts` contains no delete, eviction, expiry, TTL,
@@ -443,6 +502,7 @@ instant — rather than waiting on wall-clock time.
 | Class | a validity check on a value in `NEW`, where the property needs a privilege check on the caller |
 | Status | **CLOSED** — decided by the owner as D-017, enforced in `v14` |
 | Closed at | `9617920` |
+| Independently verified | Audit 45 at `dec063373930d5fac8ad572cfb7ecf42748acd16`, **PASS** |
 
 `reviewed_by` has been `NOT NULL` and checked for manager authority since `v1`.
 Nothing compared it to the caller, so an ops manager signed in through the API
@@ -476,6 +536,7 @@ channel still refuses a plain operator.
 | Found | by CI, on `df93008`: `verify` failed `npm test` 1,648 / 1,650, on a file none of that head's commits touch |
 | Class | a threshold nobody meant to assert — S-005 and S-012, a third time |
 | Closed at | the same commit that records it |
+| Independently verified | Audit 45 at `dec063373930d5fac8ad572cfb7ecf42748acd16`, **PASS, diagnosis verified** |
 
 `release-rescue-scanner-value-properties.test.ts` › *the scan stays bounded as
 the input grows* asserted `time(80KB) / time(40KB) < 3` for five input shapes,
@@ -797,6 +858,7 @@ Each was bought with a regression in this workstream.
 | Also passed on | `35706a4`, run `35286805441` attempt 1 — S-003 head, 1,585/1,585 |
 | Failed on | `df93008`, run [35308044742](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308044742) — `npm test` 1,648 / 1,650, the two S-014 ratio assertions; lint and typecheck green, build skipped |
 | Passed on | `4fcbbba`, run [35308531433](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308531433) attempt 1 — **1,654 / 1,654 across 88 files**, every step, 04:51:07Z → 04:53:07Z |
+| Independently confirmed on | `dec0633`, run [35308776223](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308776223) — Audit 45, `success`, **1,654 / 1,654 across 88 files**, lint 0 errors / 13 warnings, typecheck clean, build ok, runner Git 2.55.0. Only run on that commit. `pull_request` checked out the merge ref; the tested tree differed from the tip by six non-code skill files from `main`. |
 
 **Measured on `4fcbbba`, the owner-order head (D-012, D-014 to D-017, S-009 to
 S-011, S-013, S-014):**
@@ -826,6 +888,14 @@ is the container's Git 2.43 lacking `--no-lazy-fetch`, and CI `verify` passed on
 the exact SHA. The `df93008` failure was a GitHub Actions failure and did block,
 by the same decision, until its cause was found and closed as S-014; it was not
 re-run.
+
+**Independently confirmed on `dec0633` by Audit 45**, run
+[35308776223](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308776223),
+the only run on that commit. Local (Git 2.43.0): `--no-lazy-fetch` rejected
+(exit 129); lint / typecheck clean; **1,646 passed / 8 failed** (the eight
+D-012 shunt CLI tests); slice suites 121 / 121. DB proofs rebuilt: 15 / 15,
+495 cases. CI: **1,654 / 1,654 across 88 files**, every step. Both halves,
+as this ledger requires.
 
 **Green, measured, every step:**
 
@@ -933,13 +1003,15 @@ standing-down comment is on PR #97 (`issuecomment-5682530322`).
 
 | | Decision | Recorded |
 | --- | --- | --- |
-| D-012 | **Decided 2026-09-18.** "GitHub Actions `verify` on the exact candidate SHA is the authoritative release environment. Local failures caused solely by unsupported Git 2.43 do not block when CI `verify` passes. Any GitHub Actions failure remains a blocker." Review by 2026-10-17. | `DECISION_LOG.md` § D-012, amended to this wording from the owner's implementation order |
+| D-012 | **Decided 2026-09-18.** "GitHub Actions `verify` on the exact candidate SHA is the authoritative release environment. Local failures caused solely by unsupported Git 2.43 do not block when CI `verify` passes. Any GitHub Actions failure remains a blocker." Review by 2026-10-17. Recording independently verified **PASS** by Audit 45 at `dec0633`. | `DECISION_LOG.md` § D-012, amended to this wording from the owner's implementation order |
 | D-014 | **Decided 2026-09-18.** The lifecycle is an ordered graph; reopening a cancelled engagement is a manager-authorized recovery; delivered does not reopen. Closes S-009. | `DECISION_LOG.md` § D-014, migration `v14` |
 | D-015 | **Decided 2026-09-18.** A run belongs to one engagement; the sweep is scoped to it. Closes S-010. | `DECISION_LOG.md` § D-015, migration `v14` |
 | D-016 | **Decided 2026-09-18.** Demo submissions expire in 24 hours; the store has a fixed ceiling. Closes S-011. | `DECISION_LOG.md` § D-016 |
 | D-017 | **Decided 2026-09-18.** Interactive reviewer actions are bound to the authenticated user. Closes S-013. | `DECISION_LOG.md` § D-017, migration `v14` |
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
 | — | Payment activation, production access, and any increase in executor authority. **Still open**, and not this branch's to take. | `VISION.md` § D-009 |
+| — | Whether GitHub Actions `verify` must execute the SQL proofs and `proof:claim-guard`. **Still open** (Audit 45 M2). Under D-012 the authoritative gate is `verify.yml`, which runs lint, typecheck, unit tests, and build — not the DB proofs. | Audit 45, `.github/workflows/verify.yml` |
+| — | Any abnormal path out of `delivered`. **Still open**; D-014 defined none. | `DECISION_LOG.md` § D-014, Audit 45 |
 
 > **The D-012 disagreement is resolved, and this is how.** From `f214f0b` to
 > `907ba22` this table and `DECISION_LOG.md` § D-012 disagreed: the table
