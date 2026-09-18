@@ -2597,9 +2597,10 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // for the right reason and the wrong cause — it said the table "could not be
     // located" when the table was fine and the number beside it was the stale
     // thing. A count taken from disk cannot go stale, and it still fails if a
-    // proof is added without a row.
+    // proof is added without a row. The `_proof.sql` suffix excludes the
+    // disposable-Postgres shim, which is not a case file.
     const proofFiles = readdirSync(resolve(process.cwd(), "supabase/qa")).filter((file) =>
-      /^release_rescue_.*\.sql$/.test(file),
+      /^release_rescue_.*_proof\.sql$/.test(file),
     );
     expect(rows.length, "every Release Rescue proof needs a row in the per-proof table").toBe(
       proofFiles.length,

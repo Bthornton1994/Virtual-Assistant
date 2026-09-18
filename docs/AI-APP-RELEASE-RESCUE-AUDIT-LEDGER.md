@@ -100,7 +100,7 @@ are a merge gate this entry can lift.
 | ID | Finding | Class |
 | --- | --- | --- |
 | 45-M1 | PR #97 body is stale — stamped `907ba22`, still says D-012 records disagree and lists S-009 / S-010 / S-011 / reviewer bind as "not addressed", cites 404 cases / 14 proofs. | Medium, record |
-| 45-M2 | `verify.yml` does not run the SQL proofs or `proof:claim-guard`. Under D-012 the authoritative gate therefore never executes the DB half of S-009 / S-010 / S-013; that evidence is local-only (and this audit's). Owner decision whether proofs belong in CI. | Medium, gate coverage |
+| 45-M2 | `verify.yml` does not run the SQL proofs or `proof:claim-guard`. Under D-012 the authoritative gate therefore never executes the DB half of S-009 / S-010 / S-013; that evidence is local-only (and this audit's). Owner decision whether proofs belong in CI. **Closed 2026-09-18 PT** by owner decision D-018: the complete SQL proof suite and `proof:claim-guard` were added to GitHub Actions `verify`. This does not resolve D-009. | Medium, gate coverage |
 | 45-O1 | Artifact trigger skips non-object `reviewedBy` (undeliverable anyway, proven). | Low |
 | 45-O2 | Normal-path role gating is RLS-only by design. | Low |
 | 45-O3 | DB shape-checks the recovery reason code; the app catalog-checks it. | Low |
@@ -110,6 +110,22 @@ are a merge gate this entry can lift.
 | 45-O7 | Ledger CI-001 has two contradictory re-run sentences. | Low |
 | 45-O8 | Review-session module has no app importer. | Low |
 | 45-O9 | Demo store starts at `scoped`. | Low |
+
+**45-M2 owner decision, recorded 2026-09-18 PT, wording verbatim:**
+
+> Add the complete SQL proof suite and `proof:claim-guard` to GitHub Actions `verify`.
+> The authoritative CI gate must execute the database and claim-guard proofs, not only
+> lint, typecheck, unit tests, and build.
+>
+> Keep PR #97 draft and DO_NOT_MERGE until:
+> 1. CI runs all SQL and claim-guard proofs successfully;
+> 2. the exact final SHA is independently audited;
+> 3. D-009 remains explicitly resolved by the owner.
+>
+> This does NOT resolve D-009. This does NOT authorize merge or deploy.
+
+See `DECISION_LOG.md` § D-018. Implemented in `.github/workflows/verify.yml`.
+`DO_NOT_MERGE` is unchanged. D-009 is unchanged.
 
 GitHub Actions `verify` run
 [35308776223](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308776223):
@@ -129,9 +145,9 @@ non-Release-Rescue `pg_net` / `http` dependents); **15 / 15 proofs pass,
 495 cases**, every per-proof figure matching the V1 doc table.
 
 Remaining owner decisions, none of them this recording's to take: D-009
-(open, owner-only); D-012 review by 2026-10-17; whether the CI gate must
-execute the DB proofs (45-M2); any abnormal path out of `delivered`
-(explicitly undefined).
+(open, owner-only); D-012 review by 2026-10-17; any abnormal path out of
+`delivered` (explicitly undefined). 45-M2 was later owner-approved on
+2026-09-18 PT (`DECISION_LOG.md` § D-018) and is not still open here.
 
 This entry records Audit 45 against the SHA it judged. It does not seed
 a further audit, lift `DO_NOT_MERGE`, or authorize a merge.
@@ -1070,9 +1086,10 @@ its own.
 | D-015 | **Decided 2026-09-18.** A run belongs to one engagement; the sweep is scoped to it. Closes S-010. | `DECISION_LOG.md` § D-015, migration `v14` |
 | D-016 | **Decided 2026-09-18.** Demo submissions expire in 24 hours; the store has a fixed ceiling. Closes S-011. | `DECISION_LOG.md` § D-016 |
 | D-017 | **Decided 2026-09-18.** Interactive reviewer actions are bound to the authenticated user. Closes S-013. | `DECISION_LOG.md` § D-017, migration `v14` |
+| D-018 | **Decided 2026-09-18 PT.** "Add the complete SQL proof suite and `proof:claim-guard` to GitHub Actions `verify`. The authoritative CI gate must execute the database and claim-guard proofs, not only lint, typecheck, unit tests, and build." Closes 45-M2. Does **not** resolve D-009. Does **not** authorize merge or deploy. PR #97 remains draft / DO_NOT_MERGE. | `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
 | — | Payment activation, production access, and any increase in executor authority. **Still open**, and not this branch's to take. | `VISION.md` § D-009 |
-| — | Whether GitHub Actions `verify` must execute the SQL proofs and `proof:claim-guard`. **Still open** (Audit 45 M2). Under D-012 the authoritative gate is `verify.yml`, which runs lint, typecheck, unit tests, and build — not the DB proofs. | Audit 45, `.github/workflows/verify.yml` |
+| ~~—~~ | ~~Whether GitHub Actions `verify` must execute the SQL proofs and `proof:claim-guard`.~~ **Closed 2026-09-18 PT** as D-018 / 45-M2. The gate runs lint, typecheck, unit tests, build, `proof:claim-guard`, and the complete SQL proof suite. | Audit 45, `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
 | — | Any abnormal path out of `delivered`. **Still open**; D-014 defined none. | `DECISION_LOG.md` § D-014, Audit 45 |
 
 > **The D-012 disagreement is resolved, and this is how.** From `f214f0b` to

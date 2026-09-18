@@ -14,7 +14,8 @@
     "context:read": "node --experimental-strip-types scripts/software-context-shunt.mjs",
     "context:benchmark": "node --experimental-strip-types scripts/benchmark-software-context-shunt.mjs",
     "verify": "npm run lint && npm run typecheck && npm test && npm run proof:claim-guard && npm run build",
-    "proof:claim-guard": "node scripts/claim-guard-mutation-proof.mjs"
+    "proof:claim-guard": "node scripts/claim-guard-mutation-proof.mjs",
+    "proof:sql": "node scripts/run-release-rescue-sql-proofs.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

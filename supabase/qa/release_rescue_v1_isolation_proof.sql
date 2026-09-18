@@ -10,9 +10,10 @@
 -- performs an action that must succeed or attempts one that must be rejected,
 -- and the script aborts if an expected rejection does not occur.
 --
--- Usage (disposable local Postgres only, never Supabase):
+-- Usage (disposable local Postgres only, never Supabase). The complete
+-- fifteen-proof suite, including this file, is `npm run proof:sql`.
 --   createdb release_rescue_proof
---   psql -d release_rescue_proof -f <supabase shim creating auth/extensions/roles>
+--   psql -d release_rescue_proof -f supabase/qa/release_rescue_proof_shim.sql
 --   for f in supabase/migrations/*.sql; do psql -d release_rescue_proof -f "$f"; done
 --   psql -d release_rescue_proof -f supabase/qa/release_rescue_v1_isolation_proof.sql
 --   dropdb release_rescue_proof

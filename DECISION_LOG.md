@@ -261,3 +261,23 @@ This closes the fourth outstanding item on PR #97. `reviewed_by` had been checke
 In the application, an interactive signing goes through `signReleaseRescueReportAs(actor, report, submission)`: the reviewer's identity and display name are read from the authenticated session, the time from the server clock, and the submission may carry only a reason code and the approved content hash. A submission that tries to carry an identity is refused as malformed rather than ignored.
 
 Source: `supabase/migrations/20260918090000_release_rescue_lifecycle_graph_v14.sql` § 3, `supabase/qa/release_rescue_lifecycle_graph_v14_proof.sql`, `src/lib/release-rescue-review-session.ts`, `src/lib/__tests__/release-rescue-review-session.test.ts`.
+
+## D-018 — GitHub Actions `verify` must execute the SQL proofs and `proof:claim-guard`
+
+Date: 2026-09-18 PT  
+Status: **decided — owner-directed**  
+Decision: **Add the complete SQL proof suite and `proof:claim-guard` to GitHub Actions `verify`. The authoritative CI gate must execute the database and claim-guard proofs, not only lint, typecheck, unit tests, and build.**
+
+Recorded on 2026-09-18 PT from the owner's implementation order, issued through the Chief of Staff (Bryant Thornton), which carried this wording verbatim. This closes Audit 45 finding 45-M2. The executor recording it chose none of the words above.
+
+Keep PR #97 draft and DO_NOT_MERGE until:
+
+1. CI runs all SQL and claim-guard proofs successfully;
+2. the exact final SHA is independently audited;
+3. D-009 remains explicitly resolved by the owner.
+
+This does NOT resolve D-009. This does NOT authorize merge or deploy. It does not lift `DO_NOT_MERGE`, and it does not authorize a deployment, payment activation, production access, or any increase in executor authority.
+
+Local `npm run verify` already runs lint, typecheck, unit tests, `proof:claim-guard`, and build. The SQL entrypoint matching this gate is `npm run proof:sql` (`scripts/run-release-rescue-sql-proofs.mjs`): disposable Postgres 16, the documented shim and skip/apply policy, and the complete 15-proof / 495-case Release Rescue suite, fail-closed.
+
+Source: owner decision 45-M2, `.github/workflows/verify.yml`, `scripts/run-release-rescue-sql-proofs.mjs`, `supabase/qa/release_rescue_proof_shim.sql`, audit ledger § 45-M2, PR [#97](https://github.com/Bthornton1994/Virtual-Assistant/pull/97).
