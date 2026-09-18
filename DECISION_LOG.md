@@ -103,11 +103,23 @@ Recorded here for the same reason as D-010: it was taken, implemented, and left 
 
 Source: [AI App Release Rescue v1 § The structured-observation decision](docs/AI-APP-RELEASE-RESCUE-V1.md), `src/lib/release-rescue-observation-catalog.ts`, `supabase/migrations/20260916140000_release_rescue_structured_observations_v10.sql`.
 
-## D-012 — OPEN: the policy required before the release can leave DO_NOT_MERGE
+## D-012 — The release environment is GitHub Actions `verify` on the exact candidate SHA
 
-Date: 2026-09-17  
-Status: **open — owner decision required**  
-Decision: **None taken.** This entry records the exact decision that is missing, so that its absence is visible in the register rather than inferred from a PR body.
+Date: 2026-09-17 (opened) · 2026-09-18 (decided)  
+Status: **decided — owner-directed** · Review by: **2026-10-17**  
+Decision: **GitHub Actions `verify` on the exact candidate SHA is the authoritative release environment. Local failures caused solely by unsupported Git 2.43 do not block when CI `verify` passes. Any GitHub Actions failure remains a blocker.**
+
+Recorded on 2026-09-18 from the owner's implementation order, issued through the Chief of Staff (Bryant Thornton), which carried this wording verbatim and directed that this entry be amended to it. The audit ledger's open-decisions table is aligned in the same commit. The standard this register held D-009 and D-013 to — the owner's decision in the owner's words, in this file — is the standard met here; the executor recording it chose none of the words above.
+
+What the decision settles, exactly: the question the entry below narrowed to on 2026-09-17 — *does the release gate read CI, or the development container?* — is answered **CI**, and only for failures whose sole cause is the container's Git 2.43 lacking `--no-lazy-fetch`. Any other local failure, and any GitHub Actions failure of any kind, blocks as before. The eight tests named below are the complete list this decision covers; the exception is not open-ended, and it is reviewed by 2026-10-17.
+
+What it does NOT do: it does not lift `DO_NOT_MERGE`, which the pull request continues to hold; it does not authorize a merge, a deployment, payment activation, production access, or any increase in executor authority; and it does not make the local suite green — locally the eight tests still fail, and every report must continue to say both halves.
+
+---
+
+The record below is the entry as it stood while the decision was open. It is kept unedited, because it is the evidence the decision was made on.
+
+Decision as of 2026-09-17: **None taken.** This entry records the exact decision that is missing, so that its absence is visible in the register rather than inferred from a PR body.
 
 `npm test` on `remediation/release-rescue-pipeline-authority` reports **1,570 passing and 8 failing**. All eight are in `src/lib/__tests__/software-context-shunt-cli.test.ts`, they fail identically on `main`, and `git diff c3cf4a0..HEAD` is empty for that file, for `scripts/software-context-shunt.mjs`, and for `src/lib/software-context-shunt.ts` — they are not this branch's to fix. They are nonetheless real failures and the suite is not green.
 

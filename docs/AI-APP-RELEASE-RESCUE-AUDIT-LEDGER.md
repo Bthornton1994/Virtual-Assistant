@@ -12,7 +12,10 @@ itself evidence of anything — the evidence is the commits, the tests, and the
 measurements each row cites.
 
 **This ledger does not confer or withhold merge authority.** `DO_NOT_MERGE` is
-held by the pull request and by `DECISION_LOG.md` § D-012.
+held by the pull request and by the owner's standing order (draft, no merge, no
+deploy, no D-009 payments, no production). `DECISION_LOG.md` § D-012 held it
+too until 2026-09-18, when the owner decided D-012; that decision settled the
+release environment and lifted nothing else.
 
 ---
 
@@ -624,31 +627,27 @@ standing-down comment is on PR #97 (`issuecomment-5682530322`).
 
 ---
 
-## Open owner decisions
+## Owner decisions
 
 | | Decision | Recorded |
 | --- | --- | --- |
-| D-012 | **Claimed decided** (see the note below), or **open** per the register. GitHub Actions `verify` as the release environment; local Git 2.43 shunt failures env-only. | `f214f0b` cites "this task"; `DECISION_LOG.md` § D-012 still reads *open — owner decision required*, *Decision: None taken* |
-
-> **⚠ These two records disagree, and this file is not the one that settles it.**
->
-> `f214f0b` records D-012 as decided by the owner, citing **"this task"** — an
-> executor's own instructions. `DECISION_LOG.md` § D-012 still reads
-> `Status: open — owner decision required` and `Decision: None taken.`
->
-> This ledger's own opening says `DO_NOT_MERGE` is held by the pull request and
-> by `DECISION_LOG.md` § D-012, and that this file confers no authority. By that
-> rule a decision cannot become a decision here.
->
-> **Nothing has been reverted and nothing has been ratified.** The owner may well
-> have decided exactly this in the session that produced `f214f0b`; an executor
-> reading a task prompt cannot tell the difference between that and an
-> instruction it was handed. What would settle it is the owner amending
-> `DECISION_LOG.md` § D-012 in their own words — the same standard D-009 and
-> D-013 were held to.
->
-> Until the register and this table agree, `DO_NOT_MERGE` stands. Both commits
-> that touched this question kept it standing, so nothing turns on the
-> disagreement today except the accuracy of the record.
+| D-012 | **Decided 2026-09-18.** "GitHub Actions `verify` on the exact candidate SHA is the authoritative release environment. Local failures caused solely by unsupported Git 2.43 do not block when CI `verify` passes. Any GitHub Actions failure remains a blocker." Review by 2026-10-17. | `DECISION_LOG.md` § D-012, amended to this wording from the owner's implementation order |
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
-| — | Payment activation, production access, and any increase in executor authority. | `VISION.md` § D-009 |
+| — | Payment activation, production access, and any increase in executor authority. **Still open**, and not this branch's to take. | `VISION.md` § D-009 |
+
+> **The D-012 disagreement is resolved, and this is how.** From `f214f0b` to
+> `907ba22` this table and `DECISION_LOG.md` § D-012 disagreed: the table
+> recorded D-012 as decided, citing "this task", and the register read
+> *open — owner decision required*. The rule this ledger stated was that only
+> the owner amending the register in their own words could settle it.
+>
+> On 2026-09-18 the owner's implementation order, issued through the Chief of
+> Staff, carried the decision's exact wording and directed that § D-012 be
+> amended to it. It was, in the same commit as this row, and the wording in the
+> register is the owner's. The register and this table now agree, for the
+> reason the rule required rather than because this table was left standing.
+>
+> What did not change: `DO_NOT_MERGE`, held by the pull request and by the
+> owner's standing bans; the local suite, which still shows the eight shunt CLI
+> failures on Git 2.43 and is reported as such; and the requirement that any
+> GitHub Actions failure blocks.
