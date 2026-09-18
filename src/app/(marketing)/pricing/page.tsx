@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 
 export const metadata = { title: "Founding Membership" };
 
@@ -41,11 +41,16 @@ export default function PricingPage() {
             checked result.
           </p>
           <div className="mt-10">
-            <Link href="/book">
-              <Button size="lg">Apply for Founding Membership</Button>
-            </Link>
+            <ButtonLink href="/book" size="lg">Apply for Founding Membership</ButtonLink>
             <p className="mt-4 text-sm text-muted">
               Application is an account. We review fit before work begins.
+            </p>
+            <p className="mt-6 text-sm text-ink-soft">
+              Need a one-time app review instead of membership?{" "}
+              <Link href="/ai-app-release-rescue" className="underline">
+                AI App Release Rescue is $299
+              </Link>
+              , with an optional $1,250 sprint after the report. Checkout for that offer is not active on this site yet.
             </p>
           </div>
         </div>

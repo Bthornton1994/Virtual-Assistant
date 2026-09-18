@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 import { EmptyState, PageHeader, StatusBadge } from "@/components/product";
 import { requireClient } from "@/lib/auth";
 import { formatOperatingMemory } from "@/lib/domain";
@@ -39,9 +39,7 @@ export default async function DashboardPage() {
         title="What is in motion"
         description="Status, decisions, and what the system learned — not a vanity scoreboard."
         actions={
-          <Link href="/app/requests/new">
-            <Button>Delegate an outcome</Button>
-          </Link>
+          <ButtonLink href="/app/requests/new">Delegate an outcome</ButtonLink>
         }
       />
 

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 import { SOLUTIONS, solutionBySlug, type SolutionSlug } from "@/lib/solutions";
 
 export function generateStaticParams() {
@@ -80,14 +80,10 @@ export default async function SolutionDetailPage({ params }: { params: Promise<{
       </section>
 
       <div className="mt-16 flex flex-wrap gap-3">
-        <Link href="/book">
-          <Button size="lg">Start Delegating</Button>
-        </Link>
-        <Link href="/pricing">
-          <Button size="lg" variant="secondary">
-            Apply for Founding Membership
-          </Button>
-        </Link>
+        <ButtonLink href="/book" size="lg">Start Delegating</ButtonLink>
+        <ButtonLink href="/pricing" size="lg" variant="secondary">
+          Apply for Founding Membership
+        </ButtonLink>
       </div>
 
       <p className="mt-10 text-sm text-muted">
