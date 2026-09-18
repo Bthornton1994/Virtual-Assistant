@@ -182,9 +182,58 @@ function isPgNetOrHttpFailure(file, output) {
   );
 }
 
+function assertBaseDatabaseIsDisposable() {
+  // Two failures share one check.
+  //
+  // Re-running this script against a base database it already built used to die
+  // twenty migrations later with `0001_init.sql did not apply and is not a
+  // documented skip` — a true statement about the wrong thing, because the real
+  // cause was that the tables were already there. The gate is meant to be
+  // rerunnable; a second run must say what is wrong on the first line.
+  //
+  // The same census refuses to run over ANY populated database, which is the
+  // enforcement behind this file's header. A real Supabase project has tables;
+  // a disposable proof base has none. The header used to say "never pointed at
+  // a real Supabase project" and nothing checked it, which is a claim rather
+  // than a control.
+  const result = psql(
+    [
+      "-Atc",
+      "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace " +
+        "where c.relkind in ('r', 'p') and n.nspname not in ('pg_catalog', 'information_schema')",
+    ],
+    { label: "base database census", db: BASE_DB },
+  );
+  if (result.status !== 0) {
+    console.error(`FAIL: could not read the table census of ${BASE_DB}`);
+    console.error(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+    process.exit(1);
+  }
+  const tables = Number((result.stdout ?? "").trim());
+  if (!Number.isFinite(tables)) {
+    console.error(`FAIL: table census of ${BASE_DB} did not return a number`);
+    process.exit(1);
+  }
+  if (tables > 0) {
+    console.error(
+      `FAIL: ${BASE_DB} already holds ${tables} table(s). This gate builds its base from ` +
+        "an empty database and will not apply the shim or the migration chain over existing data.",
+    );
+    console.error(
+      `  If ${BASE_DB} is the disposable proof base, recreate it:  ` +
+        `psql -d ${MAINT_DB} -c 'drop database if exists ${BASE_DB} with (force)' ` +
+        `-c 'create database ${BASE_DB}'`,
+    );
+    console.error("  If it is not disposable, point PGDATABASE somewhere else. Nothing was changed.");
+    process.exit(1);
+  }
+}
+
 waitForPostgres();
 console.log("Release Rescue SQL proof suite");
 console.log(`postgres: connected`);
+assertBaseDatabaseIsDisposable();
+console.log(`base database ${BASE_DB}: empty, disposable`);
 console.log(`documented suite: ${proofRows.length} proofs, ${expectedTotal} cases`);
 console.log(`named non-applicable migrations: ${namedSkips.join(", ")}`);
 

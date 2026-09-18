@@ -545,6 +545,63 @@ second, the second issues it as themselves and the row records
 `authenticated_operator` whatever channel the caller claimed, and the server
 channel still refuses a plain operator.
 
+### S-017 — the new CI proof gate could not be run twice, and its safety claim was a comment
+
+| | |
+| --- | --- |
+| Found | while verifying `bc99f14` rather than accepting it |
+| Class | a claim with no control behind it, and a path that was not rerunnable |
+| Closed at | this commit |
+
+D-018 put the SQL proof suite and `proof:claim-guard` on the authoritative
+`verify` gate, closing Audit 45's `45-M2`. The gate itself was checked before it
+was trusted, and it holds: both of its failure paths were driven, not read.
+
+- **A failing proof fails the gate.** A `raise exception` appended to
+  `release_rescue_hardening_v3_proof.sql` produced
+  *"FAIL: proof release_rescue_hardening_v3_proof.sql did not complete"* and
+  exit 1.
+- **The documented per-proof counts are load-bearing.** Editing the architecture
+  table's isolation row from 45 to 44, and the headline to match so the sum check
+  would not fire first, produced *"FAIL: release_rescue_v1_isolation_proof.sql
+  produced 45 PASS cases, documented 44"* and exit 1.
+
+Clean, on a freshly created base: **56 of 60 migrations, 15 proofs, 495 cases, 0
+failures** — the same figures this ledger already carries, reached by a runner
+nobody here wrote.
+
+Two things were wrong with it, and one check fixes both.
+
+**It could not be run twice.** The script applies the shim and the migration
+chain to `PGDATABASE` and assumes that database is empty. On CI the service
+container is fresh every job, so it never bit there. Run locally a second time,
+it died twenty migrations later with *"0001_init.sql did not apply and is not a
+documented skip"* — true about the file, wrong about the cause, and pointing at a
+migration that has nothing to do with the problem. Re-runnability is not a
+nicety for a gate; the engineering standard this repository holds itself to asks
+for it directly.
+
+**Its safety rule was a comment.** The file's header says it is *"never pointed
+at a real Supabase project"*, and nothing enforced that. A sentence in a header
+is a claim, not a control — the failure class this ledger has retracted a
+finding over.
+
+One census closes both: before the shim, count the user tables in the base
+database and refuse if there are any. An empty disposable base has none; a
+database with data — a second run's leftovers, or a real project — has some, and
+the run stops on its first line having changed nothing, naming the database and
+the exact command to recreate it. Driven both ways: a fresh base still returns
+15 proofs / 495 cases / 0 failures, and a reused one stops with
+*"release_rescue_proof already holds 58 table(s)"*.
+
+**What is recorded and not fixed here.** `DECISION_LOG.md` § D-018 lists the
+conditions for lifting `DO_NOT_MERGE` and its third reads *"D-009 remains
+explicitly resolved by the owner"*, which contradicts the paragraph below it
+(*"This does NOT resolve D-009"*). It reads like "is" written as "remains". The
+register carries the owner's words and this executor chose none of them, so the
+wording is **flagged, not edited** — the rule that settled D-012 applies to its
+neighbours too.
+
 ### S-014 — a ratio threshold that sat above quadratic, and failed on noise
 
 | | |
