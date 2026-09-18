@@ -957,6 +957,21 @@ apply are:
 None of the four touch Release Rescue tables, and all fifteen Release Rescue
 proofs run against the result.
 
+**Two bases, and the sentence above describes the local one.** Since D-018 the
+authoritative GitHub Actions `verify` gate builds its own base, on a `postgres:16`
+service container, through `npm run proof:sql`. It applies the same policy to a
+different machine and therefore reaches a different count: the four named above,
+plus one migration that asks for the `pg_net` extension, which the CI image does
+not carry either. The run's own Postgres log shows it —
+`ERROR: extension "pg_net" is not available` — and the runner's skip rule treats a
+`pg_net`/`http` failure in a non-Release Rescue migration the same way this
+document treats the named four. A Release Rescue migration that failed would stop
+the gate, not be skipped.
+
+So the applied count is a property of the machine, not of the code, and neither
+base is the *right* one: what both agree on is what the proofs report. Compare
+figures only against a base you can name.
+
 One further sandbox difference is worth recording, because it fails as a proof
 error rather than as a proof failure. On Supabase, `pgcrypto` lives in the
 `extensions` schema, and Release Rescue's migrations and proofs qualify it that

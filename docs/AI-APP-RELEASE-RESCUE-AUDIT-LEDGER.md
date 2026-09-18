@@ -900,6 +900,14 @@ run above applied **56 of 60**. The gap was measured, not reasoned about:
 | This run, with the `cs4` workaround | **56 of 60** | 4 — named in the architecture document |
 | The same base, workaround removed | **55 of 60** | the four, plus `cs4_persisted_ledger_observations.sql` failing to parse at its orphaned line 347 |
 | Audit 45's rebuild, and CI-001's local row | **54 of 60** | six, reported as non-Release-Rescue `pg_net` / `http` dependents |
+| The authoritative CI gate since D-018, `postgres:16` service | **55 of 60** | the four named, plus one `pg_net` dependent |
+
+The fourth row is the one that now matters, because it is the gate D-012 calls
+authoritative. Its count was reported by the run; what was read directly from
+that job's own Postgres log is the mechanism —
+`ERROR: extension "pg_net" is not available` — which is why its base is one
+migration short of this container's. The count itself is the runner's, not a
+figure measured here.
 
 So the whole spread is in the handling of migrations that cannot replay onto an
 empty database and in which extensions each container happens to have — the
