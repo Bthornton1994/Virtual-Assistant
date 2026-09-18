@@ -652,6 +652,12 @@ from the `v14` proof database and updated, and
 `trg_evidence_artifact_invariants` refused it with *"Evidence artifacts are
 immutable"*. There is no update path for the insert-only trigger to miss.
 
+Audit 45 reached both points independently on `dec0633`: its reviewer-bind row
+records *"no interactive signing route exists yet, so the trigger is the live
+enforcement"*, and `45-O8` is the same observation about the module's missing
+importer. Two readings arriving separately is worth more than either alone, and
+is the reason this is recorded as scope rather than argued as a defect.
+
 ### S-012 — a 5-second default decided whether the claim guard's own test passed
 
 | | |
@@ -811,16 +817,28 @@ check that passes while asserting nothing:
   *"exactly the ten normal-path edges are accepted"* listing all 56. The matrix
   cannot pass on an empty table.
 
-**One figure in this ledger disagrees with another, and neither is being quietly
-dropped.** CI-001's local row for `4fcbbba` records the proof base as *54 of 60
-migrations applied*; the base built for the run above applied **56 of 60**. The
-two agree on everything that bears on the result — 60 migrations in the chain, 15
-proofs, 495 cases, 0 failures, and no Release Rescue table touched by anything
-skipped — and differ in how each base handles the migrations that cannot replay
-onto an empty database. The architecture document now **names** the four that do
-not apply here, and a test requires that list to match the chain and the
-arithmetic, so this figure is checkable rather than asserted. Which base
-composition is right is not settled by this entry.
+**Three bases, three applied counts, and the difference is now measured rather
+than argued.** This ledger has carried the proof base as *54 of 60 migrations*
+(CI-001's local row, and Audit 45's independent rebuild); the base built for the
+run above applied **56 of 60**. The gap was measured, not reasoned about:
+
+| Base | Applied | Not applied |
+| --- | --- | --- |
+| This run, with the `cs4` workaround | **56 of 60** | 4 — named in the architecture document |
+| The same base, workaround removed | **55 of 60** | the four, plus `cs4_persisted_ledger_observations.sql` failing to parse at its orphaned line 347 |
+| Audit 45's rebuild, and CI-001's local row | **54 of 60** | six, reported as non-Release-Rescue `pg_net` / `http` dependents |
+
+So the whole spread is in the handling of migrations that cannot replay onto an
+empty database and in which extensions each container happens to have — the
+`cs4` file fed as its first 197 lines or not, and one more `pg_net` dependent
+absent here. **None of it touches a Release Rescue table**, and every base agrees
+on what the proofs report: 60 migrations in the chain, 15 proofs, 495 cases, 0
+failures, and the same per-proof figures.
+
+The architecture document states its own base's number and **names** the four
+that do not apply to it, and a test requires that list to match the chain and the
+arithmetic. A future reader comparing bases can therefore tell which one a figure
+came from, which is the thing that was missing when the paragraph went stale.
 
 ---
 
