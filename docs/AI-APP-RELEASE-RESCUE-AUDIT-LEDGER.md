@@ -1009,11 +1009,55 @@ stood; the run above replaced the second half of it, because on CI those eight
 tests pass. The suite is governed by `DECISION_LOG.md` § D-012, amended in the
 same commit as this entry.
 
-The one permitted re-run was never spent. Actions was not retried by this
-executor at any point, including after the outage lifted.
+### The re-run count, corrected (Audit 45's `45-O7`)
 
-The one permitted re-run is spent and Actions has not been retried. The
-standing-down comment is on PR #97 (`issuecomment-5682530322`).
+Two sentences stood here and contradicted each other: *"The one permitted re-run
+was never spent. Actions was not retried by this executor at any point"*, and,
+three lines later, *"The one permitted re-run is spent and Actions has not been
+retried."* Audit 45 recorded the contradiction as `45-O7`. Neither sentence was
+measured. Both are now replaced by what the API says.
+
+Listing `verify.yml`'s runs on this branch, **three carry `run_attempt: 2`**:
+
+| Run | Head | Attempt 2 conclusion |
+| --- | --- | --- |
+| 519 | `44e825a` | failure |
+| 520 | `ea9e81a` | failure |
+| 527 | `f214f0b` | success |
+
+Every other run on the branch is a single attempt. So *"Actions was not retried
+at any point"* is false about the branch, and *"the one permitted re-run is
+spent"* understates it if the budget was one.
+
+**What this does not establish is who re-ran them.** A second attempt appears the
+same in the API whether a person pressed the button, another executor did, or the
+platform retried; the original sentence's scope — *"by this executor"* — is not a
+distinction the data carries. It is left unattributed rather than guessed, which
+is the same rule this ledger applied to D-012.
+
+What stands unchanged: **no re-run has been triggered from this session**, and
+none will be. The standing-down comment is on PR #97
+(`issuecomment-5682530322`).
+
+### Runs since
+
+| Head | Run | Result |
+| --- | --- | --- |
+| `ceb86d5` | 533 | success |
+| `91b3c5c` | 534 | success |
+| `a2d3194` | 535, [35310959816](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35310959816) | **success — 1,656 / 1,656 across 88 files**, lint, typecheck and build every step, runner Git 2.55.0, first attempt |
+
+On `a2d3194` CI ran `software-context-shunt-cli.test.ts` **13 / 13**. Those are
+the eight D-012 failures plus their five siblings, passing on Git 2.55.0 — the
+premise D-012 rests on, observed rather than assumed, on the same head where this
+container reports 1,648 passed / 8 failed.
+
+**Where this list stops.** A green run on a commit whose only content is
+recording the previous green run is not evidence of anything, and logging it
+would commit again, which runs CI again. So this table records runs on commits
+that changed code, tests, migrations or proofs, and the first run on a
+documentation commit that carried a correction worth citing. It does not record
+its own.
 
 ---
 
