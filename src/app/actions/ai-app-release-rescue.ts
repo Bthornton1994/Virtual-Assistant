@@ -2,7 +2,11 @@
 
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { DEMO_ENGAGEMENT_COOKIE, RESCUE_PATH } from "@/lib/ai-app-release-rescue/constants";
+import {
+  DEMO_ENGAGEMENT_COOKIE,
+  DEMO_ENGAGEMENT_TTL_SECONDS,
+  RESCUE_PATH,
+} from "@/lib/ai-app-release-rescue/constants";
 import { demoEngagementCookieSecure } from "@/lib/ai-app-release-rescue/demo-cookie";
 import { createDemoEngagement } from "@/lib/ai-app-release-rescue/engagement";
 import {
@@ -77,7 +81,8 @@ export async function submitRescueIntakeAction(
     httpOnly: true,
     sameSite: "lax",
     path: RESCUE_PATH,
-    maxAge: 60 * 60 * 24,
+    // The same lifetime as the record itself, so neither outlives the other.
+    maxAge: DEMO_ENGAGEMENT_TTL_SECONDS,
     // This cookie is the only thing authorizing the demo engagement page.
     // Secure follows the request protocol; it is never hardcoded false.
     secure: demoEngagementCookieSecure({

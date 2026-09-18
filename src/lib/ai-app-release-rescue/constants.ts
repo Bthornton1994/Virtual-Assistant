@@ -183,4 +183,17 @@ export const DEMO_SAMPLE_REPORT_ID = DEMO_REPORT_ID;
  * local constraint, not a production default. See demoEngagementCookieSecure.
  */
 export const DEMO_ENGAGEMENT_COOKIE = "dc_rescue_demo";
+/**
+ * How long a demo submission lives: in the store AND in the cookie that
+ * authorizes reading it. One constant, so the record cannot outlive the only
+ * thing that can reach it, and the cookie cannot point at a record that is gone.
+ */
+export const DEMO_ENGAGEMENT_TTL_SECONDS = 60 * 60 * 24;
+/**
+ * The most demo submissions the process holds at once. Each holds a prospect's
+ * name, work email, repository reference and workflow description, on a route
+ * anyone can reach; without a ceiling, anonymous submissions grow the store until
+ * the process dies. When the ceiling is reached the oldest submission is evicted.
+ */
+export const DEMO_STORE_MAX_ENTRIES = 200;
 export const RESCUE_PATH = "/ai-app-release-rescue";

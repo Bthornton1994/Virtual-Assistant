@@ -240,6 +240,16 @@ A unique partial index enforces it; the migration counts shared runs first and f
 
 Source: `supabase/migrations/20260918090000_release_rescue_lifecycle_graph_v14.sql` § 1, `supabase/qa/release_rescue_lifecycle_graph_v14_proof.sql`, audit ledger § S-010.
 
+## D-016 — Demo submissions expire in 24 hours and the store has a fixed ceiling
+
+Date: 2026-09-18  
+Status: **decided — owner-directed**  
+Decision: The public demo's in-memory store keeps a submission for 24 hours and holds at most a fixed number of submissions; when the ceiling is reached the oldest is evicted. Tests.
+
+This closes S-011. The demo takes no payment and grants no access, but each record holds a prospect's name, work email, private repository reference and workflow description, on a route anyone can reach, and nothing ever removed one. The TTL is the same constant as the cookie that authorizes reading a record, so neither can outlive the other. Expiry is checked on read and on write rather than by a timer, so nothing depends on a background task or on the process staying up between two ticks. Expired records are pruned before the ceiling is applied, so a live record is never evicted to make room while a dead one occupies a slot.
+
+Source: `src/lib/ai-app-release-rescue/engagement.ts`, `src/lib/ai-app-release-rescue/constants.ts` (`DEMO_ENGAGEMENT_TTL_SECONDS`, `DEMO_STORE_MAX_ENTRIES`), `src/lib/ai-app-release-rescue/engagement.test.ts`, audit ledger § S-011.
+
 ## D-017 — An interactive reviewer action is attributed to the authenticated user
 
 Date: 2026-09-18  
