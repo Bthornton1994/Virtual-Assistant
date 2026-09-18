@@ -176,6 +176,14 @@ describe("the scan is near-linear on adversarial input", () => {
     ["repeated tags", (n) => "<password>".repeat(Math.floor(n / 10))],
     ["quotes", (n) => '"'.repeat(n)],
     ["pem prefix", (n) => `-----BEGIN ${"A ".repeat(n / 2)}`],
+    // The four shapes that release-rescue-scanner-value-properties.test.ts
+    // measured with an adjacent-ratio check at a clipped size (S-014). They are
+    // measured here, by the exponent, and the ratio check is gone. Measured on
+    // 2026-09-18: 1.25, 1.10, 1.01 and 1.00.
+    ["repeated assignments", (n) => "password=".repeat(Math.ceil(n / 9)).slice(0, n)],
+    ["repeated flags with values", (n) => "--password x ".repeat(Math.ceil(n / 13)).slice(0, n)],
+    ["credential nouns in prose", (n) => "the password is not stored here. ".repeat(Math.ceil(n / 33)).slice(0, n)],
+    ["repeated quoted assignments", (n) => 'password="a" '.repeat(Math.ceil(n / 13)).slice(0, n)],
   ];
 
   // DERIVED from MAX_SCAN_LENGTH rather than written beside it. The previous

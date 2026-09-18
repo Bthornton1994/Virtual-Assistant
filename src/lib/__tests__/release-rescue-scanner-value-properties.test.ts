@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
-import { findCredentialSpans } from "@/lib/release-rescue-credential-scanner";
+import { MAX_SCAN_LENGTH, findCredentialSpans } from "@/lib/release-rescue-credential-scanner";
 import { classifyAssignment, valueShape } from "@/lib/release-rescue-secret-classification";
 import { isNonSecretValue } from "@/lib/release-rescue-credential-scanner";
 
@@ -288,10 +288,21 @@ describe("ordinary security prose survives, because holding a report costs the c
 });
 
 describe("the scan stays bounded as the input grows", () => {
-  // Wall-clock, so the numbers are generous: the property is that cost grows
-  // with size rather than with size squared, and a quadratic scan blows these
-  // budgets by orders of magnitude, not by a factor of two.
-  const SIZES = [20_000, 40_000, 80_000] as const;
+  // An absolute ceiling only. HOW the cost grows is measured once, by the
+  // exponent, in release-rescue-credential-scanner.test.ts ("the scan is
+  // near-linear on adversarial input"), and these shapes are in that list.
+  //
+  // This block used to also assert `time(80KB) / time(40KB) < 3`, calling 3
+  // "the line between linear and quadratic" (S-014). It was not. MAX_SCAN_LENGTH
+  // is 64,000, so the 80KB input was clipped and the step actually measured was
+  // 1.6x: on that step a linear scan reads 1.6 and a quadratic one 2.56, both
+  // under 3. The check could not fail on complexity. It could fail on a loaded
+  // runner, and did — 3.63 and 3.18 on two shapes whose measured exponents are
+  // 1.25 and 1.00 — on a commit that touched nothing it reads. That is S-005 and
+  // S-012 a third time: a threshold the machine decides, on a test that meant to
+  // measure something else. The sizes are derived from the bound now, so nothing
+  // is clipped, and the one assertion left is the one this block can keep true.
+  const SIZES = [MAX_SCAN_LENGTH / 4, MAX_SCAN_LENGTH / 2, MAX_SCAN_LENGTH] as const;
 
   const SHAPES: ReadonlyArray<{ label: string; fill: (size: number) => string }> = [
     { label: "colons", fill: (n) => "password:".repeat(Math.ceil(n / 9)).slice(0, n) },
@@ -303,10 +314,7 @@ describe("the scan stays bounded as the input grows", () => {
 
   for (const shape of SHAPES) {
     it(`stays within budget on ${shape.label}`, () => {
-      // Best of five, not one sample. At these magnitudes a 40KB scan takes
-      // ~13ms, so one descheduled slice is a third of the measurement and the
-      // ratio below crosses its threshold on noise rather than on complexity.
-      // The minimum is the run that was not interrupted.
+      // Best of five: the minimum is the run that was not interrupted.
       const timings = SIZES.map((size) => {
         const text = shape.fill(size);
         let best = Infinity;
@@ -321,15 +329,6 @@ describe("the scan stays bounded as the input grows", () => {
       for (const elapsed of timings) {
         expect(elapsed, `${shape.label}: ${timings.map((t) => Math.round(t)).join("ms, ")}ms`)
           .toBeLessThan(2_000);
-      }
-
-      // Doubling the input must not quadruple the time. Compared against the
-      // largest two sizes, where the fixed overhead is smallest. Linear puts
-      // this at 2 and quadratic at 4; 3 is the line between them.
-      const [, mid, large] = timings;
-      if (mid > 5) {
-        expect(large / mid, `80KB took ${large.toFixed(1)}ms vs 40KB ${mid.toFixed(1)}ms`)
-          .toBeLessThan(3);
       }
     });
   }

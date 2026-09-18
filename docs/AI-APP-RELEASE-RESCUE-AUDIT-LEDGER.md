@@ -469,6 +469,61 @@ second, the second issues it as themselves and the row records
 `authenticated_operator` whatever channel the caller claimed, and the server
 channel still refuses a plain operator.
 
+### S-014 — a ratio threshold that sat above quadratic, and failed on noise
+
+| | |
+| --- | --- |
+| Found | by CI, on `df93008`: `verify` failed `npm test` 1,648 / 1,650, on a file none of that head's commits touch |
+| Class | a threshold nobody meant to assert — S-005 and S-012, a third time |
+| Closed at | the same commit that records it |
+
+`release-rescue-scanner-value-properties.test.ts` › *the scan stays bounded as
+the input grows* asserted `time(80KB) / time(40KB) < 3` for five input shapes,
+with a comment calling 3 "the line between linear and quadratic". On the run:
+
+```
+equals signs   80KB took 398.6ms vs 40KB 109.7ms   ratio 3.63
+quotes         80KB took  24.8ms vs 40KB   7.8ms   ratio 3.18
+```
+
+**The threshold could not fail on complexity.** `MAX_SCAN_LENGTH` is 64,000,
+so the "80KB" input was clipped and the step actually measured was 1.6x — the
+same clipping S-005 found and fixed in the *other* growth test, left in place in
+this one. On a 1.6x step a linear scan reads 1.6 and a quadratic one 2.56. Both
+are under 3. What is over 3 is a runner that is descheduled during the five
+largest samples, which is what happened: the 40KB samples themselves ran about 45%
+slower than here, and both shapes crossed the line at the same moment.
+
+Measured before anything changed, by the exponent method S-005 established
+(sizes derived from the bound, warmed, best of three, three real doublings):
+
+| shape | timings 8 → 16 → 32 → 64KB | exponent |
+| --- | --- | --- |
+| `password=` repeated | 10.8 → 24.0 → 56.5 → 145.2ms | **1.25** |
+| `--password x ` repeated | 1.1 → 2.2 → 4.5 → 10.7ms | 1.10 |
+| credential nouns in prose | 0.9 → 1.8 → 3.7 → 7.6ms | 1.01 |
+| `password="a" ` repeated | 1.0 → 2.0 → 3.9 → 7.7ms | 1.00 |
+
+1.0 is linear, 2.0 quadratic. The two shapes CI failed are 1.25 and 1.00. The
+scanner is not the cause and is not changed.
+
+**Closed the way the S-012 lesson says to.** The four shapes only this block
+covered are added to the exponent test in
+`release-rescue-credential-scanner.test.ts`, which asserts growth on purpose and
+by a method one noisy sample cannot flip. The ratio assertion is removed, the
+block's sizes are derived from the bound so nothing is clipped, and the one
+assertion it keeps is the absolute ceiling it can keep true. The 1.25 on
+`password=` is recorded rather than smoothed: it is under the 1.5 line S-005 set
+and its per-doubling ratios rise (2.22, 2.35, 2.57), which is the shape of a
+mild super-linear component. It is not a finding at this size; it is a number
+the next scanner change should measure against.
+
+The pattern, stated for the third time: **S-005** was a 20ms floor that skipped
+a real defect; **S-012** a 5s ceiling that failed a correct test; **S-014** a
+ratio that sat above the complexity it claimed to bound and below the noise it
+did not. Each was a threshold the machine decided, on a test that meant to
+measure something else. There is now one growth test, and it measures growth.
+
 ### S-012 — a 5-second default decided whether the claim guard's own test passed
 
 | | |
