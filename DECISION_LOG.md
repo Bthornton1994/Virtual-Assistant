@@ -65,10 +65,82 @@ Decision: The owner authorized merging PRs #53–#58 in Virtual-Assistant and PR
 
 Source: [Virtual-Assistant main](https://github.com/Bthornton1994/Virtual-Assistant/commit/85000a45560e9291d68ea32b609fb087fcdebf2b), [Loadout main](https://github.com/Bthornton1994/Loadout/commit/af42f7afdbbc5af8d88451d4a2fbfd618b9711ae), [Virtual-Assistant Actions run](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/33179339710), [Loadout Actions run](https://github.com/Bthornton1994/Loadout/actions/runs/33179347590).
 
-## D-009 — Bounded technical assurance work is in scope
+## D-009 — The bounded paid technical-assurance pilot is approved
+
+Date: 2026-09-15 (opened) · 2026-09-18 (decided)  
+Status: **decided — owner-directed**  
+Decision, in the owner's words:
+
+> D-009 is approved as a bounded paid technical-assurance pilot.
+>
+> Delegation Cloud may activate payment and accept customers for the $299
+> fixed-price release-readiness review, limited to one repository, one
+> application, and one critical workflow per engagement.
+>
+> Access must be explicitly authorized by an accountable customer owner,
+> read-only, revocable, and limited to the declared scope. Delegation Cloud and
+> its executors may not modify customer systems, merge code, deploy changes,
+> remediate findings, purchase services, or take external actions.
+>
+> Each report must be produced from structured facts, use deterministic severity
+> and completion rules, exclude customer source excerpts and credentials, and
+> require a named human reviewer signature before delivery.
+>
+> This work is not penetration testing, compliance certification, or a security
+> guarantee. Remediation is a separate engagement.
+>
+> This decision does not authorize unrestricted production access, autonomous
+> executor authority, or any unrelated service. Those require separate owner
+> decisions.
+
+Recorded on 2026-09-18 from the owner's decision, which carried this wording
+verbatim. The executor recording it chose none of the words above. The audit
+ledger's open-decisions table is aligned in the same commit.
+
+**What this settles.** Payment activation and customer intake, withheld since
+2026-09-15, are approved for this one offer on these terms. It is the third of
+D-018's three conditions for lifting `DO_NOT_MERGE`.
+
+**What it does not do, read strictly.**
+
+- It does not instruct a merge, and it does not lift `DO_NOT_MERGE`, which the
+  pull request and the owner's standing order hold. A separate instruction is
+  required. The decision's own prohibition list names *merge code* among the
+  things executors may not do; whether that refers to a customer's repository or
+  to this one, neither reading grants merge authority here.
+- It does not authorize an executor to activate payment. Activating a payment
+  processor is an external action, and external actions are on the prohibition
+  list. The approval runs to Delegation Cloud — the accountable humans — not to
+  an executor acting alone.
+- It does not grant production access. *Unrestricted* production access is
+  refused outright; any production access at all remains outside what any
+  decision in this register has granted.
+- It does not increase executor authority, and it does not admit any other
+  service.
+
+**What must hold at intake, unchanged and now load-bearing:** access explicitly
+authorized by an accountable customer owner, read-only, revocable, scoped to the
+declaration; one repository, one application, one critical workflow; structured
+facts, deterministic severity and completion, no customer source excerpts and no
+credentials; a named human reviewer's signature before delivery. Every one of
+these already has a mechanism and a proof in this workstream. None of them may be
+relaxed because the offer is now paid — a paying customer raises the cost of
+every defect these controls exist to prevent.
+
+The prohibition on describing the work as penetration testing, compliance
+certification, or a security guarantee is restated by the owner and is unchanged.
+
+Source: [VISION.md](VISION.md) § Scope and non-goals, [AI App Release Rescue v1](docs/AI-APP-RELEASE-RESCUE-V1.md), `src/lib/release-rescue-intake.ts`.
+
+---
+
+The record below is the entry as it stood while the decision was open. It is kept
+unedited, because it is the evidence the decision was made on.
+
+## D-009 (as opened) — Bounded technical assurance work is in scope
 
 Date: 2026-09-15  
-Status: active  
+Status: superseded by the decision above  
 Decision: Delegation Cloud may sell bounded technical assurance work where the delegated outcome is a verified judgment, not a change to the customer's systems. The release-readiness review is the first such workstream. Admission is conditional on the constraints written into `VISION.md` § Scope and non-goals: prepare-only authority, read-only and revocable access with ownership established by an accountable human where the access method does not demonstrate control, deterministic computation of severity and completion, a named human signature before delivery, remediation as a separate engagement, and a standing prohibition on describing the work as penetration testing, compliance certification, or a security guarantee.
 
 This admits one workstream on stated terms. It does not make Delegation Cloud a security consultancy, and it does not authorize launch, payment activation, production access, or any increase in executor authority.

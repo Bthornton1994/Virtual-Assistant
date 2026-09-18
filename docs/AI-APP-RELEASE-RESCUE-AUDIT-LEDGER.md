@@ -13,9 +13,17 @@ measurements each row cites.
 
 **This ledger does not confer or withhold merge authority.** `DO_NOT_MERGE` is
 held by the pull request and by the owner's standing order (draft, no merge, no
-deploy, no D-009 payments, no production). `DECISION_LOG.md` § D-012 held it
-too until 2026-09-18, when the owner decided D-012; that decision settled the
-release environment and lifted nothing else.
+deploy, no production). `DECISION_LOG.md` § D-012 held it too until 2026-09-18,
+when the owner decided D-012; that decision settled the release environment and
+lifted nothing else.
+
+On 2026-09-18 the owner also decided **D-009**, approving the bounded paid
+technical-assurance pilot: payment activation and customer intake for the $299
+review are approved on stated terms, so "no D-009 payments" no longer belongs in
+that list. What it did not do is instruct a merge or lift `DO_NOT_MERGE` — and it
+did not authorize an *executor* to activate payment, because activating a payment
+processor is an external action and the decision's own prohibition list forbids
+executors taking external actions. The approval runs to the accountable humans.
 
 ---
 
@@ -1328,9 +1336,9 @@ its own.
 | D-015 | **Decided 2026-09-18.** A run belongs to one engagement; the sweep is scoped to it. Closes S-010. | `DECISION_LOG.md` § D-015, migration `v14` |
 | D-016 | **Decided 2026-09-18.** Demo submissions expire in 24 hours; the store has a fixed ceiling. Closes S-011. | `DECISION_LOG.md` § D-016 |
 | D-017 | **Decided 2026-09-18.** Interactive reviewer actions are bound to the authenticated user. Closes S-013. | `DECISION_LOG.md` § D-017, migration `v14` |
-| D-018 | **Decided 2026-09-18 PT.** "Add the complete SQL proof suite and `proof:claim-guard` to GitHub Actions `verify`. The authoritative CI gate must execute the database and claim-guard proofs, not only lint, typecheck, unit tests, and build." Closes 45-M2. Does **not** resolve D-009. Does **not** authorize merge or deploy. PR #97 remains draft / DO_NOT_MERGE. Recording independently verified **PASS** (CI gates) by Audit 46 at `cc9a3c6`, run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507), and by Audit 47 at `ccb3dc3`, run [35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839). Condition 2 is met for `ccb3dc3` only; later commits including this recording are unaudited. Condition 3 (D-009) is not met (**47-H1**). | `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
+| D-018 | **Decided 2026-09-18 PT.** "Add the complete SQL proof suite and `proof:claim-guard` to GitHub Actions `verify`. The authoritative CI gate must execute the database and claim-guard proofs, not only lint, typecheck, unit tests, and build." Closes 45-M2. Does **not** resolve D-009. Does **not** authorize merge or deploy. PR #97 remains draft / DO_NOT_MERGE. Recording independently verified **PASS** (CI gates) by Audit 46 at `cc9a3c6`, run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507), and by Audit 47 at `ccb3dc3`, run [35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839). Condition 2 is met for `ccb3dc3` only; later commits including this recording are unaudited. Condition 3 (D-009) was met on 2026-09-18 when the owner decided D-009, closing **47-H1**; conditions 1 and 2 govern what remains. | `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
-| — | Payment activation, production access, and any increase in executor authority. **Still open**, and not this branch's to take. Audit 47 records it still open (**47-H1**, sole remaining D-018 lift blocker). | `VISION.md` § D-009 |
+| D-009 | **Decided 2026-09-18.** Approved as a bounded paid technical-assurance pilot: payment activation and customer intake for the $299 review, one repository / one application / one critical workflow per engagement, on the access, report and signature terms the owner restated. Closes `47-H1`. It does **not** instruct a merge, does not lift `DO_NOT_MERGE`, does not authorize an executor to activate payment (an external action), and grants no production access or executor authority. | `DECISION_LOG.md` § D-009, in the owner's words |
 | ~~—~~ | ~~Whether GitHub Actions `verify` must execute the SQL proofs and `proof:claim-guard`.~~ **Closed 2026-09-18 PT** as D-018 / 45-M2. The gate runs lint, typecheck, unit tests, build, `proof:claim-guard`, and the complete SQL proof suite. Independently verified **PASS** by Audit 46 at `cc9a3c6` and Audit 47 at `ccb3dc3`. | Audit 45, Audit 46, Audit 47, `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
 | — | Any abnormal path out of `delivered`. **Still open**; D-014 defined none. | `DECISION_LOG.md` § D-014, Audit 45, Audit 46, Audit 47 |
 
