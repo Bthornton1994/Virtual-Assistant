@@ -678,6 +678,37 @@ Each was bought with a regression in this workstream.
 | First executed on | `ea9e81a`, run `35278577643` attempt 2, runner `GitHub Actions 1000001844` |
 | First passed on | `7969a76`, run `35285958590` attempt 1, runner `GitHub Actions 1000001848` |
 | Also passed on | `35706a4`, run `35286805441` attempt 1 — S-003 head, 1,585/1,585 |
+| Failed on | `df93008`, run [35308044742](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308044742) — `npm test` 1,648 / 1,650, the two S-014 ratio assertions; lint and typecheck green, build skipped |
+| Passed on | `4fcbbba`, run [35308531433](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35308531433) attempt 1 — **1,654 / 1,654 across 88 files**, every step, 04:51:07Z → 04:53:07Z |
+
+**Measured on `4fcbbba`, the owner-order head (D-012, D-014 to D-017, S-009 to
+S-011, S-013, S-014):**
+
+Local (Git 2.43.0, the D-012 container):
+
+```
+npm run lint       exit 0    0 errors, 13 pre-existing warnings
+npm run typecheck  exit 0
+npm test           exit 1    1,646 passed / 8 failed   the eight shunt CLI tests, D-012
+npm run build      exit 0
+proofs             15 files, 495 cases, 0 failures   disposable Postgres 16, 54 of 60 migrations applied
+```
+
+GitHub Actions `verify` run `35308531433`, SHA `4fcbbba73faff3bf55bd57dd8d2ad429c6a24ba1`:
+
+```
+npm ci             success
+npm run lint       success   0 errors, 13 warnings
+npm run typecheck  success
+npm test           success   1,654 passed / 1,654   88 files
+npm run build      success
+```
+
+Under D-012 as decided, the eight local failures do not block: their sole cause
+is the container's Git 2.43 lacking `--no-lazy-fetch`, and CI `verify` passed on
+the exact SHA. The `df93008` failure was a GitHub Actions failure and did block,
+by the same decision, until its cause was found and closed as S-014; it was not
+re-run.
 
 **Green, measured, every step:**
 
