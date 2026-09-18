@@ -76,4 +76,61 @@ describe("AI abstraction (deterministic mock)", () => {
     expect(plan.approvalsRequired).toBe(true);
     expect(plan.steps.some((s) => s.owner === "customer")).toBe(true);
   });
+
+  it("requires a CRM-destructive approval object when HubSpot merge/delete language is present", async () => {
+    const reqs = await mockAI.determineApprovalRequirements({
+      title: "HubSpot delete merged contacts",
+      description: "Remove duplicate records after the import.",
+      actionClass: "low_risk_execution",
+      externalCommunication: false,
+    });
+    expect(reqs.kinds).toEqual(["execution_plan", "crm_destructive_change"]);
+    expect(reqs.requiresCustomerDecision).toBe(true);
+  });
+
+  it("requires vendor communication approval only when outbound is flagged", async () => {
+    const outbound = await mockAI.determineApprovalRequirements({
+      title: "Vendor quote",
+      description: "Ask the vendor for pricing.",
+      actionClass: "external_execution",
+      externalCommunication: true,
+    });
+    expect(outbound.kinds).toEqual(["execution_plan", "external_email", "vendor_communication"]);
+
+    const internal = await mockAI.determineApprovalRequirements({
+      title: "Vendor quote",
+      description: "Compare internal vendor notes.",
+      actionClass: "prepare_only",
+      externalCommunication: false,
+    });
+    expect(internal.kinds).toEqual(["execution_plan"]);
+  });
+
+  it("always adds sensitive_action for sensitive execution and otherwise keeps only the plan", async () => {
+    const sensitive = await mockAI.determineApprovalRequirements({
+      title: "Assemble payment pack",
+      description: "Compile the invoice. Do not transfer funds.",
+      actionClass: "sensitive_execution",
+      externalCommunication: false,
+    });
+    expect(sensitive.kinds).toEqual(["execution_plan", "sensitive_action"]);
+
+    const prepare = await mockAI.determineApprovalRequirements({
+      title: "Organize files",
+      description: "File the Q3 notes.",
+      actionClass: "prepare_only",
+      externalCommunication: false,
+    });
+    expect(prepare.kinds).toEqual(["execution_plan"]);
+  });
+
+  it("elevates prepare language to external execution when outbound is flagged", async () => {
+    const risk = await mockAI.classifyRisk({
+      title: "Draft a research brief",
+      description: "Research only. Prepare a sourced brief.",
+      externalCommunication: true,
+    });
+    expect(risk.actionClass).toBe("external_execution");
+    expect(risk.riskLevel).toBe("high");
+  });
 });
