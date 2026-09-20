@@ -196,7 +196,17 @@ function growthExponent(timings: readonly number[]): number {
  * make such a change a visible deletion rather than a silent drift.
  */
 function exceedsGrowthCeiling(timings: readonly number[]): boolean {
-  return growthExponent(timings) >= MAX_GROWTH_EXPONENT;
+  const exponent = growthExponent(timings);
+
+  // FAIL CLOSED on a number that is not a number. A zero timing is reachable:
+  // `performance.now()` has finite resolution, so a fast enough scan can
+  // measure 0, and two of them give 0 / 0 = NaN. Returning `NaN >= 1.5`, which
+  // is false, would report such a run as within budget. The assertion this
+  // helper replaced compared with `toBeLessThan` and failed on NaN by
+  // accident; that behaviour is kept here on purpose.
+  if (!Number.isFinite(exponent)) return true;
+
+  return exponent >= MAX_GROWTH_EXPONENT;
 }
 
 describe("the growth gate, on recorded series rather than on the clock", () => {
@@ -299,6 +309,19 @@ describe("the growth gate, on recorded series rather than on the clock", () => {
     // back to a median whose blind spot is worse. What would actually fix it
     // changes production code or release policy, which is an owner decision
     // and not this file's to take.
+  });
+
+  it("treats an unmeasurable series as over the ceiling, not under it", () => {
+    // Three ways the arithmetic can stop producing a number, and what the gate
+    // must say about each. None of these is a scan that ran within budget.
+    expect(growthExponent([0, 0, 0, 0])).toBeNaN();
+    expect(exceedsGrowthCeiling([0, 0, 0, 0])).toBe(true);
+
+    expect(growthExponent([0, 1, 2, 4])).toBe(Number.POSITIVE_INFINITY);
+    expect(exceedsGrowthCeiling([0, 1, 2, 4])).toBe(true);
+
+    expect(growthExponent([1, 2, 4, 0])).toBe(Number.NEGATIVE_INFINITY);
+    expect(exceedsGrowthCeiling([1, 2, 4, 0])).toBe(true);
   });
 
   it("depends on the order of the samples", () => {
@@ -420,9 +443,14 @@ describe("the scan is near-linear on adversarial input", () => {
     // so it means nothing unless every step is one real doubling in ascending
     // order. The sizes are derived from the bound for that reason; this pins
     // the property the derivation is supposed to guarantee.
-    expect(SCAN_SIZES).toEqual([8_000, 16_000, 32_000, 64_000]);
+    // Properties, not literals. Writing [8_000, 16_000, 32_000, 64_000] here
+    // would re-couple the test to the numbers the derivation from
+    // MAX_SCAN_LENGTH exists to stop drifting, and would fail for the wrong
+    // reason if that bound ever legitimately changed.
+    expect(SCAN_SIZES).toHaveLength(4);
     for (let index = 1; index < SCAN_SIZES.length; index += 1) {
       expect(SCAN_SIZES[index] / SCAN_SIZES[index - 1]).toBe(2);
+      expect(Number.isInteger(SCAN_SIZES[index])).toBe(true);
     }
     expect(SCAN_SIZES[SCAN_SIZES.length - 1]).toBe(MAX_SCAN_LENGTH);
   });
@@ -439,6 +467,13 @@ describe("the scan is near-linear on adversarial input", () => {
     // rather than 2 - 0.04% short, which is why the tolerance here is two
     // decimals rather than exact. Both stages are checked, because a generator
     // that broke either would make the exponent's divisor a lie.
+    //
+    // Those same three shapes pay something the other eight do not: crossing
+    // the bound makes `findCredentialSpans` take a 64,000-character slice, so
+    // the copy lands on the LAST sample only - the numerator of the exponent.
+    // It biases those three UPWARD, against the change, which is the safe
+    // direction for a gate and the reason it is recorded here rather than
+    // corrected for.
     expect(SHAPES).toHaveLength(11);
 
     for (const [label, make] of SHAPES) {
