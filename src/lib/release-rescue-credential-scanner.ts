@@ -340,14 +340,105 @@ type ValueSpan = { start: number; end: number; call?: boolean };
  *
  * A trailing ` #` or ` //` comment is left out, so the comment stays readable.
  */
-function restOfLineValueSpan(text: string, from: number): ValueSpan | null {
+/**
+ * The delimiters the scan keeps asking about, located once instead of searched
+ * once per candidate.
+ *
+ * THE DEFECT THIS REPLACES, in one sentence: a single `indexOf` or `lastIndexOf`
+ * call in the source is an O(n) read at runtime, so asking one per candidate
+ * makes a bounded input cost O(n^2) while the source still looks linear.
+ *
+ * Three questions were being asked that way, all of them about a delimiter:
+ *
+ *  - `text.lastIndexOf("\n", offset)` — where does this line begin? Asked once
+ *    per credential noun (S-004) and once per assignment (`restOfLineValueSpan`).
+ *    On text with no newline it scanned back to offset zero every time.
+ *  - `text.indexOf("\n", index)` — where does this line end?
+ *  - `text.indexOf(")", index)` — does a closing paren follow on this line?
+ *    Asked once per value that ended at `(`, and on text with no `)` it scanned
+ *    to the end of the input every time.
+ *
+ * Every one of them is answered by the position of a delimiter, and the
+ * positions do not change while a scan runs. Collecting them costs one linear
+ * pass per delimiter; answering a query is then a binary search, O(log k).
+ * Total cost falls from O(candidates x n) to O(n + candidates x log k).
+ *
+ * The three lookups below reproduce their `String` counterparts exactly,
+ * including the -1 that means "not found" and an offset that lands ON the
+ * delimiter being sought. The index is built once per scan in
+ * `findCredentialSpans` and threaded to every function that needs it, so there
+ * is one answer to each question rather than one per call site — and so a new
+ * caller cannot reintroduce the repeated search without being handed the index
+ * it is supposed to use.
+ */
+type ScanIndex = {
+  /** `text.lastIndexOf("\n", offset) + 1` — the start of the line holding `offset`. */
+  lineStartAt: (offset: number) => number;
+  /** `text.indexOf("\n", offset)` — the end of the line holding `offset`, or -1. */
+  nextNewline: (offset: number) => number;
+  /** `text.indexOf(")", offset)` — the next closing paren at or after `offset`, or -1. */
+  nextCloseParen: (offset: number) => number;
+};
+
+/** Greatest entry at or before `offset`, or -1 when there is none. */
+function lastAtOrBefore(sorted: readonly number[], offset: number): number {
+  let low = 0;
+  let high = sorted.length - 1;
+  let found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (sorted[mid] <= offset) {
+      found = sorted[mid];
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return found;
+}
+
+/** Least entry at or after `offset`, or -1 when there is none. */
+function firstAtOrAfter(sorted: readonly number[], offset: number): number {
+  let low = 0;
+  let high = sorted.length - 1;
+  let found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (sorted[mid] >= offset) {
+      found = sorted[mid];
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
+  }
+  return found;
+}
+
+function indexScanDelimiters(text: string): ScanIndex {
+  const newlineAt: number[] = [];
+  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) newlineAt.push(at);
+
+  const closeParenAt: number[] = [];
+  for (let at = text.indexOf(")"); at !== -1; at = text.indexOf(")", at + 1)) closeParenAt.push(at);
+
+  return {
+    lineStartAt: (offset) => lastAtOrBefore(newlineAt, offset) + 1,
+    nextNewline: (offset) => firstAtOrAfter(newlineAt, Math.max(0, offset)),
+    nextCloseParen: (offset) => firstAtOrAfter(closeParenAt, Math.max(0, offset)),
+  };
+}
+
+function restOfLineValueSpan(text: string, from: number, scan: ScanIndex): ValueSpan | null {
   const begin = skipSpaces(text, from);
-  if (begin === -1) return valueSpan(text, from);
+  if (begin === -1) return valueSpan(text, from, scan);
 
   // A quoted value is already unambiguous.
-  if (QUOTES.has(text[begin])) return valueSpan(text, from);
+  if (QUOTES.has(text[begin])) return valueSpan(text, from, scan);
 
-  const lineStart = text.lastIndexOf("\n", Math.max(0, begin - 1)) + 1;
+  // Indexed, not searched. See `indexScanDelimiters`: this was a backward scan
+  // to the previous newline, run once per candidate, and on a single long line
+  // it read the whole prefix every time.
+  const lineStart = scan.lineStartAt(Math.max(0, begin - 1));
   const before = text.slice(lineStart, begin);
 
   // The line's PURPOSE must be the assignment.
@@ -365,12 +456,12 @@ function restOfLineValueSpan(text: string, from: number): ValueSpan | null {
       before,
     )
   ) {
-    return valueSpan(text, from);
+    return valueSpan(text, from, scan);
   }
   if (before.includes("://") || before.includes("?") || before.includes("&")) {
-    return valueSpan(text, from);
+    return valueSpan(text, from, scan);
   }
-  const lineEndRaw = text.indexOf("\n", begin);
+  const lineEndRaw = scan.nextNewline(begin);
   // Bounded by the same per-value cap as the run form, so one enormous line
   // cannot make the scan quadratic.
   const lineEnd = Math.min(
@@ -378,7 +469,7 @@ function restOfLineValueSpan(text: string, from: number): ValueSpan | null {
     begin + MAX_VALUE_LENGTH,
   );
   const line = text.slice(begin, lineEnd);
-  if (line.includes("{") || line.includes("}")) return valueSpan(text, from);
+  if (line.includes("{") || line.includes("}")) return valueSpan(text, from, scan);
 
   // Drop a trailing comment, then trailing whitespace.
   let end = begin + line.length;
@@ -409,7 +500,7 @@ function restOfLineValueSpan(text: string, from: number): ValueSpan | null {
   return { start: begin, end, call: looksCalled && codeContext };
 }
 
-function valueSpan(text: string, from: number): ValueSpan | null {
+function valueSpan(text: string, from: number, scan: ScanIndex): ValueSpan | null {
   let begin = skipSpaces(text, from);
 
   // The value may sit on the NEXT line.
@@ -424,10 +515,10 @@ function valueSpan(text: string, from: number): ValueSpan | null {
   // on its own line, so a key with an empty value cannot reach forward and
   // swallow an unrelated line further down.
   if (begin === -1) {
-    const lineEnd = text.indexOf("\n", from);
+    const lineEnd = scan.nextNewline(from);
     if (lineEnd === -1) return null;
     if (text.slice(from, lineEnd).trim().length > 0) return null;
-    const nextEnd = text.indexOf("\n", lineEnd + 1);
+    const nextEnd = scan.nextNewline(lineEnd + 1);
     const nextLine = text.slice(lineEnd + 1, nextEnd === -1 ? text.length : nextEnd);
     if (!isContinuationLine(nextLine, indentOfLineAt(text, from))) return null;
     begin = skipSpaces(text, lineEnd + 1);
@@ -449,10 +540,10 @@ function valueSpan(text: string, from: number): ValueSpan | null {
     let afterOperator = skipSpaces(text, begin);
     if (afterOperator === -1) {
       // Same one-line reach as above: `mysql --password=\` then the value.
-      const lineEnd = text.indexOf("\n", begin);
+      const lineEnd = scan.nextNewline(begin);
       if (lineEnd === -1) return null;
       if (text.slice(begin, lineEnd).replace(/\\\s*$/, "").trim().length > 0) return null;
-      const nextEnd = text.indexOf("\n", lineEnd + 1);
+      const nextEnd = scan.nextNewline(lineEnd + 1);
       const nextLine = text.slice(lineEnd + 1, nextEnd === -1 ? text.length : nextEnd);
       if (!isContinuationLine(nextLine, indentOfLineAt(text, begin))) return null;
       afterOperator = skipSpaces(text, lineEnd + 1);
@@ -500,10 +591,23 @@ function valueSpan(text: string, from: number): ValueSpan | null {
   // keeps `getToken(req)` a call while `DB_PASSWORD=Xk92mQvn7Lz(` stays a value:
   // a trailing open paren alone is not a call, and treating it as one suppressed
   // a whole column of the generated corpus.
-  const closes = text.indexOf(")", index);
-  const lineEnd = text.indexOf("\n", index);
-  const isCall =
-    text[index] === "(" && closes !== -1 && (lineEnd === -1 || closes < lineEnd);
+  //
+  // BOTH LOOKUPS ARE GATED ON THE OPEN PAREN, because both are only meaningful
+  // when the run stopped at one. They used to be evaluated unconditionally, one
+  // statement above the test that discards them, and on text holding neither a
+  // `)` nor a newline each scanned to the end of the input — once per candidate
+  // value, which is a full-suffix search repeated a linear number of times. On
+  // 64,000 characters of `password=` that was 223,834,008 characters read per
+  // lookup, and it is the same shape of defect as S-004: a bounded input made
+  // to scale super-linearly by a search that restarts from scratch. Gating them
+  // is a pure short-circuit — when `text[index]` is not `(` the old expression
+  // was already false — so no input changes classification.
+  let isCall = false;
+  if (text[index] === "(") {
+    const closes = scan.nextCloseParen(index);
+    const lineEnd = scan.nextNewline(index);
+    isCall = closes !== -1 && (lineEnd === -1 || closes < lineEnd);
+  }
 
   return { start: begin, end: index, call: isCall };
 }
@@ -571,6 +675,9 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
   const scanned = truncated ? text.slice(0, MAX_SCAN_LENGTH) : text;
   const spans: CredentialSpan[] = [];
   const words = tokenize(scanned);
+  // Built once for this scan and threaded to every function that asks where a
+  // delimiter is. See `indexScanDelimiters`.
+  const scan = indexScanDelimiters(scanned);
 
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
@@ -608,7 +715,7 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
       // `--dbPasswordProd` reads as one meaningless segment. Found by the
       // generated form-by-key matrix, which is the point of generating it.
       if (CREDENTIAL_FLAGS.has(flag.toLowerCase()) || keyLooksSecret(flag)) {
-        pushSpan(spans, scanned, valueSpan(scanned, word.end), "command_flag");
+        pushSpan(spans, scanned, valueSpan(scanned, word.end, scan), "command_flag");
         continue;
       }
     }
@@ -617,7 +724,7 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
     if (ASSIGNMENT_KEYWORDS.has(word.text.toLowerCase()) && index + 1 < words.length) {
       const key = words[index + 1];
       if (keyLooksSecret(key.text)) {
-        pushSpan(spans, scanned, valueSpan(scanned, key.end), "keyword_assignment");
+        pushSpan(spans, scanned, valueSpan(scanned, key.end, scan), "keyword_assignment");
         continue;
       }
     }
@@ -671,7 +778,7 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
             if (!/^[ \t]+\S/.test(scanned.slice(end, stop))) break;
             end = stop + 1;
           }
-          const body = valueSpan(scanned, blockStart + 1);
+          const body = valueSpan(scanned, blockStart + 1, scan);
           pushSpan(spans, scanned, body, "block_scalar");
           continue;
         }
@@ -684,14 +791,16 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
       // On an `=`-family operator the value is the REST OF THE LINE, not a
       // character run. See `restOfLineValueSpan`.
       const assigned =
-        scanned[next] === "=" ? restOfLineValueSpan(scanned, after) : valueSpan(scanned, after);
+        scanned[next] === "="
+          ? restOfLineValueSpan(scanned, after, scan)
+          : valueSpan(scanned, after, scan);
       if (assigned && AUTH_SCHEMES.has(scanned.slice(assigned.start, assigned.end).toLowerCase())) {
         // The scheme introduces the credential, so the span worth taking is what
         // follows it — UNLESS nothing follows, in which case the scheme word IS
         // the value. `DB_PASSWORD=token` and `API_KEY=apikey` are real and
         // common passwords, and dropping them here was a silent leak the
         // generated corpus found.
-        const afterScheme = valueSpan(scanned, assigned.end);
+        const afterScheme = valueSpan(scanned, assigned.end, scan);
         pushSpan(spans, scanned, afterScheme ?? assigned, "operator_assignment", { syntax });
         continue;
       }
@@ -707,7 +816,7 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
     //     Not for a quoted key: there the next quote is an attribute boundary,
     //     not a value, and F5 below is the form that applies.
     if (!isQuotedKey && QUOTES.has(scanned[next])) {
-      pushSpan(spans, scanned, valueSpan(scanned, afterKey), "quoted_after_key");
+      pushSpan(spans, scanned, valueSpan(scanned, afterKey, scan), "quoted_after_key");
       continue;
     }
 
@@ -717,7 +826,7 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
     //      neither the operator form nor the quoted-after-key form applies, and
     //      F5 does not either because there is no `value=` attribute.
     if (isQuotedKey && next !== -1 && scanned[next] === ",") {
-      const argument = valueSpan(scanned, next + 1);
+      const argument = valueSpan(scanned, next + 1, scan);
       if (argument) {
         pushSpan(spans, scanned, argument, "argument_list", { syntax: "structured" });
         continue;
@@ -741,8 +850,8 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
     }
   }
 
-  collectLineOrientedSpans(scanned, spans);
-  collectOpaqueTokensNearCredentialNouns(scanned, words, spans);
+  collectLineOrientedSpans(scanned, spans, scan);
+  collectOpaqueTokensNearCredentialNouns(scanned, words, spans, scan);
   return { spans, truncated };
 }
 
@@ -770,10 +879,11 @@ function collectOpaqueTokensNearCredentialNouns(
   text: string,
   words: readonly Word[],
   spans: CredentialSpan[],
+  scan: ScanIndex,
 ): void {
   const lineHasNoun = new Map<number, boolean>();
 
-  // Line starts, indexed once.
+  // Line starts come from the scan-wide index built in `findCredentialSpans`.
   //
   // This was `text.lastIndexOf("\n", offset) + 1`, evaluated once per word in
   // each of the two loops below. On text with FEW newlines that call scans
@@ -789,37 +899,19 @@ function collectOpaqueTokensNearCredentialNouns(
   // successive doublings (3.10, 3.48, 3.70), which is the signature of
   // super-linear growth rather than of measurement noise.
   //
-  // A binary search over the newline offsets answers the same question with the
-  // same result. `lastIndexOf` semantics are preserved exactly, including an
-  // offset that lands ON a newline.
-  const newlineAt: number[] = [];
-  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
-    newlineAt.push(index);
-  }
-  const lineStartOf = (offset: number): number => {
-    let low = 0;
-    let high = newlineAt.length - 1;
-    let found = -1;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      if (newlineAt[mid] <= offset) {
-        found = mid;
-        low = mid + 1;
-      } else {
-        high = mid - 1;
-      }
-    }
-    return found === -1 ? 0 : newlineAt[found] + 1;
-  };
+  // The binary search that replaced it now lives in `indexLineStarts`, shared
+  // with `restOfLineValueSpan`, which carried the same defect. `lastIndexOf`
+  // semantics are preserved exactly, including an offset that lands ON a
+  // newline.
 
   for (const word of words) {
     if (!CREDENTIAL_NOUNS.has(word.text.toLowerCase())) continue;
-    lineHasNoun.set(lineStartOf(word.start), true);
+    lineHasNoun.set(scan.lineStartAt(word.start), true);
   }
   if (lineHasNoun.size === 0) return;
 
   for (const word of words) {
-    if (!lineHasNoun.get(lineStartOf(word.start))) continue;
+    if (!lineHasNoun.get(scan.lineStartAt(word.start))) continue;
 
     const token = word.text;
     if (token.length < 12) continue;
@@ -982,7 +1074,7 @@ function hasContiguousEntropyRun(token: string): boolean {
  * Forms whose unit is a line rather than a token: `.netrc`, and delimited data
  * whose header names a credential column.
  */
-function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
+function collectLineOrientedSpans(text: string, spans: CredentialSpan[], scan: ScanIndex): void {
   let offset = 0;
   let secretColumns: number[] = [];
   let delimiter = ",";
@@ -1006,7 +1098,7 @@ function collectLineOrientedSpans(text: string, spans: CredentialSpan[]): void {
       const marker = /\b(password|passwd|account)\b[ \t]+/i.exec(line);
       if (marker) {
         const from = offset + marker.index + marker[0].length;
-        pushSpan(spans, text, valueSpan(text, from), "netrc_line", { syntax: "structured" });
+        pushSpan(spans, text, valueSpan(text, from, scan), "netrc_line", { syntax: "structured" });
       }
     }
 
