@@ -50,3 +50,6 @@ next-env.d.ts
 
 # Parked by scripts/claim-guard-mutation-proof.mjs while a mutant is applied.
 *.mutation-proof-original
+
+# Release Rescue internal local workflow: operators, sessions key, runs, outputs
+/.release-rescue-local/

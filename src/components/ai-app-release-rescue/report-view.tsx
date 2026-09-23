@@ -29,6 +29,7 @@ export function ReportView({
   checks,
   view,
   synthetic,
+  links,
 }: {
   report: CustomerReportView;
   contentHash: string;
@@ -36,9 +37,12 @@ export function ReportView({
   checks: DeliveryChecks;
   view: "readable" | "json";
   synthetic: boolean;
+  /** Where the view toggle and download point. The demo report's routes when omitted. */
+  links?: { readable: string; json: string; download: string };
 }) {
-  const jsonHref = `${RESCUE_PATH}/demo/report?view=json`;
-  const readableHref = `${RESCUE_PATH}/demo/report`;
+  const jsonHref = links?.json ?? `${RESCUE_PATH}/demo/report?view=json`;
+  const readableHref = links?.readable ?? `${RESCUE_PATH}/demo/report`;
+  const downloadHref = links?.download ?? `${RESCUE_PATH}/demo/report/download`;
 
   return (
     <article className="space-y-10">
@@ -111,7 +115,7 @@ export function ReportView({
             {view === "json" ? "Read the report" : "View the JSON"}
           </Link>
           {" · "}
-          <Link className="underline underline-offset-4" href={`${RESCUE_PATH}/demo/report/download`}>
+          <Link className="underline underline-offset-4" href={downloadHref}>
             Download JSON
           </Link>
         </p>

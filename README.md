@@ -76,6 +76,10 @@ npm run build
 
 Or `npm run verify` to run all four.
 
+### Release Rescue, internal
+
+To run AI App Release Rescue locally against our own allowlisted repositories, see `docs/RELEASE-RESCUE-INTERNAL.md`. This is internal use only.
+
 ## Environment variables
 
 Copy `.env.example`. All values are optional for local demo mode.
