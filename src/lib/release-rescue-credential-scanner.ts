@@ -363,10 +363,13 @@ type ValueSpan = { start: number; end: number; call?: boolean };
  * pass per delimiter; answering a query is then a binary search, O(log k).
  * Total cost falls from O(candidates x n) to O(n + candidates x log k).
  *
- * The three lookups below reproduce their `String` counterparts exactly,
- * including the -1 that means "not found" and an offset that lands ON the
- * delimiter being sought. The index is built once per scan in
- * `findCredentialSpans` and threaded to every function that needs it, so there
+ * The three delimiter lookups below reproduce their `String` counterparts at
+ * every non-negative offset, which is every offset a caller passes, including
+ * the -1 that means "not found" and an offset that lands ON the delimiter being
+ * sought. `attributeCarrier` reproduces the XML-attribute form's search of the
+ * rest of the tag, which was asked once per quoted key and, on a tag with no
+ * `>`, searched the rest of the input each time. The index is built once per
+ * scan in `findCredentialSpans` and threaded to every function that needs it, so there
  * is one answer to each question rather than one per call site — and so a new
  * caller cannot reintroduce the repeated search without being handed the index
  * it is supposed to use.
@@ -378,6 +381,20 @@ type ScanIndex = {
   nextNewline: (offset: number) => number;
   /** `text.indexOf(")", offset)` — the next closing paren at or after `offset`, or -1. */
   nextCloseParen: (offset: number) => number;
+  /**
+   * The value attribute of the tag holding `from`, as the XML-attribute form
+   * reads it: the first carrier-pattern match in `text.slice(from, tagEnd)`,
+   * where `tagEnd` is the next `>` at or after `from` (or the end of the text),
+   * and the value running from the opening quote to the next matching quote (or
+   * the end of the text). Null when the tag has no such attribute.
+   *
+   * `from` must follow a non-word character. A search of the slice sees a word
+   * boundary at its first character whatever precedes it; the whole-text index
+   * agrees with that only when the preceding character is not a word
+   * character. The one caller passes the offset after a quoted key's closing
+   * quote, where it never is.
+   */
+  attributeCarrier: (from: number) => { open: number; end: number } | null;
 };
 
 /** Greatest entry at or before `offset`, or -1 when there is none. */
@@ -397,15 +414,15 @@ function lastAtOrBefore(sorted: readonly number[], offset: number): number {
   return found;
 }
 
-/** Least entry at or after `offset`, or -1 when there is none. */
-function firstAtOrAfter(sorted: readonly number[], offset: number): number {
+/** Position of the least entry at or after `offset`, or -1 when there is none. */
+function indexAtOrAfter(sorted: readonly number[], offset: number): number {
   let low = 0;
   let high = sorted.length - 1;
   let found = -1;
   while (low <= high) {
     const mid = (low + high) >> 1;
     if (sorted[mid] >= offset) {
-      found = sorted[mid];
+      found = mid;
       high = mid - 1;
     } else {
       low = mid + 1;
@@ -414,17 +431,82 @@ function firstAtOrAfter(sorted: readonly number[], offset: number): number {
   return found;
 }
 
-function indexScanDelimiters(text: string): ScanIndex {
-  const newlineAt: number[] = [];
-  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) newlineAt.push(at);
+/** Least entry at or after `offset`, or -1 when there is none. */
+function firstAtOrAfter(sorted: readonly number[], offset: number): number {
+  const at = indexAtOrAfter(sorted, offset);
+  return at === -1 ? -1 : sorted[at];
+}
 
-  const closeParenAt: number[] = [];
-  for (let at = text.indexOf(")"); at !== -1; at = text.indexOf(")", at + 1)) closeParenAt.push(at);
+type AttributeCarriers = {
+  tagEndAt: number[];
+  quoteAt: Record<string, number[]>;
+  carrierAt: number[];
+  carrierOpen: number[];
+  carrierQuote: string[];
+};
+
+function positionsOf(text: string, delimiter: string): number[] {
+  const at: number[] = [];
+  for (let found = text.indexOf(delimiter); found !== -1; found = text.indexOf(delimiter, found + 1)) at.push(found);
+  return at;
+}
+
+/**
+ * Every carrier match in the text, found in one pass.
+ *
+ * A single global pass finds every position the pattern matches at, not only
+ * the non-overlapping ones, because no match can begin inside another: a
+ * match is a keyword, spaces, `=`, spaces and a quote, and only the keyword
+ * holds a letter, which it can hold only after the boundary it began at.
+ */
+function indexAttributeCarriers(text: string): AttributeCarriers {
+  const carrierAt: number[] = [];
+  const carrierOpen: number[] = [];
+  const carrierQuote: string[] = [];
+  // `name="jdbc.password" value="x"`: the attribute that carries the value of
+  // a quoted key. Word boundary first, so `datavalue=` is not a carrier. A
+  // literal in a function body is a new object per call, so its `lastIndex` is
+  // this scan's alone.
+  const everyCarrier = /\b(?:value|content|password|secret)\s*=\s*(["'])/gi;
+  for (let match = everyCarrier.exec(text); match; match = everyCarrier.exec(text)) {
+    carrierAt.push(match.index);
+    carrierOpen.push(match.index + match[0].length);
+    carrierQuote.push(match[1]);
+  }
+  return {
+    tagEndAt: positionsOf(text, ">"),
+    quoteAt: { '"': positionsOf(text, '"'), "'": positionsOf(text, "'") },
+    carrierAt,
+    carrierOpen,
+    carrierQuote,
+  };
+}
+
+function indexScanDelimiters(text: string): ScanIndex {
+  const newlineAt = positionsOf(text, "\n");
+  const closeParenAt = positionsOf(text, ")");
+
+  // Built on first use: most text never reaches the XML-attribute form, and
+  // this is the one index that needs a regular-expression pass to build.
+  let carriers: AttributeCarriers | null = null;
 
   return {
     lineStartAt: (offset) => lastAtOrBefore(newlineAt, offset) + 1,
     nextNewline: (offset) => firstAtOrAfter(newlineAt, Math.max(0, offset)),
     nextCloseParen: (offset) => firstAtOrAfter(closeParenAt, Math.max(0, offset)),
+    attributeCarrier: (from) => {
+      carriers ??= indexAttributeCarriers(text);
+      const tagEnd = firstAtOrAfter(carriers.tagEndAt, from);
+      const limit = tagEnd === -1 ? text.length : tagEnd;
+
+      const at = indexAtOrAfter(carriers.carrierAt, from);
+      if (at === -1 || carriers.carrierAt[at] >= limit) return null;
+      // No carrier match holds a `>`, so one that starts before `limit` also
+      // ends at or before it, exactly as it would inside the slice.
+      const open = carriers.carrierOpen[at];
+      const close = firstAtOrAfter(carriers.quoteAt[carriers.carrierQuote[at]], open);
+      return { open, end: close === -1 ? text.length : close };
+    },
   };
 }
 
@@ -678,6 +760,8 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
   // Built once for this scan and threaded to every function that asks where a
   // delimiter is. See `indexScanDelimiters`.
   const scan = indexScanDelimiters(scanned);
+  // An XML-attribute span depends only on where its carrier opens.
+  const xmlAttributeSpans = new Map<number, CredentialSpan>();
 
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
@@ -769,15 +853,14 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
       // F9. A YAML block scalar: `db_password: |` then indented lines.
       const indicator = skipSpaces(scanned, after);
       if (indicator !== -1 && (scanned[indicator] === "|" || scanned[indicator] === ">")) {
-        const blockStart = scanned.indexOf("\n", indicator);
+        // The span is the value run on the first body line. A loop here used to
+        // walk every following indented line to find where the block ended, and
+        // its result was never read — not since the form was written. It cost one
+        // walk of the rest of the block per indicator, which is quadratic on a
+        // file of indented `key: |` lines. Taking the whole block is a detector
+        // change and is not made here.
+        const blockStart = scan.nextNewline(indicator);
         if (blockStart !== -1) {
-          let end = blockStart + 1;
-          while (end < scanned.length) {
-            const lineEnd = scanned.indexOf("\n", end);
-            const stop = lineEnd === -1 ? scanned.length : lineEnd;
-            if (!/^[ \t]+\S/.test(scanned.slice(end, stop))) break;
-            end = stop + 1;
-          }
           const body = valueSpan(scanned, blockStart + 1, scan);
           pushSpan(spans, scanned, body, "block_scalar");
           continue;
@@ -836,15 +919,21 @@ export function findCredentialSpans(text: string): { spans: CredentialSpan[]; tr
     // F5. An XML attribute pair: `name="jdbc.password" value="x"`.
     //     The key arrives as the CONTENTS of one attribute and the secret as the
     //     contents of a later one in the same tag.
+    //
+    //     Every quoted key in one tag shares that tag's carrier, so the carrier
+    //     comes from the scan-wide index rather than from a search of the rest of
+    //     the text per key, and its span is classified once. The span is still
+    //     recorded once per key, as it always was.
     if (isQuotedKey) {
-      const tagEnd = scanned.indexOf(">", afterKey);
-      const limit = tagEnd === -1 ? scanned.length : tagEnd;
-      const carrier = /\b(?:value|content|password|secret)\s*=\s*(["'])/i.exec(scanned.slice(afterKey, limit));
+      const carrier = scan.attributeCarrier(afterKey);
       if (carrier) {
-        const open = afterKey + carrier.index + carrier[0].length;
-        let end = open;
-        while (end < scanned.length && scanned[end] !== carrier[1]) end += 1;
-        pushSpan(spans, scanned, { start: open, end }, "xml_attribute");
+        const known = xmlAttributeSpans.get(carrier.open);
+        if (known) {
+          spans.push({ ...known });
+        } else {
+          pushSpan(spans, scanned, { start: carrier.open, end: carrier.end }, "xml_attribute");
+          xmlAttributeSpans.set(carrier.open, { ...spans[spans.length - 1] });
+        }
         continue;
       }
     }
