@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
 import { findCredentialSpans, MAX_SCAN_LENGTH } from "@/lib/release-rescue-credential-scanner";
 import { MAX_INTAKE_FIELD_LENGTH, parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
+import {
+  FIELD_SIZES,
+  MAX_WORK_EXPONENT,
+  MIN_STEP_GROWTH,
+  QUOTED_KEY,
+  SCAN_SIZES,
+  SERIES,
+  SHAPES,
+  shape,
+  smallestStep,
+  workExponent,
+  worstPerCharacter,
+} from "@/lib/__tests__/release-rescue-scan-shapes";
 
 // The scan's COST, measured as work done rather than as time elapsed.
 //
@@ -172,90 +185,29 @@ function chargedRegexWork(run: () => void): number {
   return charged;
 }
 
-/** Growth across the whole range, over counted work rather than over time. */
-function workExponent(counts: readonly number[]): number {
-  const doublings = counts.length - 1;
-  return Math.log2(counts[doublings] / counts[0]) / doublings;
-}
-
-// Sizes derived from the bound, so every step is one real doubling of the text
-// the span scan actually reads, exactly as the growth test derives them.
-const SCAN_SIZES = [
-  MAX_SCAN_LENGTH / 8,
-  MAX_SCAN_LENGTH / 4,
-  MAX_SCAN_LENGTH / 2,
-  MAX_SCAN_LENGTH,
-];
-
-/** `unit` repeated to exactly `size` characters. */
-function fill(unit: string, size: number): string {
-  return unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
-}
-
-/**
- * The shapes that carry the defects this file exists to keep fixed, plus
- * the ones the growth test measures. Every shape here is a SINGLE LINE with no
- * newline in it, which is the input that makes a line-start search scan the
- * whole prefix and a line-end search scan the whole suffix.
- */
-const SHAPES: ReadonlyArray<readonly [string, (size: number) => string]> = [
-  // `restOfLineValueSpan` asked for a line start once per assignment.
-  ["repeated assignments", (n) => "password=".repeat(Math.ceil(n / 9)).slice(0, n)],
-  // `valueSpan` asked for the next `)` and the next newline once per value.
-  ["repeated colons", (n) => "password:".repeat(Math.floor(n / 9))],
-  ["repeated quoted assignments", (n) => 'password="a" '.repeat(Math.ceil(n / 13)).slice(0, n)],
-  // The shape S-004 was measured on.
-  ["repeated tags", (n) => "<password>".repeat(Math.floor(n / 10))],
-  // The noun-driven path, which is the one S-004 lived in.
-  ["credential nouns in prose", (n) => "the password is not stored here. ".repeat(Math.ceil(n / 33)).slice(0, n)],
-  // A value run that really does end at `(`, so the guarded lookups are the
-  // ones that run rather than the ones that are skipped.
-  ["assignments ending at a paren", (n) => "password=a( ".repeat(Math.ceil(n / 12)).slice(0, n)],
-  ["repeated flags", (n) => "--password ".repeat(Math.floor(n / 11))],
-  ["repeated flags with values", (n) => "--password x ".repeat(Math.ceil(n / 13)).slice(0, n)],
-  ["scheme-like run", (n) => `a${".b".repeat(n / 2)}=value12345`],
-  ["identifier run", (n) => `${"A".repeat(n)}_PASSWORD=x`],
-  ["quotes", (n) => '"'.repeat(n)],
-  ["pem prefix", (n) => `-----BEGIN ${"A ".repeat(n / 2)}`],
-  // The XML-attribute form asked, once per quoted key, where the tag ends and
-  // whether a `value=` follows before it. With no `>` both searches ran to the
-  // end of the input every time.
-  ["quoted keys in a tag with no end", (n) => fill('"password" ', n)],
-  // Every key shares one carrier whose value has no closing quote, so each key
-  // also walked to the end of the input and classified the same long value.
-  ["quoted keys sharing one unterminated value", (n) => {
-    const keys = fill('"password" ', n / 2);
-    return `${keys}value="${"x".repeat(n - keys.length - 7)}`;
-  }],
-  // The block-scalar form asked for the next newline once per indicator.
-  ["block scalars with no newline", (n) => fill("password: | ", n)],
-  // And then walked every following indented line, once per indicator, to find
-  // an end it never used.
-  ["indented block-scalar lines", (n) => fill("  password: |\n", n)],
-];
-
-/**
- * Linear is 1.0 and quadratic is 2.0 over three real doublings. The bar sits
- * between them with room on both sides that was measured rather than guessed.
- * On the fixed scanner, across all sixteen shapes, the worst `indexOf` exponent
- * is 1.0315 (repeated colons) and the worst regular-expression exponent is
- * 1.040. With the defects present the defective shapes charge 1.85 or more.
- */
-const MAX_WORK_EXPONENT = 1.5;
+// `MAX_WORK_EXPONENT` (1.5) and `MIN_STEP_GROWTH` (0.5) are shared with the
+// block-work test. Measured on the fixed scanner across all sixteen shapes and
+// both series: the worst `indexOf` exponent is 1.1871 and the worst
+// regular-expression exponent is 1.0780, both on repeated colons at the field
+// sizes (1.0315 and 1.0146 at the scan sizes). That `indexOf` count is linear,
+// about 24.2 per character less a fixed 13,700, which a two-point ratio from 2K
+// to 8K reads as 1.19. With the residual defects present (on `56e6ed1`), every
+// defective shape charges 1.90 or more on at least one counter, on both series.
 
 /**
  * An absolute companion to the exponent, because a cost can be linear and still
- * be enormous. Measured on the fixed scanner, the worst shape charges 24.01
- * characters per input character (repeated colons). With a defect present the
- * defective shapes charge 2,124 to 10,553. A bound of 100 is about four times
- * the observed worst case and about twenty-one times below the nearest defect.
+ * be enormous. It holds at every size of both series. Measured on the fixed
+ * scanner, the worst is 24.01 characters per input character (repeated colons,
+ * at 64K). With a defect present the defective shapes charge 2,124 to 10,553 at
+ * 64K. A bound of 100 is about four times the observed worst case and about
+ * twenty-one times below the nearest defect.
  */
 const MAX_CHARGED_PER_CHARACTER = 100;
 
 /**
- * The same companion for regular-expression work. Measured on the fixed scanner,
- * the worst shape charges 443.8 start positions per input character (repeated
- * colons). The XML-attribute defects charge 2,930 and 6,566, so this bound
+ * The same companion for regular-expression work, at every size of both series.
+ * Measured on the fixed scanner, the worst is 443.9 start positions per input
+ * character (repeated colons, at 64K). The XML-attribute defects charge 2,930 and 6,566, so this bound
  * catches them on its own. The block-scalar defect charges 516, which it does
  * not: that one is caught by the exponent and by the `indexOf` count.
  */
@@ -269,29 +221,67 @@ describe("the scan reads a bounded number of characters, counted rather than tim
       expect(SCAN_SIZES[index] / SCAN_SIZES[index - 1]).toBe(2);
     }
     expect(SCAN_SIZES[SCAN_SIZES.length - 1]).toBe(MAX_SCAN_LENGTH);
+    // The field series doubles up to the largest intake field.
+    expect(FIELD_SIZES).toHaveLength(3);
+    for (let index = 1; index < FIELD_SIZES.length; index += 1) {
+      expect(FIELD_SIZES[index] / FIELD_SIZES[index - 1]).toBe(2);
+    }
+    expect(FIELD_SIZES[FIELD_SIZES.length - 1]).toBe(MAX_INTAKE_FIELD_LENGTH);
   });
 
+  it("reaches the shared carrier at every size, so the exponent compares one path", () => {
+    // The exponent only means something if every size exercises the same code.
+    // This shape once reached the carrier at 64K alone, because the keys were cut
+    // mid-word at the other three sizes. At every size the text must be whole
+    // keys, then one carrier that never closes, and every key must record that
+    // one carrier's span.
+    const make = shape("quoted keys sharing one unterminated value");
+    for (const size of [...FIELD_SIZES, ...SCAN_SIZES]) {
+      const text = make(size);
+      const carrier = text.indexOf('value="');
+      const keys = text.slice(0, Math.max(0, carrier)).split(QUOTED_KEY).length - 1;
+      const carried = findCredentialSpans(text).spans.filter((span) => span.form === "xml_attribute");
+
+      expect(text, `${size}`).toHaveLength(size);
+      expect(keys, `${size}`).toBeGreaterThan(0);
+      expect(text.slice(0, carrier), `${size}: whole keys before the carrier`).toBe(QUOTED_KEY.repeat(keys));
+      expect(text.indexOf('"', carrier + 'value="'.length), `${size}: the carrier never closes`).toBe(-1);
+      expect(carried, `${size}: ${keys} keys`).toHaveLength(keys);
+      expect(new Set(carried.map((span) => `${span.start}:${span.end}`)).size, `${size}: one carrier`).toBe(1);
+    }
+  });
+
+  // Each bound holds on both series: the exponent, the per-character ceiling at
+  // every size rather than at the largest alone, and the step floor.
   for (const [label, make] of SHAPES) {
     it(`stays linear in characters read: ${label}`, () => {
-      const counts = SCAN_SIZES.map((size) => chargedScanWork(() => redactSecrets(make(size))));
-      const exponent = workExponent(counts);
-      const perCharacter = counts[counts.length - 1] / MAX_SCAN_LENGTH;
-      const detail = `${label}: ${counts.join(" -> ")} chars read, exponent ${exponent.toFixed(4)}, ${perCharacter.toFixed(1)} per input character`;
+      for (const [series, sizes] of SERIES) {
+        const counts = sizes.map((size) => chargedScanWork(() => redactSecrets(make(size))));
+        const exponent = workExponent(counts);
+        const perCharacter = worstPerCharacter(counts, sizes);
+        const step = smallestStep(counts);
+        const detail = `${label}, ${series} sizes: ${counts.join(" -> ")} chars read, exponent ${exponent.toFixed(4)}, worst ${perCharacter.toFixed(1)} per input character, smallest step ${step.toFixed(3)}`;
 
-      expect(exponent, detail).toBeLessThan(MAX_WORK_EXPONENT);
-      expect(perCharacter, detail).toBeLessThan(MAX_CHARGED_PER_CHARACTER);
+        expect(exponent, detail).toBeLessThan(MAX_WORK_EXPONENT);
+        expect(perCharacter, detail).toBeLessThan(MAX_CHARGED_PER_CHARACTER);
+        expect(step, detail).toBeGreaterThanOrEqual(MIN_STEP_GROWTH);
+      }
     });
   }
 
   for (const [label, make] of SHAPES) {
     it(`stays linear in regular-expression start positions: ${label}`, () => {
-      const counts = SCAN_SIZES.map((size) => chargedRegexWork(() => redactSecrets(make(size))));
-      const exponent = workExponent(counts);
-      const perCharacter = counts[counts.length - 1] / MAX_SCAN_LENGTH;
-      const detail = `${label}: ${counts.join(" -> ")} regex positions, exponent ${exponent.toFixed(4)}, ${perCharacter.toFixed(1)} per input character`;
+      for (const [series, sizes] of SERIES) {
+        const counts = sizes.map((size) => chargedRegexWork(() => redactSecrets(make(size))));
+        const exponent = workExponent(counts);
+        const perCharacter = worstPerCharacter(counts, sizes);
+        const step = smallestStep(counts);
+        const detail = `${label}, ${series} sizes: ${counts.join(" -> ")} regex positions, exponent ${exponent.toFixed(4)}, worst ${perCharacter.toFixed(1)} per input character, smallest step ${step.toFixed(3)}`;
 
-      expect(exponent, detail).toBeLessThan(MAX_WORK_EXPONENT);
-      expect(perCharacter, detail).toBeLessThan(MAX_REGEX_CHARGED_PER_CHARACTER);
+        expect(exponent, detail).toBeLessThan(MAX_WORK_EXPONENT);
+        expect(perCharacter, detail).toBeLessThan(MAX_REGEX_CHARGED_PER_CHARACTER);
+        expect(step, detail).toBeGreaterThanOrEqual(MIN_STEP_GROWTH);
+      }
     });
   }
 
@@ -355,7 +345,7 @@ describe("the measurement can fail, on the two patterns this scanner had", () =>
   // copy of the scanner, recorded in the pull request: with the line index
   // degraded back to a backward scan the worst shape charges an exponent of
   // 2.0000, and with the value-span lookups ungated it charges 2.0562, against
-  // 1.0315 for the scanner as it now stands.
+  // 1.0315 at the scan sizes for the scanner as it now stands.
 
   const sizes = SCAN_SIZES;
   const oneLine = (n: number) => "password=".repeat(Math.ceil(n / 9)).slice(0, n);
