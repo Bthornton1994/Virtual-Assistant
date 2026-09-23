@@ -172,16 +172,3 @@ describe("timing observation: the scan stays within 2,000ms as the input grows (
     });
   }
 });
-
-// DEMONSTRATION ONLY, REVERTED BY THE NEXT COMMIT. D-019 requires showing that a
-// failure of this advisory check does not fail `verify`. This assertion cannot
-// pass: no scan takes less than 0ms.
-describe("DEMONSTRATION ONLY (reverted in the next commit): an advisory timing failure", () => {
-  it("fails a wall-clock assertion on purpose", () => {
-    const started = performance.now();
-    redactSecrets("password=x");
-    const elapsed = performance.now() - started;
-    record({ check: "deliberate demonstration failure", milliseconds: [Number(elapsed.toFixed(3))] });
-    expect(elapsed, "deliberate: no scan takes less than 0ms").toBeLessThan(0);
-  });
-});
