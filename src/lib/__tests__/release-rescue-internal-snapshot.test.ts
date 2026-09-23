@@ -1,9 +1,10 @@
-import { writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { SNAPSHOT_LIMITS } from "@/lib/release-rescue-snapshot-limits";
-import { readGitCommit, parseLsTree } from "@/lib/release-rescue-internal/git-source";
+import { gitArgs, gitEnv, parseLsTree, readGitCommit, resolveCheckoutHead } from "@/lib/release-rescue-internal/git-source";
 import { SnapshotBudget, SnapshotRefused } from "@/lib/release-rescue-internal/snapshot";
 import { readTarStream } from "@/lib/release-rescue-internal/tar-source";
 import {
@@ -12,6 +13,7 @@ import {
   gzip,
   makeFixtureRepo,
   tarHeader,
+  tempDir,
 } from "@/lib/__tests__/release-rescue-internal-fixtures";
 
 // Source acquisition for the internal workflow, against hostile input.
@@ -228,5 +230,134 @@ describe("the git reader reads the pinned commit from the object database, read-
   it("refuses a malformed tree listing rather than guessing", () => {
     expect(parseLsTree(Buffer.from("100644 blob nothex 1\tfile\0"))).toBeNull();
     expect(parseLsTree(Buffer.from("no tab here\0"))).toBeNull();
+  });
+});
+
+describe("a clone's own git configuration cannot make the reader run anything", () => {
+  // The review finding this guards: a promisor remote with an `ext::` url and
+  // `protocol.ext.allow=always` in the clone's local config made git run a
+  // shell command while lazily fetching a missing object. The command here
+  // only creates a marker file in a temporary directory.
+  function hostileClone(missing: "blob" | "commit") {
+    const repo = makeFixtureRepo({ "a.ts": "a\n", "b.ts": "b\n" });
+    const marker = join(tempDir("rr-internal-marker-"), "RAN");
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo.path, ...args], {
+        encoding: "utf8",
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      }).trim();
+    const object = missing === "blob" ? git("rev-parse", "HEAD:b.ts") : repo.commitSha;
+    rmSync(join(repo.path, ".git", "objects", object.slice(0, 2), object.slice(2)));
+    git("config", "core.repositoryformatversion", "1");
+    git("config", "extensions.partialClone", "evil");
+    git("config", "remote.evil.promisor", "true");
+    git("config", "remote.evil.url", `ext::sh -c touch% ${marker}% >&2`);
+    git("config", "protocol.ext.allow", "always");
+    return { repo, marker };
+  }
+
+  it("refuses the checkout before git reads a single object, and runs nothing", async () => {
+    const { repo, marker } = hostileClone("blob");
+    const outcome = await readGitCommit({
+      checkoutPath: repo.path,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+    });
+    expect(outcome.status).toBe("blocked");
+    if (outcome.status === "blocked") {
+      expect(outcome.refusals[0].reason).toBe("checkout_config_not_allowed");
+      expect(outcome.refusals[0].detail).toContain("remote.<name>.promisor");
+      expect(outcome.refusals[0].detail).not.toContain("sh -c");
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("does not run it when the dashboard looks up the clone's head", async () => {
+    const control = hostileClone("commit");
+    spawnSync("git", ["-C", control.repo.path, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"], {
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+    expect(existsSync(control.marker), "control: the head lookup reaches the lazy fetch").toBe(true);
+
+    const { repo, marker } = hostileClone("commit");
+    expect(await resolveCheckoutHead(repo.path, "main")).toBeNull();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  function catFile(repo: { path: string }, env: NodeJS.ProcessEnv): void {
+    const blob = execFileSync("git", ["-C", repo.path, "ls-tree", "HEAD", "b.ts"], {
+      encoding: "utf8",
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ALLOW_PROTOCOL: "none" },
+    }).split(/\s+/)[2];
+    spawnSync("git", gitArgs(repo.path, ["cat-file", "--batch"]), { env, input: `${blob}\n` });
+  }
+
+  function without(env: NodeJS.ProcessEnv, ...names: string[]): NodeJS.ProcessEnv {
+    const copy = { ...env };
+    for (const name of names) delete copy[name];
+    return copy;
+  }
+
+  it("control: with neither environment guard, the hostile config does run its command", () => {
+    // Without this, the tests below could pass because the attack never fired.
+    const { repo, marker } = hostileClone("blob");
+    catFile(repo, without(gitEnv(), "GIT_ALLOW_PROTOCOL", "GIT_NO_LAZY_FETCH"));
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it("GIT_ALLOW_PROTOCOL alone stops it, on any git version, even where the config check did not run", () => {
+    const { repo, marker } = hostileClone("blob");
+    catFile(repo, without(gitEnv(), "GIT_NO_LAZY_FETCH"));
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("refuses a clone that borrows objects from another repository", async () => {
+    const other = makeFixtureRepo({ "elsewhere.ts": "x\n" });
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    writeFileSync(join(repo.path, ".git", "objects", "info", "alternates"), `${join(other.path, ".git", "objects")}\n`);
+    const outcome = await readGitCommit({ checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha: repo.commitSha });
+    expect(outcome.status === "blocked" && outcome.refusals[0].reason).toBe("checkout_config_not_allowed");
+  });
+
+  it("accepts a plain clone", async () => {
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    const outcome = await readGitCommit({ checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha: repo.commitSha });
+    expect(outcome.status).toBe("acquired");
+    expect(await resolveCheckoutHead(repo.path, "main")).toBe(repo.commitSha);
+  });
+});
+
+describe("limits stop the reader before it reads, and nothing hides past the end", () => {
+  it("refuses a commit with too many files before reading a single blob", async () => {
+    const files: Record<string, string> = {};
+    for (let index = 0; index <= SNAPSHOT_LIMITS.maxFileCount; index += 1) files[`f/${index}.txt`] = "x\n";
+    const repo = makeFixtureRepo(files);
+    const outcome = await readGitCommit({ checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha: repo.commitSha });
+    expect(outcome.status).toBe("blocked");
+    if (outcome.status === "blocked") {
+      expect(outcome.refusals[0].reason).toBe("too_many_files");
+      expect(outcome.totals.streamBytes).toBe(0);
+      expect(outcome.totals.acceptedFileCount).toBe(0);
+    }
+  }, 120_000);
+
+  it("refuses an entry hidden after the end-of-archive marker", async () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const hidden = buildTar([{ kind: "file", name: "hidden.ts", data: "secret\n" }]);
+    const archive = Buffer.concat([
+      buildTar([{ kind: "pax", global: true, records: { comment: sha } }, { kind: "file", name: "a.ts", data: "a\n" }]),
+      hidden,
+    ]);
+    const outcome = await readTarStream(Readable.from([archive]), sha, { gzip: false });
+    expect(outcome.status === "blocked" && outcome.refusals[0].detail).toBe("Data followed an end-of-archive marker.");
+  });
+
+  it("accepts the zero padding tar writes after the marker", async () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const archive = Buffer.concat([
+      buildTar([{ kind: "pax", global: true, records: { comment: sha } }, { kind: "file", name: "a.ts", data: "a\n" }]),
+      Buffer.alloc(10_240, 0),
+    ]);
+    expect((await readTarStream(Readable.from([archive]), sha, { gzip: false })).status).toBe("acquired");
   });
 });

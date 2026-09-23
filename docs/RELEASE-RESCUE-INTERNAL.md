@@ -33,20 +33,29 @@ The terminal has no signing command. Signing needs a signed-in session in the br
 ## What a run does
 
 1. **Scope.** The repository must be listed in `config/release-rescue-internal.allowlist.json`. That file names one application and one critical workflow per repository. If a repository is not on the list, or the ownership box is not confirmed, the run is refused before anything is read and no record is written. To add a target, change the committed allowlist in a reviewed commit.
-2. **Acquisition.** The run reads the pinned commit from the clone's git object database, using `git ls-tree` and `git cat-file`. It never reads the working tree, and it does not apply `.gitattributes`, filters, or hooks. The clone's `origin` must name the allowlisted repository. A `.tar` or `.tar.gz` made by `git archive` can be read instead with `--archive`; its recorded commit must equal the pin. Every limit in `SNAPSHOT_LIMITS` (file count, file size, total bytes, archive bytes, expansion ratio, path depth and length) is enforced against the bytes actually read, not the sizes the source declares. Symlinks are recorded and not followed. Traversal, absolute paths, hard links, devices, submodules, and credential files are recorded and not read. If a limit is exceeded, or the source is malformed, the run is **BLOCKED** and produces no report.
+2. **Acquisition.** The run reads the pinned commit from the clone's git object database, using `git ls-tree` and `git cat-file`. It never reads the working tree, and it does not apply `.gitattributes`, filters, or hooks. The clone itself is treated as hostile input:
+   - Its local git configuration must hold only the keys a plain clone carries: `core.*` basics, `remote.origin.url`/`fetch`, `branch.*`, `user.*`, `pull.*` and `init.defaultbranch`. It must not borrow objects from another repository.
+   - Anything else refuses the checkout, including promisor remotes, `extensions.*`, `include.*`, `protocol.*` and `credential.*`, because such configuration can make git run a program while it reads.
+   - Git also runs with every transport refused (`GIT_ALLOW_PROTOCOL`) and lazy fetching off.
+   - The clone's `origin` must name the allowlisted repository.
+
+   A `.tar` or `.tar.gz` made by `git archive` can be read instead with `--archive`. An archive's recorded commit is its author's claim, so the archive is accepted only if it holds exactly the readable files of the pinned commit in the allowlisted clone, byte for byte. That needs the clone configured, and a file hidden with `export-ignore` is a mismatch. Every limit in `SNAPSHOT_LIMITS` (file count, file size, total bytes, archive bytes, expansion ratio, path depth and length) is enforced against the bytes actually read, not the sizes the source declares. The file count is enforced before any blob is read. Symlinks are recorded and not followed. Traversal, absolute paths, hard links, devices, submodules, and credential files are recorded and not read. Data after a tar's end-of-archive marker, other than zero padding, refuses the archive. If a limit is exceeded, or the source is malformed, the run is **BLOCKED** and produces no report. A run whose source was read but for which no valid draft can be built is BLOCKED too, with its ledger kept.
 3. **Analysis.** Deterministic checks only. Each check is recorded in the ledger in one of four states:
 
    | Ledger state | Meaning | In the report |
    | --- | --- | --- |
-   | `FAIL` | The check found an instance. | `concern`, with findings built from catalog codes and `path:line` locations |
-   | `PASS` | The check ran over every file it covers and found nothing. | `not_assessed`: finding nothing does not show the control holds |
-   | `BLOCKED` | A file the check covers was not read. | `not_assessed`, with that stated as the reason |
+   | `FAIL` | The check found an instance it can cite. | `concern`, with findings built from catalog codes and `path:line` locations |
+   | `PASS` | The check read every file it covers and found nothing. | `not_assessed`: finding nothing does not show the control holds |
+   | `BLOCKED` | A file the check covers was not read, or every instance it found is in a file the report cannot name (a path that is not path-shaped, or that is itself credential-shaped). | `not_assessed`, with the reason stated |
    | `NOT RUN` | No automated implementation exists. | `not_assessed`: it needs a reviewer's reading |
 
-   Two of the 32 rubric checks are implemented: `secrets.no_secrets_in_version_control` (only vendor-specific credential shapes produce findings) and `secrets.no_secrets_reachable_from_client` (privileged key names behind a browser-exposed prefix). Generic matches, such as `password = "..."`, are counted for the reviewer and never reported. No check can report `pass`, so the verdict is always `conditional_release` and never a clean one.
+   Every accepted file is scanned. UTF-16 text is decoded first. Other binary content is scanned as bytes for distinctive credential shapes only, and its locations carry no line numbers. Two of the 32 rubric checks are implemented: `secrets.no_secrets_in_version_control` (only vendor-specific credential shapes produce findings) and `secrets.no_secrets_reachable_from_client` (privileged key names behind a browser-exposed prefix). Generic matches, such as `password = "..."`, are counted for the reviewer and never reported. No check can report `pass`, so the verdict is always `conditional_release` and never a clean one.
 4. **Draft.** The draft is assembled by the production `buildReleaseRescueReport` and must pass `validateReleaseRescueReport`. It is sealed with an HMAC under a local key.
-5. **Signature.** The reviewer is the signed-in operator, taken from the session. The form sends only a reason code and the content hash of the draft that was shown. The signature is refused if the stored draft was edited, the hash differs, the operator no longer exists, the run is already signed, or the submission carries any other field.
-6. **Export.** Viewing and export both go through `decideReleaseRescueDelivery`. A signed report whose stored copy no longer matches its seal is withheld. The first export counts as the delivery and starts the retention window.
+5. **Signature.** The reviewer is the signed-in operator, taken from the session.
+   - The app forwards only a reason code and the content hash of the draft that was shown. Any other form field is dropped and cannot affect who signs. The signing function itself refuses a submission that carries any other field.
+   - The signature is refused if the stored draft was edited, the hash differs, the operator no longer exists, or the run is already signed.
+   - A run started from the terminal has no named person on its ownership confirmation, so the signer must confirm ownership and is recorded as having done so.
+6. **Export.** Viewing and export both go through `decideReleaseRescueDelivery`, after retention has been applied. A signed report whose stored copy no longer matches its seal is withheld, and so is one past its retention window. The first export a person asks for counts as the delivery and starts the retention window. Viewing the report does not, and neither does a browser prefetch of the download link.
 
 ## Data, identity and retention
 
@@ -56,9 +65,13 @@ The terminal has no signing command. Signing needs a signed-in session in the br
   - `checkouts.json`;
   - `runs/*.json`.
 - Source is held in memory for the length of a run and is never written anywhere. Run records, summaries, and exports carry catalog codes, counts, hashes, and `path:line` locations, and no source text or credential values.
-- Retention follows the elected policy. After delivery, a run is purged when its policy's window ends. An undelivered run is purged 60 days after creation. The sweep runs whenever the dashboard or a run page loads, or on `npm run rr:local -- purge`. A purged run keeps only its accounting: its hashes, verdict, and finding count.
-- Operators exist only in this directory, and there is no default account. Sessions are HMAC-signed, last 8 hours, and end when the operator is removed or the key changes. Five failed sign-ins lock the name for a minute.
-- The internal routes return 404 unless `RELEASE_RESCUE_INTERNAL=local` is set and no `VERCEL*` variable is present. The request must also reach a loopback host with no forwarded-by-proxy headers. The server is bound to `127.0.0.1`.
+- Retention follows the elected policy. After delivery, a run is purged when its policy's window ends. An undelivered run is purged 60 days after creation. The sweep runs whenever the dashboard or a run page loads, before any view or export, or on `npm run rr:local -- purge`. A purged run keeps no report, draft or file path, only the record that it existed:
+   - who started it, the repository and commit;
+   - the check ledger and acquisition counts;
+   - the report's hashes, verdict and finding count.
+- Operators exist only in this directory, and there is no default account. Sessions are HMAC-signed and last 8 hours. They end when the operator signs out (every copy of the cookie with them), when the operator is removed, or when the key changes. Five failed sign-ins lock the name for a minute.
+- The server is bound to `127.0.0.1`, which is what keeps it off the network. As defence in depth, the internal routes return 404 unless `RELEASE_RESCUE_INTERNAL=local` is set and none of `VERCEL`, `VERCEL_ENV` or `VERCEL_URL` is. The request must also be addressed to a loopback host and carry no `Forwarded` or `X-Real-IP` header, and no `X-Forwarded-*` value naming another host or address. No other kind of deployment is detected: do not run this mode anywhere but your own machine.
+- Reports record the repository's access mode as `customer_uploaded_archive`, the production mode for access that does not itself demonstrate control. A local clone doesn't either, which is why a named person confirms ownership.
 
 ## What this does not cover
 
@@ -85,4 +98,6 @@ The browser journey runs against a throwaway repository and store under the syst
 - the signed view;
 - export;
 - a stranger's export attempt;
-- a tampered signed report.
+- a tampered signed report, shown withheld;
+- viewing and prefetching not counting as delivery;
+- sign-out ending a copied session.

@@ -43,6 +43,8 @@ const operatorSchema = z
     role: z.literal("ops_manager"),
     passphraseHash: z.string().regex(/^scrypt\$\d+\$\d+\$\d+\$[0-9a-f]{32}\$[0-9a-f]{64}$/),
     createdAt: z.string(),
+    /** Sessions issued before this time (ms) are void. Set by signing out. */
+    sessionsValidFrom: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -210,5 +212,22 @@ export function operatorFromSession(token: string | undefined | null, now: numbe
     return null;
   }
   if (parsed.expiresAt <= now || parsed.issuedAt > now + 60_000) return null;
-  return findOperator(parsed.operatorId);
+  const operator = findOperator(parsed.operatorId);
+  if (!operator || parsed.issuedAt < (operator.sessionsValidFrom ?? 0)) return null;
+  return operator;
+}
+
+/**
+ * Ends every session this operator holds, including copies of the cookie:
+ * sessions issued before now stop verifying. Used by sign-out.
+ */
+export function endSessions(operatorId: string, now: number = Date.now()): void {
+  const operators = loadOperators();
+  if (!operators.some((operator) => operator.operatorId === operatorId)) return;
+  writePrivateJson(registryPath(), {
+    schemaVersion: OPERATOR_SCHEMA_VERSION,
+    operators: operators.map((operator) =>
+      operator.operatorId === operatorId ? { ...operator, sessionsValidFrom: now + 1 } : operator,
+    ),
+  });
 }

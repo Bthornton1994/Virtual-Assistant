@@ -344,6 +344,7 @@ export const ASSESSMENT_RATIONALE_CODES = [
   "not_assessed_snapshot_lacked_the_evidence",
   "not_assessed_automated_check_found_no_instance",
   "not_assessed_automated_check_could_not_read_everything",
+  "not_assessed_automated_check_found_instances_it_cannot_cite",
   "not_assessed_requires_a_reviewers_reading",
 ] as const;
 
@@ -394,7 +395,7 @@ export const ASSESSMENT_RATIONALE_CATALOG: Readonly<
     text: "This check was not assessed because the reviewed snapshot did not contain the evidence it needs.",
     outcomes: ["not_assessed"],
   },
-  // The three below are what an automated-only run says about a check it did
+  // The four below are what an automated-only run says about a check it did
   // not assess. They exist so that "not run" is a stated reason rather than a
   // borrowed one: none of the older codes described an automated check that
   // ran and found nothing, and borrowing one would misstate why.
@@ -406,6 +407,11 @@ export const ASSESSMENT_RATIONALE_CATALOG: Readonly<
   not_assessed_automated_check_could_not_read_everything: {
     code: "not_assessed_automated_check_could_not_read_everything",
     text: "An automated check for this ran but could not read every file it covers, so this check was not assessed.",
+    outcomes: ["not_assessed"],
+  },
+  not_assessed_automated_check_found_instances_it_cannot_cite: {
+    code: "not_assessed_automated_check_found_instances_it_cannot_cite",
+    text: "An automated check for this recorded instances of the problem in files whose names this report cannot show safely, so it cannot cite them. This check was not assessed and needs a reviewer to look.",
     outcomes: ["not_assessed"],
   },
   not_assessed_requires_a_reviewers_reading: {

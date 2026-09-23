@@ -27,12 +27,14 @@ export function runSummary(record: RunRecord) {
       filesExamined: run.filesExamined,
       filesNotRead: run.filesNotRead,
       observationCount: run.observationCount,
+      uncitedObservationCount: run.uncitedObservationCount,
     })),
     checkStatusCounts: record.checkRuns.reduce<Record<string, number>>((counts, run) => {
       counts[run.status] = (counts[run.status] ?? 0) + 1;
       return counts;
     }, {}),
     notes: record.notes,
+    draftFailure: record.draftFailure ?? null,
     report: report
       ? {
           verdict: report.verdict,

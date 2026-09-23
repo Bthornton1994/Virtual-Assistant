@@ -7,7 +7,7 @@ import {
 } from "@/lib/release-rescue-report";
 import { reviewSubmissionSchema } from "@/lib/release-rescue-review-session";
 import { findOperator, type LocalOperator } from "@/lib/release-rescue-internal/local-identity";
-import { loadRun, saveRun, sealIntact, sealReport, type RunRecord } from "@/lib/release-rescue-internal/store";
+import { loadRun, saveRun, sealIntact, sealReport, sweepRetention, type RunRecord } from "@/lib/release-rescue-internal/store";
 
 // Signing and export for internal runs.
 //
@@ -33,6 +33,7 @@ export type SignOutcome =
         | "operator_unknown"
         | "malformed_submission"
         | "content_changed_since_shown"
+        | "ownership_not_confirmed"
         | "signature_refused";
       detail: string;
     };
@@ -78,6 +79,11 @@ export function signRunAsLocalOperator(
   runId: string,
   submission: unknown,
   now: Date = new Date(),
+  /**
+   * The signer's own confirmation that the repository is ours to review. Needed
+   * only when no named person confirmed it when the run started (a CLI run).
+   */
+  options: { ownershipConfirmed?: boolean } = {},
 ): SignOutcome {
   const record = loadRun(runId);
   if (!record) return { ok: false, reason: "run_not_found", detail: "No such run." };
@@ -98,6 +104,18 @@ export function signRunAsLocalOperator(
   }
   const attested = attestationFromLocalOperator(operator, submission, now);
   if (!attested.ok) return { ok: false, reason: "malformed_submission", detail: attested.detail };
+
+  // Ownership of the repository must have been confirmed by a named person. A
+  // run started from the terminal has no one's name on it, so its signer
+  // confirms it, and becomes the person on record.
+  const needsOwnership = record.ownershipConfirmedBy.operatorId === null;
+  if (needsOwnership && options.ownershipConfirmed !== true) {
+    return {
+      ok: false,
+      reason: "ownership_not_confirmed",
+      detail: "This run was started without a named person confirming the repository is ours. Confirm it to sign.",
+    };
+  }
 
   const currentSubject = hashReleaseRescueReviewSubject(record.draft.report);
   if (attested.attestation.approvedContentHash !== currentSubject) {
@@ -123,6 +141,9 @@ export function signRunAsLocalOperator(
   const updated: RunRecord = {
     ...record,
     status: "signed",
+    ownershipConfirmedBy: needsOwnership
+      ? { operatorId: operator.operatorId, displayName: operator.displayName }
+      : record.ownershipConfirmedBy,
     signed: { ...sealed, signedAt: now.toISOString(), signedBy: operator.operatorId },
     accounting: {
       ...record.accounting,
@@ -141,7 +162,10 @@ export type ExportOutcome =
  * The delivery decision for a run's signed report. A report whose seal is
  * broken is withheld before the production gate is even asked.
  */
-export function deliveryForRun(runId: string): ExportOutcome {
+export function deliveryForRun(runId: string, now: Date = new Date()): ExportOutcome {
+  // Retention first, so a report past its window is never handed out just
+  // because no page load happened to run the sweep.
+  sweepRetention(now);
   const record = loadRun(runId);
   if (!record) return { status: "withheld", blockers: ["No such run."] };
   if (record.status === "purged") return { status: "withheld", blockers: ["This run was purged under its retention policy."] };

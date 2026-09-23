@@ -9,13 +9,31 @@ export const dynamic = "force-dynamic";
 const NO_STORE = { "Cache-Control": "private, no-store" };
 
 /**
+ * A request the browser or the router made on its own: a link prefetch or a
+ * React Server Components fetch. Only a person asking for the file is a
+ * delivery, so these get nothing and record nothing.
+ */
+function isSpeculative(requestHeaders: Headers): boolean {
+  const purpose = `${requestHeaders.get("sec-purpose") ?? ""} ${requestHeaders.get("purpose") ?? ""}`.toLowerCase();
+  return (
+    requestHeaders.has("next-router-prefetch") ||
+    requestHeaders.has("rsc") ||
+    purpose.includes("prefetch")
+  );
+}
+
+/**
  * The signed report, as a file, gated by the production delivery decision.
  *
  * The first successful export is the delivery: it starts the retention window.
  */
-export async function GET(_request: Request, { params }: { params: Promise<{ runId: string }> }) {
-  if (!internalModeEnabled() || !isLoopbackRequest(await headers())) {
+export async function GET(request: Request, { params }: { params: Promise<{ runId: string }> }) {
+  const requestHeaders = await headers();
+  if (!internalModeEnabled() || !isLoopbackRequest(requestHeaders)) {
     return new Response("Not found", { status: 404 });
+  }
+  if (isSpeculative(requestHeaders) || new URL(request.url).searchParams.has("_rsc")) {
+    return new Response(null, { status: 204, headers: NO_STORE });
   }
   if (!operatorFromSession((await cookies()).get(SESSION_COOKIE)?.value)) {
     return Response.json({ status: "unauthorized" }, { status: 401, headers: NO_STORE });

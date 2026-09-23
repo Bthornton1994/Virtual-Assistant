@@ -2,7 +2,7 @@ import { RETENTION_POLICIES, type RetentionPolicy } from "@/lib/release-rescue-i
 import { findAllowlisted, loadAllowlist, type Allowlist } from "@/lib/release-rescue-internal/allowlist";
 import { analyzeSnapshot } from "@/lib/release-rescue-internal/checks";
 import { buildDraftReport } from "@/lib/release-rescue-internal/draft-report";
-import { readGitCommit } from "@/lib/release-rescue-internal/git-source";
+import { archiveMismatch, readGitCommit } from "@/lib/release-rescue-internal/git-source";
 import type { LocalOperator } from "@/lib/release-rescue-internal/local-identity";
 import { blockedBeforeReading, type SnapshotOutcome } from "@/lib/release-rescue-internal/snapshot";
 import { checkoutFor, newRunId, saveRun, sealReport, type RunRecord } from "@/lib/release-rescue-internal/store";
@@ -69,18 +69,37 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
   const runId = newRunId();
 
   let snapshot: SnapshotOutcome;
+  const notConfigured = (source: "git_objects" | "tar_archive") =>
+    blockedBeforeReading(
+      source,
+      null,
+      "checkout_not_configured",
+      "No local checkout is configured for this repository. Run `npm run rr:local -- checkout:set`.",
+    );
   if (input.source.kind === "archive") {
-    snapshot = await readTarArchive({ archivePath: input.source.path, commitSha: input.commitSha });
+    // An archive is read with its own measured limits, then accepted only if
+    // it is exactly the pinned commit of the allowlisted clone: its declared
+    // commit is its author's claim, not evidence. See `archiveMismatch`.
+    const checkoutPath = checkoutFor(entry.repositoryRef);
+    if (!checkoutPath) {
+      snapshot = notConfigured("tar_archive");
+    } else {
+      snapshot = await readTarArchive({ archivePath: input.source.path, commitSha: input.commitSha });
+      if (snapshot.status === "acquired") {
+        const mismatch = await archiveMismatch(
+          { checkoutPath, repositoryRef: entry.repositoryRef, commitSha: snapshot.commitSha },
+          snapshot.files,
+        );
+        if (mismatch) {
+          snapshot = { ...blockedBeforeReading("tar_archive", snapshot.commitSha, mismatch.reason, mismatch.detail), totals: snapshot.totals };
+        }
+      }
+    }
   } else {
     const checkoutPath = input.source.path ?? checkoutFor(entry.repositoryRef);
     snapshot = checkoutPath
       ? await readGitCommit({ checkoutPath, repositoryRef: entry.repositoryRef, commitSha: input.commitSha })
-      : blockedBeforeReading(
-          "git_objects",
-          null,
-          "checkout_not_configured",
-          "No local checkout is configured for this repository. Run `npm run rr:local -- checkout:set`.",
-        );
+      : notConfigured("git_objects");
   }
 
   const base: RunRecord = {
@@ -104,6 +123,7 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
     },
     checkRuns: [],
     notes: null,
+    draftFailure: null,
     draft: null,
     signed: null,
     deliveredAt: null,
@@ -117,14 +137,28 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
   }
 
   const analysis = analyzeSnapshot(snapshot);
-  const draft = buildDraftReport({
-    runId,
-    entry,
-    commitSha: snapshot.commitSha,
-    analysis,
-    retentionPolicy: input.retentionPolicy,
-    now,
-  });
+  let draft: ReturnType<typeof buildDraftReport>;
+  try {
+    draft = buildDraftReport({
+      runId,
+      entry,
+      commitSha: snapshot.commitSha,
+      analysis,
+      retentionPolicy: input.retentionPolicy,
+      now,
+    });
+  } catch {
+    // The ledger is kept so a reviewer can see what ran. The error text is not:
+    // it names schema paths and can quote a file name.
+    const blocked: RunRecord = {
+      ...base,
+      checkRuns: analysis.checkRuns,
+      notes: analysis.notes,
+      draftFailure: "The source was read, but no valid draft could be built from the analysis, so there is no report.",
+    };
+    saveRun(blocked);
+    return blocked;
+  }
   const sealed = sealReport("draft", runId, draft.report, draft.subjectHash);
   const record: RunRecord = {
     ...base,

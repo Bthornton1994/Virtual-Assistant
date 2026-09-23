@@ -219,13 +219,25 @@ async function parseTar(
     return true;
   };
 
+  // After the end-of-archive marker only zero padding may follow (tar pads to
+  // its record size). Anything else is an entry hidden past the end, refused
+  // rather than silently dropped.
+  const assertOnlyPadding = (bytes: Buffer) => {
+    if (!bytes.every((byte) => byte === 0)) {
+      throw new SnapshotRefused("malformed_input", "Data followed an end-of-archive marker.");
+    }
+  };
   for await (const chunk of chunks) {
     countDecompressed(chunk.length);
-    if (ended) continue;
+    if (ended) {
+      assertOnlyPadding(chunk);
+      continue;
+    }
     buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk]);
     while (!ended && step()) {
       // keep parsing what is buffered
     }
+    if (ended) assertOnlyPadding(buffered);
   }
   if (!ended || state.kind !== "header") {
     throw new SnapshotRefused("malformed_input", "The archive ended before its end-of-archive marker.");

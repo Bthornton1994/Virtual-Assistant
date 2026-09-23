@@ -173,8 +173,23 @@ test("the full journey: acquire, analyze, review, sign exactly what is shown, ex
   await expect(page.getByText(shownHash).first()).toBeVisible();
   await expectNoRepositoryText(page);
 
+  // Viewing is not delivery. Give the browser every chance to prefetch the
+  // export link first: a prefetch must not start the retention window.
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("link", { name: /download/i }).first().hover();
+  await page.waitForTimeout(1_000);
+  expect(storedRun(runId).deliveredAt).toBeNull();
+
+  // A person clicking the link does get the file, and that is the delivery.
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("link", { name: "Download JSON" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe(`release-rescue-${runId}.json`);
+  const clickedAt = storedRun(runId).deliveredAt;
+  expect(clickedAt).not.toBeNull();
+
   // Export is the delivery: it goes through the delivery gate and starts retention.
-  expect(signed.deliveredAt).toBeNull();
   const exported = await page.request.get(`${HOME}/runs/${runId}/export`);
   expect(exported.status()).toBe(200);
   expect(exported.headers()["content-disposition"]).toContain(`release-rescue-${runId}.json`);
@@ -186,7 +201,8 @@ test("the full journey: acquire, analyze, review, sign exactly what is shown, ex
   expect(json.reviewer.approvedContentHash).toBe(shownHash);
   expect(json.report.scope.repositoryRef).toBe(FIXTURE_REPOSITORY);
   expect(json.report.scope.commitSha).toBe(signed.commitSha);
-  expect(storedRun(runId).deliveredAt).not.toBeNull();
+  // A later export does not move the delivery time.
+  expect(storedRun(runId).deliveredAt).toBe(clickedAt);
 
   // Nobody else can export it.
   const stranger = await browser.newContext();
@@ -200,6 +216,8 @@ test("the full journey: acquire, analyze, review, sign exactly what is shown, ex
   writeFileSync(path, JSON.stringify(altered));
   expect((await page.request.get(`${HOME}/runs/${runId}/export`)).status()).toBe(409);
   await page.reload();
+  await expect(page.getByRole("heading", { name: "What is blocking delivery" })).toBeVisible();
+  await expect(page.getByText("The stored signed report no longer matches its seal.")).toBeVisible();
   await expect(page.getByText("Someone Else")).toHaveCount(0);
 
   // Nothing persisted carries the credential or the injected text.
@@ -208,4 +226,19 @@ test("the full journey: acquire, analyze, review, sign exactly what is shown, ex
     expect(text).not.toContain(FAKE_AWS_KEY);
     expect(text).not.toContain("ignore all previous instructions");
   }
+});
+
+test("signing out ends the session everywhere, including a copied cookie", async ({ page, browser }) => {
+  await signIn(page);
+  const cookie = (await page.context().cookies()).find((entry) => entry.name === "dc_rr_internal_session");
+  expect(cookie).toBeTruthy();
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.waitForURL(new RegExp(`${HOME}/login$`));
+
+  const copy = await browser.newContext();
+  await copy.addCookies([{ ...cookie! }]);
+  const other = await copy.newPage();
+  await other.goto(`http://127.0.0.1:3021${HOME}`);
+  await expect(other).toHaveURL(new RegExp(`${HOME}/login$`));
+  await copy.close();
 });

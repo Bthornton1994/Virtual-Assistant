@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { commitShaSchema } from "@/lib/release-rescue-intake";
@@ -9,7 +10,7 @@ import {
   blockedBeforeReading,
   type SnapshotOutcome,
 } from "@/lib/release-rescue-internal/snapshot";
-import type { SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
+import { evaluateSnapshotEntry, type SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
 
 // Reads one commit of a LOCAL git checkout, read-only, straight from its object
 // database.
@@ -25,15 +26,27 @@ import type { SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
 //   the tree and the blobs exactly as committed, with no attribute or filter
 //   applied.
 //
-// Git runs with system and global configuration disabled, hooks and fsmonitor
-// off, replace objects ignored, and every transport protocol refused, so a
-// partial clone cannot reach the network to fetch a missing object. Nothing
-// here writes to the checkout.
+// A clone is hostile input too, including its own `.git/config`, which git
+// reads and which can outrank a `-c` default: `protocol.ext.allow=always` plus
+// a promisor remote whose url is `ext::<command>` makes git RUN that command
+// the moment it lazily fetches a missing object. So:
+//
+// - every transport is refused through GIT_ALLOW_PROTOCOL, which repository
+//   configuration cannot override, and lazy fetching is switched off where git
+//   supports the switch;
+// - before any other git command reads the repository, its local
+//   configuration is checked against a short allowlist of keys a plain clone
+//   carries, and a checkout with any other key, or with object alternates, is
+//   refused;
+// - system and global configuration are disabled, hooks and fsmonitor are
+//   off, and replace objects are ignored.
+//
+// Nothing here writes to the checkout.
 
 const GIT_TIMEOUT_MS = 120_000;
 const MAX_LS_TREE_OUTPUT_BYTES = 16_000_000;
 
-function gitEnv(): NodeJS.ProcessEnv {
+export function gitEnv(): NodeJS.ProcessEnv {
   return {
     NODE_ENV: process.env.NODE_ENV,
     PATH: process.env.PATH,
@@ -45,10 +58,16 @@ function gitEnv(): NodeJS.ProcessEnv {
     GIT_TERMINAL_PROMPT: "0",
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_OPTIONAL_LOCKS: "0",
+    // No transport at all. A name no transport has, because an empty value is
+    // treated by some git versions as "unset".
+    GIT_ALLOW_PROTOCOL: "none",
+    GIT_PROTOCOL_FROM_USER: "0",
+    // Honoured by git 2.44 and later; GIT_ALLOW_PROTOCOL covers older versions.
+    GIT_NO_LAZY_FETCH: "1",
   };
 }
 
-function gitArgs(checkout: string, args: string[]): string[] {
+export function gitArgs(checkout: string, args: string[]): string[] {
   return [
     "-c", "core.fsmonitor=false",
     "-c", "core.hooksPath=/dev/null",
@@ -84,6 +103,52 @@ function runGit(checkout: string, args: string[], maxBytes = 1_000_000): Promise
       resolvePromise({ code: code ?? -1, stdout: Buffer.concat(chunks) });
     });
   });
+}
+
+/**
+ * The local configuration keys a plain `git clone` writes, plus a few a person
+ * commonly sets. None of them makes a read-only `ls-tree` / `cat-file` run a
+ * program, reach a transport, or read objects from elsewhere. Anything else
+ * (`extensions.*`, `include.*`, `protocol.*`, `credential.*`, `core.*`
+ * commands, any remote other than `origin`, ...) refuses the checkout.
+ */
+const ALLOWED_LOCAL_CONFIG: readonly RegExp[] = [
+  /^core\.(?:repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|autocrlf|eol|safecrlf|checkstat|trustctime)$/,
+  /^remote\.origin\.(?:url|fetch|tagopt)$/,
+  /^branch\.[A-Za-z0-9._/-]+\.(?:remote|merge|rebase)$/,
+  /^user\.(?:name|email)$/,
+  /^pull\.(?:rebase|ff)$/,
+  /^init\.defaultbranch$/,
+];
+
+/** A config key as it can be shown: section and name, never a subsection's text. */
+function displayKey(key: string): string {
+  const first = key.indexOf(".");
+  const last = key.lastIndexOf(".");
+  if (first < 0) return "(malformed)";
+  return first === last ? key : `${key.slice(0, first)}.<name>${key.slice(last)}`;
+}
+
+/**
+ * Refuses a checkout whose own configuration or object store could change what
+ * git does while it reads. Returns the refusal, or null when the checkout is a
+ * plain clone.
+ */
+async function checkoutConfigProblem(checkout: string): Promise<string | null> {
+  const listing = await runGit(checkout, ["config", "--local", "--no-includes", "--list", "--name-only", "-z"]);
+  if (listing.code !== 0) return "The checkout's local configuration could not be read.";
+  const keys = listing.stdout.toString("utf8").split("\0").filter((key) => key.length > 0);
+  const refused = [...new Set(keys.filter((key) => !ALLOWED_LOCAL_CONFIG.some((pattern) => pattern.test(key))).map(displayKey))];
+  if (refused.length > 0) {
+    const shown = refused.slice(0, 5).join(", ");
+    return `The checkout's local git configuration sets keys the reader does not allow: ${shown}${refused.length > 5 ? ", ..." : ""}. Use a plain clone.`;
+  }
+  const alternates = await runGit(checkout, ["rev-parse", "--git-path", "objects/info/alternates"]);
+  const alternatesPath = resolve(checkout, alternates.stdout.toString("utf8").trim());
+  if (alternates.code !== 0 || existsSync(alternatesPath)) {
+    return "The checkout borrows objects from another repository (object alternates). Use a plain clone.";
+  }
+  return null;
 }
 
 export type GitSourceRequest = {
@@ -214,60 +279,73 @@ function readBlobs(
   });
 }
 
-export async function readGitCommit(request: GitSourceRequest): Promise<SnapshotOutcome> {
+type PinnedTree =
+  | { ok: true; checkout: string; commitSha: string; entries: TreeEntry[] }
+  | { ok: false; outcome: SnapshotOutcome };
+
+/**
+ * Everything before reading a blob: the sha, the path, that it is a plain clone
+ * of the allowlisted repository, that the commit is there, and its tree.
+ */
+async function openPinnedTree(request: GitSourceRequest): Promise<PinnedTree> {
   const source = "git_objects" as const;
+  const refuse = (commitSha: string | null, reason: Parameters<typeof blockedBeforeReading>[2], detail: string): PinnedTree => ({
+    ok: false,
+    outcome: blockedBeforeReading(source, commitSha, reason, detail),
+  });
   const sha = commitShaSchema.safeParse(request.commitSha);
-  if (!sha.success) {
-    return blockedBeforeReading(source, null, "commit_sha_malformed", "A full 40-character lowercase commit sha is required.");
-  }
+  if (!sha.success) return refuse(null, "commit_sha_malformed", "A full 40-character lowercase commit sha is required.");
   const commitSha = sha.data;
-  if (!isAbsolute(request.checkoutPath)) {
-    return blockedBeforeReading(source, commitSha, "checkout_not_configured", "The checkout path must be absolute.");
-  }
+  if (!isAbsolute(request.checkoutPath)) return refuse(commitSha, "checkout_not_configured", "The checkout path must be absolute.");
   const checkout = resolve(request.checkoutPath);
   if (!existsSync(checkout) || !statSync(checkout).isDirectory()) {
-    return blockedBeforeReading(source, commitSha, "checkout_not_configured", "The configured checkout does not exist.");
+    return refuse(commitSha, "checkout_not_configured", "The configured checkout does not exist.");
   }
+
+  const inside = await runGit(checkout, ["rev-parse", "--is-inside-work-tree"]);
+  const bare = await runGit(checkout, ["rev-parse", "--is-bare-repository"]);
+  if (inside.code !== 0 && bare.code !== 0) {
+    return refuse(commitSha, "checkout_not_a_git_repository", "The configured path is not a git repository.");
+  }
+
+  const configProblem = await checkoutConfigProblem(checkout);
+  if (configProblem) return refuse(commitSha, "checkout_config_not_allowed", configProblem);
+
+  // The checkout must be a clone of the allowlisted repository, so a path
+  // cannot point the review at some other codebase.
+  const remote = await runGit(checkout, ["config", "--local", "--get", "remote.origin.url"]);
+  const remoteRef = remote.code === 0 ? githubRefFromRemoteUrl(remote.stdout.toString("utf8")) : null;
+  if (!remoteRef || remoteRef.toLowerCase() !== request.repositoryRef.toLowerCase()) {
+    return refuse(commitSha, "checkout_remote_mismatch", "The checkout's origin remote is not the allowlisted repository.");
+  }
+
+  const resolved = await runGit(checkout, ["rev-parse", "--verify", "--quiet", `${commitSha}^{commit}`]);
+  if (resolved.code !== 0 || resolved.stdout.toString("utf8").trim() !== commitSha) {
+    return refuse(commitSha, "commit_not_found", "The pinned commit is not in the local checkout.");
+  }
+
+  const listing = await runGit(checkout, ["ls-tree", "-r", "-z", "-l", "--full-tree", commitSha], MAX_LS_TREE_OUTPUT_BYTES);
+  if (listing.code !== 0) return refuse(commitSha, "reader_failed", "The tree of the pinned commit could not be listed.");
+  const entries = parseLsTree(listing.stdout);
+  if (!entries) return refuse(commitSha, "malformed_input", "The tree listing was malformed.");
+  return { ok: true, checkout, commitSha, entries };
+}
+
+export async function readGitCommit(request: GitSourceRequest): Promise<SnapshotOutcome> {
+  const source = "git_objects" as const;
+  let tree: PinnedTree;
+  try {
+    tree = await openPinnedTree(request);
+  } catch (error) {
+    const refusal =
+      error instanceof SnapshotRefused ? error.refusal : { reason: "reader_failed" as const, detail: "The local git reader failed." };
+    return new SnapshotBudget(false).blocked(source, null, refusal);
+  }
+  if (!tree.ok) return tree.outcome;
+  const { checkout, commitSha, entries } = tree;
 
   const budget = new SnapshotBudget(false);
   try {
-    const inside = await runGit(checkout, ["rev-parse", "--is-inside-work-tree"]);
-    const bare = await runGit(checkout, ["rev-parse", "--is-bare-repository"]);
-    if (inside.code !== 0 && bare.code !== 0) {
-      return blockedBeforeReading(source, commitSha, "checkout_not_a_git_repository", "The configured path is not a git repository.");
-    }
-
-    // The checkout must be a clone of the allowlisted repository, so a path
-    // cannot point the review at some other codebase.
-    const remote = await runGit(checkout, ["config", "--local", "--get", "remote.origin.url"]);
-    const remoteRef = remote.code === 0 ? githubRefFromRemoteUrl(remote.stdout.toString("utf8")) : null;
-    if (!remoteRef || remoteRef.toLowerCase() !== request.repositoryRef.toLowerCase()) {
-      return blockedBeforeReading(
-        source,
-        commitSha,
-        "checkout_remote_mismatch",
-        "The checkout's origin remote is not the allowlisted repository.",
-      );
-    }
-
-    const resolved = await runGit(checkout, ["rev-parse", "--verify", "--quiet", `${commitSha}^{commit}`]);
-    if (resolved.code !== 0 || resolved.stdout.toString("utf8").trim() !== commitSha) {
-      return blockedBeforeReading(source, commitSha, "commit_not_found", "The pinned commit is not in the local checkout.");
-    }
-
-    const listing = await runGit(
-      checkout,
-      ["ls-tree", "-r", "-z", "-l", "--full-tree", commitSha],
-      MAX_LS_TREE_OUTPUT_BYTES,
-    );
-    if (listing.code !== 0) {
-      return blockedBeforeReading(source, commitSha, "reader_failed", "The tree of the pinned commit could not be listed.");
-    }
-    const entries = parseLsTree(listing.stdout);
-    if (!entries) {
-      return blockedBeforeReading(source, commitSha, "malformed_input", "The tree listing was malformed.");
-    }
-
     const wanted: TreeEntry[] = [];
     for (const entry of entries) {
       const type = entryTypeForMode(entry.mode, entry.objectType);
@@ -281,10 +359,67 @@ export async function readGitCommit(request: GitSourceRequest): Promise<Snapshot
   }
 }
 
+/** Git's own object id for a blob with these bytes. */
+function blobId(bytes: Buffer): string {
+  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+}
+
+/**
+ * Whether an archive's files are exactly the pinned commit's readable files.
+ *
+ * An archive declares its own commit, and `git archive` applies the
+ * repository's `export-ignore` and `export-subst` attributes, so neither the
+ * declaration nor the archive's content can be taken on trust. This compares
+ * them with the tree of the allowlisted clone at the pinned commit: the same
+ * set of paths the snapshot rules accept as files, each with the same git blob
+ * id. A file hidden from the archive, added to it, or rewritten in it is a
+ * mismatch. Returns null when they match, else the refusal.
+ */
+export async function archiveMismatch(
+  request: GitSourceRequest,
+  archiveFiles: ReadonlyArray<{ path: string; bytes: Buffer }>,
+): Promise<{ reason: "archive_commit_unverified" | Parameters<typeof blockedBeforeReading>[2]; detail: string } | null> {
+  let tree: PinnedTree;
+  try {
+    tree = await openPinnedTree(request);
+  } catch {
+    return { reason: "reader_failed", detail: "The local git reader failed while checking the archive." };
+  }
+  if (!tree.ok) {
+    const refusal = tree.outcome.status === "blocked" ? tree.outcome.refusals[0] : null;
+    return refusal ?? { reason: "reader_failed", detail: "The pinned commit could not be opened to check the archive." };
+  }
+  const expected = new Map<string, string>();
+  for (const entry of tree.entries) {
+    const type = entryTypeForMode(entry.mode, entry.objectType);
+    if (type === "file" && evaluateSnapshotEntry({ path: entry.path, type, sizeBytes: entry.declaredBytes }).accepted) {
+      expected.set(entry.path, entry.objectId);
+    }
+  }
+  let missing = expected.size;
+  let differing = 0;
+  let extra = 0;
+  for (const file of archiveFiles) {
+    const id = expected.get(file.path);
+    if (id === undefined) extra += 1;
+    else {
+      missing -= 1;
+      if (blobId(file.bytes) !== id) differing += 1;
+    }
+  }
+  if (missing === 0 && differing === 0 && extra === 0) return null;
+  return {
+    reason: "archive_commit_unverified",
+    detail: `The archive is not the pinned commit of the allowlisted clone: ${missing} of its files are missing, ${differing} differ and ${extra} are not in the commit.`,
+  };
+}
+
 /** The commit a checkout's branch points at, for pre-filling the pin. Read-only. */
 export async function resolveCheckoutHead(checkoutPath: string, branch: string): Promise<string | null> {
   if (!isAbsolute(checkoutPath) || !existsSync(checkoutPath)) return null;
   if (!/^[A-Za-z0-9._/-]+$/.test(branch) || branch.includes("..")) return null;
+  // The same vetting as a run: this is called on every dashboard load.
+  if ((await checkoutConfigProblem(resolve(checkoutPath))) !== null) return null;
   for (const ref of [`refs/remotes/origin/${branch}`, `refs/heads/${branch}`, "HEAD"]) {
     const result = await runGit(checkoutPath, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
     const value = result.stdout.toString("utf8").trim();

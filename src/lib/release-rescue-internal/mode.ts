@@ -54,9 +54,13 @@ function hostnameOf(host: string): string {
  * `x-forwarded-for` (the socket's address) on every request, but only when the
  * request does not already carry them. So a direct local request arrives with a
  * forwarded host equal to its host and a single loopback forwarded address,
- * while anything a client or a proxy set survives and is refused here.
+ * while a proxy's or client's value that says otherwise survives and is refused
+ * here. It cannot tell a local client's own `X-Forwarded-For: 127.0.0.1` from
+ * the one `next start` adds, and does not need to: that client is local.
  */
 export function isLoopbackRequest(headers: { get(name: string): string | null }): boolean {
+  // `next start` never adds these, so their presence means a proxy or a client set them.
+  if (headers.get("forwarded") !== null || headers.get("x-real-ip") !== null) return false;
   const host = headers.get("host");
   if (!host || !LOOPBACK_HOSTNAMES.has(hostnameOf(host))) return false;
   const forwardedHost = headers.get("x-forwarded-host");

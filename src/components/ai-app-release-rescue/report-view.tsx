@@ -115,7 +115,9 @@ export function ReportView({
             {view === "json" ? "Read the report" : "View the JSON"}
           </Link>
           {" · "}
-          <Link className="underline underline-offset-4" href={downloadHref}>
+          {/* Not prefetched: a download is an action, and the internal export
+              route counts the first fetch as the delivery. */}
+          <Link className="underline underline-offset-4" href={downloadHref} prefetch={false}>
             Download JSON
           </Link>
         </p>

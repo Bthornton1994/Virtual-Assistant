@@ -7,9 +7,15 @@ import {
   SESSION_COOKIE,
   SESSION_LIFETIME_MS,
   authenticateOperator,
+  endSessions,
   issueSession,
 } from "@/lib/release-rescue-internal/local-identity";
-import { INTERNAL_PATH, requireInternalRequest, requireOperator } from "@/lib/release-rescue-internal/request-guard";
+import {
+  INTERNAL_PATH,
+  currentOperator,
+  requireInternalRequest,
+  requireOperator,
+} from "@/lib/release-rescue-internal/request-guard";
 import { signRunAsLocalOperator } from "@/lib/release-rescue-internal/review";
 import { RunRefused, initiatorFromOperator, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { isRunId } from "@/lib/release-rescue-internal/store";
@@ -38,7 +44,10 @@ export async function loginInternalOperatorAction(formData: FormData): Promise<v
 }
 
 export async function logoutInternalOperatorAction(): Promise<void> {
-  await requireInternalRequest();
+  // Deleting the cookie is not enough: a copy of it would stay valid until it
+  // expired. Ending the operator's sessions voids every copy.
+  const operator = await currentOperator();
+  if (operator) endSessions(operator.operatorId);
   (await cookies()).delete({ name: SESSION_COOKIE, path: INTERNAL_PATH });
   redirect(`${INTERNAL_PATH}/login`);
 }
@@ -73,10 +82,16 @@ export async function signInternalRunAction(formData: FormData): Promise<void> {
   if (!isRunId(runId)) redirect(INTERNAL_PATH);
   // Exactly the two fields a reviewer may send. Anything else a client adds is
   // not forwarded, and the identity comes from the session.
-  const outcome = signRunAsLocalOperator(operator, runId, {
-    reasonCode: text(formData, "reasonCode"),
-    approvedContentHash: text(formData, "approvedContentHash"),
-  });
+  const outcome = signRunAsLocalOperator(
+    operator,
+    runId,
+    {
+      reasonCode: text(formData, "reasonCode"),
+      approvedContentHash: text(formData, "approvedContentHash"),
+    },
+    new Date(),
+    { ownershipConfirmed: text(formData, "ownershipConfirmed") === "yes" },
+  );
   if (!outcome.ok) redirect(`${INTERNAL_PATH}/runs/${runId}?refused=${outcome.reason}`);
   redirect(`${INTERNAL_PATH}/runs/${runId}?signed=1`);
 }

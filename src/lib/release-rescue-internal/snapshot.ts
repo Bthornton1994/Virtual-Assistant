@@ -27,6 +27,7 @@ export const ACQUISITION_REFUSAL_REASONS = [
   "checkout_not_configured",
   "checkout_not_a_git_repository",
   "checkout_remote_mismatch",
+  "checkout_config_not_allowed",
   "commit_sha_malformed",
   "commit_not_found",
   "archive_commit_unverified",
@@ -113,6 +114,7 @@ export class SnapshotBudget {
   readonly rejected: RejectedEntry[] = [];
   readonly files: SnapshotFile[] = [];
   private readonly acceptedSizes: Array<{ path: string; type: SnapshotEntryType; sizeBytes: number }> = [];
+  private admittedFiles = 0;
   private readonly compressed: boolean;
 
   constructor(compressed: boolean) {
@@ -166,7 +168,10 @@ export class SnapshotBudget {
       return false;
     }
     if (entry.type !== "file") return false;
-    if (this.acceptedSizes.length + 1 > SNAPSHOT_LIMITS.maxFileCount) {
+    // Counted on admission, not on acceptance: the git reader admits every
+    // entry before it reads any blob, and must stop before reading them.
+    this.admittedFiles += 1;
+    if (this.admittedFiles > SNAPSHOT_LIMITS.maxFileCount) {
       throw new SnapshotRefused(
         "too_many_files",
         `More than ${SNAPSHOT_LIMITS.maxFileCount} files; the review stops rather than reads a partial snapshot.`,

@@ -144,6 +144,11 @@ export type RunRecord = {
   };
   checkRuns: CheckRun[];
   notes: AnalysisNotes | null;
+  /**
+   * Set when the source was read but no valid draft could be built. A fixed
+   * sentence, never the error text, which can quote a path.
+   */
+  draftFailure?: string | null;
   draft: SealedReport | null;
   signed: (SealedReport & { signedAt: string; signedBy: string }) | null;
   deliveredAt: string | null;

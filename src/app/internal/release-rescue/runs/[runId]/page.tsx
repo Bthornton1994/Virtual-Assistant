@@ -18,6 +18,7 @@ const REFUSALS: Record<string, string> = {
   operator_unknown: "You are not a registered reviewer.",
   not_awaiting_review: "This run has no draft awaiting review.",
   signature_refused: "The signature was refused by the report validator.",
+  ownership_not_confirmed: "Confirm the repository is ours before signing a run started from the terminal.",
   run_not_found: "No such run.",
 };
 
@@ -85,6 +86,7 @@ export default async function InternalRunPage({
             ))}
           </ul>
         ) : null}
+        {record.draftFailure ? <p className="text-sm text-bad">BLOCKED: {record.draftFailure}</p> : null}
         {record.acquisition.refusals.map((refusal) => (
           <p key={refusal.reason} className="text-sm text-bad">
             BLOCKED ({refusal.reason}): {refusal.detail}
@@ -92,7 +94,9 @@ export default async function InternalRunPage({
         ))}
         {record.notes ? (
           <p className="text-sm text-ink-soft">
-            {record.notes.binaryFilesSkipped} binary files were not scanned.{" "}
+            Every accepted file was scanned: {record.notes.utf16FilesDecoded} as decoded UTF-16 text, and{" "}
+            {record.notes.binaryFilesScannedAsBytes} binary files as bytes, for distinctive credential shapes only and
+            with no line numbers.{" "}
             {Object.entries(record.notes.reviewerCandidatesByDetector).length > 0
               ? `Generic detector matches left for you, counted and not reported: ${Object.entries(
                   record.notes.reviewerCandidatesByDetector,
@@ -154,6 +158,15 @@ export default async function InternalRunPage({
                     ))}
                   </select>
                 </div>
+                {record.ownershipConfirmedBy.operatorId === null ? (
+                  <label className="flex items-start gap-2 text-sm">
+                    <input type="checkbox" name="ownershipConfirmed" value="yes" required className="mt-1" />
+                    <span>
+                      This run was started from the terminal, so nobody has confirmed it by name: this repository is
+                      ours, and I am authorized to review it.
+                    </span>
+                  </label>
+                ) : null}
                 <Button type="submit">Sign as {operator.displayName}</Button>
               </form>
             </Card>

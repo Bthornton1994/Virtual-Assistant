@@ -21,19 +21,19 @@ const SHA = "0123456789abcdef0123456789abcdef01234567";
 const RUN_ID = "3b1f8c2a-7d4e-4f6a-9b8c-1d2e3f4a5b6c";
 const ENTRY = fixtureAllowlist().repositories[0];
 
-function snapshot(files: Record<string, string>, rejected: RejectedEntry[] = []): AcquiredSnapshot {
+function snapshot(files: Record<string, string | Buffer>, rejected: RejectedEntry[] = []): AcquiredSnapshot {
   return {
     status: "acquired",
     source: "git_objects",
     commitSha: SHA,
     limitsVersion: SNAPSHOT_LIMITS_VERSION,
-    files: Object.entries(files).map(([path, text]) => ({ path, bytes: Buffer.from(text, "utf8") })),
+    files: Object.entries(files).map(([path, text]) => ({ path, bytes: typeof text === "string" ? Buffer.from(text, "utf8") : text })),
     rejected,
     totals: { entryCount: 0, acceptedFileCount: 0, rejectedCount: 0, streamBytes: 0, expandedBytes: 0, acceptedBytes: 0 },
   };
 }
 
-function draftFor(files: Record<string, string>, rejected: RejectedEntry[] = []) {
+function draftFor(files: Record<string, string | Buffer>, rejected: RejectedEntry[] = []) {
   const analysis = analyzeSnapshot(snapshot(files, rejected));
   const draft = buildDraftReport({
     runId: RUN_ID,
@@ -144,6 +144,57 @@ describe("nothing unrun or merely clean becomes a pass", () => {
       { path: "link", reason: "symlink_not_followed", detail: "" },
     ]);
     expect(analysis.checkRuns.find((check) => check.checkId === "secrets.no_secrets_in_version_control")?.status).toBe("PASS");
+  });
+});
+
+describe("an observation is never lost between the scan and the report", () => {
+  const ledger = (analysis: ReturnType<typeof draftFor>["analysis"]) =>
+    analysis.checkRuns.find((check) => check.checkId === "secrets.no_secrets_in_version_control")!;
+
+  it("marks the check BLOCKED, not PASS, when a hit is in a file the report cannot name", () => {
+    const { analysis, draft, json } = draftFor({ "config/prod keys.ts": `export const k = "${FAKE_AWS_KEY}";\n` });
+    expect(ledger(analysis)).toEqual(expect.objectContaining({ status: "BLOCKED", observationCount: 1, uncitedObservationCount: 1 }));
+    expect(draft.report.assessments.find((entry) => entry.checkId === "secrets.no_secrets_in_version_control")?.rationaleCode).toBe(
+      "not_assessed_automated_check_found_instances_it_cannot_cite",
+    );
+    expect(json).not.toContain("prod keys");
+  });
+
+  it("does not cite a file whose name is itself credential-shaped, and still builds a valid draft", () => {
+    const { analysis, draft, json } = draftFor({ [`src/${FAKE_GITHUB_TOKEN}.ts`]: `const k = "${FAKE_AWS_KEY}";\n` });
+    expect(ledger(analysis).status).toBe("BLOCKED");
+    expect(validateReleaseRescueReport(draft.report).hardGatePass).toBe(true);
+    expect(json).not.toContain(FAKE_GITHUB_TOKEN);
+  });
+
+  it("still FAILs, citing what it can, when only some hits are uncitable", () => {
+    const { analysis, draft } = draftFor({
+      "config/prod keys.ts": `const a = "${FAKE_AWS_KEY}";\n`,
+      "src/settings.ts": `const b = "${FAKE_AWS_KEY}";\n`,
+    });
+    expect(ledger(analysis)).toEqual(expect.objectContaining({ status: "FAIL", uncitedObservationCount: 1 }));
+    expect(draft.report.findings.flatMap((finding) => finding.locations.map((location) => location.path))).toEqual(["src/settings.ts"]);
+  });
+
+  it("reads UTF-16 text, and finds a credential in it at its line", () => {
+    const { analysis, draft } = draftFor({ "src/utf16.ts": Buffer.from(`\uFEFFline one\nconst k = "${FAKE_AWS_KEY}";\n`, "utf16le") });
+    expect(analysis.notes.utf16FilesDecoded).toBe(1);
+    expect(ledger(analysis).status).toBe("FAIL");
+    expect(draft.report.findings[0].locations).toEqual([{ path: "src/utf16.ts", startLine: 2, endLine: 2 }]);
+  });
+
+  it("scans binary content for distinctive credential shapes, with no line numbers", () => {
+    const binary = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13]), Buffer.from(`tEXt key ${FAKE_AWS_KEY} `), Buffer.from([0, 1, 2])]);
+    const { analysis, draft, json } = draftFor({ "assets/logo.png": binary });
+    expect(analysis.notes.binaryFilesScannedAsBytes).toBe(1);
+    expect(ledger(analysis).status).toBe("FAIL");
+    expect(draft.report.findings[0].locations).toEqual([{ path: "assets/logo.png", startLine: null, endLine: null }]);
+    expect(json).not.toContain(FAKE_AWS_KEY);
+  });
+
+  it("reports PASS only when every accepted file, text or binary, was scanned and nothing was found", () => {
+    const { analysis } = draftFor({ "a.ts": "ok\n", "assets/logo.png": Buffer.from([0x89, 0x50, 0, 0, 1, 2, 3]) });
+    expect(ledger(analysis)).toEqual(expect.objectContaining({ status: "PASS", filesExamined: 2, filesNotRead: 0 }));
   });
 });
 

@@ -42,7 +42,8 @@ export function CheckLedger({ checkRuns }: { checkRuns: CheckRun[] }) {
       <p className="text-sm text-ink-soft">
         {counts.FAIL ?? 0} FAIL, {counts.PASS ?? 0} PASS, {counts.BLOCKED ?? 0} BLOCKED, {counts.NOT_RUN ?? 0} NOT RUN.
         PASS means an automated check read every file it covers and recorded nothing; the report still leaves that check
-        not assessed, because an automated check finding nothing does not show the control holds. NOT RUN means no
+        not assessed, because an automated check finding nothing does not show the control holds. BLOCKED means it
+        could not read a file it covers, or recorded observations in files this report cannot name. NOT RUN means no
         automated check exists for it and no model-assisted analysis ran.
       </p>
       <table className="w-full text-left text-sm">
@@ -53,6 +54,7 @@ export function CheckLedger({ checkRuns }: { checkRuns: CheckRun[] }) {
             <th>Files read</th>
             <th>Files not read</th>
             <th>Observations</th>
+            <th>Not citable</th>
           </tr>
         </thead>
         <tbody>
@@ -65,6 +67,7 @@ export function CheckLedger({ checkRuns }: { checkRuns: CheckRun[] }) {
               <td>{run.implementation === "deterministic" ? run.filesExamined : "none"}</td>
               <td>{run.implementation === "deterministic" ? run.filesNotRead : "none"}</td>
               <td>{run.implementation === "deterministic" ? run.observationCount : "none"}</td>
+              <td>{run.implementation === "deterministic" ? run.uncitedObservationCount : "none"}</td>
             </tr>
           ))}
         </tbody>

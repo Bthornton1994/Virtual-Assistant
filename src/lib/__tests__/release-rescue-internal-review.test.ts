@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +7,7 @@ import { internalModeDecision, isLoopbackRequest } from "@/lib/release-rescue-in
 import {
   addOperator,
   authenticateOperator,
+  endSessions,
   issueSession,
   operatorFromSession,
   removeOperator,
@@ -14,10 +16,11 @@ import {
 import { deliveryForRun, recordDelivery, signRunAsLocalOperator } from "@/lib/release-rescue-internal/review";
 import { CLI_INITIATOR, RunRefused, initiatorFromOperator, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { runSummary } from "@/lib/release-rescue-internal/summary";
-import { listRuns, loadRun, localDir, purgeAfter, sweepRetention } from "@/lib/release-rescue-internal/store";
+import { listRuns, loadRun, localDir, purgeAfter, saveCheckout, sweepRetention } from "@/lib/release-rescue-internal/store";
 import {
   FAKE_AWS_KEY,
   PROMPT_INJECTION,
+  buildTar,
   fixtureAllowlist,
   makeFixtureRepo,
   tempDir,
@@ -111,6 +114,15 @@ describe("a session names an operator, and cannot be forged, extended or outlive
     expect(operatorFromSession(token, issued + SESSION_LIFETIME_MS)).toBeNull();
   });
 
+  it("ends, with every copy of it, when the operator signs out", () => {
+    const operator = addOperator("Sign Out Case", PASSPHRASE);
+    const issued = Date.now();
+    const copied = issueSession(operator.operatorId, issued);
+    endSessions(operator.operatorId, issued);
+    expect(operatorFromSession(copied, issued + 10)).toBeNull();
+    expect(operatorFromSession(issueSession(operator.operatorId, issued + 10), issued + 20)?.operatorId).toBe(operator.operatorId);
+  });
+
   it("ends when the operator is removed, and when the local key changes", () => {
     const operator = addOperator("Removal Case", PASSPHRASE);
     const token = issueSession(operator.operatorId);
@@ -183,6 +195,29 @@ describe("the signature is the session's operator, over exactly the report shown
     expect(signRunAsLocalOperator(second.operator, second.record.runId, { reasonCode: REASON, approvedContentHash: secondShown })).toEqual(
       expect.objectContaining({ ok: false, reason: "operator_unknown" }),
     );
+  });
+});
+
+describe("a run started from the terminal needs a named person to confirm ownership before it is signed", () => {
+  it("refuses to sign without that confirmation, and records the signer as the confirmer with it", async () => {
+    const operator = addOperator("Terminal Signer", PASSPHRASE);
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    const record = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: fixtureAllowlist().repositories[0].repositoryRef,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout", path: repo.path },
+      allowlist: fixtureAllowlist(),
+    });
+    const submission = { reasonCode: REASON, approvedContentHash: hashReleaseRescueReviewSubject(record.draft!.report) };
+    expect(signRunAsLocalOperator(operator, record.runId, submission)).toEqual(
+      expect.objectContaining({ ok: false, reason: "ownership_not_confirmed" }),
+    );
+    const signed = signRunAsLocalOperator(operator, record.runId, submission, new Date(), { ownershipConfirmed: true });
+    expect(signed.ok).toBe(true);
+    expect(loadRun(record.runId)!.ownershipConfirmedBy).toEqual({ operatorId: operator.operatorId, displayName: "Terminal Signer" });
   });
 });
 
@@ -310,6 +345,85 @@ describe("retention", () => {
   });
 });
 
+describe("an archive is accepted only when it is the pinned commit of the allowlisted clone", () => {
+  async function archiveRun(repo: { path: string; commitSha: string }, archivePath: string, commitSha = repo.commitSha) {
+    return startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: fixtureAllowlist().repositories[0].repositoryRef,
+      commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "archive", path: archivePath },
+      allowlist: fixtureAllowlist(),
+    });
+  }
+  const gitArchive = (repo: { path: string }, out: string, ...extra: string[]) =>
+    execFileSync("git", ["-C", repo.path, "archive", ...extra, "--format=tar", "-o", out, "HEAD"], {
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+
+  it("accepts `git archive` of the pinned commit", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "a\n", "src/b.ts": "b\n" });
+    saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+    const out = join(tempDir("rr-internal-archive-"), "commit.tar");
+    gitArchive(repo, out);
+    const record = await archiveRun(repo, out);
+    expect(record.status).toBe("awaiting_review");
+    expect(record.source).toBe("tar_archive");
+  });
+
+  it("refuses an archive that only claims the pinned commit", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "a\n" });
+    saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+    const out = join(tempDir("rr-internal-archive-"), "forged.tar");
+    writeFileSync(
+      out,
+      buildTar([
+        { kind: "pax", global: true, records: { comment: repo.commitSha } },
+        { kind: "file", name: "src/unrelated.ts", data: "not the commit\n" },
+      ]),
+    );
+    const record = await archiveRun(repo, out);
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
+    expect(record.draft).toBeNull();
+  });
+
+  it("refuses an archive that hides a file with export-ignore", async () => {
+    const repo = makeFixtureRepo({ ".gitattributes": "hidden.ts export-ignore\n", "src/a.ts": "a\n", "hidden.ts": `k = "${FAKE_AWS_KEY}"\n` });
+    saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+    const out = join(tempDir("rr-internal-archive-"), "hiding.tar");
+    gitArchive(repo, out);
+    const record = await archiveRun(repo, out);
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0].detail).toContain("1 of its files are missing");
+  });
+
+  it("refuses an archive with no allowlisted clone to check it against", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "a\n" });
+    const out = join(tempDir("rr-internal-archive-"), "commit.tar");
+    gitArchive(repo, out);
+    const record = await archiveRun(repo, out);
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0].reason).toBe("checkout_not_configured");
+  });
+});
+
+describe("export applies retention itself", () => {
+  it("withholds a report past its window even if nothing else has run the sweep", async () => {
+    const { operator, record } = await draftRun();
+    const shown = hashReleaseRescueReviewSubject(record.draft!.report);
+    signRunAsLocalOperator(operator, record.runId, { reasonCode: REASON, approvedContentHash: shown });
+    const day = 24 * 60 * 60 * 1000;
+    const deliveredAt = new Date(Date.now() - 30 * day);
+    recordDelivery(record.runId, deliveredAt);
+    expect(loadRun(record.runId)!.status).toBe("signed");
+
+    expect(deliveryForRun(record.runId).status).toBe("withheld");
+    expect(loadRun(record.runId)!.status).toBe("purged");
+  });
+});
+
 describe("the internal mode exists only where it was switched on, on a loopback host", () => {
   it("is off by default and off on any deployment", () => {
     expect(internalModeDecision({})).toEqual({ enabled: false, reason: "not_switched_on" });
@@ -321,7 +435,7 @@ describe("the internal mode exists only where it was switched on, on a loopback 
     expect(internalModeDecision({ RELEASE_RESCUE_INTERNAL: "yes" }).enabled).toBe(false);
   });
 
-  it("accepts only loopback hosts, and never a request a client or proxy forwarded", () => {
+  it("accepts only loopback hosts, and refuses a request that says a proxy forwarded it from elsewhere", () => {
     const headers = (values: Record<string, string>) => ({ get: (name: string) => values[name] ?? null });
     expect(isLoopbackRequest(headers({ host: "127.0.0.1:3020" }))).toBe(true);
     expect(isLoopbackRequest(headers({ host: "localhost:3020" }))).toBe(true);
@@ -331,6 +445,8 @@ describe("the internal mode exists only where it was switched on, on a loopback 
     expect(isLoopbackRequest(headers({ host: "127.0.0.1", "x-forwarded-for": "203.0.113.9" }))).toBe(false);
     expect(isLoopbackRequest(headers({ host: "127.0.0.1", "x-forwarded-for": "127.0.0.1, 203.0.113.9" }))).toBe(false);
     expect(isLoopbackRequest(headers({ host: "127.0.0.1:3020", "x-forwarded-host": "app.example.com" }))).toBe(false);
+    expect(isLoopbackRequest(headers({ host: "127.0.0.1:3020", forwarded: "for=203.0.113.9;host=app.example.com" }))).toBe(false);
+    expect(isLoopbackRequest(headers({ host: "127.0.0.1:3020", "x-real-ip": "203.0.113.9" }))).toBe(false);
     // What `next start` itself adds to a direct local request.
     expect(
       isLoopbackRequest(
