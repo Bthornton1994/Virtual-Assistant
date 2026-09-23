@@ -823,6 +823,48 @@ ratio that sat above quadratic on a clipped step; **S-018** a 1.5 exponent
 ceiling that sat inside runner noise on a real doubling. Each was a threshold
 the machine decided, on a test that meant to measure growth.
 
+**What changed after this entry, recorded here rather than rewritten above.**
+The paragraphs above are the entry as it was closed, and they are kept as the
+evidence it was closed on. Two later changes mean they no longer describe the
+code:
+
+1. **The median is gone.** PR [#105](https://github.com/Bthornton1994/Virtual-Assistant/pull/105)
+   restored the whole-range exponent against 1.5. A median of three discards
+   the largest ratio, so growth confined to the final doubling passes it:
+   `[1, 2, 4, 256]` has median 2.00 and exponent 2.667. The same PR measured
+   the restored exponent failing on an unchanged scanner under load, in 2 of
+   16 loaded full-suite runs, so choosing an estimator did not settle this
+   entry's class of failure.
+2. **No wall-clock growth assertion blocks a release.** Under
+   `DECISION_LOG.md` § D-019 (2026-09-23), the exponent and its 2,000ms
+   ceiling, and the five 2,000ms checks from
+   `release-rescue-scanner-value-properties.test.ts`, run in the advisory
+   `timing-observation` check (`.github/workflows/timing-observation.yml`,
+   `src/lib/__tests__/release-rescue-scanner.timing-observation.ts`), with
+   their thresholds unchanged. Their failure is visible and does not block.
+   The estimator's clock-free tests stay in `npm test`. The release gate on the
+   scan's cost is counted work: `release-rescue-scan-work.test.ts` and
+   `release-rescue-scan-block-work.test.ts`, from PRs
+   [#109](https://github.com/Bthornton1994/Virtual-Assistant/pull/109) and
+   [#110](https://github.com/Bthornton1994/Virtual-Assistant/pull/110).
+
+What the counted gate is shown to catch, and no more: the two scanner defects this entry's gate was built
+for, reintroduced as mutations on the candidate that implements D-019, both
+fail the blocking suite with no clock involved. Audit 48's EXEC-1, a
+size-gated backward line-start search above `MAX_SCAN_LENGTH / 2`, fails 10
+tests; S-004's per-word backward line-start search fails 11. In both cases the
+counter that detects it is the `indexOf` / `lastIndexOf` scan distance; the
+regular-expression and block counters pass both, because the cost is inside a
+native `lastIndexOf`. The unmutated control passes. That is
+detection of the tested shapes, not of every performance regression. The
+counters see `indexOf` / `lastIndexOf` scan distance, regular-expression start
+positions and JavaScript block executions; work in other native builtins,
+allocation and garbage collection is counted by none of them, which is what the
+timing observation is still for.
+
+This entry's diagnosis is unchanged by either: a wall-clock threshold on a
+shared runner is decided by the machine as well as the code.
+
 ### S-015 — the proof-base paragraph counted a chain that had since grown
 
 | | |
@@ -1337,6 +1379,7 @@ its own.
 | D-016 | **Decided 2026-09-18.** Demo submissions expire in 24 hours; the store has a fixed ceiling. Closes S-011. | `DECISION_LOG.md` § D-016 |
 | D-017 | **Decided 2026-09-18.** Interactive reviewer actions are bound to the authenticated user. Closes S-013. | `DECISION_LOG.md` § D-017, migration `v14` |
 | D-018 | **Decided 2026-09-18 PT.** "Add the complete SQL proof suite and `proof:claim-guard` to GitHub Actions `verify`. The authoritative CI gate must execute the database and claim-guard proofs, not only lint, typecheck, unit tests, and build." Closes 45-M2. Does **not** resolve D-009. Does **not** authorize merge or deploy. PR #97 remains draft / DO_NOT_MERGE. Recording independently verified **PASS** (CI gates) by Audit 46 at `cc9a3c6`, run [35355296507](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35355296507), and by Audit 47 at `ccb3dc3`, run [35357121839](https://github.com/Bthornton1994/Virtual-Assistant/actions/runs/35357121839). Condition 2 is met for `ccb3dc3` only; later commits including this recording are unaudited. Condition 3 (D-009) was met on 2026-09-18 when the owner decided D-009, closing **47-H1**; conditions 1 and 2 govern what remains. | `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |
+| D-019 | **Decided 2026-09-23.** "The wall-clock growth and 2,000 ms timing assertions move to a visible, separately identified, non-required timing-observation check. Failure of that named timing check is advisory and does not block release; its result must remain visible and must not be silently retried." The deterministic work-count tests and every other test stay blocking in `verify`. Narrows D-012's "Any GitHub Actions failure remains a blocker" for that named check only. D-018 unchanged. Authorizes no merge, deployment, payment activation, production access, permission change or executor-authority increase. | `DECISION_LOG.md` § D-019, in the owner's words; § S-018 |
 | ~~—~~ | ~~Whether `reviewedBy` should carry a **reason** and a **hash of the artifact approved**.~~ **Closed** by owner direction: it carries both. See `DECISION_LOG.md` § D-013 and migration `v13`. | `DECISION_LOG.md` |
 | D-009 | **Decided 2026-09-18.** Approved as a bounded paid technical-assurance pilot: payment activation and customer intake for the $299 review, one repository / one application / one critical workflow per engagement, on the access, report and signature terms the owner restated. Closes `47-H1`. It does **not** instruct a merge, does not lift `DO_NOT_MERGE`, does not authorize an executor to activate payment (an external action), and grants no production access or executor authority. | `DECISION_LOG.md` § D-009, in the owner's words |
 | ~~—~~ | ~~Whether GitHub Actions `verify` must execute the SQL proofs and `proof:claim-guard`.~~ **Closed 2026-09-18 PT** as D-018 / 45-M2. The gate runs lint, typecheck, unit tests, build, `proof:claim-guard`, and the complete SQL proof suite. Independently verified **PASS** by Audit 46 at `cc9a3c6` and Audit 47 at `ccb3dc3`. | Audit 45, Audit 46, Audit 47, `DECISION_LOG.md` § D-018, `.github/workflows/verify.yml` |

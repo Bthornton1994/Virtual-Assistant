@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:timing-observation": "vitest run --config vitest.timing-observation.config.ts",
     "test:e2e": "playwright test",
     "context:read": "node --experimental-strip-types scripts/software-context-shunt.mjs",
     "context:benchmark": "node --experimental-strip-types scripts/benchmark-software-context-shunt.mjs",

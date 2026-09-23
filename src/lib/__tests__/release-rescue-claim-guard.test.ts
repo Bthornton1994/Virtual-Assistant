@@ -517,9 +517,10 @@ describe("the marketing surface makes no prohibited claim", () => {
   //
   // The property under test is the exemption list, from both sides. How long the
   // parse takes is not part of it, and S-005 is the lesson about thresholds a
-  // test never meant to assert. The scan's actual complexity is guarded by
-  // `release-rescue-credential-scanner.test.ts`, which measures growth on
-  // purpose.
+  // test never meant to assert. The scan's actual complexity is gated by
+  // counted work, in `release-rescue-scan-work.test.ts` and
+  // `release-rescue-scan-block-work.test.ts`; its wall-clock growth is the
+  // advisory timing observation (DECISION_LOG.md § D-019).
   it("declares exactly the files that need a claim-bearing exemption, and no more", { timeout: 60_000 }, () => {
     // A file reachable from a route is CHECKED unless it is declared, and the
     // declaration carries a reason. The danger with any exemption list is that
