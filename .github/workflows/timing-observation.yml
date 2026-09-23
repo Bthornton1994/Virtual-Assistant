@@ -1,0 +1,72 @@
+# The scanner timing observation. ADVISORY under DECISION_LOG.md § D-019.
+#
+# This is not the release gate. `verify` (verify.yml) is, and it runs every
+# blocking test, `proof:claim-guard`, the build and the full `proof:sql` suite
+# (D-012, D-018). This workflow runs only the wall-clock growth and 2,000ms
+# assertions that D-019 moved out of `npm test`, as its own check named
+# `timing-observation`, so its result is visible on every pull request and its
+# failure does not block a release.
+#
+# Its failure is not hidden: the job fails when an assertion fails, and nothing
+# here retries it, skips it, or marks it as passed. The observed timings are
+# written to the job summary and kept as an artifact, pass or fail. It posts no
+# comment, opens no issue, sends no message and runs on no schedule.
+name: timing-observation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  timing-observation:
+    name: timing-observation (advisory, D-019)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Observe scanner wall-clock timings (advisory, D-019)
+        id: observe
+        run: |
+          set -o pipefail
+          mkdir -p timing-observation
+          nproc > timing-observation/runner.txt
+          node --version >> timing-observation/runner.txt
+          npm run test:timing-observation -- \
+            --reporter=default --reporter=json \
+            --outputFile.json=timing-observation/results.json \
+            2>&1 | tee timing-observation/output.log
+      - name: Summarize observed timings
+        if: always()
+        env:
+          OUTCOME: ${{ steps.observe.outcome }}
+        run: |
+          {
+            echo "## Scanner timing observation (advisory, D-019)"
+            echo
+            echo "Outcome: **${OUTCOME}**. This check does not block a release; \`verify\` is the release gate."
+            echo
+            echo "Runner: $(tr '\n' ' ' < timing-observation/runner.txt 2>/dev/null) (CPUs, Node)"
+            echo
+            echo '```'
+            grep -o '\[timing-observation\].*' timing-observation/output.log || echo "no observations were recorded"
+            echo '```'
+            echo
+            echo '```'
+            grep -E '^ +(Test Files|Tests) ' timing-observation/output.log || true
+            grep -E 'AssertionError' timing-observation/output.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the observation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timing-observation-${{ github.event.pull_request.head.sha }}
+          path: timing-observation/
+          if-no-files-found: error

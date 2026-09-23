@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { redactSecrets } from "@/lib/release-rescue-redaction";
 import { parseRescueIntake } from "@/lib/ai-app-release-rescue/intake";
-import { MAX_SCAN_LENGTH, findCredentialSpans } from "@/lib/release-rescue-credential-scanner";
+import { findCredentialSpans } from "@/lib/release-rescue-credential-scanner";
 import { classifyAssignment, valueShape } from "@/lib/release-rescue-secret-classification";
 import { isNonSecretValue } from "@/lib/release-rescue-credential-scanner";
 
@@ -288,50 +288,12 @@ describe("ordinary security prose survives, because holding a report costs the c
 });
 
 describe("the scan stays bounded as the input grows", () => {
-  // An absolute ceiling only. HOW the cost grows is measured once, by the
-  // exponent, in release-rescue-credential-scanner.test.ts ("the scan is
-  // near-linear on adversarial input"), and these shapes are in that list.
-  //
-  // This block used to also assert `time(80KB) / time(40KB) < 3`, calling 3
-  // "the line between linear and quadratic" (S-014). It was not. MAX_SCAN_LENGTH
-  // is 64,000, so the 80KB input was clipped and the step actually measured was
-  // 1.6x: on that step a linear scan reads 1.6 and a quadratic one 2.56, both
-  // under 3. The check could not fail on complexity. It could fail on a loaded
-  // runner, and did — 3.63 and 3.18 on two shapes whose measured exponents are
-  // 1.25 and 1.00 — on a commit that touched nothing it reads. That is S-005 and
-  // S-012 a third time: a threshold the machine decides, on a test that meant to
-  // measure something else. The sizes are derived from the bound now, so nothing
-  // is clipped, and the one assertion left is the one this block can keep true.
-  const SIZES = [MAX_SCAN_LENGTH / 4, MAX_SCAN_LENGTH / 2, MAX_SCAN_LENGTH] as const;
-
-  const SHAPES: ReadonlyArray<{ label: string; fill: (size: number) => string }> = [
-    { label: "colons", fill: (n) => "password:".repeat(Math.ceil(n / 9)).slice(0, n) },
-    { label: "equals signs", fill: (n) => "password=".repeat(Math.ceil(n / 9)).slice(0, n) },
-    { label: "one enormous line of flags", fill: (n) => "--password x ".repeat(Math.ceil(n / 13)).slice(0, n) },
-    { label: "credential nouns in prose", fill: (n) => "the password is not stored here. ".repeat(Math.ceil(n / 33)).slice(0, n) },
-    { label: "quotes", fill: (n) => 'password="a" '.repeat(Math.ceil(n / 13)).slice(0, n) },
-  ];
-
-  for (const shape of SHAPES) {
-    it(`stays within budget on ${shape.label}`, () => {
-      // Best of five: the minimum is the run that was not interrupted.
-      const timings = SIZES.map((size) => {
-        const text = shape.fill(size);
-        let best = Infinity;
-        for (let run = 0; run < 5; run += 1) {
-          const started = performance.now();
-          redactSecrets(text);
-          best = Math.min(best, performance.now() - started);
-        }
-        return best;
-      });
-
-      for (const elapsed of timings) {
-        expect(elapsed, `${shape.label}: ${timings.map((t) => Math.round(t)).join("ms, ")}ms`)
-          .toBeLessThan(2_000);
-      }
-    });
-  }
+  // The five `stays within budget on <shape>` checks that stood here asserted a
+  // 2,000ms ceiling on the clock. Under D-019 they run, unchanged, in the
+  // advisory timing observation (`release-rescue-scanner.timing-observation.ts`),
+  // with the history of the ratio check this block once carried (S-014). What
+  // stays is the cap, which needs no clock. The scan's cost is gated for
+  // release by counted work, in `release-rescue-scan-work.test.ts`.
 
   it("refuses rather than half-scans an input past the hard cap", () => {
     const oversized = `DB_PASSWORD=Xk92mQvn7LzPr0dQ\n${"# padding\n".repeat(8_000)}`;
