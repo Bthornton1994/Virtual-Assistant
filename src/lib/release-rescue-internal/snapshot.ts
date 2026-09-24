@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   SNAPSHOT_LIMITS,
   SNAPSHOT_LIMITS_VERSION,
@@ -69,6 +70,12 @@ export type AcquiredSnapshot = {
   files: SnapshotFile[];
   rejected: RejectedEntry[];
   totals: MeasuredTotals;
+  /**
+   * The git blob id of every file and symlink the source carried, read or not,
+   * by canonical path: a file's content, a symlink's target. Set by the tar
+   * reader, so an archive can be compared with the pinned tree entry by entry.
+   */
+  blobIds?: ReadonlyMap<string, string>;
 };
 
 export type BlockedSnapshot = {
@@ -107,6 +114,40 @@ export function canonicalEntryPath(path: string): string {
     .split("/")
     .filter((segment) => segment !== "" && segment !== ".")
     .join("/");
+}
+
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/**
+ * A name's bytes as text, exactly: two different byte strings never give the
+ * same text.
+ *
+ * A lossy decode turns every invalid byte into U+FFFD, so `k\xff.ts` and
+ * `k\xfe.ts` were one path, and an archive could rename a committed file to
+ * other bytes and still match it. Valid UTF-8 is decoded as it is (a byte-order
+ * mark included). Anything else is written byte by byte, with every byte from
+ * 0x80 up as `\xHH`. A backslash is written as `\x5c` in both, so an escape
+ * can only come from here. Every such name holds a backslash, which the entry
+ * rules refuse, so its content is recorded as not read.
+ */
+export function exactText(bytes: Uint8Array): string {
+  let text: string | null;
+  try {
+    text = STRICT_UTF8.decode(bytes);
+  } catch {
+    text = null;
+  }
+  if (text !== null) return text.includes("\\") ? text.replaceAll("\\", "\\x5c") : text;
+  let escaped = "";
+  for (const byte of bytes) {
+    escaped += byte >= 0x80 || byte === 0x5c ? `\\x${byte.toString(16).padStart(2, "0")}` : String.fromCharCode(byte);
+  }
+  return escaped;
+}
+
+/** Git's own object id for a blob with these bytes. */
+export function blobId(bytes: Uint8Array): string {
+  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
 /**
@@ -183,6 +224,7 @@ export class SnapshotBudget {
   private readonly directoryPaths = new Set<string>();
   private readonly compressed: boolean;
   private readonly inputBytes: number | undefined;
+  private readonly blobIds = new Map<string, string>();
 
   constructor(compressed: boolean, inputBytes?: number) {
     this.compressed = compressed;
@@ -318,6 +360,14 @@ export class SnapshotBudget {
   }
 
   /**
+   * Records the git blob id of an entry the source carried, under its
+   * canonical path: a file's content, read or not, or a symlink's target.
+   */
+  recordBlobId(path: string, id: string): void {
+    this.blobIds.set(canonicalEntryPath(path), id);
+  }
+
+  /**
    * The final decision. The archive limits were enforced on the measured
    * stream as it was read, and the ratio is decided here over the whole input.
    * The entry and whole-snapshot rules are the same `evaluateSnapshot` the claim
@@ -350,6 +400,7 @@ export class SnapshotBudget {
       files: [...this.files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
       rejected: this.rejected,
       totals: this.totals,
+      blobIds: this.blobIds,
     };
   }
 

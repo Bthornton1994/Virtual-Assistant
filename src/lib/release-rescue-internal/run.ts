@@ -96,8 +96,9 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
     );
   if (input.source.kind === "archive") {
     // An archive is read with its own measured limits, then accepted only if
-    // it is exactly the pinned commit of the allowlisted clone: its declared
-    // commit is its author's claim, not evidence. See `verifyArchiveAgainstTree`.
+    // it matches the pinned commit of the allowlisted clone entry by entry: its
+    // declared commit is its author's claim, not evidence. See
+    // `verifyArchiveAgainstTree` for what is compared and what is not.
     const checkoutPath = checkoutFor(entry.repositoryRef);
     if (!checkoutPath) {
       snapshot = notConfigured("tar_archive");

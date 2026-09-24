@@ -179,3 +179,65 @@ export function buildTar(entries: TarEntry[], options: { terminate?: boolean } =
 export function gzip(buffer: Buffer): Buffer {
   return gzipSync(buffer);
 }
+
+function rewriteChecksum(block: Buffer): void {
+  block.fill(0x20, 148, 156);
+  let sum = 0;
+  for (const byte of block) sum += byte;
+  block.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, "ascii");
+}
+
+/**
+ * A copy of a `git archive` tar with one entry changed: its name's bytes, its
+ * type flag, its link target, or its data (same length). The entry is found by
+ * the raw bytes of its ustar name, and its checksum is rewritten, so the result
+ * is a well-formed tar that differs from the commit in exactly that way.
+ */
+export function editTarEntry(
+  tar: Buffer,
+  name: Buffer | string,
+  edit: { name?: Buffer | string; typeflag?: string; linkname?: Buffer | string; data?: Buffer | string },
+): Buffer {
+  const out = Buffer.from(tar);
+  const wanted = Buffer.from(name);
+  for (let offset = 0; offset + 512 <= out.length; ) {
+    const block = out.subarray(offset, offset + 512);
+    if (block.every((byte) => byte === 0)) break;
+    const nul = block.indexOf(0);
+    const entryName = block.subarray(0, nul < 0 || nul > 100 ? 100 : nul);
+    const size = Number.parseInt(block.subarray(124, 136).toString("ascii").replace(/\0.*$/, "").trim() || "0", 8);
+    if (entryName.equals(wanted)) {
+      if (edit.name !== undefined) {
+        block.fill(0, 0, 100);
+        Buffer.from(edit.name).copy(block, 0);
+      }
+      if (edit.typeflag !== undefined) block.write(edit.typeflag, 156, "ascii");
+      if (edit.linkname !== undefined) {
+        block.fill(0, 157, 257);
+        Buffer.from(edit.linkname).copy(block, 157);
+      }
+      if (edit.data !== undefined) {
+        const data = Buffer.from(edit.data);
+        if (data.length !== size) throw new Error("editTarEntry replaces data of the same length only");
+        data.copy(out, offset + 512);
+      }
+      rewriteChecksum(block);
+      return out;
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  throw new Error(`editTarEntry: no entry named ${wanted.toString("utf8")}`);
+}
+
+/**
+ * Commits files whose names are raw bytes, which may not be valid UTF-8, to a
+ * fixture repository. Returns the new commit.
+ */
+export function commitRawNames(repo: FixtureRepo, files: Array<{ name: Buffer; content: string }>): string {
+  for (const file of files) {
+    writeFileSync(Buffer.concat([Buffer.from(`${repo.path}/`), file.name]), file.content);
+  }
+  git(repo.path, ["add", "-A"]);
+  git(repo.path, ["commit", "-q", "-m", "raw names"]);
+  return git(repo.path, ["rev-parse", "HEAD"]);
+}

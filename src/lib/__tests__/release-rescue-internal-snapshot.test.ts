@@ -14,11 +14,12 @@ import {
   canonicalEntryPath,
   readableAncestorsOf,
 } from "@/lib/release-rescue-internal/snapshot";
-import { readTarArchive, readTarStream } from "@/lib/release-rescue-internal/tar-source";
+import { parsePax, readTarArchive, readTarStream } from "@/lib/release-rescue-internal/tar-source";
 import {
   FAKE_AWS_KEY,
   FIXTURE_REPOSITORY,
   buildTar,
+  editTarEntry,
   gzip,
   makeFixtureRepo,
   tarHeader,
@@ -150,6 +151,73 @@ describe("the tar reader reads what the archive contains, and nothing it only cl
     if (outcome.status !== "blocked") return;
     expect(outcome.refusals[0].reason).toBe("expansion_ratio_exceeded");
     expect(outcome.totals.expandedBytes).toBeLessThan(tar.length);
+  });
+
+  it.each([
+    ["a directory", "5", "A directory entry carries data."],
+    ["a symlink", "2", "A symlink entry carries data."],
+    ["a hard link", "1", "A link or special entry carries data."],
+    ["a FIFO", "6", "A link or special entry carries data."],
+  ])("refuses %s entry that carries data, rather than skip it unread", async (_name, typeflag, detail) => {
+    const tar = buildTar(
+      withCommit([
+        { kind: "file", name: "a.ts", data: "a\n" },
+        { kind: "file", name: "x", typeflag, data: `k = "${FAKE_AWS_KEY}"\n` },
+      ]),
+    );
+    const outcome = await readTarStream(tarStream(tar), SHA, { gzip: false });
+    expect(outcome.status === "blocked" && outcome.refusals[0]).toEqual({ reason: "malformed_input", detail });
+  });
+
+  it("names tar paths that are not valid UTF-8 exactly, so two such names stay two entries", async () => {
+    const tar = buildTar(
+      withCommit([
+        { kind: "file", name: "a.ts", data: "a\n" },
+        { kind: "file", name: "kX.ts", data: "one\n" },
+        { kind: "file", name: "kY.ts", data: "two\n" },
+      ]),
+    );
+    const edited = editTarEntry(editTarEntry(tar, "kX.ts", { name: Buffer.from([0x6b, 0xfe, 0x2e, 0x74, 0x73]) }), "kY.ts", {
+      name: Buffer.from([0x6b, 0xff, 0x2e, 0x74, 0x73]),
+    });
+    const outcome = await readTarStream(tarStream(edited), SHA, { gzip: false });
+    expect(outcome.status).toBe("acquired");
+    if (outcome.status !== "acquired") return;
+    expect(outcome.rejected.map((entry) => [entry.path, entry.reason])).toEqual([
+      ["k\\xfe.ts", "illegal_path_character"],
+      ["k\\xff.ts", "illegal_path_character"],
+    ]);
+  });
+
+  it("names a pax path that is not valid UTF-8 exactly, as it does a ustar name", async () => {
+    const paxEntry = (path: Buffer): Parameters<typeof buildTar>[0] => {
+      const body = Buffer.concat([Buffer.from(" path="), path, Buffer.from("\n")]);
+      let length = body.length + 1;
+      while (String(length).length + body.length !== length) length = String(length).length + body.length;
+      const data = Buffer.concat([Buffer.from(String(length)), body]);
+      const padded = Buffer.concat([data, Buffer.alloc((512 - (data.length % 512)) % 512, 0)]);
+      return [{ kind: "raw", block: tarHeader("PaxHeader", data.length, "x") }, { kind: "raw", block: padded }];
+    };
+    const tar = buildTar(
+      withCommit([
+        { kind: "file", name: "a.ts", data: "a\n" },
+        ...paxEntry(Buffer.from([0x6b, 0xfe, 0x2e, 0x74, 0x73])),
+        { kind: "file", name: "placeholder-1", data: "one\n" },
+        ...paxEntry(Buffer.from([0x6b, 0xff, 0x2e, 0x74, 0x73])),
+        { kind: "file", name: "placeholder-2", data: "two\n" },
+      ]),
+    );
+    const outcome = await readTarStream(tarStream(tar), SHA, { gzip: false });
+    expect(outcome.status).toBe("acquired");
+    if (outcome.status !== "acquired") return;
+    expect(outcome.rejected.map((entry) => entry.path)).toEqual(["k\\xfe.ts", "k\\xff.ts"]);
+  });
+
+  it("reads a pax length only as plain decimal digits that end exactly at the record's newline", () => {
+    expect(parsePax(Buffer.from("13 path=a.ts\n"))?.get("path")?.toString()).toBe("a.ts");
+    for (const record of ["0xe path=a.ts\n", "+14 path=a.ts\n", "014 path=a.ts\n", "1e1 x=abc\n", "12 path=a.ts\n", "99 path=a.ts\n", "13 =patha.ts\n", "13 path=a.tsx"]) {
+      expect(parsePax(Buffer.from(record)), JSON.stringify(record)).toBeNull();
+    }
   });
 
   it("refuses input that is not gzip when gzip is expected", async () => {
@@ -768,6 +836,66 @@ describe("a source lists each path once, however it spells it", () => {
     return { git, blob, tree, entry, commit, read };
   }
 
+  it.each([".", "..", "./a.ts", "a.ts/", "x/y.ts", "x//y.ts"])(
+    "refuses a git tree with an entry named %j, which git itself refuses, rather than read it under another name",
+    async (name) => {
+      const t = hostileTree();
+      const commitSha = t.commit(t.tree(t.entry("100644", "b.ts", t.blob), t.entry("100644", name, t.blob)));
+      const outcome = await t.read(commitSha);
+      expect(outcome.status === "blocked" && outcome.refusals[0]).toEqual({
+        reason: "malformed_input",
+        detail: "The commit's tree holds a name git itself refuses (empty, `.`, `..`, or containing `/`).",
+      });
+    },
+  );
+
+  it("refuses such a name inside a subtree as well", async () => {
+    const t = hostileTree();
+    const sub = Buffer.from(t.tree(t.entry("100644", "c/d.ts", t.blob)), "hex");
+    const outcome = await t.read(t.commit(t.tree(t.entry("40000", "src", sub))));
+    expect(outcome.status === "blocked" && outcome.refusals[0].reason).toBe("malformed_input");
+  });
+
+  it("records the one such name it does not see: a name holding `/` beside a real subtree of that directory", async () => {
+    // Documented in docs/RELEASE-RESCUE-INTERNAL.md. If this starts being
+    // refused, the documented limitation is overstated and should be removed.
+    const t = hostileTree();
+    const sub = Buffer.from(t.tree(t.entry("100644", "z.ts", t.blob)), "hex");
+    const outcome = await t.read(t.commit(t.tree(t.entry("40000", "x", sub), t.entry("100644", "x/y.ts", t.blob))));
+    expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["x/y.ts", "x/z.ts"]);
+  });
+
+  it("names a path that is not valid UTF-8 exactly, so two such names stay two entries, and reads neither", async () => {
+    const t = hostileTree();
+    const key = t.git(["hash-object", "-w", "--stdin"], Buffer.from(`k = "${FAKE_AWS_KEY}"\n`));
+    const raw = (bytes: number[], id: Buffer) => Buffer.concat([Buffer.from("100644 "), Buffer.from(bytes), Buffer.from([0]), id]);
+    const commitSha = t.commit(
+      t.tree(
+        t.entry("100644", "b.ts", t.blob),
+        raw([0x6b, 0xfe, 0x2e, 0x74, 0x73], Buffer.from(key, "hex")),
+        raw([0x6b, 0xff, 0x2e, 0x74, 0x73], Buffer.from(key, "hex")),
+      ),
+    );
+    const outcome = await t.read(commitSha);
+    expect(outcome.status).toBe("acquired");
+    if (outcome.status !== "acquired") return;
+    expect(outcome.files.map((file) => file.path)).toEqual(["b.ts"]);
+    expect(outcome.rejected.map((entry) => [entry.path, entry.reason])).toEqual([
+      ["k\\xfe.ts", "illegal_path_character"],
+      ["k\\xff.ts", "illegal_path_character"],
+    ]);
+  });
+
+  it("writes a backslash in a name the same way, so no spelling can stand for another", () => {
+    const listing = (name: Buffer) =>
+      Buffer.concat([Buffer.from(`100644 blob ${"a".repeat(40)}       1\t`), name, Buffer.from([0])]);
+    expect(parseLsTree(listing(Buffer.from("k\\xff.ts")))?.[0].path).toBe("k\\x5cxff.ts");
+    expect(parseLsTree(listing(Buffer.from([0x6b, 0xff, 0x2e, 0x74, 0x73])))?.[0].path).toBe("k\\xff.ts");
+    expect(parseLsTree(listing(Buffer.from("caf\u00e9.ts")))?.[0].path).toBe("caf\u00e9.ts");
+    // A leading byte-order mark is part of the name, not dropped, or it would be `a.ts`.
+    expect(parseLsTree(listing(Buffer.from("\ufeffa.ts")))?.[0].path).toBe("\ufeffa.ts");
+  });
+
   it("refuses a git tree that uses one name for a file and a directory, in either order", async () => {
     const t = hostileTree();
     const sub = Buffer.from(t.tree(t.entry("100644", "y.ts", t.blob)), "hex");
@@ -811,12 +939,6 @@ describe("a source lists each path once, however it spells it", () => {
         detail: "The source uses one path as both a file and a directory.",
       });
     }
-  });
-
-  it("reads a git name that prints non-canonically under its canonical path", async () => {
-    const t = hostileTree();
-    const outcome = await t.read(t.commit(t.tree(t.entry("100644", "./a.ts", t.blob))));
-    expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["a.ts"]);
   });
 
   it("refuses a git tree that names one path twice", async () => {

@@ -30,6 +30,15 @@ npm run rr:local -- run Bthornton1994/Loadout --sha <40-char sha> --confirm-owne
 
 The terminal has no signing command. Signing needs a signed-in session in the browser.
 
+The terminal checks every argument before it reads or writes anything. It refuses, with exit status 1:
+- an option the command does not take, including a misspelled one;
+- an option given twice;
+- `--option=value` (write `--option value`);
+- an option with a missing or empty value, or one followed by another option. A value may not begin with `-`, so write `./-x` for a file called `-x`;
+- the wrong number of arguments, a `--sha` that is not a full 40-character lowercase commit, and an unknown `--retention` policy.
+
+A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKED. It exits 1 if the summary file could not be written, after reporting the run. The summary file and an export are written owner-only (`0600`). An existing file at that path is replaced, and so is a symlink, which is not written through.
+
 ## What a run does
 
 1. **Scope.** The repository must be listed in `config/release-rescue-internal.allowlist.json`. That file names one application and one critical workflow per repository. If a repository is not on the list, or the ownership box is not confirmed, the run is refused before anything is read and no record is written. To add a target, change the committed allowlist in a reviewed commit.
@@ -39,32 +48,53 @@ The terminal has no signing command. Signing needs a signed-in session in the br
    - Git also runs with every transport refused (`GIT_ALLOW_PROTOCOL`) and lazy fetching off.
    - The clone's `origin` must name the allowlisted repository.
 
-   A `.tar` or `.tar.gz` made by `git archive` can be read instead with `--archive`. An archive's recorded commit is its author's claim, so the archive is accepted only if it is exactly the pinned commit of the allowlisted clone, which must be configured:
-   - every file the review reads must appear once, byte for byte (the same git blob id);
-   - every entry the review does not read must appear once, at the same path and for the same reason. That is anything the snapshot rules refuse: symlinks, credential files, oversized files, and illegal, too-long or too-deep paths. Their content is not compared, because it is not read. A submodule is the one exception: `git archive` writes it as a directory;
-   - no other file or unread entry may appear, and no path may appear twice. Directory entries are not compared, since they hold no content.
+   A `.tar` or `.tar.gz` made by `git archive` can be read instead with `--archive`. The file name decides the format: `.tar.gz` or `.tgz` is read as gzip, and anything else as a plain tar. An archive's recorded commit is its author's claim, so the archive is accepted only if it matches the pinned commit of the allowlisted clone, which must be configured. The archive and the commit are compared entry by entry:
+   - every file must appear once under the same path, with the same bytes (the same git blob id). That holds whether or not the review reads it: a credential file, an oversized file, or a file whose name the rules refuse is hashed as it streams past unread;
+   - every symlink must appear once, at the same path and with the same target (the target's blob id). It is not followed;
+   - every other entry the review does not read must appear once, at the same path and for the same reason;
+   - a submodule must be absent or a directory, which is how `git archive` writes it. Anything else at its path is refused;
+   - no other file, symlink or unread entry may appear, and no path may appear twice.
 
-   These are all refused:
-   - a file hidden with `export-ignore`;
-   - a file whose bytes were changed;
-   - a file repeated in place of one that was left out;
-   - a `.env` left out to turn BLOCKED into PASS.
+   What is not compared:
+   - Directory entries. They hold no data: a directory, symlink, hard link or special entry that carries data is refused.
+   - Path spelling. Paths are compared in the one spelling described below, so `./a.ts` in an archive is `a.ts`.
 
    The run records the pinned tree's totals and its list of entries it did not read, not the archive's.
 
+   These are all refused:
+   - a file hidden with `export-ignore`;
+   - a file whose bytes were changed, whether or not the review reads it;
+   - a file repeated in place of one that was left out;
+   - a `.env` left out to turn BLOCKED into PASS;
+   - a symlink pointed somewhere else;
+   - a file renamed to other bytes that are not valid UTF-8.
+
    Some archives of the right commit are refused as well, because their bytes or layout differ from the commit:
-   - one made with `--prefix`, the layout of a GitHub tarball. A plain `git archive --format=tar <sha>` works instead;
-   - a small `.tar.gz`. Tar pads every archive to 10 KB, so a small repository compresses past the expansion-ratio limit. The same plain `.tar` works instead;
+   - one made with `--prefix`, the layout of a GitHub tarball. Use a plain `git archive --format=tar <sha> > commit.tar`, or `git archive --format=tar.gz <sha> > commit.tar.gz`;
    - one from a repository whose `.gitattributes` rewrites content, such as `export-subst`, `eol`/`text` or `ident`. `git archive` applies those whatever the format, so only the checkout works for such a repository.
 
-   Each entry's path is taken in one spelling, with empty and `.` segments dropped, so `./a.ts`, `a.ts/` and `src//a.ts` name the same path as their plain forms. Absolute and drive-qualified paths are left as they are, so the entry rules still refuse them. A source that lists one path twice, however it spells it, is refused. So is a source in which a file the rules would read (at most 400 characters and 24 segments) is also used as a directory. That covers the git path too, where a hostile tree object can repeat a name or put a blob beside a subtree of the same name. Two entries that are both refused as too long or too deep are not compared this way; neither is read, and either one already makes the text checks BLOCKED. GNU long-name records are refused, because `git archive` never writes them. Every limit in `SNAPSHOT_LIMITS` (file count, file size, total bytes, archive bytes, expansion ratio, path depth and length) is enforced against the bytes actually read, not the sizes the source declares. The file count is enforced before any blob is read. Symlinks are recorded and not followed. Traversal, absolute paths, hard links, devices, submodules, and credential files are recorded and not read. Data after a tar's end-of-archive marker, other than zero padding, refuses the archive. If a limit is exceeded, or the source is malformed, the run is **BLOCKED** and produces no report. A read that fails part way, a `.tar.gz` included, is recorded as a BLOCKED run too. So is a run whose source was read but whose analysis throws; it keeps its measured acquisition, with no ledger and no report. If the analysis completed but the draft cannot be built, or cannot be sealed with the local key, the run is BLOCKED with its ledger kept. Either way the record says which stage failed in a fixed sentence. The error text itself is neither stored nor logged.
+   **Paths.** Each entry's path is taken in one spelling, with empty and `.` segments dropped, so `./a.ts`, `a.ts/` and `src//a.ts` name the same path as their plain forms. Absolute and drive-qualified paths are left as they are, so the entry rules still refuse them.
+
+   A name is decoded exactly: bytes that are not valid UTF-8 are written as `\xHH`, and so is a backslash. So two different names never become one path, and an archive cannot rename a committed file to other bytes that decode the same way. Such a name holds a backslash, which the entry rules refuse, so the file is recorded as not read and the text checks cannot pass.
+
+   On the git path, a tree entry with a name git itself refuses (empty, `.`, `..`, or containing `/`) refuses the snapshot, rather than being read under another path. The one such name this does not see is a name containing `/` whose directory part is also a real subtree: a blob named `x/y.ts` beside a subtree `x` that holds no `y.ts`. It is read under the path it spells, which is also what `git archive` writes for it.
+
+   A source that lists one path twice, however it spells it, is refused. So is a source in which a file the rules would read (at most 400 UTF-16 characters and 24 segments) is also used as a directory. That covers the git path too, where a hostile tree object can repeat a name or put a blob beside a subtree of the same name. Two entries that are both refused as too long or too deep are not compared this way. Neither is read, and either one keeps the text checks from passing. GNU long-name records are refused, because `git archive` never writes them. A pax length must be plain decimal digits and must end exactly at its record's newline.
+
+   **Limits.** Every limit in `SNAPSHOT_LIMITS` (file count, file size, total bytes, archive bytes, expansion ratio, path depth and length) is enforced against the bytes actually read, not the sizes the source declares. The file count is enforced before any blob is read.
+
+   A `.tar.gz` is judged on the whole archive's expansion ratio: its expanded bytes over the file's size, taken before it is read. It is refused once it expands past 12 times its size and past 16 MiB. The reader stops at that point, so a decompression bomb is stopped near the threshold rather than after it has expanded. Because the file's size is fixed and expanded bytes only grow, the decision does not depend on the order of the entries or on how the file is read. Below 16 MiB the ratio is not applied: tar framing alone (a 512-byte header per entry, and padding) makes a small repository, or one of many small files, expand far past 12x. A `.tar.gz` whose whole archive is over 12x and over 16 MiB is refused even when it is legitimate, with the reason and the advice to use a plain `.tar`, which has no ratio. A file that changes size while it is read is refused.
+
+   Symlinks are recorded and not followed. Traversal, absolute paths, hard links, devices, submodules, and credential files are recorded and not read. Data after a tar's end-of-archive marker, other than zero padding, refuses the archive. If a limit is exceeded, or the source is malformed, the run is **BLOCKED** and produces no report.
+
+   **Failures.** A read that fails part way, a `.tar.gz` included, is recorded as a BLOCKED run too. So is a run whose source was read but whose analysis throws; it keeps its measured acquisition, with no ledger and no report. If the analysis completed but the draft cannot be built, or cannot be sealed with the local key, the run is BLOCKED with its ledger kept. Either way the record says which stage failed in a fixed sentence. The error text itself is neither stored nor logged.
 3. **Analysis.** Deterministic checks only. Each check is recorded in the ledger in one of four states:
 
    | Ledger state | Meaning | In the report |
    | --- | --- | --- |
    | `FAIL` | The check found an instance it can cite. | `concern`, with findings built from catalog codes and `path:line` locations |
    | `PASS` | The check read every file it covers and found nothing. | `not_assessed`: finding nothing does not show the control holds |
-   | `BLOCKED` | Something the check covers was not read, or every instance it found is in a file the report cannot name (a path that is not path-shaped, or that is itself credential-shaped). Any entry the snapshot rules refused counts as unread, a symlink included: its link text is committed content that could hold a credential. | `not_assessed`, with the reason stated |
+   | `BLOCKED` | Something the check covers was not read, or every instance it found is in a file the report cannot name (a path that is not path-shaped, or that is itself credential-shaped). Any entry the snapshot rules refused counts as unread, a symlink included: its link text is committed content that could hold a credential. It is compared with the commit, but not scanned. A check that finds a citable instance elsewhere is `FAIL` instead, and its unread count is still shown. | `not_assessed`, with the reason stated |
    | `NOT RUN` | No automated implementation exists. | `not_assessed`: it needs a reviewer's reading |
 
    Every accepted file is scanned. UTF-16 text is decoded first. Other binary content is scanned as bytes for distinctive credential shapes only, and its locations carry no line numbers. Two of the 32 rubric checks are implemented: `secrets.no_secrets_in_version_control` (only vendor-specific credential shapes produce findings) and `secrets.no_secrets_reachable_from_client` (privileged key names behind a browser-exposed prefix). Generic matches, such as `password = "..."`, are counted for the reviewer and never reported. No check can report `pass`, so the verdict is always `conditional_release` and never a clean one.
@@ -87,6 +117,7 @@ The terminal has no signing command. Signing needs a signed-in session in the br
    - who started it, the repository and commit;
    - the check ledger and acquisition counts;
    - the report's hashes, verdict and finding count.
+- A display name may not make a claim about the review. It is held to the offer's prohibited claims and, as a typed value, to professional claims such as "penetration tester", "pentester" or "compliance certified" (`TYPED_FIELD_PROHIBITED_CLAIMS`). Signing checks it again. The guard is not complete: the forms it is known to miss, such as "Certified in compliance" or a credential acronym, are recorded in `src/lib/__tests__/release-rescue-claim-guard-residuals.ts`.
 - Operators exist only in this directory, and there is no default account. Sessions are HMAC-signed and last 8 hours. They end when the operator signs out (every copy of the cookie with them), when the operator is removed, or when the key changes. Five failed sign-ins lock the name for a minute.
 - The server is bound to `127.0.0.1`, which is what keeps it off the network. As defence in depth, the internal routes return 404 unless `RELEASE_RESCUE_INTERNAL=local` is set and none of `VERCEL`, `VERCEL_ENV` or `VERCEL_URL` is. The request must also be addressed to a loopback host and carry no `Forwarded` or `X-Real-IP` header, and no `X-Forwarded-*` value naming another host or address. No other kind of deployment is detected: do not run this mode anywhere but your own machine.
 - Reports record the repository's access mode as `customer_uploaded_archive`, the production mode for access that does not itself demonstrate control. A local clone doesn't either, which is why a named person confirms ownership.

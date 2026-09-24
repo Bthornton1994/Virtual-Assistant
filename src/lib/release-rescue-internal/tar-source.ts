@@ -1,3 +1,4 @@
+import { createHash, type Hash } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { createGunzip } from "node:zlib";
@@ -6,7 +7,9 @@ import { commitShaSchema } from "@/lib/release-rescue-intake";
 import {
   SnapshotBudget,
   SnapshotRefused,
+  blobId,
   blockedBeforeReading,
+  exactText,
   type SnapshotOutcome,
 } from "@/lib/release-rescue-internal/snapshot";
 import { SNAPSHOT_LIMITS, type SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
@@ -44,6 +47,8 @@ type Header = {
   name: string;
   size: number;
   typeflag: string;
+  /** The ustar link target, as bytes: a symlink's target is committed content. */
+  linkname: Buffer;
 };
 
 function parseOctal(field: Buffer): number | null {
@@ -68,9 +73,9 @@ function checksumMatches(block: Buffer): boolean {
   return sum === stored;
 }
 
-function cString(field: Buffer): string {
+function cBytes(field: Buffer): Buffer {
   const end = field.indexOf(0);
-  return field.subarray(0, end < 0 ? field.length : end).toString("utf8");
+  return field.subarray(0, end < 0 ? field.length : end);
 }
 
 export function parseHeader(block: Buffer): Header | null {
@@ -78,26 +83,32 @@ export function parseHeader(block: Buffer): Header | null {
   const size = parseOctal(block.subarray(124, 136));
   if (size === null) return null;
   const typeflag = String.fromCharCode(block[156] || 0x30);
-  const name = cString(block.subarray(0, 100));
+  const name = cBytes(block.subarray(0, 100));
   const magic = block.subarray(257, 263).toString("ascii");
-  const prefix = magic.startsWith("ustar") ? cString(block.subarray(345, 500)) : "";
-  return { name: prefix ? `${prefix}/${name}` : name, size, typeflag };
+  const prefix = magic.startsWith("ustar") ? cBytes(block.subarray(345, 500)) : Buffer.alloc(0);
+  const full = prefix.length > 0 ? Buffer.concat([prefix, Buffer.from("/"), name]) : name;
+  return { name: exactText(full), size, typeflag, linkname: Buffer.from(cBytes(block.subarray(157, 257))) };
 }
 
-/** Parses pax records (`<len> <key>=<value>\n`). Null when malformed. */
-export function parsePax(data: Buffer): Map<string, string> | null {
-  const records = new Map<string, string>();
+/**
+ * Parses pax records (`<len> <key>=<value>\n`), keeping each value as bytes.
+ * Null when malformed: the length must be plain decimal digits with no leading
+ * zero, and must end exactly at the record's newline.
+ */
+export function parsePax(data: Buffer): Map<string, Buffer> | null {
+  const records = new Map<string, Buffer>();
   let offset = 0;
   while (offset < data.length) {
     const space = data.indexOf(0x20, offset);
     if (space < 0) return null;
-    const length = Number(data.subarray(offset, space).toString("ascii"));
-    if (!Number.isSafeInteger(length) || length <= 0 || offset + length > data.length) return null;
-    const record = data.subarray(space + 1, offset + length).toString("utf8");
-    if (!record.endsWith("\n")) return null;
-    const equals = record.indexOf("=");
-    if (equals < 0) return null;
-    records.set(record.slice(0, equals), record.slice(equals + 1, -1));
+    const digits = data.subarray(offset, space).toString("latin1");
+    if (!/^[1-9][0-9]{0,9}$/.test(digits)) return null;
+    const length = Number(digits);
+    if (offset + length > data.length || data[offset + length - 1] !== 0x0a) return null;
+    const record = data.subarray(space + 1, offset + length - 1);
+    const equals = record.indexOf(0x3d);
+    if (equals <= 0) return null;
+    records.set(record.subarray(0, equals).toString("latin1"), Buffer.from(record.subarray(equals + 1)));
     offset += length;
   }
   return records;
@@ -123,13 +134,20 @@ async function parseTar(
 ): Promise<{ recordedCommit: string | null }> {
   let buffered: Buffer = Buffer.alloc(0);
   let recordedCommit: string | null = null;
-  let pending: Map<string, string> | null = null;
+  let pending: Map<string, Buffer> | null = null;
   let zeroBlocks = 0;
   let ended = false;
 
   type State =
     | { kind: "header" }
-    | { kind: "data"; remaining: number; padding: number; collect: Buffer[] | null; onDone: (data: Buffer) => void };
+    | {
+        kind: "data";
+        remaining: number;
+        padding: number;
+        collect: Buffer[] | null;
+        hash: Hash | null;
+        onDone: (data: Buffer) => void;
+      };
   let state: State = { kind: "header" };
 
   const step = (): boolean => {
@@ -154,12 +172,13 @@ async function parseTar(
           remaining: header.size,
           padding,
           collect: [],
+          hash: null,
           onDone: (data) => {
             const records = parsePax(data);
             if (!records) throw new SnapshotRefused("malformed_input", "A pax header is malformed.");
             if (header.typeflag === "g") {
               const comment = records.get("comment");
-              if (comment !== undefined) recordedCommit = comment;
+              if (comment !== undefined) recordedCommit = exactText(comment);
             } else {
               pending = records;
             }
@@ -178,28 +197,55 @@ async function parseTar(
       pending = null;
       // The budget canonicalises the path (`./a.ts`, `a.ts/`, `src//a.ts` are
       // one path) and refuses a second claim on it.
-      const path = pax?.get("path") ?? header.name;
-      const paxSize = pax?.get("size");
+      const paxPath = pax?.get("path");
+      const path = paxPath !== undefined ? exactText(paxPath) : header.name;
+      const paxSize = pax?.get("size")?.toString("latin1");
+      if (paxSize !== undefined && !/^[0-9]{1,15}$/.test(paxSize)) {
+        throw new SnapshotRefused("malformed_input", "An entry size is malformed.");
+      }
       const size = paxSize !== undefined ? Number(paxSize) : header.size;
       if (!Number.isSafeInteger(size) || size < 0) throw new SnapshotRefused("malformed_input", "An entry size is malformed.");
       const dataPadding = (BLOCK - (size % BLOCK)) % BLOCK;
       const type = entryTypeForFlag(header.typeflag);
+
+      // Only a file holds data. `git archive` writes every other entry with
+      // none, and data on one would be skipped unread while the archive still
+      // matched the commit, so it is refused.
+      if (type !== "file" && size > 0) {
+        throw new SnapshotRefused(
+          "malformed_input",
+          type === "directory"
+            ? "A directory entry carries data."
+            : type === "symlink"
+              ? "A symlink entry carries data."
+              : "A link or special entry carries data.",
+        );
+      }
 
       if (type === "directory") {
         // A directory holds no content and the files under it are judged on
         // their own paths, so it is skipped rather than recorded as a
         // rejection. It still claims its path.
         budget.claimPath(path, "directory");
-        state = { kind: "data", remaining: size, padding: dataPadding, collect: null, onDone: () => undefined };
+        state = { kind: "data", remaining: 0, padding: 0, collect: null, hash: null, onDone: () => undefined };
         return true;
       }
       const readAs = budget.admit({ path, type, declaredBytes: type === "file" ? size : 0 });
+      if (type === "symlink") {
+        // Not followed and not scanned, but compared: its target is a blob in the commit.
+        budget.recordBlobId(path, blobId(pax?.get("linkpath") ?? header.linkname));
+      }
+      // A file's content is hashed as it streams, read or not, so an unread
+      // file is compared with the commit as exactly as a read one.
+      const hash = type === "file" ? createHash("sha1").update(`blob ${size}\0`) : null;
       state = {
         kind: "data",
         remaining: size,
         padding: dataPadding,
         collect: readAs !== null ? [] : null,
+        hash,
         onDone: (data) => {
+          if (hash) budget.recordBlobId(path, hash.digest("hex"));
           if (readAs !== null) budget.accept(readAs, size, data);
         },
       };
@@ -211,6 +257,7 @@ async function parseTar(
       if (buffered.length === 0) return false;
       const take = Math.min(state.remaining, buffered.length);
       if (state.collect) state.collect.push(Buffer.from(buffered.subarray(0, take)));
+      state.hash?.update(buffered.subarray(0, take));
       buffered = buffered.subarray(take);
       state.remaining -= take;
       if (state.remaining > 0) return false;

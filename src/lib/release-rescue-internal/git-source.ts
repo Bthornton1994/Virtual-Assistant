@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { commitShaSchema } from "@/lib/release-rescue-intake";
@@ -7,8 +6,10 @@ import { githubRefFromRemoteUrl } from "@/lib/release-rescue-internal/allowlist"
 import {
   SnapshotBudget,
   SnapshotRefused,
+  blobId,
   blockedBeforeReading,
   canonicalEntryPath,
+  exactText,
   type AcquiredSnapshot,
   type AcquisitionRefusal,
   type RejectedEntry,
@@ -166,18 +167,24 @@ export type GitSourceRequest = {
 
 type TreeEntry = { mode: string; objectType: string; objectId: string; declaredBytes: number; path: string };
 
-/** Parses `git ls-tree -r -z -l` output. Returns null on any malformed record. */
+/**
+ * Parses `git ls-tree -r -t -z -l` output. Returns null on any malformed record.
+ *
+ * Each record is split as bytes, and its path decoded with `exactText`, so a
+ * name that is not valid UTF-8 keeps its identity rather than collapsing into
+ * another name's U+FFFD spelling.
+ */
 export function parseLsTree(output: Buffer): TreeEntry[] | null {
   const entries: TreeEntry[] = [];
-  const text = output.toString("utf8");
-  if (text.length === 0) return entries;
-  const records = text.split("\0");
-  if (records[records.length - 1] === "") records.pop();
-  for (const record of records) {
-    const tab = record.indexOf("\t");
+  for (let start = 0; start < output.length; ) {
+    let end = output.indexOf(0, start);
+    if (end < 0) end = output.length;
+    const record = output.subarray(start, end);
+    start = end + 1;
+    const tab = record.indexOf(0x09);
     if (tab < 0) return null;
-    const meta = record.slice(0, tab).trim().split(/\s+/);
-    const path = record.slice(tab + 1);
+    const meta = record.subarray(0, tab).toString("latin1").trim().split(/\s+/);
+    const path = exactText(record.subarray(tab + 1));
     if (meta.length !== 4) return null;
     const [mode, objectType, objectId, sizeField] = meta;
     if (!/^[0-7]{6}$/.test(mode) || !/^[0-9a-f]{40}$/.test(objectId)) return null;
@@ -328,11 +335,43 @@ async function openPinnedTree(request: GitSourceRequest): Promise<PinnedTree> {
     return refuse(commitSha, "commit_not_found", "The pinned commit is not in the local checkout.");
   }
 
-  const listing = await runGit(checkout, ["ls-tree", "-r", "-z", "-l", "--full-tree", commitSha], MAX_LS_TREE_OUTPUT_BYTES);
+  // `-t` lists the subtrees too, so a path's directory can be checked to be a
+  // real subtree rather than part of one entry's name.
+  const listing = await runGit(checkout, ["ls-tree", "-r", "-t", "-z", "-l", "--full-tree", commitSha], MAX_LS_TREE_OUTPUT_BYTES);
   if (listing.code !== 0) return refuse(commitSha, "reader_failed", "The tree of the pinned commit could not be listed.");
-  const entries = parseLsTree(listing.stdout);
-  if (!entries) return refuse(commitSha, "malformed_input", "The tree listing was malformed.");
-  return { ok: true, checkout, commitSha, entries };
+  const listed = parseLsTree(listing.stdout);
+  if (!listed) return refuse(commitSha, "malformed_input", "The tree listing was malformed.");
+  if (holdsNameGitRefuses(listed)) {
+    return refuse(
+      commitSha,
+      "malformed_input",
+      "The commit's tree holds a name git itself refuses (empty, `.`, `..`, or containing `/`).",
+    );
+  }
+  return { ok: true, checkout, commitSha, entries: listed.filter((entry) => entry.objectType !== "tree") };
+}
+
+/**
+ * Whether a tree entry has a name `git fsck` refuses: empty, `.`, `..`, or one
+ * containing `/`. A hostile tree can hold one, and `ls-tree -r` prints it as
+ * part of a path, so `./a.ts` would be read as `a.ts` and `x/y.ts` as a file in
+ * a directory `x` that does not exist. A path's segments are checked, and its
+ * directory must be one of the subtrees `-t` lists.
+ *
+ * One such name is not seen: a name containing `/` whose directory part is
+ * also a real subtree, as a blob named `x/y.ts` beside a subtree `x` that holds
+ * no `y.ts`. It is read under the path it spells, which is what `git archive`
+ * writes for it.
+ */
+function holdsNameGitRefuses(entries: readonly TreeEntry[]): boolean {
+  const subtrees = new Set(entries.filter((entry) => entry.objectType === "tree").map((entry) => entry.path));
+  for (const entry of entries) {
+    const segments = entry.path.split("/");
+    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return true;
+    const slash = entry.path.lastIndexOf("/");
+    if (slash >= 0 && !subtrees.has(entry.path.slice(0, slash))) return true;
+  }
+  return false;
 }
 
 export async function readGitCommit(request: GitSourceRequest): Promise<SnapshotOutcome> {
@@ -364,10 +403,6 @@ export async function readGitCommit(request: GitSourceRequest): Promise<Snapshot
   }
 }
 
-/** Git's own object id for a blob with these bytes. */
-function blobId(bytes: Buffer): string {
-  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
-}
 
 export type ArchiveVerification =
   | {
@@ -385,7 +420,9 @@ export type ArchiveVerification =
   | { matches: false; refusal: AcquisitionRefusal };
 
 /**
- * Whether an archive is exactly the pinned commit of the allowlisted clone.
+ * Whether an archive matches the pinned commit of the allowlisted clone, entry
+ * by entry. Directory entries are not compared (the tar reader refuses one
+ * that carries data), and paths are compared in their canonical spelling.
  *
  * An archive declares its own commit, and `git archive` applies the
  * repository's `export-ignore` and `export-subst` attributes, so neither the
@@ -395,10 +432,12 @@ export type ArchiveVerification =
  * - every file the tree's rules accept must appear in the archive exactly once,
  *   under the same canonical path, with the same git blob id;
  * - every entry the rules do not read (a symlink, a credential file, an
- *   oversized file, an illegal path) must appear once with the same path and
- *   the same reason, so an archive cannot drop one and turn an honest BLOCKED
- *   into a PASS. A submodule is the one exception: `git archive` writes it as
- *   a directory, which is not an entry;
+ *   oversized file, an illegal path) must appear once with the same path, the
+ *   same reason and, for a file or a symlink, the same git blob id: its bytes,
+ *   or its target, hashed as they stream past unread. So an archive cannot drop
+ *   one and turn an honest BLOCKED into a PASS, or change one it knows will
+ *   not be read. A submodule is the one exception: `git archive` writes it as a
+ *   directory, and anything else at its path is refused;
  * - nothing else may appear, and nothing may appear twice. The reader already
  *   refuses a repeated path; this counts repeats again, so the comparison does
  *   not depend on that.
@@ -407,7 +446,7 @@ export type ArchiveVerification =
  */
 export async function verifyArchiveAgainstTree(
   request: GitSourceRequest,
-  archive: Pick<AcquiredSnapshot, "files" | "rejected">,
+  archive: Pick<AcquiredSnapshot, "files" | "rejected" | "blobIds">,
 ): Promise<ArchiveVerification> {
   const refuse = (reason: AcquisitionRefusal["reason"], detail: string): ArchiveVerification => ({
     matches: false,
@@ -428,6 +467,8 @@ export async function verifyArchiveAgainstTree(
 
   const treeBudget = new SnapshotBudget(false);
   const expectedFiles = new Map<string, string>();
+  /** Every blob in the tree, read or not, by canonical path: files and symlinks. */
+  const expectedBlobs = new Map<string, string>();
   const submodules = new Set<string>();
   try {
     for (const entry of tree.entries) {
@@ -435,6 +476,7 @@ export async function verifyArchiveAgainstTree(
       const readAs = treeBudget.admit({ path: entry.path, type, declaredBytes: entry.declaredBytes });
       if (readAs !== null) expectedFiles.set(readAs, entry.objectId);
       else if (entry.objectType === "commit") submodules.add(canonicalEntryPath(entry.path));
+      if (entry.objectType === "blob") expectedBlobs.set(canonicalEntryPath(entry.path), entry.objectId);
     }
   } catch (error) {
     if (error instanceof SnapshotRefused) return { matches: false, refusal: error.refusal };
@@ -474,7 +516,10 @@ export async function verifyArchiveAgainstTree(
     seenUnread.add(path);
     const reason = expectedUnread.get(path);
     if (reason === undefined) extra += 1;
-    else if (reason !== entry.reason) differing += 1;
+    // `git archive` writes a submodule as a directory, never as an entry.
+    else if (reason !== entry.reason || submodules.has(path)) differing += 1;
+    // Its content is not read, but it is compared: a file's bytes, a symlink's target.
+    else if (expectedBlobs.has(path) && archive.blobIds?.get(path) !== expectedBlobs.get(path)) differing += 1;
   }
   for (const path of expectedUnread.keys()) {
     if (!seenUnread.has(path) && !submodules.has(path)) missing += 1;

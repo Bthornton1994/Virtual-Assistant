@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it } from "vitest";
 import { hashReleaseRescueReviewSubject } from "@/lib/release-rescue-report";
+import { SNAPSHOT_LIMITS } from "@/lib/release-rescue-snapshot-limits";
 import { internalModeDecision, isLoopbackRequest } from "@/lib/release-rescue-internal/mode";
 import {
   addOperator,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/release-rescue-internal/local-identity";
 import { deliveryForRun, recordDelivery, signRunAsLocalOperator } from "@/lib/release-rescue-internal/review";
 import { verifyArchiveAgainstTree } from "@/lib/release-rescue-internal/git-source";
+import { blobId } from "@/lib/release-rescue-internal/snapshot";
 import { CLI_INITIATOR, RunRefused, initiatorFromOperator, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { runSummary } from "@/lib/release-rescue-internal/summary";
 import { listRuns, loadRun, localDir, purgeAfter, saveCheckout, sweepRetention } from "@/lib/release-rescue-internal/store";
@@ -28,6 +30,8 @@ import {
   fixtureAllowlist,
   makeFixtureRepo,
   tempDir,
+  commitRawNames,
+  editTarEntry,
 } from "@/lib/__tests__/release-rescue-internal-fixtures";
 
 // The human half: who may sign, what they sign, and what happens to the report
@@ -625,14 +629,18 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     const request = { checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha: repo.commitSha };
     const files = [{ path: "src/a.ts", bytes: Buffer.from("alpha\n") }];
     const env = { path: ".env", reason: "credential_file_not_read" as const, detail: "" };
-    expect((await verifyArchiveAgainstTree(request, { files, rejected: [env] })).matches).toBe(true);
-    const cases: Array<[typeof env[], string]> = [
-      [[{ ...env, reason: "symlink_not_followed" as never }], "1 differ"],
-      [[env, env], "1 are repeated"],
-      [[], "1 of the commit's entries are missing"],
+    const blobIds = new Map([[".env", blobId(Buffer.from("X=1\n"))]]);
+    expect((await verifyArchiveAgainstTree(request, { files, rejected: [env], blobIds })).matches).toBe(true);
+    const cases: Array<[typeof env[], string, ReadonlyMap<string, string> | undefined]> = [
+      [[{ ...env, reason: "symlink_not_followed" as never }], "1 differ", blobIds],
+      [[env, env], "1 are repeated", blobIds],
+      [[], "1 of the commit's entries are missing", blobIds],
+      // Unread, so its content cannot matter to the checks; compared anyway.
+      [[env], "1 differ", new Map([[".env", blobId(Buffer.from("X=2\n"))]])],
+      [[env], "1 differ", undefined],
     ];
-    for (const [rejected, expected] of cases) {
-      const verification = await verifyArchiveAgainstTree(request, { files, rejected });
+    for (const [rejected, expected, ids] of cases) {
+      const verification = await verifyArchiveAgainstTree(request, { files, rejected, blobIds: ids });
       expect(verification.matches).toBe(false);
       if (!verification.matches) expect(verification.refusal.detail).toContain(expected);
     }
@@ -700,6 +708,105 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     );
     expect(viaArchive.checkRuns).toEqual(viaGit.checkRuns);
     expect(viaArchive.checkRuns.find((check) => check.checkId === "secrets.no_secrets_in_version_control")?.status).toBe("BLOCKED");
+  });
+});
+
+describe("an archive is bound to the commit by exact names and git blob ids, whether or not the review reads the entry", () => {
+  const ref = () => fixtureAllowlist().repositories[0].repositoryRef;
+  const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "f", GIT_AUTHOR_EMAIL: "f@example.invalid", GIT_COMMITTER_NAME: "f", GIT_COMMITTER_EMAIL: "f@example.invalid" };
+  const gitIn = (path: string, ...args: string[]) => execFileSync("git", ["-C", path, ...args], { env: gitEnv }).toString("utf8").trim();
+  const archiveOf = (repo: { path: string }, commitSha: string) =>
+    execFileSync("git", ["-C", repo.path, "archive", "--format=tar", commitSha], {
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  async function runArchive(repo: { path: string }, commitSha: string, tar: Buffer) {
+    saveCheckout(ref(), repo.path);
+    const path = join(tempDir("rr-internal-identity-"), "commit.tar");
+    writeFileSync(path, tar);
+    return startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: ref(),
+      commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "archive", path },
+      allowlist: fixtureAllowlist(),
+    });
+  }
+  const FF = Buffer.from([0x6b, 0xff, 0x2e, 0x74, 0x73]); // "k\xff.ts"
+  const FE = Buffer.from([0x6b, 0xfe, 0x2e, 0x74, 0x73]); // "k\xfe.ts"
+  const BIG = "a".repeat(SNAPSHOT_LIMITS.maxFileBytes + 1);
+  function commitWithUnreadEntries() {
+    const repo = makeFixtureRepo({ "src/ok.ts": "ok\n", ".env": "X=1\n", "big.txt": BIG }, { symlinks: { link: "src/ok.ts" } });
+    const commitSha = commitRawNames(repo, [{ name: FF, content: "raw\n" }]);
+    return { repo, commitSha };
+  }
+
+  it("control: the unedited `git archive` of that commit is accepted, and every one of those entries is unread", async () => {
+    const { repo, commitSha } = commitWithUnreadEntries();
+    const record = await runArchive(repo, commitSha, archiveOf(repo, commitSha));
+    expect(record.status).toBe("awaiting_review");
+    expect(record.acquisition.rejectedByReason).toEqual({
+      credential_file_not_read: 1,
+      file_too_large: 1,
+      illegal_path_character: 1,
+      symlink_not_followed: 1,
+    });
+    expect(record.checkRuns.find((check) => check.checkId === "secrets.no_secrets_in_version_control")?.status).toBe("BLOCKED");
+  });
+
+  it.each([
+    ["renames the file whose name is not UTF-8 to different bytes", (tar: Buffer) => editTarEntry(tar, FF, { name: FE })],
+    ["points the symlink somewhere else", (tar: Buffer) => editTarEntry(tar, "link", { linkname: "src/ok.tx" })],
+    ["changes the unread credential file", (tar: Buffer) => editTarEntry(tar, ".env", { data: "X=2\n" })],
+    ["changes the unread oversized file", (tar: Buffer) => editTarEntry(tar, "big.txt", { data: `b${BIG.slice(1)}` })],
+  ])("refuses an archive that %s", async (_name, edit) => {
+    const { repo, commitSha } = commitWithUnreadEntries();
+    const record = await runArchive(repo, commitSha, edit(archiveOf(repo, commitSha)));
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
+  });
+
+  it("compares a symlink whose target is too long for the tar header by its pax target", async () => {
+    const target = `src/${"deep/".repeat(30)}ok.ts`;
+    expect(target.length).toBeGreaterThan(100);
+    const repo = makeFixtureRepo({ "src/ok.ts": "ok\n" }, { symlinks: { link: target } });
+    const faithful = archiveOf(repo, repo.commitSha);
+    expect(faithful.includes(Buffer.from(` linkpath=${target}\n`)), "control: git archive wrote a pax linkpath").toBe(true);
+    expect((await runArchive(repo, repo.commitSha, faithful)).status).toBe("awaiting_review");
+    const other = Buffer.from(faithful);
+    const at = other.indexOf(Buffer.from(` linkpath=${target}\n`));
+    other.write("x", at + " linkpath=".length + target.length - 1, "latin1");
+    const record = await runArchive(repo, repo.commitSha, other);
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
+  });
+
+  it("refuses an archive that puts a hard link where the commit has a submodule", async () => {
+    const sub = makeFixtureRepo({ "s.ts": "s\n" }, { remoteRef: "Bthornton1994/rr-internal-submodule" });
+    const repo = makeFixtureRepo({ "src/a.ts": "a\n" });
+    gitIn(repo.path, "update-index", "--add", "--cacheinfo", `160000,${sub.commitSha},vendor/sub`);
+    gitIn(repo.path, "commit", "-q", "-m", "add a submodule");
+    const commitSha = gitIn(repo.path, "rev-parse", "HEAD");
+    const faithful = archiveOf(repo, commitSha);
+    expect((await runArchive(repo, commitSha, faithful)).status, "control").toBe("awaiting_review");
+    const record = await runArchive(repo, commitSha, editTarEntry(faithful, "vendor/sub/", { typeflag: "1", linkname: FAKE_AWS_KEY }));
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
+  });
+
+  it("refuses an archive with a directory entry that carries data", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "a\n" });
+    const tar = buildTar([
+      { kind: "pax", global: true, records: { comment: repo.commitSha } },
+      { kind: "file", name: "src/", typeflag: "5", data: "" },
+      { kind: "file", name: "src/a.ts", data: "a\n" },
+      { kind: "file", name: "hidden/", typeflag: "5", data: `key = "${FAKE_AWS_KEY}"\n` },
+    ]);
+    const record = await runArchive(repo, repo.commitSha, tar);
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0]).toEqual({ reason: "malformed_input", detail: "A directory entry carries data." });
   });
 });
 
