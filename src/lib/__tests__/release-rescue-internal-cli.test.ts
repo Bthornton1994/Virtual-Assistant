@@ -376,7 +376,7 @@ function localState(): Record<string, string> {
 }
 
 describe("an inherited property name is an unknown option, through the real launcher", () => {
-  it("refuses --constructor, --toString, --__proto__ and --valueOf on every command that takes options or none", async () => {
+  it("refuses --constructor, --toString, --__proto__ and --valueOf on every command", async () => {
     const operator = addOperator("Dana Okafor", "a long local test passphrase");
     // Created long ago and never delivered, so any command that reached the
     // retention sweep would purge it.
@@ -395,8 +395,10 @@ describe("an inherited property name is an unknown option, through the real laun
     const commands: Array<[string, string[]]> = [
       ["run", ["run", FIXTURE_REPOSITORY, "--sha", repo.commitSha, "--confirm-ownership"]],
       ["operator:add", ["operator:add", "--name", "Kim Okafor"]],
+      ["operator:list", ["operator:list"]],
       ["operator:remove", ["operator:remove", operator.operatorId]],
       ["checkout:set", ["checkout:set", FIXTURE_REPOSITORY, repo.path]],
+      ["checkout:list", ["checkout:list"]],
       ["head", ["head", FIXTURE_REPOSITORY]],
       ["show", ["show", old.runId]],
       ["export", ["export", old.runId, "--out", join(work, "report.json")]],
@@ -405,7 +407,13 @@ describe("an inherited property name is an unknown option, through the real laun
     const invocations = commands.flatMap(([command, argv]) =>
       ["constructor", "toString", "__proto__", "valueOf"].map((name) => ({ command, name, argv: [...argv, `--${name}`, "x"] })),
     );
-    const results = await Promise.all(invocations.map((invocation) => launch(invocation.argv, "a long local test passphrase\n")));
+    // Eight at a time, so the processes do not starve the test runner.
+    const results: Array<Awaited<ReturnType<typeof launch>>> = [];
+    for (let start = 0; start < invocations.length; start += 8) {
+      const batch = invocations.slice(start, start + 8);
+      results.push(...(await Promise.all(batch.map((invocation) => launch(invocation.argv, "a long local test passphrase\n")))));
+    }
+    expect(invocations).toHaveLength(40);
     invocations.forEach((invocation, index) => {
       const label = `${invocation.command} --${invocation.name}`;
       expect(results[index].stderr, label).toBe(`Unknown option --${invocation.name} for ${invocation.command}. Nothing was run.\n`);
@@ -418,7 +426,7 @@ describe("an inherited property name is an unknown option, through the real laun
     // Control: the same launcher, asked properly, does reach the sweep.
     const purge = await launch(["purge"]);
     expect(purge).toEqual({ status: 0, stdout: "Purged 1 run(s).\n", stderr: "" });
-  }, 60_000);
+  }, 120_000);
 
   it("reports an unexpected failure in one sentence, with no stack trace", async () => {
     rmSync(join(localDir(), "checkouts.json"));
