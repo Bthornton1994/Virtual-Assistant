@@ -10,6 +10,7 @@ import { hashReleaseRescueReviewSubject } from "@/lib/release-rescue-report";
 import { INTERNAL_PATH, requireOperator } from "@/lib/release-rescue-internal/request-guard";
 import { deliveryForRun } from "@/lib/release-rescue-internal/review";
 import { isRunId, loadRun, sealIntact, sweepRetention } from "@/lib/release-rescue-internal/store";
+import { modelAnalysisReason } from "@/lib/release-rescue-internal/summary";
 
 const REFUSALS: Record<string, string> = {
   draft_tampered: "The stored draft no longer matches its seal, so it cannot be signed.",
@@ -109,8 +110,7 @@ export default async function InternalRunPage({
           </p>
         ) : null}
         <p className="text-sm text-ink-soft">
-          Model-assisted analysis: NOT RUN. No model provider is authorized for this workflow
-          {record.checkRuns.length > 0 ? ", so only the automated checks below ran." : ", and no automated check ran either."}
+          Model-assisted analysis: NOT RUN. {modelAnalysisReason(record)}
         </p>
       </Card>
 

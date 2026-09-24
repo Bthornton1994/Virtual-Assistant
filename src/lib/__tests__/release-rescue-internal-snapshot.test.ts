@@ -5,7 +5,12 @@ import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { SNAPSHOT_LIMITS } from "@/lib/release-rescue-snapshot-limits";
 import { gitArgs, gitEnv, parseLsTree, readGitCommit, resolveCheckoutHead } from "@/lib/release-rescue-internal/git-source";
-import { SnapshotBudget, SnapshotRefused, canonicalEntryPath } from "@/lib/release-rescue-internal/snapshot";
+import {
+  SnapshotBudget,
+  SnapshotRefused,
+  canonicalEntryPath,
+  readableAncestorsOf,
+} from "@/lib/release-rescue-internal/snapshot";
 import { readTarStream } from "@/lib/release-rescue-internal/tar-source";
 import {
   FAKE_AWS_KEY,
@@ -382,11 +387,11 @@ describe("a source lists each path once, however it spells it", () => {
     expect(canonicalEntryPath("src/../a.ts")).toBe("src/../a.ts");
     expect(canonicalEntryPath("/etc/passwd")).toBe("/etc/passwd");
     // A drive-qualified path is left as it is, so `C:/.` cannot become an accepted `C:`.
-    for (const path of ["C:/.", "C:/", "C:/./", "c:\\x"]) expect(canonicalEntryPath(path)).toBe(path);
+    for (const path of ["C:/.", "C:/", "C:/./", "c:/.", "c:\\x"]) expect(canonicalEntryPath(path)).toBe(path);
   });
 
   it("does not let canonicalisation turn a refused path into an accepted one", async () => {
-    for (const name of ["C:/.", "C:/./", "/./etc/passwd", "a/./../../b"]) {
+    for (const name of ["C:/.", "C:/./", "c:/.", "/./etc/passwd", "a/./../../b"]) {
       const outcome = await read([{ kind: "file", name, data: "x\n" }, { kind: "file", name: "ok.ts", data: "ok\n" }]);
       expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["ok.ts"]);
     }
@@ -432,16 +437,55 @@ describe("a source lists each path once, however it spells it", () => {
     expect(refusal?.reason).toBe("duplicate_entry_path");
   });
 
+  const BOTH = { reason: "duplicate_entry_path", detail: "The source uses one path as both a file and a directory." };
+  const TWICE = { reason: "duplicate_entry_path", detail: "The source lists the same path more than once." };
+
   it.each([
-    ["x", "x/y.ts"],
-    ["x/y.ts", "x"],
-    ["src/a.ts/", "src/a.ts/inner.ts"],
-  ])("refuses %s alongside %s: one path used as both a file and a directory", async (first, second) => {
-    const refusal = await refusalOf([
-      { kind: "file", name: first, data: "a\n" },
-      { kind: "file", name: second, data: "b\n" },
+    ["file then a file under it", [["file", "x"], ["file", "x/y.ts"]], BOTH],
+    ["a file under it then the file", [["file", "x/y.ts"], ["file", "x"]], BOTH],
+    ["a file spelled as a directory, then a file under it", [["file", "src/a.ts/"], ["file", "src/a.ts/inner.ts"]], BOTH],
+    ["a file then a directory entry with its path", [["file", "x"], ["dir", "x/"]], BOTH],
+    ["a directory entry then a file with its path", [["dir", "x/"], ["file", "x"]], BOTH],
+    ["a directory entry listed twice", [["dir", "src/"], ["dir", "src/"]], TWICE],
+  ])("refuses %s, and says which", async (_name, pairs, expected) => {
+    const entries = (pairs as Array<[string, string]>).map(([kind, name]) =>
+      kind === "dir"
+        ? { kind: "file" as const, name, data: "", typeflag: "5" }
+        : { kind: "file" as const, name, data: "a\n" },
+    );
+    expect(await refusalOf(entries)).toEqual(expected);
+  });
+
+  it("builds at most maxPathDepth ancestors of at most maxPathLength characters, however long the path", () => {
+    expect(readableAncestorsOf("a/b/c")).toEqual(["a", "a/b"]);
+    expect(readableAncestorsOf("/etc/passwd")).toEqual(["/etc"]);
+    expect(readableAncestorsOf("a.ts")).toEqual([]);
+    expect(readableAncestorsOf(`${"x".repeat(SNAPSHOT_LIMITS.maxPathLength + 1)}/a.ts`)).toEqual([]);
+    const hostile = `z/${"a/".repeat(32_000)}z`;
+    const ancestors = readableAncestorsOf(hostile);
+    expect(ancestors.length).toBe(SNAPSHOT_LIMITS.maxPathDepth);
+    expect(Math.max(...ancestors.map((ancestor) => ancestor.length))).toBeLessThanOrEqual(SNAPSHOT_LIMITS.maxPathLength);
+    expect(ancestors[0]).toBe("z");
+  });
+
+  it("reads an archive of very deep paths without building every prefix, and still finds a conflict within the limits", async () => {
+    // Eight distinct 60 KB paths. Building every prefix of each, as an earlier
+    // version did, is quadratic and exhausts the heap; the bounded ancestors
+    // make this an ordinary read. The deep entries are refused as too long.
+    const deep = Array.from({ length: 8 }, (_, index) => ({
+      kind: "pax" as const,
+      records: { path: `deep${index}/${"a/".repeat(30_000)}z` },
+    }));
+    const entries = deep.flatMap((pax, index) => [pax, { kind: "file" as const, name: `placeholder-${index}`, data: "x\n" }]);
+    const outcome = await read([...entries, { kind: "file", name: "ok.ts", data: "ok\n" }]);
+    expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["ok.ts"]);
+
+    const conflict = await refusalOf([
+      { kind: "file", name: "x", data: "x\n" },
+      { kind: "pax", records: { path: `x/${"a/".repeat(30_000)}z` } },
+      { kind: "file", name: "placeholder", data: "x\n" },
     ]);
-    expect(refusal?.reason).toBe("duplicate_entry_path");
+    expect(conflict).toEqual(BOTH);
   });
 
   it("accepts files under a directory entry, in either order", async () => {
@@ -517,9 +561,15 @@ describe("a source lists each path once, however it spells it", () => {
     return { git, blob, tree, entry, commit, read };
   }
 
-  it("refuses a git tree that uses one name for a file and a directory", async () => {
+  it("refuses a git tree that uses one name for a file and a directory, in either order", async () => {
     const t = hostileTree();
     const sub = Buffer.from(t.tree(t.entry("100644", "y.ts", t.blob)), "hex");
+    const treeBesideBlob = t.commit(t.tree(t.entry("40000", "x", sub), t.entry("100644", "x", t.blob)));
+    const reversed = await t.read(treeBesideBlob);
+    expect(reversed.status === "blocked" && reversed.refusals[0]).toEqual({
+      reason: "duplicate_entry_path",
+      detail: "The source uses one path as both a file and a directory.",
+    });
     const blobBesideTree = t.commit(t.tree(t.entry("100644", "x", t.blob), t.entry("40000", "x", sub)));
     expect(t.git(["ls-tree", "-r", "--name-only", blobBesideTree]).split("\n"), "control: git lists both").toEqual(["x", "x/y.ts"]);
     const outcome = await t.read(blobBesideTree);

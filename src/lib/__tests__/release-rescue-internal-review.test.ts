@@ -642,6 +642,28 @@ describe("a record written by the previous version still says why it is BLOCKED"
     expect("draftFailure" in loaded).toBe(false);
     expect(runSummary(loaded).processingFailure?.message).toBe(legacy.draftFailure);
   });
+
+  it("keeps a processingFailure the record already has, whatever a legacy field says", async () => {
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    const record = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout", path: repo.path },
+      allowlist: fixtureAllowlist(),
+    });
+    const both = {
+      ...JSON.parse(readFileSync(storedRunPath(record.runId), "utf8")),
+      status: "blocked",
+      draft: null,
+      processingFailure: { stage: "sealing", message: "a sealing sentence" },
+      draftFailure: "a legacy sentence",
+    };
+    writeFileSync(storedRunPath(record.runId), JSON.stringify(both));
+    expect(loadRun(record.runId)!.processingFailure).toEqual({ stage: "sealing", message: "a sealing sentence" });
+  });
 });
 
 describe("export applies retention itself", () => {

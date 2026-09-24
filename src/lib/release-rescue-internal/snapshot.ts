@@ -109,13 +109,22 @@ export function canonicalEntryPath(path: string): string {
     .join("/");
 }
 
-/** Every proper ancestor of a canonical path: `a/b/c` gives `a` and `a/b`. */
-function ancestorsOf(canonical: string): string[] {
-  const segments = canonical.split("/");
+/**
+ * The ancestors of a canonical path that could be a file the review reads:
+ * `a/b/c` gives `a` and `a/b`.
+ *
+ * A file that is read is at most `maxPathLength` characters and
+ * `maxPathDepth` segments, so only the first `maxPathDepth` ancestors, of at
+ * most `maxPathLength` characters, can be one. None beyond them is built. They
+ * are found in one pass and sliced from the path, so a hostile 64 KB path costs
+ * at most `maxPathDepth` short strings, not every prefix of itself.
+ */
+export function readableAncestorsOf(canonical: string): string[] {
   const ancestors: string[] = [];
-  for (let end = 1; end < segments.length; end += 1) {
-    const ancestor = segments.slice(0, end).join("/");
-    if (ancestor.length > 0) ancestors.push(ancestor);
+  let slash = canonical.indexOf("/");
+  while (slash !== -1 && slash <= SNAPSHOT_LIMITS.maxPathLength && ancestors.length < SNAPSHOT_LIMITS.maxPathDepth) {
+    if (slash > 0) ancestors.push(canonical.slice(0, slash));
+    slash = canonical.indexOf("/", slash + 1);
   }
   return ancestors;
 }
@@ -205,13 +214,13 @@ export class SnapshotBudget {
    */
   claimPath(path: string, kind: "entry" | "directory" = "entry"): string {
     const canonical = canonicalEntryPath(path);
-    const repeated =
-      kind === "directory"
-        ? this.directoryEntries.has(canonical) || this.entryPaths.has(canonical)
-        : this.entryPaths.has(canonical) || this.directoryPaths.has(canonical);
+    const repeated = kind === "directory" ? this.directoryEntries.has(canonical) : this.entryPaths.has(canonical);
     if (repeated) throw new SnapshotRefused("duplicate_entry_path", "The source lists the same path more than once.");
-    const ancestors = ancestorsOf(canonical);
-    if (ancestors.some((ancestor) => this.entryPaths.has(ancestor))) {
+    const ancestors = readableAncestorsOf(canonical);
+    const fileAndDirectory =
+      (kind === "directory" ? this.entryPaths.has(canonical) : this.directoryPaths.has(canonical)) ||
+      ancestors.some((ancestor) => this.entryPaths.has(ancestor));
+    if (fileAndDirectory) {
       throw new SnapshotRefused("duplicate_entry_path", "The source uses one path as both a file and a directory.");
     }
     if (kind === "directory") {

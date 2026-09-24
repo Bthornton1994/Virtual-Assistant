@@ -6,6 +6,16 @@ import type { RunRecord } from "@/lib/release-rescue-internal/store";
 // repository's files said, which is what makes it safe to print and to save
 // under a gitignored output directory.
 
+/**
+ * Why model-assisted analysis did not run, and what did run instead. Shared by
+ * the summary and the run page, so neither says checks ran when none did.
+ */
+export function modelAnalysisReason(record: Pick<RunRecord, "checkRuns">): string {
+  return record.checkRuns.length > 0
+    ? "No model provider is authorized for Release Rescue, so only the automated checks in the ledger ran."
+    : "No model provider is authorized for Release Rescue, and no automated check ran either.";
+}
+
 export function runSummary(record: RunRecord) {
   const report = record.signed?.report ?? record.draft?.report ?? null;
   return {
@@ -61,6 +71,6 @@ export function runSummary(record: RunRecord) {
     reportHash: record.signed?.reportHash ?? record.accounting.reportHash,
     deliveredAt: record.deliveredAt,
     purgedAt: record.purgedAt,
-    modelDependentAnalysis: "NOT RUN: no model provider is authorized for Release Rescue; only deterministic checks ran.",
+    modelDependentAnalysis: `NOT RUN: ${modelAnalysisReason(record)}`,
   };
 }

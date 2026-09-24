@@ -1076,6 +1076,7 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/release-rescue-internal/run.ts",
   "src/lib/release-rescue-internal/snapshot.ts",
   "src/lib/release-rescue-internal/store.ts",
+  "src/lib/release-rescue-internal/summary.ts",
   "src/lib/release-rescue-internal/tar-source.ts",
   "src/lib/release-rescue-lifecycle.ts",
   "src/lib/release-rescue-observation-catalog.ts",

@@ -41,7 +41,7 @@ The terminal has no signing command. Signing needs a signed-in session in the br
 
    A `.tar` or `.tar.gz` made by `git archive` can be read instead with `--archive`. An archive's recorded commit is its author's claim, so the archive is accepted only if it is exactly the pinned commit of the allowlisted clone, which must be configured:
    - every file the review reads must appear once, byte for byte (the same git blob id);
-   - every entry the review does not read must appear once, at the same path and for the same reason. These are symlinks, credential files and oversized files. Their content is not compared, because it is not read. A submodule is the one exception: `git archive` writes it as a directory;
+   - every entry the review does not read must appear once, at the same path and for the same reason. That is anything the snapshot rules refuse: symlinks, credential files, oversized files, and illegal, too-long or too-deep paths. Their content is not compared, because it is not read. A submodule is the one exception: `git archive` writes it as a directory;
    - no other file or unread entry may appear, and no path may appear twice. Directory entries are not compared, since they hold no content.
 
    These are all refused:
@@ -53,11 +53,9 @@ The terminal has no signing command. Signing needs a signed-in session in the br
    The run records the pinned tree's totals and its list of entries it did not read, not the archive's.
 
    Some archives of the right commit are refused as well, because their bytes or layout differ from the commit:
-   - one made with `--prefix`, the layout of a GitHub tarball;
-   - one whose `.gitattributes` rewrites content, such as `export-subst`, `eol`/`text` or `ident`;
-   - a small `.tar.gz`. Tar pads every archive to 10 KB, so a small repository compresses past the expansion-ratio limit.
-
-   For these, use the checkout, or a plain `.tar` made with `git archive --format=tar <sha>`.
+   - one made with `--prefix`, the layout of a GitHub tarball. A plain `git archive --format=tar <sha>` works instead;
+   - a small `.tar.gz`. Tar pads every archive to 10 KB, so a small repository compresses past the expansion-ratio limit. The same plain `.tar` works instead;
+   - one from a repository whose `.gitattributes` rewrites content, such as `export-subst`, `eol`/`text` or `ident`. `git archive` applies those whatever the format, so only the checkout works for such a repository.
 
    Each entry's path is taken in one spelling, with empty and `.` segments dropped, so `./a.ts`, `a.ts/` and `src//a.ts` name the same path as their plain forms. Absolute and drive-qualified paths are left as they are, so the entry rules still refuse them. A source that lists one path twice, however it spells it, is refused. So is a source that uses one path as both a file and a directory. That covers the git path too, where a hostile tree object can repeat a name or put a blob beside a subtree of the same name. GNU long-name records are refused, because `git archive` never writes them. Every limit in `SNAPSHOT_LIMITS` (file count, file size, total bytes, archive bytes, expansion ratio, path depth and length) is enforced against the bytes actually read, not the sizes the source declares. The file count is enforced before any blob is read. Symlinks are recorded and not followed. Traversal, absolute paths, hard links, devices, submodules, and credential files are recorded and not read. Data after a tar's end-of-archive marker, other than zero padding, refuses the archive. If a limit is exceeded, or the source is malformed, the run is **BLOCKED** and produces no report. A read that fails part way, a `.tar.gz` included, is recorded as a BLOCKED run too. So is a run whose source was read but whose analysis throws; it keeps its measured acquisition, with no ledger and no report. If the analysis completed but the draft cannot be built, or cannot be sealed with the local key, the run is BLOCKED with its ledger kept. Either way the record says which stage failed in a fixed sentence. The error text itself is neither stored nor logged.
 3. **Analysis.** Deterministic checks only. Each check is recorded in the ledger in one of four states:

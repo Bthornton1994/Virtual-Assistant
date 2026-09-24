@@ -158,7 +158,6 @@ export async function main(argv: string[]): Promise<void> {
         });
         const summary = runSummary(record);
         const out = flag(args, "summary-out");
-        if (out) writeFileSync(resolve(out), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
         process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
         process.stdout.write(
           record.status === "awaiting_review"
@@ -168,6 +167,15 @@ export async function main(argv: string[]): Promise<void> {
                 "The source was not acquired (see the refusal above), so nothing was analysed and no report exists."
               }\n`,
         );
+        // Written after the run is reported, so a bad path cannot hide the run id.
+        if (out) {
+          try {
+            writeFileSync(resolve(out), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
+          } catch {
+            process.stderr.write(`The summary file could not be written. The run is saved as ${record.runId}.\n`);
+            process.exitCode = 1;
+          }
+        }
       } catch (error) {
         if (error instanceof RunRefused) fail(`Refused (${error.reason}): ${error.message}`);
         throw error;

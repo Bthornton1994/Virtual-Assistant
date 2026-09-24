@@ -114,6 +114,9 @@ describe("an analysis that throws is recorded as a BLOCKED run, not an escaped e
     const record = await runOnFixture();
     expect(record.status).toBe("awaiting_review");
     expect(record.processingFailure).toBeNull();
+    expect(runSummary(record).modelDependentAnalysis).toBe(
+      "NOT RUN: No model provider is authorized for Release Rescue, so only the automated checks in the ledger ran.",
+    );
   });
 
   it("returns and saves a BLOCKED record with the measured acquisition, and nothing the analysis would have said", async () => {
@@ -144,6 +147,9 @@ describe("an analysis that throws is recorded as a BLOCKED run, not an escaped e
     const summary = runSummary(stored!);
     expect(summary.checkStatusCounts).toEqual({});
     expect(summary.processingFailure?.stage).toBe("analysis");
+    expect(summary.modelDependentAnalysis).toBe(
+      "NOT RUN: No model provider is authorized for Release Rescue, and no automated check ran either.",
+    );
     expectNothingLeaked(record.runId);
   });
 });
@@ -170,15 +176,35 @@ describe("a draft that cannot be sealed keeps the analysis and says what failed"
 });
 
 describe("the CLI says which stage failed, not that nothing was analysed", () => {
-  async function cliRun() {
+  async function cliRun(options: { sha?: string; extra?: string[] } = {}) {
     const repo = makeFixtureRepo({ "src/app.ts": "ok\n" });
     const allowlistPath = join(tempDir("rr-internal-failure-allowlist-"), "allowlist.json");
     writeAllowlist(allowlistPath, fixtureAllowlist());
     process.env.RELEASE_RESCUE_ALLOWLIST = allowlistPath;
     saveCheckout(FIXTURE_REPOSITORY, repo.path);
-    await main(["run", FIXTURE_REPOSITORY, "--sha", repo.commitSha, "--confirm-ownership"]);
+    await main(["run", FIXTURE_REPOSITORY, "--sha", options.sha ?? repo.commitSha, "--confirm-ownership", ...(options.extra ?? [])]);
     return logged.join("");
   }
+
+  it("says the source was not acquired when the acquisition was refused", async () => {
+    const printed = await cliRun({ sha: "f".repeat(40) });
+    expect(printed).toContain(
+      "Run BLOCKED. The source was not acquired (see the refusal above), so nothing was analysed and no report exists.",
+    );
+  });
+
+  it("still reports the run, and says so plainly, when the summary file cannot be written", async () => {
+    const unwritable = join(tempDir("rr-internal-failure-out-"), "missing", "summary.json");
+    try {
+      const printed = await cliRun({ extra: ["--summary-out", unwritable] });
+      expect(printed).toContain("Draft ready and awaiting a named reviewer.");
+      expect(printed).toMatch(/The summary file could not be written\. The run is saved as [0-9a-f-]{36}\./);
+      expect(printed).not.toContain("ENOENT");
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = 0;
+    }
+  });
 
   it("names an analysis that did not complete", async () => {
     failing.analysis = true;
