@@ -200,6 +200,30 @@ describe("the signature is the session's operator, over exactly the report shown
   });
 });
 
+describe("a credential stored as a symlink's target is never reported as a clean check", () => {
+  it("leaves both secrets checks BLOCKED, not PASS, on the git path", async () => {
+    const repo = makeFixtureRepo(
+      { "src/settings.ts": "export const a = 1;\n" },
+      { symlinks: { "config/key": `aws_access_key_id=${FAKE_AWS_KEY}` } },
+    );
+    const record = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout", path: repo.path },
+      allowlist: fixtureAllowlist(),
+    });
+    expect(record.acquisition.rejectedByReason).toEqual({ symlink_not_followed: 1 });
+    expect(record.checkRuns.filter((check) => check.status !== "NOT_RUN").map((check) => check.status)).toEqual([
+      "BLOCKED",
+      "BLOCKED",
+    ]);
+    expect(JSON.stringify(loadRun(record.runId))).not.toContain(FAKE_AWS_KEY);
+  });
+});
+
 describe("a run started from the terminal needs a named person to confirm ownership before it is signed", () => {
   it("refuses to sign without that confirmation, and records the signer as the confirmer with it", async () => {
     const operator = addOperator("Terminal Signer", PASSPHRASE);
@@ -478,6 +502,59 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     expect((await verifyArchiveAgainstTree(request, { files: [a, b], rejected: [] })).matches).toBe(true);
   });
 
+  it("refuses an archive that keeps every path but changes a committed file's bytes, so FAIL cannot become PASS", async () => {
+    const repo = makeFixtureRepo({ "src/settings.ts": `const k = "${FAKE_AWS_KEY}";\n`, "src/app.ts": "ok\n" });
+    saveCheckout(FIXTURE_REPOSITORY, repo.path);
+    const record = await archiveRun(
+      repo,
+      tarOf(repo.commitSha, [
+        { kind: "file", name: "src/app.ts", data: "ok\n" },
+        { kind: "file", name: "src/settings.ts", data: "const k = process.env.K;\n" },
+      ]),
+    );
+    expect(record.status).toBe("blocked");
+    expect(record.draft).toBeNull();
+    expect(record.checkRuns).toEqual([]);
+    expect(record.acquisition.refusals[0].detail).toContain("1 differ");
+  });
+
+  it("refuses a repeat even when it is the only difference from the commit", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "alpha\n", "src/b.ts": "bravo\n" });
+    const request = { checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha: repo.commitSha };
+    const a = { path: "src/a.ts", bytes: Buffer.from("alpha\n") };
+    const b = { path: "src/b.ts", bytes: Buffer.from("bravo\n") };
+    for (const archive of [
+      { files: [a, a, b], rejected: [] },
+      { files: [a, b], rejected: [{ path: "src/a.ts", reason: "symlink_not_followed" as const, detail: "" }] },
+    ]) {
+      const verification = await verifyArchiveAgainstTree(request, archive);
+      expect(verification.matches).toBe(false);
+      if (!verification.matches) {
+        expect(verification.refusal.detail).toBe(
+          "The archive is not the pinned commit of the allowlisted clone: 0 of the commit's entries are missing, 0 differ, 0 are not in the commit and 1 are repeated.",
+        );
+      }
+    }
+  });
+
+  it("requires an entry the review does not read to appear once, for the same reason", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "alpha\n", ".env": "X=1\n" });
+    const request = { checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha: repo.commitSha };
+    const files = [{ path: "src/a.ts", bytes: Buffer.from("alpha\n") }];
+    const env = { path: ".env", reason: "credential_file_not_read" as const, detail: "" };
+    expect((await verifyArchiveAgainstTree(request, { files, rejected: [env] })).matches).toBe(true);
+    const cases: Array<[typeof env[], string]> = [
+      [[{ ...env, reason: "symlink_not_followed" as never }], "1 differ"],
+      [[env, env], "1 are repeated"],
+      [[], "1 of the commit's entries are missing"],
+    ];
+    for (const [rejected, expected] of cases) {
+      const verification = await verifyArchiveAgainstTree(request, { files, rejected });
+      expect(verification.matches).toBe(false);
+      if (!verification.matches) expect(verification.refusal.detail).toContain(expected);
+    }
+  });
+
   it("refuses an archive that leaves out an entry the review would not read, so BLOCKED cannot become PASS", async () => {
     const repo = makeFixtureRepo({ "src/a.ts": "alpha\n", ".env": "X=1\n" });
     saveCheckout(FIXTURE_REPOSITORY, repo.path);
@@ -533,8 +610,37 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     });
     expect(viaArchive.acquisition.rejectedByReason).toEqual(viaGit.acquisition.rejectedByReason);
     expect(viaArchive.acquisition.totals.rejectedCount).toBe(viaGit.acquisition.totals.rejectedCount);
+    // The totals add up: the tree's entry count, including the submodule git archive writes as a directory.
+    expect(viaArchive.acquisition.totals.entryCount).toBe(viaGit.acquisition.totals.entryCount);
+    expect(viaArchive.acquisition.totals.entryCount).toBe(
+      viaArchive.acquisition.totals.acceptedFileCount + viaArchive.acquisition.totals.rejectedCount,
+    );
     expect(viaArchive.checkRuns).toEqual(viaGit.checkRuns);
     expect(viaArchive.checkRuns.find((check) => check.checkId === "secrets.no_secrets_in_version_control")?.status).toBe("BLOCKED");
+  });
+});
+
+describe("a record written by the previous version still says why it is BLOCKED", () => {
+  it("maps a legacy draftFailure sentence to processingFailure when the record is loaded", async () => {
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    const record = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout", path: repo.path },
+      allowlist: fixtureAllowlist(),
+    });
+    const legacy = { ...JSON.parse(readFileSync(storedRunPath(record.runId), "utf8")), status: "blocked", draft: null };
+    delete legacy.processingFailure;
+    legacy.draftFailure = "The source was read, but no valid draft could be built from the analysis, so there is no report.";
+    writeFileSync(storedRunPath(record.runId), JSON.stringify(legacy));
+
+    const loaded = loadRun(record.runId)!;
+    expect(loaded.processingFailure).toEqual({ stage: "draft_assembly", message: legacy.draftFailure });
+    expect("draftFailure" in loaded).toBe(false);
+    expect(runSummary(loaded).processingFailure?.message).toBe(legacy.draftFailure);
   });
 });
 

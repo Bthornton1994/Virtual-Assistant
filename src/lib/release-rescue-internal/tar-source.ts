@@ -187,7 +187,7 @@ async function parseTar(
         // A directory holds no content and the files under it are judged on
         // their own paths, so it is skipped rather than recorded as a
         // rejection. It still claims its path.
-        budget.claimPath(path);
+        budget.claimPath(path, "directory");
         state = { kind: "data", remaining: size, padding: dataPadding, collect: null, onDone: () => undefined };
         return true;
       }
@@ -282,6 +282,10 @@ export async function readTarStream(
           gunzip.destroy(error as Error);
         }
       });
+      // `pipe` does not pass a read error on, so a failing file would leave the
+      // gunzip stream, and the run, waiting forever. Forward it, so the loop
+      // below rejects and the catch records the run as BLOCKED.
+      input.on("error", (error) => gunzip.destroy(error));
       input.pipe(gunzip);
       stream = gunzip;
     } else {

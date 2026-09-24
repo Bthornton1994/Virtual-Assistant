@@ -149,7 +149,7 @@ export type RunRecord = {
    * failed. `message` is a fixed sentence, never the error text, which can
    * name a file or quote what was being read.
    */
-  processingFailure?: { stage: "analysis" | "draft_assembly"; message: string } | null;
+  processingFailure?: { stage: "analysis" | "draft_assembly" | "sealing"; message: string } | null;
   draft: SealedReport | null;
   signed: (SealedReport & { signedAt: string; signedBy: string }) | null;
   deliveredAt: string | null;
@@ -206,8 +206,18 @@ export function saveRun(record: RunRecord): void {
 
 export function loadRun(runId: string): RunRecord | null {
   if (!isRunId(runId)) return null;
-  const record = readJson<RunRecord>(runPath(runId));
+  const record = readJson<RunRecord & { draftFailure?: unknown }>(runPath(runId));
   if (!record || record.schemaVersion !== RUN_SCHEMA_VERSION || record.runId !== runId) return null;
+  // A record written before `processingFailure` replaced `draftFailure` keeps
+  // its reason. That field only ever held one of our own fixed sentences.
+  if (typeof record.draftFailure === "string" && !record.processingFailure) {
+    const migrated: RunRecord & { draftFailure?: unknown } = {
+      ...record,
+      processingFailure: { stage: "draft_assembly", message: record.draftFailure },
+    };
+    delete migrated.draftFailure;
+    return migrated;
+  }
   return record;
 }
 

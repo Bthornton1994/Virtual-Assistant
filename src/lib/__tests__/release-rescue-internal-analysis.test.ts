@@ -139,11 +139,15 @@ describe("nothing unrun or merely clean becomes a pass", () => {
     );
   });
 
-  it("does not treat a skipped symlink as an unread file", () => {
-    const { analysis } = draftFor({ "src/app.ts": "ok\n" }, [
+  it("treats a symlink as unread: its link text is committed content the checks do not read", () => {
+    const { analysis, draft } = draftFor({ "src/app.ts": "ok\n" }, [
       { path: "link", reason: "symlink_not_followed", detail: "" },
     ]);
-    expect(analysis.checkRuns.find((check) => check.checkId === "secrets.no_secrets_in_version_control")?.status).toBe("PASS");
+    const run = analysis.checkRuns.find((check) => check.checkId === "secrets.no_secrets_in_version_control");
+    expect(run).toEqual(expect.objectContaining({ status: "BLOCKED", filesNotRead: 1 }));
+    expect(draft.report.assessments.find((entry) => entry.checkId === run?.checkId)?.rationaleCode).toBe(
+      "not_assessed_automated_check_could_not_read_everything",
+    );
   });
 });
 

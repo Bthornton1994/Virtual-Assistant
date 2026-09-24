@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -35,8 +35,9 @@ vi.mock("@/lib/release-rescue-internal/draft-report", async (original) => {
   };
 });
 
+import { main } from "@/lib/release-rescue-internal/cli";
 import { CLI_INITIATOR, startInternalRun } from "@/lib/release-rescue-internal/run";
-import { localDir, loadRun } from "@/lib/release-rescue-internal/store";
+import { localDir, loadRun, saveCheckout } from "@/lib/release-rescue-internal/store";
 import { runSummary } from "@/lib/release-rescue-internal/summary";
 import {
   FAKE_AWS_KEY,
@@ -45,6 +46,7 @@ import {
   fixtureAllowlist,
   makeFixtureRepo,
   tempDir,
+  writeAllowlist,
 } from "@/lib/__tests__/release-rescue-internal-fixtures";
 
 const LEAKY_PATH = "src/payments/live-keys.ts";
@@ -62,10 +64,19 @@ beforeEach(() => {
       logged.push(args.map(String).join(" "));
     });
   }
+  // Written straight to the process streams, too, so a catch that printed the
+  // error without going through console would still be seen.
+  for (const stream of [process.stdout, process.stderr]) {
+    vi.spyOn(stream, "write").mockImplementation((chunk: string | Uint8Array) => {
+      logged.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    });
+  }
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env.RELEASE_RESCUE_ALLOWLIST;
 });
 
 async function runOnFixture() {
@@ -134,6 +145,54 @@ describe("an analysis that throws is recorded as a BLOCKED run, not an escaped e
     expect(summary.checkStatusCounts).toEqual({});
     expect(summary.processingFailure?.stage).toBe("analysis");
     expectNothingLeaked(record.runId);
+  });
+});
+
+describe("a draft that cannot be sealed keeps the analysis and says what failed", () => {
+  it("saves a BLOCKED record at the sealing stage when the local key is malformed", async () => {
+    mkdirSync(localDir(), { recursive: true });
+    writeFileSync(join(localDir(), "secret.key"), "zz");
+    const record = await runOnFixture();
+
+    expect(record.status).toBe("blocked");
+    expect(record.processingFailure).toEqual({
+      stage: "sealing",
+      message:
+        "The source was read and analysed and a draft was built, but it could not be sealed with this machine's local key, so there is no report to review.",
+    });
+    expect(record.checkRuns).toHaveLength(32);
+    expect(record.notes).not.toBeNull();
+    expect(record.draft).toBeNull();
+    expect(loadRun(record.runId)).toEqual(record);
+    expect(JSON.stringify(record)).not.toContain("secret key is malformed");
+    expect(logged.join("\n")).not.toContain("secret key is malformed");
+  });
+});
+
+describe("the CLI says which stage failed, not that nothing was analysed", () => {
+  async function cliRun() {
+    const repo = makeFixtureRepo({ "src/app.ts": "ok\n" });
+    const allowlistPath = join(tempDir("rr-internal-failure-allowlist-"), "allowlist.json");
+    writeAllowlist(allowlistPath, fixtureAllowlist());
+    process.env.RELEASE_RESCUE_ALLOWLIST = allowlistPath;
+    saveCheckout(FIXTURE_REPOSITORY, repo.path);
+    await main(["run", FIXTURE_REPOSITORY, "--sha", repo.commitSha, "--confirm-ownership"]);
+    return logged.join("");
+  }
+
+  it("names an analysis that did not complete", async () => {
+    failing.analysis = true;
+    const printed = await cliRun();
+    expect(printed).toContain("Run BLOCKED. The source was read, but the automated analysis did not complete");
+    expect(printed).not.toContain("failed at");
+  });
+
+  it("names a draft that could not be built after the analysis completed", async () => {
+    failing.draft = true;
+    const printed = await cliRun();
+    expect(printed).toContain("Run BLOCKED. The source was read and analysed, but no valid draft could be built");
+    expect(printed).not.toContain("Nothing was analysed");
+    expect(printed).not.toContain("failed at");
   });
 });
 

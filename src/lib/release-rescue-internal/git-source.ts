@@ -379,6 +379,8 @@ export type ArchiveVerification =
        * `git archive` writes as directories.
        */
       treeRejected: RejectedEntry[];
+      /** The pinned tree's entry and rejection counts, so the run's totals add up with `treeRejected`. */
+      treeCounts: { entryCount: number; rejectedCount: number };
     }
   | { matches: false; refusal: AcquisitionRefusal };
 
@@ -479,7 +481,11 @@ export async function verifyArchiveAgainstTree(
   }
 
   if (missing === 0 && differing === 0 && extra === 0 && repeated === 0) {
-    return { matches: true, treeRejected: treeBudget.rejected };
+    return {
+      matches: true,
+      treeRejected: treeBudget.rejected,
+      treeCounts: { entryCount: treeBudget.totals.entryCount, rejectedCount: treeBudget.totals.rejectedCount },
+    };
   }
   return refuse(
     "archive_commit_unverified",

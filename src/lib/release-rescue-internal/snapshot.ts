@@ -98,15 +98,26 @@ export class SnapshotRefused extends Error {
  * A tar archive can spell one path several ways (`./a.ts`, `a.ts/`,
  * `src//a.ts`, `src/./a.ts`), and a hostile git tree can carry a name that
  * prints like another path. Empty and `.` segments name nothing, so they are
- * dropped. `..` is kept, and an absolute path is left absolute, so the entry
- * rules still refuse them.
+ * dropped. `..` is kept, and an absolute or drive-qualified path is returned
+ * unchanged, so the entry rules still refuse it: `C:/.` must not become `C:`.
  */
 export function canonicalEntryPath(path: string): string {
-  if (path.startsWith("/")) return path;
+  if (path.startsWith("/") || /^[A-Za-z]:(?:[/\\]|$)/.test(path)) return path;
   return path
     .split("/")
     .filter((segment) => segment !== "" && segment !== ".")
     .join("/");
+}
+
+/** Every proper ancestor of a canonical path: `a/b/c` gives `a` and `a/b`. */
+function ancestorsOf(canonical: string): string[] {
+  const segments = canonical.split("/");
+  const ancestors: string[] = [];
+  for (let end = 1; end < segments.length; end += 1) {
+    const ancestor = segments.slice(0, end).join("/");
+    if (ancestor.length > 0) ancestors.push(ancestor);
+  }
+  return ancestors;
 }
 
 export function emptyTotals(): MeasuredTotals {
@@ -134,7 +145,12 @@ export class SnapshotBudget {
   readonly files: SnapshotFile[] = [];
   private readonly acceptedSizes: Array<{ path: string; type: SnapshotEntryType; sizeBytes: number }> = [];
   private admittedFiles = 0;
-  private readonly claimedPaths = new Set<string>();
+  /** Paths of entries that are not directories: files, symlinks, submodules, anything refused. */
+  private readonly entryPaths = new Set<string>();
+  /** Paths of explicit directory entries (tar only). */
+  private readonly directoryEntries = new Set<string>();
+  /** Every path some entry lives under, and every explicit directory. */
+  private readonly directoryPaths = new Set<string>();
   private readonly compressed: boolean;
 
   constructor(compressed: boolean) {
@@ -177,17 +193,34 @@ export class SnapshotBudget {
 
   /**
    * Claims one entry's path, in its canonical spelling, and returns that
-   * spelling. A source that lists the same path twice, however it spells it,
-   * is refused: which copy belongs to the commit cannot be decided, and a
-   * repeated file could stand in for one that was left out. Every entry claims
-   * its path, directories included, so a file cannot share a path with one.
+   * spelling. Refused, whatever the spelling:
+   *
+   * - the same path listed twice: which copy belongs to the commit cannot be
+   *   decided, and a repeated file could stand in for one that was left out;
+   * - one path used as both a file and a directory, whether the directory is
+   *   an explicit tar entry or only implied by an entry under it. A git tree
+   *   lists no directories, so on the git path the directories are the ones
+   *   the listed paths imply, and a hostile tree that names a blob `x` beside a
+   *   subtree `x` is refused.
    */
-  claimPath(path: string): string {
+  claimPath(path: string, kind: "entry" | "directory" = "entry"): string {
     const canonical = canonicalEntryPath(path);
-    if (this.claimedPaths.has(canonical)) {
-      throw new SnapshotRefused("duplicate_entry_path", "The source lists the same path more than once.");
+    const repeated =
+      kind === "directory"
+        ? this.directoryEntries.has(canonical) || this.entryPaths.has(canonical)
+        : this.entryPaths.has(canonical) || this.directoryPaths.has(canonical);
+    if (repeated) throw new SnapshotRefused("duplicate_entry_path", "The source lists the same path more than once.");
+    const ancestors = ancestorsOf(canonical);
+    if (ancestors.some((ancestor) => this.entryPaths.has(ancestor))) {
+      throw new SnapshotRefused("duplicate_entry_path", "The source uses one path as both a file and a directory.");
     }
-    this.claimedPaths.add(canonical);
+    if (kind === "directory") {
+      this.directoryEntries.add(canonical);
+      this.directoryPaths.add(canonical);
+    } else {
+      this.entryPaths.add(canonical);
+    }
+    for (const ancestor of ancestors) this.directoryPaths.add(ancestor);
     return canonical;
   }
 

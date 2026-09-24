@@ -15,6 +15,8 @@ const ANALYSIS_FAILED =
   "The source was read, but the automated analysis did not complete, so no check has a result and there is no report.";
 const DRAFT_FAILED =
   "The source was read and analysed, but no valid draft could be built from the analysis, so there is no report.";
+const SEAL_FAILED =
+  "The source was read and analysed and a draft was built, but it could not be sealed with this machine's local key, so there is no report to review.";
 
 function countByReason(rejected: ReadonlyArray<{ reason: string }>): Record<string, number> {
   const counts: Record<string, number> = {};
@@ -117,7 +119,7 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
           snapshot = {
             ...snapshot,
             rejected: verification.treeRejected,
-            totals: { ...snapshot.totals, rejectedCount: verification.treeRejected.length },
+            totals: { ...snapshot.totals, ...verification.treeCounts },
           };
         }
       }
@@ -178,8 +180,10 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
     return saveBlocked({ ...base, processingFailure: { stage: "analysis", message: ANALYSIS_FAILED } });
   }
 
+  // From here the analysis has completed, so its ledger is kept for a
+  // reviewer to see whatever fails next.
+  const analysed = { ...base, checkRuns: analysis.checkRuns, notes: analysis.notes };
   let draft: ReturnType<typeof buildDraftReport>;
-  let sealed: ReturnType<typeof sealReport>;
   try {
     draft = buildDraftReport({
       runId,
@@ -189,21 +193,20 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
       retentionPolicy: input.retentionPolicy,
       now,
     });
+  } catch {
+    return saveBlocked({ ...analysed, processingFailure: { stage: "draft_assembly", message: DRAFT_FAILED } });
+  }
+  let sealed: ReturnType<typeof sealReport>;
+  try {
     sealed = sealReport("draft", runId, draft.report, draft.subjectHash);
   } catch {
-    // The analysis completed, so its ledger is kept for a reviewer to see.
-    return saveBlocked({
-      ...base,
-      checkRuns: analysis.checkRuns,
-      notes: analysis.notes,
-      processingFailure: { stage: "draft_assembly", message: DRAFT_FAILED },
-    });
+    // The draft exists but cannot be sealed (the local key is unreadable or
+    // malformed), so it is not stored: an unsealed draft could not be signed.
+    return saveBlocked({ ...analysed, processingFailure: { stage: "sealing", message: SEAL_FAILED } });
   }
   const record: RunRecord = {
-    ...base,
+    ...analysed,
     status: "awaiting_review",
-    checkRuns: analysis.checkRuns,
-    notes: analysis.notes,
     draft: sealed,
     accounting: {
       subjectHash: draft.subjectHash,

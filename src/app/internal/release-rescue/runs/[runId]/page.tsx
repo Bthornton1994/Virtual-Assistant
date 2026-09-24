@@ -109,8 +109,8 @@ export default async function InternalRunPage({
           </p>
         ) : null}
         <p className="text-sm text-ink-soft">
-          Model-assisted analysis: NOT RUN. No model provider is authorized for this workflow, so only the automated
-          checks below ran.
+          Model-assisted analysis: NOT RUN. No model provider is authorized for this workflow
+          {record.checkRuns.length > 0 ? ", so only the automated checks below ran." : ", and no automated check ran either."}
         </p>
       </Card>
 

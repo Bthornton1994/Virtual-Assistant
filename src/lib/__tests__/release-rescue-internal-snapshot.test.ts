@@ -8,6 +8,7 @@ import { gitArgs, gitEnv, parseLsTree, readGitCommit, resolveCheckoutHead } from
 import { SnapshotBudget, SnapshotRefused, canonicalEntryPath } from "@/lib/release-rescue-internal/snapshot";
 import { readTarStream } from "@/lib/release-rescue-internal/tar-source";
 import {
+  FAKE_AWS_KEY,
   FIXTURE_REPOSITORY,
   buildTar,
   gzip,
@@ -380,6 +381,15 @@ describe("a source lists each path once, however it spells it", () => {
     expect(canonicalEntryPath("src/./a.ts")).toBe("src/a.ts");
     expect(canonicalEntryPath("src/../a.ts")).toBe("src/../a.ts");
     expect(canonicalEntryPath("/etc/passwd")).toBe("/etc/passwd");
+    // A drive-qualified path is left as it is, so `C:/.` cannot become an accepted `C:`.
+    for (const path of ["C:/.", "C:/", "C:/./", "c:\\x"]) expect(canonicalEntryPath(path)).toBe(path);
+  });
+
+  it("does not let canonicalisation turn a refused path into an accepted one", async () => {
+    for (const name of ["C:/.", "C:/./", "/./etc/passwd", "a/./../../b"]) {
+      const outcome = await read([{ kind: "file", name, data: "x\n" }, { kind: "file", name: "ok.ts", data: "ok\n" }]);
+      expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["ok.ts"]);
+    }
   });
 
   it("refuses a file listed twice", async () => {
@@ -422,6 +432,27 @@ describe("a source lists each path once, however it spells it", () => {
     expect(refusal?.reason).toBe("duplicate_entry_path");
   });
 
+  it.each([
+    ["x", "x/y.ts"],
+    ["x/y.ts", "x"],
+    ["src/a.ts/", "src/a.ts/inner.ts"],
+  ])("refuses %s alongside %s: one path used as both a file and a directory", async (first, second) => {
+    const refusal = await refusalOf([
+      { kind: "file", name: first, data: "a\n" },
+      { kind: "file", name: second, data: "b\n" },
+    ]);
+    expect(refusal?.reason).toBe("duplicate_entry_path");
+  });
+
+  it("accepts files under a directory entry, in either order", async () => {
+    for (const entries of [
+      [{ kind: "file" as const, name: "src/", data: "", typeflag: "5" }, { kind: "file" as const, name: "src/a.ts", data: "a\n" }],
+      [{ kind: "file" as const, name: "src/a.ts", data: "a\n" }, { kind: "file" as const, name: "src/", data: "", typeflag: "5" }],
+    ]) {
+      expect((await read(entries)).status).toBe("acquired");
+    }
+  });
+
   it("refuses an entry it does not read listed twice", async () => {
     const refusal = await refusalOf([
       { kind: "file", name: "a.ts", data: "a\n" },
@@ -436,12 +467,76 @@ describe("a source lists each path once, however it spells it", () => {
     expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["src/a.ts"]);
   });
 
-  it("refuses GNU long-name records rather than read an entry under a truncated path", async () => {
+  it.each(["L", "K"])("refuses GNU long-name records (typeflag %s) rather than read an entry under a truncated path", async (typeflag) => {
     const refusal = await refusalOf([
-      { kind: "file", name: "././@LongLink", data: "src/a-very-long-name.ts\0", typeflag: "L" },
+      { kind: "file", name: "././@LongLink", data: "src/a-very-long-name.ts\0", typeflag },
       { kind: "file", name: "src/a-very-long-n", data: "a\n" },
     ]);
     expect(refusal).toEqual({ reason: "malformed_input", detail: "GNU long-name records are not supported; use git archive." });
+  });
+
+  it("records a BLOCKED read, promptly and without its text, when a gzip archive's stream fails", async () => {
+    const failing = new Readable({
+      read() {
+        this.destroy(Object.assign(new Error(`EIO while reading src/payments.ts ${FAKE_AWS_KEY}`), { code: "EIO" }));
+      },
+    });
+    const outcome = await Promise.race([
+      readTarStream(failing, SHA, { gzip: true }),
+      new Promise<"unsettled">((settle) => setTimeout(() => settle("unsettled"), 5_000)),
+    ]);
+    expect(outcome).not.toBe("unsettled");
+    if (outcome !== "unsettled") {
+      expect(outcome.status).toBe("blocked");
+      if (outcome.status === "blocked") {
+        expect(outcome.refusals).toEqual([{ reason: "reader_failed", detail: "The archive reader failed." }]);
+        expect(JSON.stringify(outcome)).not.toContain(FAKE_AWS_KEY);
+      }
+    }
+  });
+
+  function hostileTree() {
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    const env = {
+      ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_AUTHOR_NAME: "fixture",
+      GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+      GIT_COMMITTER_NAME: "fixture",
+      GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+    };
+    const git = (args: string[], input?: Buffer) =>
+      execFileSync("git", ["-C", repo.path, ...args], { env, input }).toString("utf8").trim();
+    const blob = Buffer.from(git(["rev-parse", "HEAD:a.ts"]), "hex");
+    const tree = (...entries: Buffer[]) =>
+      git(["hash-object", "-t", "tree", "--literally", "-w", "--stdin"], Buffer.concat(entries));
+    const entry = (mode: string, name: string, id: Buffer) => Buffer.concat([Buffer.from(`${mode} ${name}\0`), id]);
+    const commit = (root: string) => git(["commit-tree", root, "-m", "hostile"]);
+    const read = (commitSha: string) => readGitCommit({ checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha });
+    return { git, blob, tree, entry, commit, read };
+  }
+
+  it("refuses a git tree that uses one name for a file and a directory", async () => {
+    const t = hostileTree();
+    const sub = Buffer.from(t.tree(t.entry("100644", "y.ts", t.blob)), "hex");
+    const blobBesideTree = t.commit(t.tree(t.entry("100644", "x", t.blob), t.entry("40000", "x", sub)));
+    expect(t.git(["ls-tree", "-r", "--name-only", blobBesideTree]).split("\n"), "control: git lists both").toEqual(["x", "x/y.ts"]);
+    const outcome = await t.read(blobBesideTree);
+    expect(outcome.status === "blocked" && outcome.refusals[0]).toEqual({
+      reason: "duplicate_entry_path",
+      detail: "The source uses one path as both a file and a directory.",
+    });
+
+    const gitlinkBesideTree = t.commit(t.tree(t.entry("160000", "sub", t.blob), t.entry("40000", "sub", sub)));
+    const gitlinkOutcome = await t.read(gitlinkBesideTree);
+    expect(gitlinkOutcome.status === "blocked" && gitlinkOutcome.refusals[0].reason).toBe("duplicate_entry_path");
+  });
+
+  it("reads a git name that prints non-canonically under its canonical path", async () => {
+    const t = hostileTree();
+    const outcome = await t.read(t.commit(t.tree(t.entry("100644", "./a.ts", t.blob))));
+    expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["a.ts"]);
   });
 
   it("refuses a git tree that names one path twice", async () => {

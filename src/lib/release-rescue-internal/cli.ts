@@ -163,7 +163,10 @@ export async function main(argv: string[]): Promise<void> {
         process.stdout.write(
           record.status === "awaiting_review"
             ? `\nDraft ready and awaiting a named reviewer. Sign it in the app: /internal/release-rescue/runs/${record.runId}\n`
-            : `\nRun BLOCKED. Nothing was analysed and no report exists.\n`,
+            : `\nRun BLOCKED. ${
+                record.processingFailure?.message ??
+                "The source was not acquired (see the refusal above), so nothing was analysed and no report exists."
+              }\n`,
         );
       } catch (error) {
         if (error instanceof RunRefused) fail(`Refused (${error.reason}): ${error.message}`);

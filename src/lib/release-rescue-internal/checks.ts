@@ -4,7 +4,7 @@ import { composeFinding, repositoryPathSchema, type ReleaseRescueFindingV1 } fro
 import { RELEASE_RESCUE_RUBRIC_V1, type RubricEvidenceKind } from "@/lib/release-rescue-rubric";
 import type { AssessmentRationaleCode } from "@/lib/release-rescue-observation-catalog";
 import type { RubricAssessment } from "@/lib/release-rescue-report";
-import type { AcquiredSnapshot, RejectedEntry } from "@/lib/release-rescue-internal/snapshot";
+import type { AcquiredSnapshot } from "@/lib/release-rescue-internal/snapshot";
 import type { EntryRejectionReason } from "@/lib/release-rescue-snapshot-limits";
 
 // The checks the internal workflow actually runs, and an honest account of
@@ -81,24 +81,14 @@ export const IMPLEMENTED_CHECK_IDS = [
   "secrets.no_secrets_reachable_from_client",
 ] as const;
 
-/**
- * Rejection reasons that leave a text check unable to say it read everything.
- *
- * A symlink is not among them: its target, if inside the snapshot, is read
- * under its own path. A credential-named file IS: the snapshot deliberately
- * does not read a committed `.env`, so a secrets check cannot say it found none.
+/*
+ * Every entry the snapshot rules refused leaves a text check unable to say it
+ * read everything. A credential-named file does: the snapshot deliberately
+ * does not read a committed `.env`, so a secrets check cannot say it found
+ * none. So does a symlink: its target, if inside the snapshot, is read under
+ * its own path, but the link text itself is committed content the checks do
+ * not read, and a credential can be stored there.
  */
-const UNREAD_CONTENT_REASONS: ReadonlySet<EntryRejectionReason> = new Set<EntryRejectionReason>([
-  "unsupported_entry_type",
-  "absolute_path",
-  "path_traversal",
-  "path_too_long",
-  "path_too_deep",
-  "illegal_path_character",
-  "file_too_large",
-  "credential_file_not_read",
-  "malformed_entry",
-]);
 
 const MAX_FINDINGS_PER_CHECK = 25;
 const MAX_LOCATIONS_PER_FINDING = 20;
@@ -352,7 +342,7 @@ export function analyzeSnapshot(snapshot: AcquiredSnapshot): Analysis {
   for (const rejected of snapshot.rejected) {
     notes.rejectedByReason[rejected.reason] = (notes.rejectedByReason[rejected.reason] ?? 0) + 1;
   }
-  const unreadForTextChecks = snapshot.rejected.filter((entry: RejectedEntry) => UNREAD_CONTENT_REASONS.has(entry.reason)).length;
+  const unreadForTextChecks = snapshot.rejected.length;
 
   const textFiles: TextFile[] = [];
   for (const file of snapshot.files) textFiles.push(toTextFile(file.path, file.bytes, notes));
