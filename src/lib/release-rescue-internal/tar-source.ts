@@ -9,7 +9,7 @@ import {
   blockedBeforeReading,
   type SnapshotOutcome,
 } from "@/lib/release-rescue-internal/snapshot";
-import type { SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
+import { SNAPSHOT_LIMITS, type SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
 
 // Reads a tar archive produced by `git archive`, plain or gzip-compressed,
 // without extracting anything to disk.
@@ -19,8 +19,10 @@ import type { SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
 //
 // - the compressed bytes are counted as they are read, against `maxArchiveBytes`;
 // - the decompressed bytes are counted as they are produced, against
-//   `maxTotalBytes` and the expansion ratio, so a decompression bomb stops at the
-//   byte that crosses the line rather than after it has filled memory;
+//   `maxTotalBytes` and the expansion ratio over the file's whole size (see
+//   `SnapshotBudget`), so a decompression bomb stops near the line rather than
+//   after it has filled memory, and the decision does not depend on the order
+//   of the entries or the size of the reads;
 // - each header's size is the size the parser then consumes, and a stream that
 //   ends inside an entry is malformed, never "probably fine".
 //
@@ -257,11 +259,17 @@ export type TarSourceRequest = {
   commitSha: string;
 };
 
-/** Reads a tar or tar.gz from a readable stream. Exposed for tests. */
+/**
+ * Reads a tar or tar.gz from a readable stream. Exposed for tests.
+ *
+ * `inputBytes` is the stream's total size when it is known in advance, as a
+ * file's is. It lets the expansion ratio stop a bomb as it expands, and the
+ * stream must then be exactly that long.
+ */
 export async function readTarStream(
   input: Readable,
   commitSha: string,
-  options: { gzip: boolean },
+  options: { gzip: boolean; inputBytes?: number },
 ): Promise<SnapshotOutcome> {
   const source = "tar_archive" as const;
   const sha = commitShaSchema.safeParse(commitSha);
@@ -269,7 +277,14 @@ export async function readTarStream(
     input.destroy();
     return blockedBeforeReading(source, null, "commit_sha_malformed", "A full 40-character lowercase commit sha is required.");
   }
-  const budget = new SnapshotBudget(options.gzip);
+  const budget = new SnapshotBudget(options.gzip, options.inputBytes);
+  if (options.inputBytes !== undefined && options.inputBytes > SNAPSHOT_LIMITS.maxArchiveBytes) {
+    input.destroy();
+    return budget.blocked(source, sha.data, {
+      reason: "archive_too_large",
+      detail: `The archive is ${options.inputBytes} bytes, over the ${SNAPSHOT_LIMITS.maxArchiveBytes} limit.`,
+    });
+  }
   try {
     let stream: AsyncIterable<Buffer>;
     if (options.gzip) {
@@ -318,6 +333,9 @@ export async function readTarArchive(request: TarSourceRequest): Promise<Snapsho
   if (!isAbsolute(request.archivePath) || !existsSync(request.archivePath) || !statSync(request.archivePath).isFile()) {
     return blockedBeforeReading("tar_archive", null, "checkout_not_configured", "The archive path must be an existing absolute file.");
   }
+  // The name decides the format: `.tar.gz` or `.tgz` is read as gzip, anything
+  // else as a plain tar.
   const gzip = /\.(?:tgz|tar\.gz)$/i.test(request.archivePath);
-  return readTarStream(createReadStream(request.archivePath), request.commitSha, { gzip });
+  const inputBytes = statSync(request.archivePath).size;
+  return readTarStream(createReadStream(request.archivePath), request.commitSha, { gzip, inputBytes });
 }

@@ -379,6 +379,14 @@ const MUTANTS = [
     kind: "verbatim: the case-insensitive set it replaced",
   },
   {
+    id: "M-TYPED-PROFESSIONAL",
+    mechanism: "a typed value is also held to the professional claims (\"penetration tester\", \"compliance certified\")",
+    from: "    ? [...RELEASE_RESCUE_OFFER.prohibitedClaims, ...TYPED_FIELD_PROHIBITED_CLAIMS]",
+    to: "    ? [...RELEASE_RESCUE_OFFER.prohibitedClaims]",
+    kind: "verbatim: typed fields held to the offer's list alone, as they were",
+    file: "src/lib/release-rescue-intake.ts",
+  },
+  {
     id: "FP1",
     mechanism: "control: a comment reworded, nothing behavioural",
     from: "// ONE walk. There were two",

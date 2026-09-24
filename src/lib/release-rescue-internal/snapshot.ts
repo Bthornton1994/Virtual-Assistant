@@ -141,12 +141,33 @@ export function emptyTotals(): MeasuredTotals {
 }
 
 /**
+ * Below this many expanded bytes the expansion ratio is not applied.
+ *
+ * Tar framing alone compresses far past the ratio: every entry takes a 512-byte
+ * header and pads its data to 512 bytes, and `git archive` pads the whole
+ * archive to 10 KiB. So a small repository, or one of many small files,
+ * expands 12x to 80x without being a bomb. Sixteen MiB covers that framing for
+ * `maxFileCount` entries and is harmless to expand; the absolute limits,
+ * `maxArchiveBytes` and `maxTotalBytes`, still apply at every size.
+ */
+export const MEASURED_RATIO_FLOOR_BYTES = 16 * 1024 * 1024;
+
+/**
  * Enforces the snapshot limits on measured bytes, as they arrive.
  *
- * `compressed` says whether `streamBytes` and `expandedBytes` differ. The
- * expansion ratio only means something for a compressed source, and is checked
- * continuously there, so a decompression bomb is stopped at the byte that
- * crosses the ratio rather than after it has filled memory.
+ * `compressed` says whether `streamBytes` and `expandedBytes` differ. For a
+ * compressed source the expansion ratio is the whole archive's: expanded bytes
+ * over the input's total size, refused only past `MEASURED_RATIO_FLOOR_BYTES`.
+ *
+ * When the input's size is known before reading (`inputBytes`, a file's size),
+ * the reader stops as soon as the bytes produced pass that threshold. Expanded
+ * bytes only grow, so stopping early is the decision the finished archive
+ * would get anyway: it does not depend on the order of the entries or on how
+ * the input is split into reads. A decompression bomb is stopped near the
+ * threshold rather than after it has expanded. The input must then be exactly
+ * that size, so a file that changes while it is read is refused.
+ *
+ * Without `inputBytes`, the same rule is applied once, at the end.
  */
 export class SnapshotBudget {
   readonly totals: MeasuredTotals = emptyTotals();
@@ -161,9 +182,11 @@ export class SnapshotBudget {
   /** Every path some entry lives under, and every explicit directory. */
   private readonly directoryPaths = new Set<string>();
   private readonly compressed: boolean;
+  private readonly inputBytes: number | undefined;
 
-  constructor(compressed: boolean) {
+  constructor(compressed: boolean, inputBytes?: number) {
     this.compressed = compressed;
+    this.inputBytes = inputBytes;
   }
 
   /** Bytes received from the reader, before decompression. */
@@ -175,6 +198,7 @@ export class SnapshotBudget {
         `Read ${this.totals.streamBytes} bytes of input, over the ${SNAPSHOT_LIMITS.maxArchiveBytes} limit.`,
       );
     }
+    if (this.inputBytes !== undefined && this.totals.streamBytes > this.inputBytes) throw this.sizeChanged();
     if (!this.compressed) this.countExpanded(bytes);
   }
 
@@ -187,17 +211,25 @@ export class SnapshotBudget {
         `Expanded to ${this.totals.expandedBytes} bytes, over the ${SNAPSHOT_LIMITS.maxTotalBytes} limit.`,
       );
     }
-    if (this.compressed && this.totals.streamBytes > 0) {
-      const ratio = this.totals.expandedBytes / this.totals.streamBytes;
-      // A tiny prefix can legitimately expand a lot (a header block of zeros), so
-      // the ratio is only enforced once there is enough input to mean anything.
-      if (this.totals.expandedBytes > 1_000_000 && ratio > SNAPSHOT_LIMITS.maxExpansionRatio) {
-        throw new SnapshotRefused(
-          "expansion_ratio_exceeded",
-          `Input expands ${ratio.toFixed(1)}x, over the ${SNAPSHOT_LIMITS.maxExpansionRatio}x limit.`,
-        );
-      }
+    if (this.inputBytes !== undefined) {
+      const refusal = this.ratioRefusal(this.inputBytes);
+      if (refusal) throw new SnapshotRefused(refusal.reason, refusal.detail);
     }
+  }
+
+  private sizeChanged(): SnapshotRefused {
+    return new SnapshotRefused("malformed_input", "The archive changed size while it was read.");
+  }
+
+  /** The ratio rule over an input of `inputBytes`, or null when it holds. */
+  private ratioRefusal(inputBytes: number): AcquisitionRefusal | null {
+    if (!this.compressed) return null;
+    const threshold = Math.max(MEASURED_RATIO_FLOOR_BYTES, SNAPSHOT_LIMITS.maxExpansionRatio * inputBytes);
+    if (this.totals.expandedBytes <= threshold) return null;
+    return {
+      reason: "expansion_ratio_exceeded",
+      detail: `The archive's ${inputBytes} bytes expand past ${threshold} bytes, more than ${SNAPSHOT_LIMITS.maxExpansionRatio}x its size. A plain .tar is not subject to this limit.`,
+    };
   }
 
   /**
@@ -286,14 +318,20 @@ export class SnapshotBudget {
   }
 
   /**
-   * The final decision, made by the same `evaluateSnapshot` the claim half
-   * uses, over the measured sizes and the measured stream.
+   * The final decision. The archive limits were enforced on the measured
+   * stream as it was read, and the ratio is decided here over the whole input.
+   * The entry and whole-snapshot rules are the same `evaluateSnapshot` the claim
+   * half uses, over the measured sizes. It is given no archive facts: its ratio
+   * rule has no floor, which is right for a declared index and wrong for tar
+   * framing (see `MEASURED_RATIO_FLOOR_BYTES`).
    */
   finish(source: SnapshotSourceKind, commitSha: string): SnapshotOutcome {
-    const decision = evaluateSnapshot(this.acceptedSizes, {
-      archiveBytes: Math.max(1, this.totals.streamBytes),
-      declaredExpandedBytes: this.totals.expandedBytes,
-    });
+    if (this.inputBytes !== undefined && this.totals.streamBytes !== this.inputBytes) {
+      return this.blocked(source, commitSha, this.sizeChanged().refusal);
+    }
+    const ratio = this.ratioRefusal(this.totals.streamBytes);
+    if (ratio) return this.blocked(source, commitSha, ratio);
+    const decision = evaluateSnapshot(this.acceptedSizes);
     if (!decision.accepted) {
       return {
         status: "blocked",

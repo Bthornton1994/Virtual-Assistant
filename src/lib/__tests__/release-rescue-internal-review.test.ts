@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it } from "vitest";
 import { hashReleaseRescueReviewSubject } from "@/lib/release-rescue-report";
 import { internalModeDecision, isLoopbackRequest } from "@/lib/release-rescue-internal/mode";
@@ -9,6 +10,7 @@ import {
   authenticateOperator,
   endSessions,
   issueSession,
+  loadOperators,
   operatorFromSession,
   removeOperator,
   SESSION_LIFETIME_MS,
@@ -89,6 +91,32 @@ describe("an operator is a real local identity, created only with a passphrase",
     }
     expect(authenticateOperator("Lockout Case", PASSPHRASE)).toEqual({ ok: false, reason: "locked" });
     expect(authenticateOperator("Nobody At All", PASSPHRASE)).toEqual({ ok: false, reason: "invalid" });
+  });
+});
+
+describe("an operator's display name cannot claim a credential the review does not carry", () => {
+  it.each(["Certified penetration tester", "certified pentester", "certified pen tester", "Compliance certified"])(
+    "refuses to create an operator named %s, and writes nothing",
+    (name) => {
+      expect(() => addOperator(name, "a long enough passphrase")).toThrow("A display name may not make a claim about the review.");
+      expect(loadOperators()).toEqual([]);
+    },
+  );
+
+  it("refuses to sign as an operator whose stored name makes such a claim, as one registered before this rule would", async () => {
+    const { operator, record } = await draftRun();
+    const registryPath = join(localDir(), "operators.json");
+    const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+    registry.operators[0].displayName = "Certified penetration tester";
+    writeFileSync(registryPath, JSON.stringify(registry));
+    const renamed = { ...operator, displayName: "Certified penetration tester" };
+    const shown = hashReleaseRescueReviewSubject(record.draft!.report);
+    const outcome = signRunAsLocalOperator(renamed, record.runId, { reasonCode: REASON, approvedContentHash: shown });
+    expect(outcome).toEqual(
+      expect.objectContaining({ ok: false, reason: "signature_refused", detail: expect.stringContaining('prohibited claim ("penetration tester")') }),
+    );
+    expect(loadRun(record.runId)?.status).toBe("awaiting_review");
+    expect(loadRun(record.runId)?.signed).toBeNull();
   });
 });
 
@@ -396,6 +424,61 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     const record = await archiveRun(repo, out);
     expect(record.status).toBe("awaiting_review");
     expect(record.source).toBe("tar_archive");
+  });
+
+  // A `.tar.gz` is judged on the whole archive's ratio, so a small repository
+  // (tar padding alone is past 12x) and one whose first file compresses very
+  // well are read, and give what the checkout gives.
+  it.each([
+    ["a small repository", () => ({ "src/a.ts": "a\n", "src/b.ts": "b\n" })],
+    [
+      "the reported 2.4 MB repository, with 1.6 MB of generated JSON first",
+      () => {
+        let json = "[";
+        for (let index = 0; index < 30_000; index += 1) {
+          json += `${JSON.stringify({ id: index, name: `item-${index}`, active: index % 2 === 0, tags: ["a", "b"] })},`;
+        }
+        const files: Record<string, string> = { "data/fixtures.json": `${json}{}]` };
+        let x = 1;
+        for (let index = 1; index <= 60; index += 1) {
+          const bytes = Buffer.alloc(6000);
+          for (let at = 0; at < bytes.length; at += 1) {
+            x ^= x << 13;
+            x >>>= 0;
+            x ^= x >>> 17;
+            x ^= x << 5;
+            x >>>= 0;
+            bytes[at] = x & 0xff;
+          }
+          files[`src/f${index}.txt`] = bytes.toString("base64");
+        }
+        return files;
+      },
+    ],
+  ])("accepts a `git archive` .tar.gz of %s, and reports what the checkout reports", async (_name, files) => {
+    const repo = makeFixtureRepo(files());
+    saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+    const dir = tempDir("rr-internal-archive-");
+    const tar = join(dir, "commit.tar");
+    gitArchive(repo, tar);
+    const tgz = join(dir, "commit.tar.gz");
+    writeFileSync(tgz, gzipSync(readFileSync(tar)));
+
+    const archived = await archiveRun(repo, tgz);
+    expect(archived.status).toBe("awaiting_review");
+    expect(archived.source).toBe("tar_archive");
+    const checkout = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: fixtureAllowlist().repositories[0].repositoryRef,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout", path: repo.path },
+      allowlist: fixtureAllowlist(),
+    });
+    expect(archived.checkRuns).toEqual(checkout.checkRuns);
+    expect(archived.acquisition.totals.acceptedFileCount).toBe(checkout.acquisition.totals.acceptedFileCount);
+    expect(archived.acquisition.totals.acceptedBytes).toBe(checkout.acquisition.totals.acceptedBytes);
   });
 
   it("refuses an archive that only claims the pinned commit", async () => {

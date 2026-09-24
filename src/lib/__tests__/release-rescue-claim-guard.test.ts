@@ -13,7 +13,7 @@ import {
   SWEEP_CONNECTIVES,
   UNRECOGNISED_DENIAL_PHRASINGS,
 } from "./release-rescue-claim-guard-residuals";
-import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
+import { RELEASE_RESCUE_OFFER, TYPED_FIELD_PROHIBITED_CLAIMS, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
   assetIsItsOwnText,
   collectedByTheRunner,
@@ -1486,6 +1486,62 @@ describe("the offer's claim list", () => {
   it("is lowercase, so the case-insensitive match cannot miss an entry", () => {
     for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
       expect(claim, claim).toBe(claim.toLowerCase());
+    }
+  });
+});
+
+describe("a typed value may not claim to be the professional the review is not", () => {
+  // A reviewer's display name is the signature line of a delivered report. The
+  // offer's list names the refused services ("penetration test"), not the
+  // people who perform them, so these went through as typed values.
+  const REPORTED = ["Certified penetration tester", "certified pentester", "certified pen tester", "Compliance certified"];
+  const VARIANTS = [
+    "OSCP certified penetration tester",
+    "Jane Doe, pentester",
+    "Jane Doe - Pen-Tester",
+    "Dana Okafor, PenTester",
+    "Senior Penetration Testers Ltd",
+    "Security certified",
+    "Compliance-certified reviewer",
+    "Certified Ethical Hacker",
+    "Acme red teamer",
+    "Dana Okafor, security auditor",
+    "SOC 2 compliance auditor",
+    "SOC 2 auditor",
+    "ISO 27001 auditor",
+    "Certified auditor",
+    "Ethical hacking lead",
+    "Red team lead",
+  ];
+
+  it.each([...REPORTED, ...VARIANTS])("refuses %s in a typed field", (value) => {
+    expect(findProhibitedClaims(value, "typed_field")).not.toEqual([]);
+  });
+
+  it("leaves offer copy as it was: the benign sentence still passes, and nothing new is reported there", () => {
+    expect(findProhibitedClaims("Our pentesters are not involved in this review.")).toEqual([]);
+    for (const value of [...REPORTED, ...VARIANTS]) {
+      for (const claim of findProhibitedClaims(value)) {
+        expect(RELEASE_RESCUE_OFFER.prohibitedClaims as readonly string[], value).toContain(claim);
+      }
+    }
+  });
+
+  it("reports the typed-field claims by their own names, after the offer's", () => {
+    expect(findProhibitedClaims("Certified penetration tester", "typed_field")).toEqual(["penetration tester"]);
+    expect(findProhibitedClaims("Pentest lead and pentester", "typed_field")).toEqual(["pentest", "pentesting", "pentester"]);
+  });
+
+  it("keeps the typed-field list lowercase and apart from the offer's", () => {
+    for (const claim of TYPED_FIELD_PROHIBITED_CLAIMS) {
+      expect(claim, claim).toBe(claim.toLowerCase());
+      expect(RELEASE_RESCUE_OFFER.prohibitedClaims as readonly string[], claim).not.toContain(claim);
+    }
+  });
+
+  it("does not refuse an ordinary reviewer name or job title", () => {
+    for (const value of ["Dana Okafor", "Dana Okafor, Staff Engineer", "QA Tester", "Test Lead", "Certified Scrum Master", "Security Engineer"]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
     }
   });
 });

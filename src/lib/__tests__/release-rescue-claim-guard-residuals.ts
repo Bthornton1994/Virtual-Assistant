@@ -74,6 +74,17 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
   { mechanism: "word_insertion", value: "Zero Vulnerabilities Ltd" },
   { mechanism: "word_insertion", value: "Acme Free From Vulnerabilities Ltd" },
   { mechanism: "word_insertion", value: "Acme Is Secure's Ltd" },
+  // Measured when the typed-field list gained the professional claims
+  // ("penetration tester", "compliance certified", ...). A credential that
+  // reorders the list's words, puts one between them, or is spelled as an
+  // acronym or a synonym the list does not carry still goes through.
+  { mechanism: "word_insertion", value: "Certified in compliance" },
+  { mechanism: "word_insertion", value: "Certified compliance professional" },
+  { mechanism: "word_insertion", value: "Certified Security Professional" },
+  { mechanism: "word_insertion", value: "Certified by SOC 2" },
+  { mechanism: "word_insertion", value: "Compliance certifier" },
+  { mechanism: "word_insertion", value: "Dana Okafor, OSCP" },
+  { mechanism: "word_insertion", value: "White hat hacker" },
 
   // Audit 23 widened this class with invisible characters and non-ASCII
   // letterforms. Exact stem matching cannot close it — each is a different

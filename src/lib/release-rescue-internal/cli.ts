@@ -1,8 +1,9 @@
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
-import { isAbsolute, resolve } from "node:path";
-import { writeFileSync } from "node:fs";
-import { RETENTION_POLICIES, type RetentionPolicy } from "@/lib/release-rescue-intake";
+import { randomUUID } from "node:crypto";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { RETENTION_POLICIES, commitShaSchema, type RetentionPolicy } from "@/lib/release-rescue-intake";
 import { findAllowlisted, loadAllowlist } from "@/lib/release-rescue-internal/allowlist";
 import { resolveCheckoutHead } from "@/lib/release-rescue-internal/git-source";
 import { addOperator, loadOperators, removeOperator } from "@/lib/release-rescue-internal/local-identity";
@@ -34,24 +35,142 @@ import {
 // Output is summaries: counts, codes, hashes, paths and line numbers. No
 // command prints file content.
 
-/**
- * The value after `--name`, or undefined. A following flag is not a value, so
- * `--summary-out --confirm-ownership` cannot write a file called
- * `--confirm-ownership`.
- */
-function flag(args: string[], name: string): string | undefined {
-  const index = args.indexOf(`--${name}`);
-  const value = index >= 0 ? args[index + 1] : undefined;
-  return value === undefined || value.startsWith("--") ? undefined : value;
-}
-
-function has(args: string[], name: string): boolean {
-  return args.includes(`--${name}`);
-}
-
 function fail(message: string): never {
   process.stderr.write(`${message}\n`);
   process.exit(1);
+}
+
+// Each command's arguments, declared once. The usage text is built from these,
+// and `parseArguments` checks an invocation against them in full before the
+// command does anything, so a mistyped invocation is refused rather than run
+// as something else:
+//
+// - an option the command does not take, a misspelled one included, is refused;
+// - an option given twice is refused, rather than one copy winning;
+// - `--flag=value` is refused, because nothing else here reads that form;
+// - an option that takes a value needs one: not missing, not empty, and not
+//   the next option (a value may not begin with `-`; write `./-x` for a file
+//   called `-x`);
+// - the number of plain arguments must be exact.
+
+type OptionKind = "value" | "switch";
+
+type CommandSpec = {
+  usage: string;
+  summary: string;
+  arguments: number;
+  options: Record<string, OptionKind>;
+  required?: string[];
+};
+
+const COMMANDS: Record<string, CommandSpec> = {
+  "operator:add": {
+    usage: 'operator:add --name "<display name>"',
+    summary: "create the reviewer who will sign (prompts for a passphrase)",
+    arguments: 0,
+    options: { name: "value" },
+    required: ["name"],
+  },
+  "operator:list": { usage: "operator:list", summary: "list operators (names and ids only)", arguments: 0, options: {} },
+  "operator:remove": {
+    usage: "operator:remove <operator id>",
+    summary: "remove an operator; their sessions end",
+    arguments: 1,
+    options: {},
+  },
+  "checkout:set": {
+    usage: "checkout:set <owner/name> <absolute path>",
+    summary: "record where an allowlisted repository's local clone is",
+    arguments: 2,
+    options: {},
+  },
+  "checkout:list": { usage: "checkout:list", summary: "list configured clones", arguments: 0, options: {} },
+  head: {
+    usage: "head <owner/name>",
+    summary: "print the commit the clone's default branch points at",
+    arguments: 1,
+    options: {},
+  },
+  run: {
+    usage:
+      "run <owner/name> --sha <40-char sha> --confirm-ownership [--retention <policy>] [--archive <file.tar>] [--summary-out <file>]",
+    summary: "run a review up to the unsigned draft",
+    arguments: 1,
+    options: { sha: "value", "confirm-ownership": "switch", retention: "value", archive: "value", "summary-out": "value" },
+    required: ["sha"],
+  },
+  show: { usage: "show <run id>", summary: "print a run's sanitized summary", arguments: 1, options: {} },
+  export: {
+    usage: "export <run id> --out <file>",
+    summary: "write the signed, delivery-gated report",
+    arguments: 1,
+    options: { out: "value" },
+    required: ["out"],
+  },
+  purge: { usage: "purge", summary: "apply retention now", arguments: 0, options: {} },
+};
+
+type ParsedArguments = { arguments: string[]; values: Record<string, string>; switches: Set<string> };
+
+function refuse(message: string): never {
+  fail(`${message} Nothing was run.`);
+}
+
+function countOf(count: number): string {
+  return count === 0 ? "no arguments" : count === 1 ? "1 argument" : `${count} arguments`;
+}
+
+function parseArguments(command: string, spec: CommandSpec, args: string[]): ParsedArguments {
+  const parsed: ParsedArguments = { arguments: [], values: {}, switches: new Set() };
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (!token.startsWith("-")) {
+      parsed.arguments.push(token);
+      continue;
+    }
+    const equals = token.indexOf("=");
+    const spelled = equals < 0 ? token : token.slice(0, equals);
+    const name = spelled.startsWith("--") ? spelled.slice(2) : "";
+    const kind = name ? spec.options[name] : undefined;
+    if (kind === undefined) refuse(`Unknown option ${spelled} for ${command}.`);
+    if (equals >= 0) {
+      refuse(kind === "value" ? `Write --${name} <value>, not --${name}=<value>.` : `Write --${name}, not --${name}=<value>.`);
+    }
+    if (seen.has(name)) refuse(`--${name} was given more than once.`);
+    seen.add(name);
+    if (kind === "switch") {
+      parsed.switches.add(name);
+      continue;
+    }
+    const value = args[index + 1];
+    if (value === undefined || value === "" || value.startsWith("-")) refuse(`--${name} needs a value.`);
+    parsed.values[name] = value;
+    index += 1;
+  }
+  if (parsed.arguments.length !== spec.arguments) refuse(`${command} takes ${countOf(spec.arguments)}: ${spec.usage}.`);
+  for (const name of spec.required ?? []) {
+    if (parsed.values[name] === undefined && !parsed.switches.has(name)) refuse(`${command} needs --${name}.`);
+  }
+  return parsed;
+}
+
+/**
+ * Writes `text` to `path` owner-only. The text goes to a new file beside the
+ * target, created 0600, which is then renamed over it. So an existing file's
+ * wider permissions are not kept, and a symlink at the path is replaced rather
+ * than written through.
+ */
+function writeOwnerOnly(path: string, text: string): void {
+  const target = resolve(path);
+  const staged = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(staged, text, { mode: 0o600, flag: "wx" });
+    renameSync(staged, target);
+  } catch (error) {
+    rmSync(staged, { force: true });
+    throw error;
+  }
 }
 
 async function readPassphrase(prompt: string): Promise<string> {
@@ -75,35 +194,42 @@ async function readPassphrase(prompt: string): Promise<string> {
   return answer;
 }
 
-const USAGE = `Release Rescue, internal local workflow
+function usage(): string {
+  const lines = Object.values(COMMANDS).map((spec) =>
+    spec.usage.length < 43 ? `  ${spec.usage.padEnd(43)}${spec.summary}` : `  ${spec.usage}\n  ${"".padEnd(43)}${spec.summary}`,
+  );
+  return `Release Rescue, internal local workflow
 
-  operator:add --name "<display name>"       create the reviewer who will sign (prompts for a passphrase)
-  operator:list                              list operators (names and ids only)
-  operator:remove <operator id>              remove an operator; their sessions end
-  checkout:set <owner/name> <absolute path>  record where an allowlisted repository's local clone is
-  checkout:list                              list configured clones
-  head <owner/name>                          print the commit the clone's default branch points at
-  run <owner/name> --sha <40-char sha> --confirm-ownership [--retention <policy>] [--archive <file.tar.gz>] [--summary-out <file>]
-                                             run a review up to the unsigned draft
-  show <run id>                              print a run's sanitized summary
-  export <run id> --out <file>               write the signed, delivery-gated report
-  purge                                      apply retention now
+${lines.join("\n")}
+
+Exit status: 0 when the command did what it says (for run, a draft is awaiting a
+reviewer); 1 when it was refused or failed, and for run when the summary file
+could not be written; 2 when run saved the run as BLOCKED.
 
 Local data lives in ${"${RELEASE_RESCUE_LOCAL_DIR:-.release-rescue-local}"} and is never committed.`;
+}
 
 export async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
+  if (command === undefined || command === "help" || command === "--help") {
+    process.stdout.write(`${usage()}\n\nLocal directory: ${localDir()}\n`);
+    return;
+  }
+  const spec = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
+  if (!spec) fail(`Unknown command ${command}. Run with no arguments for usage.`);
+  const parsed = parseArguments(command, spec, args);
+  const [first, second] = parsed.arguments;
+
   switch (command) {
     case "operator:add": {
-      const name = flag(args, "name");
-      if (!name) fail("operator:add needs --name.");
-      const first = await readPassphrase("Passphrase (not shown): ");
+      const name = parsed.values.name;
+      const passphrase = await readPassphrase("Passphrase (not shown): ");
       if (process.stdin.isTTY) {
-        const second = await readPassphrase("Repeat passphrase: ");
-        if (first !== second) fail("The passphrases did not match. Nothing was written.");
+        const repeated = await readPassphrase("Repeat passphrase: ");
+        if (passphrase !== repeated) fail("The passphrases did not match. Nothing was written.");
       }
       try {
-        const operator = addOperator(name, first);
+        const operator = addOperator(name, passphrase);
         process.stdout.write(`Operator created: ${operator.displayName} (${operator.operatorId})\n`);
       } catch (error) {
         fail(error instanceof Error ? error.message : "The operator could not be created.");
@@ -117,19 +243,15 @@ export async function main(argv: string[]): Promise<void> {
       return;
     }
     case "operator:remove": {
-      const id = args[0];
-      if (!id) fail("operator:remove needs an operator id.");
-      process.stdout.write(removeOperator(id) ? "Removed.\n" : "No such operator.\n");
+      process.stdout.write(removeOperator(first) ? "Removed.\n" : "No such operator.\n");
       return;
     }
     case "checkout:set": {
-      const [ref, path] = args;
-      if (!ref || !path) fail("checkout:set needs <owner/name> <absolute path>.");
-      const entry = findAllowlisted(loadAllowlist(), ref);
+      const entry = findAllowlisted(loadAllowlist(), first);
       if (!entry) fail("That repository is not on the internal allowlist.");
-      if (!isAbsolute(path)) fail("The checkout path must be absolute.");
-      saveCheckout(entry.repositoryRef, resolve(path));
-      process.stdout.write(`Checkout for ${entry.repositoryRef}: ${resolve(path)}\n`);
+      if (!isAbsolute(second)) fail("The checkout path must be absolute.");
+      saveCheckout(entry.repositoryRef, resolve(second));
+      process.stdout.write(`Checkout for ${entry.repositoryRef}: ${resolve(second)}\n`);
       return;
     }
     case "checkout:list": {
@@ -137,7 +259,7 @@ export async function main(argv: string[]): Promise<void> {
       return;
     }
     case "head": {
-      const entry = findAllowlisted(loadAllowlist(), args[0] ?? "");
+      const entry = findAllowlisted(loadAllowlist(), first);
       if (!entry) fail("That repository is not on the internal allowlist.");
       const checkout = checkoutFor(entry.repositoryRef);
       if (!checkout) fail("No checkout is configured for that repository.");
@@ -147,25 +269,24 @@ export async function main(argv: string[]): Promise<void> {
       return;
     }
     case "run": {
-      const ref = args[0];
-      const sha = flag(args, "sha");
-      if (!ref || !sha) fail("run needs <owner/name> --sha <40-character commit>.");
-      const retention = (flag(args, "retention") ?? "minimum_7_day") as RetentionPolicy;
-      if (!(RETENTION_POLICIES as readonly string[]).includes(retention)) fail("Unknown retention policy.");
-      const archive = flag(args, "archive");
-      if (has(args, "archive") && !archive) fail("--archive needs a file path. Nothing was run.");
-      if (has(args, "summary-out") && !flag(args, "summary-out")) fail("--summary-out needs a file path. Nothing was run.");
+      const sha = commitShaSchema.safeParse(parsed.values.sha);
+      if (!sha.success) refuse("--sha must be a full 40-character lowercase commit sha.");
+      const retention = parsed.values.retention ?? "minimum_7_day";
+      if (!(RETENTION_POLICIES as readonly string[]).includes(retention)) {
+        refuse(`Unknown retention policy: use one of ${RETENTION_POLICIES.join(", ")}.`);
+      }
+      const archive = parsed.values.archive;
+      const out = parsed.values["summary-out"];
       try {
         const record = await startInternalRun({
           initiatedBy: CLI_INITIATOR,
-          repositoryRef: ref,
-          commitSha: sha,
-          retentionPolicy: retention,
-          ownershipConfirmed: has(args, "confirm-ownership"),
+          repositoryRef: first,
+          commitSha: sha.data,
+          retentionPolicy: retention as RetentionPolicy,
+          ownershipConfirmed: parsed.switches.has("confirm-ownership"),
           source: archive ? { kind: "archive", path: resolve(archive) } : { kind: "checkout" },
         });
         const summary = runSummary(record);
-        const out = flag(args, "summary-out");
         process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
         process.stdout.write(
           record.status === "awaiting_review"
@@ -175,10 +296,13 @@ export async function main(argv: string[]): Promise<void> {
                 "The source was not acquired (see the refusal above), so nothing was analysed and no report exists."
               }\n`,
         );
+        // A BLOCKED run is saved and reported, but it is not a draft, so a
+        // script that checks the exit status is not told it succeeded.
+        if (record.status !== "awaiting_review") process.exitCode = 2;
         // Written after the run is reported, so a bad path cannot hide the run id.
         if (out) {
           try {
-            writeFileSync(resolve(out), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
+            writeOwnerOnly(out, `${JSON.stringify(summary, null, 2)}\n`);
           } catch {
             process.stderr.write(`The summary file could not be written. The run is saved as ${record.runId}.\n`);
             process.exitCode = 1;
@@ -191,23 +315,18 @@ export async function main(argv: string[]): Promise<void> {
       return;
     }
     case "show": {
-      const record = loadRun(args[0] ?? "");
+      const record = loadRun(first);
       if (!record) fail("No such run.");
       process.stdout.write(`${JSON.stringify(runSummary(record), null, 2)}\n`);
       return;
     }
     case "export": {
-      const runId = args[0] ?? "";
-      const out = flag(args, "out");
-      if (!out) fail("export needs --out <file>.");
-      const outcome = deliveryForRun(runId);
+      const outcome = deliveryForRun(first);
       if (outcome.status !== "deliverable") fail(`Withheld: ${outcome.blockers.join("; ")}`);
       const { view, contentHash, reviewer, checks } = outcome.decision;
-      writeFileSync(resolve(out), `${JSON.stringify({ contentHash, reviewer, checks, report: view }, null, 2)}\n`, {
-        mode: 0o600,
-      });
-      recordDelivery(runId);
-      process.stdout.write(`Exported to ${resolve(out)}\n`);
+      writeOwnerOnly(parsed.values.out, `${JSON.stringify({ contentHash, reviewer, checks, report: view }, null, 2)}\n`);
+      recordDelivery(first);
+      process.stdout.write(`Exported to ${resolve(parsed.values.out)}\n`);
       return;
     }
     case "purge": {
@@ -215,7 +334,5 @@ export async function main(argv: string[]): Promise<void> {
       process.stdout.write(`Purged ${purged.length} run(s).\n`);
       return;
     }
-    default:
-      process.stdout.write(`${USAGE}\n\nLocal directory: ${localDir()}\n`);
   }
 }

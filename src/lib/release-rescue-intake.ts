@@ -80,6 +80,38 @@ export const RELEASE_RESCUE_OFFER = {
   ],
 } as const;
 
+/**
+ * Claims a TYPED value may not make, in addition to the offer's list.
+ *
+ * The offer's list names the services this review refuses to be ("penetration
+ * test", "compliance certification"), not the people who perform them, and
+ * `stemWord` leaves "-er" alone, so "Certified penetration tester", "certified
+ * pentester" and "Compliance certified" passed as a reviewer's display name.
+ * A display name is the signature line of a delivered report, and there each
+ * of them tells the customer the review was the service it is not.
+ *
+ * They apply to typed fields only (`ClaimTextSource`). Offer copy may say "Our
+ * pentesters are not involved in this review", and a name cannot carry a
+ * denial. What is still not caught is recorded in
+ * `release-rescue-claim-guard-residuals.ts`.
+ */
+export const TYPED_FIELD_PROHIBITED_CLAIMS = [
+  "penetration tester",
+  "pen tester",
+  "pentester",
+  "ethical hacker",
+  "ethical hacking",
+  "red team",
+  "red teamer",
+  "security auditor",
+  "compliance auditor",
+  "certified auditor",
+  "soc 2 auditor",
+  "iso 27001 auditor",
+  "security certified",
+  "compliance certified",
+] as const;
+
 // --- Requested services -------------------------------------------------------------
 
 /**
@@ -856,15 +888,27 @@ function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): C
  * evaluation order would otherwise matter.
  */
 const claimStemsCache = new Map<TokenizerMode, ReadonlyArray<{ claim: string; stems: readonly string[] }>>();
+const typedClaimStemsCache = new Map<TokenizerMode, ReadonlyArray<{ claim: string; stems: readonly string[] }>>();
 
-function prohibitedClaimStems(mode: TokenizerMode): ReadonlyArray<{ claim: string; stems: readonly string[] }> {
-  let cached = claimStemsCache.get(mode);
+/** The claims a value from `source` may not make, in the order they are reported. */
+function prohibitedClaimsFor(source: ClaimTextSource): readonly string[] {
+  return source === "typed_field"
+    ? [...RELEASE_RESCUE_OFFER.prohibitedClaims, ...TYPED_FIELD_PROHIBITED_CLAIMS]
+    : RELEASE_RESCUE_OFFER.prohibitedClaims;
+}
+
+function prohibitedClaimStems(
+  mode: TokenizerMode,
+  source: ClaimTextSource = "offer_copy",
+): ReadonlyArray<{ claim: string; stems: readonly string[] }> {
+  const cache = source === "typed_field" ? typedClaimStemsCache : claimStemsCache;
+  let cached = cache.get(mode);
   if (!cached) {
-    cached = RELEASE_RESCUE_OFFER.prohibitedClaims.map((claim) => ({
+    cached = prohibitedClaimsFor(source).map((claim) => ({
       claim,
       stems: tokenizeClaimText(claim, mode).map((token) => token.stem),
     }));
-    claimStemsCache.set(mode, cached);
+    cache.set(mode, cached);
   }
   return cached;
 }
@@ -1548,14 +1592,14 @@ export function findProhibitedClaims(
     const key = tokens.map((token) => `${token.breakBefore}:${token.stem}`).join("\u0000");
     if (seen.has(key)) continue;
     seen.add(key);
-    for (const claim of claimsInTokens(tokens, prohibitedClaimStems(mode), disclaimersMayLicense)) {
+    for (const claim of claimsInTokens(tokens, prohibitedClaimStems(mode, source), disclaimersMayLicense)) {
       found.add(claim);
     }
   }
 
-  // Ordered by the offer's own list rather than by which mode spoke first, so
+  // Ordered by the lists themselves rather than by which mode spoke first, so
   // the result does not depend on the order the modes happen to be tried in.
-  return RELEASE_RESCUE_OFFER.prohibitedClaims.filter((claim) => found.has(claim));
+  return prohibitedClaimsFor(source).filter((claim) => found.has(claim));
 }
 
 

@@ -1,17 +1,20 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import { createGzip } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { SNAPSHOT_LIMITS } from "@/lib/release-rescue-snapshot-limits";
 import { gitArgs, gitEnv, parseLsTree, readGitCommit, resolveCheckoutHead } from "@/lib/release-rescue-internal/git-source";
 import {
+  MEASURED_RATIO_FLOOR_BYTES,
   SnapshotBudget,
   SnapshotRefused,
   canonicalEntryPath,
   readableAncestorsOf,
 } from "@/lib/release-rescue-internal/snapshot";
-import { readTarStream } from "@/lib/release-rescue-internal/tar-source";
+import { readTarArchive, readTarStream } from "@/lib/release-rescue-internal/tar-source";
 import {
   FAKE_AWS_KEY,
   FIXTURE_REPOSITORY,
@@ -142,7 +145,7 @@ describe("the tar reader reads what the archive contains, and nothing it only cl
     const tar = buildTar(withCommit([{ kind: "file", name: "zeros.bin", data: payload }]));
     const compressed = gzip(tar);
     expect(tar.length / compressed.length).toBeGreaterThan(SNAPSHOT_LIMITS.maxExpansionRatio);
-    const outcome = await readTarStream(tarStream(compressed), SHA, { gzip: true });
+    const outcome = await readTarStream(tarStream(compressed), SHA, { gzip: true, inputBytes: compressed.length });
     expect(outcome.status).toBe("blocked");
     if (outcome.status !== "blocked") return;
     expect(outcome.refusals[0].reason).toBe("expansion_ratio_exceeded");
@@ -179,6 +182,192 @@ describe("the measured budget enforces the whole-snapshot limits on real bytes",
     const budget = new SnapshotBudget(false);
     expect(budget.admit({ path: "a.ts", type: "file", declaredBytes: 10 })).toBe("a.ts");
     expect(() => budget.accept("a.ts", 10, Buffer.from("short"))).toThrow(/declared_size_mismatch/);
+  });
+});
+
+// --- The expansion ratio ---------------------------------------------------------
+
+function chunked(buffer: Buffer, size: number): Readable {
+  const chunks: Buffer[] = [];
+  for (let offset = 0; offset < buffer.length; offset += size) chunks.push(buffer.subarray(offset, offset + size));
+  return Readable.from(chunks);
+}
+
+/** Deterministic bytes that do not compress: xorshift32 from `seed`. */
+function incompressible(length: number, seed: number): Buffer {
+  const out = Buffer.alloc(length);
+  let x = seed >>> 0 || 1;
+  for (let index = 0; index < length; index += 1) {
+    x ^= x << 13;
+    x >>>= 0;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    x >>>= 0;
+    out[index] = x & 0xff;
+  }
+  return out;
+}
+
+/**
+ * The reported archive: 1.6 MB of generated JSON first, which compresses about
+ * 19x on its own, then 60 files of base64 noise. About 2.4 MB, and 4.6x overall.
+ */
+function reportedEntries(): Parameters<typeof buildTar>[0] {
+  let json = "[";
+  for (let index = 0; index < 30_000; index += 1) {
+    json += `${JSON.stringify({ id: index, name: `item-${index}`, active: index % 2 === 0, tags: ["a", "b"] })},`;
+  }
+  const entries: Parameters<typeof buildTar>[0] = [{ kind: "file", name: "data/fixtures.json", data: `${json}{}]` }];
+  for (let index = 1; index <= 60; index += 1) {
+    entries.push({ kind: "file", name: `src/f${index}.txt`, data: incompressible(6000, index).toString("base64") });
+  }
+  return entries;
+}
+
+/** gzip of a tar holding one file of `bytes` zeros beside `ok.ts`, built without holding the tar in memory. */
+async function zeroBomb(bytes: number): Promise<Buffer> {
+  const gz = createGzip();
+  const out: Buffer[] = [];
+  gz.on("data", (chunk: Buffer) => out.push(chunk));
+  const ended = once(gz, "end");
+  const write = async (chunk: Buffer) => {
+    if (!gz.write(chunk)) await once(gz, "drain");
+  };
+  await write(buildTar(withCommit([{ kind: "file", name: "ok.ts", data: "ok\n" }]), { terminate: false }));
+  await write(tarHeader("zeros.bin", bytes, "0"));
+  const zeros = Buffer.alloc(1 << 20, 0);
+  for (let left = bytes; left > 0; left -= zeros.length) await write(zeros.subarray(0, Math.min(zeros.length, left)));
+  await write(Buffer.alloc((512 - (bytes % 512)) % 512 + 1024, 0));
+  gz.end();
+  await ended;
+  return Buffer.concat(out);
+}
+
+describe("the expansion ratio is the whole archive's, whatever the order of its entries or the size of its reads", () => {
+  const LIMIT = SNAPSHOT_LIMITS.maxExpansionRatio;
+
+  it("acquires the reported 2.4 MB archive, 4.6x overall though its first file alone is over 12x, at every read size", async () => {
+    const tar = buildTar(withCommit(reportedEntries()));
+    const compressed = gzip(tar);
+    expect(tar.length).toBeGreaterThan(2_400_000);
+    expect(tar.length / compressed.length).toBeLessThan(6);
+    const first = buildTar(withCommit(reportedEntries().slice(0, 1)));
+    expect(first.length / gzip(first).length).toBeGreaterThan(LIMIT);
+    for (const size of [512, 700, 64 * 1024, compressed.length]) {
+      const outcome = await readTarStream(chunked(compressed, size), SHA, { gzip: true, inputBytes: compressed.length });
+      expect(outcome.status, `read in ${size}-byte chunks`).toBe("acquired");
+      if (outcome.status === "acquired") expect(outcome.files).toHaveLength(61);
+    }
+  });
+
+  it("acquires it from a file, and with its entries in the reverse order", async () => {
+    const dir = tempDir("rr-internal-ratio-");
+    for (const [name, entries] of [
+      ["forward.tar.gz", reportedEntries()],
+      ["reverse.tar.gz", reportedEntries().reverse()],
+    ] as const) {
+      const path = join(dir, name);
+      writeFileSync(path, gzip(buildTar(withCommit([...entries]))));
+      const outcome = await readTarArchive({ archivePath: path, commitSha: SHA });
+      expect(outcome.status, name).toBe("acquired");
+    }
+  });
+
+  it("acquires a small `git archive` .tar.gz, which tar padding pushes far past 12x", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "export const a = 1;\n" });
+    const path = join(tempDir("rr-internal-ratio-"), "small.tar.gz");
+    execFileSync("git", ["-C", repo.path, "archive", "--format=tar.gz", "-o", path, repo.commitSha], {
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+    const outcome = await readTarArchive({ archivePath: path, commitSha: repo.commitSha });
+    expect(outcome.status).toBe("acquired");
+    expect(outcome.totals.expandedBytes / outcome.totals.streamBytes).toBeGreaterThan(LIMIT);
+  });
+
+  it("refuses a 150 MB bomb early, with the same decision and the same words at every read size", async () => {
+    const compressed = await zeroBomb(150_000_000);
+    const details = new Set<string>();
+    for (const size of [700, 64 * 1024, compressed.length]) {
+      const outcome = await readTarStream(chunked(compressed, size), SHA, { gzip: true, inputBytes: compressed.length });
+      expect(outcome.status).toBe("blocked");
+      if (outcome.status !== "blocked") return;
+      expect(outcome.refusals[0].reason).toBe("expansion_ratio_exceeded");
+      details.add(outcome.refusals[0].detail);
+      // Stopped near the threshold, not after expanding 150 MB.
+      expect(outcome.totals.expandedBytes).toBeLessThan(MEASURED_RATIO_FLOOR_BYTES + 2 * 1024 * 1024);
+    }
+    expect([...details]).toEqual([
+      `The archive's ${compressed.length} bytes expand past ${MEASURED_RATIO_FLOOR_BYTES} bytes, more than ${LIMIT}x its size. A plain .tar is not subject to this limit.`,
+    ]);
+  });
+
+  it("stops a bomb read from a file early, using the file's size", async () => {
+    const path = join(tempDir("rr-internal-ratio-"), "bomb.tar.gz");
+    writeFileSync(path, await zeroBomb(150_000_000));
+    const outcome = await readTarArchive({ archivePath: path, commitSha: SHA });
+    expect(outcome.status).toBe("blocked");
+    if (outcome.status === "blocked") expect(outcome.refusals[0].reason).toBe("expansion_ratio_exceeded");
+    expect(outcome.totals.expandedBytes).toBeLessThan(MEASURED_RATIO_FLOOR_BYTES + 2 * 1024 * 1024);
+  });
+
+  it("refuses an input over the archive limit before reading any of it", async () => {
+    const outcome = await readTarStream(chunked(gzip(buildTar(withCommit([]))), 700), SHA, {
+      gzip: true,
+      inputBytes: SNAPSHOT_LIMITS.maxArchiveBytes + 1,
+    });
+    expect(outcome.status).toBe("blocked");
+    if (outcome.status === "blocked") expect(outcome.refusals[0].reason).toBe("archive_too_large");
+    expect(outcome.totals.streamBytes).toBe(0);
+  });
+
+  it("does not apply the ratio below the floor, and does above it", async () => {
+    const under = await zeroBomb(MEASURED_RATIO_FLOOR_BYTES - 64 * 1024);
+    const over = await zeroBomb(MEASURED_RATIO_FLOOR_BYTES + 64 * 1024);
+    const accepted = await readTarStream(chunked(under, 64 * 1024), SHA, { gzip: true, inputBytes: under.length });
+    expect(accepted.status).toBe("acquired");
+    if (accepted.status === "acquired") expect(accepted.rejected.map((entry) => entry.reason)).toEqual(["file_too_large"]);
+    const refused = await readTarStream(chunked(over, 64 * 1024), SHA, { gzip: true, inputBytes: over.length });
+    expect(refused.status).toBe("blocked");
+    if (refused.status === "blocked") expect(refused.refusals[0].reason).toBe("expansion_ratio_exceeded");
+  });
+
+  it("refuses a stream that is longer or shorter than the size it was read at", async () => {
+    const compressed = gzip(buildTar(withCommit([{ kind: "file", name: "a.ts", data: "a\n" }])));
+    for (const inputBytes of [compressed.length - 1, compressed.length + 1]) {
+      const outcome = await readTarStream(chunked(compressed, 700), SHA, { gzip: true, inputBytes });
+      expect(outcome.status, `stated ${inputBytes}`).toBe("blocked");
+      if (outcome.status === "blocked") {
+        expect(outcome.refusals[0]).toEqual({ reason: "malformed_input", detail: "The archive changed size while it was read." });
+      }
+    }
+    // Longer than stated is refused as soon as it is, not after reading the rest.
+    const long = gzip(buildTar(withCommit([{ kind: "file", name: "a.bin", data: incompressible(50_000, 7) }])));
+    const early = await readTarStream(chunked(long, 700), SHA, { gzip: true, inputBytes: 1_000 });
+    expect(early.status).toBe("blocked");
+    if (early.status === "blocked") expect(early.refusals[0].detail).toBe("The archive changed size while it was read.");
+    expect(early.totals.streamBytes).toBeLessThan(long.length);
+  });
+
+  it("decides at the limit exactly: the floor, then twelve times the input", () => {
+    const small = new SnapshotBudget(true, 1_000);
+    small.countStream(1_000);
+    small.countExpanded(MEASURED_RATIO_FLOOR_BYTES);
+    expect(() => small.countExpanded(1)).toThrow(/expansion_ratio_exceeded/);
+
+    const input = 2_000_000;
+    const large = new SnapshotBudget(true, input);
+    large.countStream(input);
+    large.countExpanded(LIMIT * input);
+    expect(() => large.countExpanded(1)).toThrow(/expansion_ratio_exceeded/);
+  });
+
+  it("makes the same decision at the end when the input size was not known in advance", () => {
+    const budget = new SnapshotBudget(true);
+    budget.countStream(1_000);
+    budget.countExpanded(MEASURED_RATIO_FLOOR_BYTES + 1);
+    const outcome = budget.finish("tar_archive", SHA);
+    expect(outcome.status).toBe("blocked");
+    if (outcome.status === "blocked") expect(outcome.refusals[0].reason).toBe("expansion_ratio_exceeded");
   });
 });
 

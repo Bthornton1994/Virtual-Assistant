@@ -80,6 +80,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  process.exitCode = 0;
   delete process.env.RELEASE_RESCUE_ALLOWLIST;
 });
 
@@ -185,7 +186,12 @@ describe("a draft that cannot be sealed keeps the analysis and says what failed"
 
 describe("the CLI says which stage failed, not that nothing was analysed", () => {
   async function cliRun(options: { sha?: string; extra?: string[]; beforeConfirm?: string[] } = {}) {
-    const repo = makeFixtureRepo({ "src/app.ts": "ok\n" });
+    // Source a leaking summary would carry: a credential and an instruction.
+    const repo = makeFixtureRepo({
+      "src/app.ts": "ok\n",
+      "src/settings.ts": `export const key = "${FAKE_AWS_KEY}";\n`,
+      "README.md": `${PROMPT_INJECTION}\n`,
+    });
     const allowlistPath = join(tempDir("rr-internal-failure-allowlist-"), "allowlist.json");
     writeAllowlist(allowlistPath, fixtureAllowlist());
     process.env.RELEASE_RESCUE_ALLOWLIST = allowlistPath;
@@ -248,11 +254,60 @@ describe("the CLI says which stage failed, not that nothing was analysed", () =>
     try {
       await expect(cliRun(options)).rejects.toThrow("exit");
       expect(exit).toHaveBeenCalledWith(1);
-      expect(stderrOnly.join("")).toBe("--summary-out needs a file path. Nothing was run.\n");
+      expect(stderrOnly.join("")).toBe("--summary-out needs a value. Nothing was run.\n");
       expect(existsSync(stray)).toBe(false);
       expect(existsSync(join(localDir(), "runs")) ? readdirSync(join(localDir(), "runs")) : []).toEqual([]);
     } finally {
       rmSync(stray, { force: true });
+    }
+  });
+
+  // The summary file is the printed summary, whatever stage the run stopped
+  // at: never the raw record, the error that was thrown, or anything read.
+  it.each([
+    ["an acquisition that was refused", () => ({ sha: "f".repeat(40) }), null],
+    [
+      "an analysis that threw",
+      () => {
+        failing.analysis = true;
+        return {};
+      },
+      "analysis",
+    ],
+    [
+      "a draft that could not be built",
+      () => {
+        failing.draft = true;
+        return {};
+      },
+      "draft_assembly",
+    ],
+    [
+      "a draft that could not be sealed",
+      () => {
+        mkdirSync(localDir(), { recursive: true });
+        writeFileSync(join(localDir(), "secret.key"), "zz");
+        return {};
+      },
+      "sealing",
+    ],
+  ] as const)("writes exactly the printed summary for %s, and exits 2", async (_name, arrange, stage) => {
+    const out = join(tempDir("rr-internal-failure-out-"), "summary.json");
+    const printed = await cliRun({ ...arrange(), extra: ["--summary-out", out] });
+    const written = readFileSync(out, "utf8");
+    expect(printed.startsWith(written)).toBe(true);
+    const summary = JSON.parse(written);
+    expect(summary).toEqual(JSON.parse(JSON.stringify(runSummary(loadRun(summary.runId)!))));
+    expect(summary.status).toBe("blocked");
+    expect(summary.processingFailure?.stage ?? null).toBe(stage);
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    expect(process.exitCode).toBe(2);
+    for (const text of [written, printed]) {
+      expect(text).not.toContain(FAKE_AWS_KEY);
+      expect(text).not.toContain(LEAKY_PATH);
+      expect(text).not.toContain("ignore all previous instructions");
+      expect(text).not.toContain("failed at");
+      expect(text).not.toContain("secret key is malformed");
     }
   });
 
