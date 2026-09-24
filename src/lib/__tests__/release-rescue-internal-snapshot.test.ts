@@ -412,7 +412,8 @@ describe("the expansion ratio is the whole archive's, whatever the order of its 
       writeFileSync(path, compressed);
       expect((await readTarArchive({ archivePath: path, commitSha: SHA })).status, `${name} from a file`).toBe("acquired");
     }
-  });
+    // About 6 s alone: 74 MB of tar compressed and read seven times.
+  }, 60_000);
 
   it("refuses any byte after the gzip data, the same way at every read size", async () => {
     // gunzip stops at the end of its data and ignores trailing bytes that begin
@@ -491,7 +492,7 @@ describe("the expansion ratio is the whole archive's, whatever the order of its 
     const plain = await readTarStream(chunked(deepTar, 64 * 1024), SHA, { gzip: false, inputBytes: deepTar.length });
     expect(plain.status).toBe("acquired");
     if (plain.status === "acquired") expect(plain.files).toHaveLength(SNAPSHOT_LIMITS.maxFileCount);
-  });
+  }, 30_000);
 
   it("refuses a 150 MB bomb early, with the same decision and the same words at every read size", async () => {
     const compressed = await zeroBomb(150_000_000);

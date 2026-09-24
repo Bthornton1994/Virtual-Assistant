@@ -407,10 +407,11 @@ describe("an inherited property name is an unknown option, through the real laun
     const invocations = commands.flatMap(([command, argv]) =>
       ["constructor", "toString", "__proto__", "valueOf"].map((name) => ({ command, name, argv: [...argv, `--${name}`, "x"] })),
     );
-    // Eight at a time, so the processes do not starve the test runner.
+    // Two at a time: each is a cold Node process that strips types from the
+    // whole CLI, and more at once starve the other test files' workers.
     const results: Array<Awaited<ReturnType<typeof launch>>> = [];
-    for (let start = 0; start < invocations.length; start += 8) {
-      const batch = invocations.slice(start, start + 8);
+    for (let start = 0; start < invocations.length; start += 2) {
+      const batch = invocations.slice(start, start + 2);
       results.push(...(await Promise.all(batch.map((invocation) => launch(invocation.argv, "a long local test passphrase\n")))));
     }
     expect(invocations).toHaveLength(40);
@@ -426,7 +427,7 @@ describe("an inherited property name is an unknown option, through the real laun
     // Control: the same launcher, asked properly, does reach the sweep.
     const purge = await launch(["purge"]);
     expect(purge).toEqual({ status: 0, stdout: "Purged 1 run(s).\n", stderr: "" });
-  }, 120_000);
+  }, 180_000);
 
   it("reports an unexpected failure in one sentence, with no stack trace", async () => {
     rmSync(join(localDir(), "checkouts.json"));
