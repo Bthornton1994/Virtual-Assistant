@@ -415,7 +415,7 @@ describe("the expansion ratio is the whole archive's, whatever the order of its 
     // About 6 s alone: 74 MB of tar compressed and read seven times.
   }, 60_000);
 
-  it("refuses any byte after the gzip data, the same way at every read size", async () => {
+  it("refuses bytes after the gzip data, the same way at every read size", async () => {
     // gunzip stops at the end of its data and ignores trailing bytes that begin
     // with a zero byte, so how much of the rest had been read used to depend on
     // the chunking, and the refusal said the file had changed size. The input
@@ -459,6 +459,18 @@ describe("the expansion ratio is the whole archive's, whatever the order of its 
       expect(fromFile.status).toBe("blocked");
       if (fromFile.status === "blocked") details.add(fromFile.refusals[0].detail);
       expect([...details], `${trailer.length} trailing bytes`).toEqual([detail]);
+    }
+
+    // The one shape accepted: a valid second gzip member holding nothing, or
+    // only zeros. gunzip reads it as part of the stream, and zeros after the
+    // tar's end-of-archive marker are the padding a plain tar may carry too, so
+    // no content can be hidden this way.
+    for (const member of [gzip(Buffer.alloc(0)), gzip(Buffer.alloc(10_240))]) {
+      const input = Buffer.concat([compressed, member]);
+      for (const size of [1, 700, input.length]) {
+        const outcome = await readTarStream(chunked(input, size), SHA, { gzip: true, inputBytes: input.length });
+        expect(outcome.status, `a ${member.length}-byte member, ${size}-byte reads`).toBe("acquired");
+      }
     }
   }, 60_000);
 

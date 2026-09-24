@@ -2819,16 +2819,17 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // commit asserting three residuals were recorded when they were absent from
     // the repository entirely — worse than an unrecorded hole, because the next
     // round reads the message, believes the record exists, and does not look.
-    expect(CLAIM_GUARD_RESIDUALS.length, "if this changes, correct any published figure").toBe(40);
+    expect(CLAIM_GUARD_RESIDUALS.length, "if this changes, correct any published figure").toBe(45);
     const byMechanism = new Map<string, number>();
     for (const residual of CLAIM_GUARD_RESIDUALS) {
       byMechanism.set(residual.mechanism, (byMechanism.get(residual.mechanism) ?? 0) + 1);
     }
     expect(Object.fromEntries([...byMechanism].sort())).toEqual({
       all_caps_run: 6,
+      clause_break: 4,
       intra_word: 9,
       no_boundary: 2,
-      word_insertion: 23,
+      word_insertion: 24,
     });
 
     // And the guard is not simply switched off: the plain form is still caught.

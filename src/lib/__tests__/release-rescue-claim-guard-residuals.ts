@@ -28,7 +28,13 @@ export type ResidualMechanism =
   /** A character substituted, doubled or inserted inside a claim word. Each is a different token to the matcher. */
   | "intra_word"
   /** No word boundary of any kind — no separator, no case transition. */
-  | "no_boundary";
+  | "no_boundary"
+  /**
+   * A spaced clause mark between the words of a typed-field professional
+   * claim. Such a phrase is read within one clause, so that "Erik Red, Team
+   * Lead" is a name; the same shape lets "Penetration, Tester" through.
+   */
+  | "clause_break";
 
 export type ClaimGuardResidual = {
   readonly mechanism: ResidualMechanism;
@@ -98,6 +104,9 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
   { mechanism: "word_insertion", value: "appsec auditor" },
   { mechanism: "word_insertion", value: "security researcher" },
   { mechanism: "word_insertion", value: "bug bounty hunter" },
+  // Deliberately not listed: also an accounting and internal-audit credential,
+  // and refusing it refused "Dana Okafor, CPA, Certified Auditor".
+  { mechanism: "word_insertion", value: "Certified auditor" },
 
   // Audit 23 widened this class with invisible characters and non-ASCII
   // letterforms. Exact stem matching cannot close it — each is a different
@@ -128,6 +137,14 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
   // flag ordinary values.
   { mechanism: "no_boundary", value: "thisappissecureandfreeofvulnerabilities" },
   { mechanism: "no_boundary", value: "THISAPPISSECURE" },
+
+  // Measured when typed-field professional claims became clause-bounded. A
+  // clause mark with no space beside it ("Red–Team", "Red(Team)") still joins
+  // the words and is refused; with a space it separates them.
+  { mechanism: "clause_break", value: "Penetration, Tester" },
+  { mechanism: "clause_break", value: "Red – Team Lead" },
+  { mechanism: "clause_break", value: "Security: Certified" },
+  { mechanism: "clause_break", value: "Ethical (Hacker)" },
 ];
 
 /**

@@ -319,7 +319,8 @@ export type TarSourceRequest = {
  * rest of the input is read to its end before the decision and those bytes are
  * refused as "Data followed the gzip stream." Any other trailing bytes gunzip
  * reads as a second member, refused as invalid gzip or, when valid, as data
- * after the tar's end-of-archive marker.
+ * after the tar's end-of-archive marker, unless it holds nothing or only zeros:
+ * that is accepted like a plain tar's zero padding.
  */
 export async function readTarStream(
   input: Readable,

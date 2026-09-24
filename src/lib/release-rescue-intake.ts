@@ -698,6 +698,8 @@ type ClaimToken = {
   readonly stem: string;
   /** The strongest break between the previous token and this one. */
   readonly breakBefore: "none" | "clause" | "sentence";
+  /** Whether whitespace separates this token from the previous one. */
+  readonly spacedBefore: boolean;
 };
 
 const CLAUSE_MARKS = new Set([",", ";", ":", "(", ")", "—", "–"]);
@@ -796,13 +798,15 @@ function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): C
   const characters = [...text];
   let word = "";
   let pending: ClaimToken["breakBefore"] = "none";
+  let spaced = false;
 
   const flush = () => {
     if (word.length === 0) return;
     const lowered = word.toLowerCase();
-    tokens.push({ word: lowered, stem: stemWord(lowered), breakBefore: pending });
+    tokens.push({ word: lowered, stem: stemWord(lowered), breakBefore: pending, spacedBefore: spaced });
     word = "";
     pending = "none";
+    spaced = false;
   };
 
   for (let index = 0; index < characters.length; index += 1) {
@@ -862,6 +866,7 @@ function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): C
     }
 
     flush();
+    if (/\s/.test(character)) spaced = true;
 
     const joinsTwoWords =
       character === "." &&
@@ -916,9 +921,11 @@ type ClaimStems = { claim: string; stems: readonly string[]; contiguous?: true }
  * The stems of every claim a value from `source` may not make.
  *
  * A typed-field professional claim is `contiguous`: it matches only when no
- * clause break (a comma, semicolon, colon, parenthesis, or en or em dash) falls
- * inside it. A slash and a hyphen are not clause breaks. Without that,
- * "Erik Red, Team Lead" read as the claim "red team". The offer's own claims keep
+ * spaced clause break (a comma, semicolon, colon, parenthesis, or en or em
+ * dash, with whitespace beside it) falls inside it. Without that, "Erik Red,
+ * Team Lead" read as the claim "red team". A clause mark with no space beside
+ * it joins the words, so "Red–Team Lead" and "Penetration(Tester)" are still
+ * refused. A slash and a hyphen are not clause breaks. The offer's own claims keep
  * matching across a comma, as they did before, so "Acme Is, Secure Ltd" is still
  * caught in a typed field and offer copy is judged exactly as it was.
  */
@@ -952,7 +959,7 @@ function claimOccurrences(tokens: readonly ClaimToken[], wanted: readonly string
         matched = false;
         break;
       }
-      if (offset > 0 && (token.breakBefore === "sentence" || (contiguous && token.breakBefore === "clause"))) {
+      if (offset > 0 && (token.breakBefore === "sentence" || (contiguous && token.breakBefore === "clause" && token.spacedBefore))) {
         matched = false;
         break;
       }
@@ -1632,7 +1639,9 @@ export function findProhibitedClaims(
   for (const mode of PROSE_MODES) {
     const plain = tokenizeClaimText(text, mode);
     for (const tokens of source === "typed_field" ? [plain, withoutPossessives(plain)] : [plain]) {
-      const key = tokens.map((token) => `${token.breakBefore}:${token.stem}`).join("\u0000");
+      const key = tokens
+        .map((token) => `${token.breakBefore === "clause" && token.spacedBefore ? "spaced-clause" : token.breakBefore}:${token.stem}`)
+        .join("\u0000");
       if (seen.has(key)) continue;
       seen.add(key);
       for (const claim of claimsInTokens(tokens, prohibitedClaimStems(mode, source), disclaimersMayLicense)) {

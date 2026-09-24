@@ -54,8 +54,16 @@ const MUTANTS = [
     id: "M-CLAUSE",
     guard: "a typed-field phrase does not run across a clause break",
     file: INTAKE,
-    from: '(contiguous && token.breakBefore === "clause")',
-    to: '(false && token.breakBefore === "clause")',
+    from: '(contiguous && token.breakBefore === "clause" && token.spacedBefore)',
+    to: '(false && token.breakBefore === "clause" && token.spacedBefore)',
+    suite: CLAIM_SUITE,
+  },
+  {
+    id: "M-CLAUSE-SPACED",
+    guard: "only a clause mark with a space beside it separates a typed-field phrase",
+    file: INTAKE,
+    from: 'token.breakBefore === "clause" && token.spacedBefore)))',
+    to: 'token.breakBefore === "clause")))',
     suite: CLAIM_SUITE,
   },
   {

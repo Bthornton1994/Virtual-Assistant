@@ -1574,6 +1574,22 @@ describe("a typed value may not claim to be the professional the review is not",
     }
   });
 
+  // A clause mark only separates the words when a space is beside it. These
+  // were refused before the clause rule and must stay refused.
+  it.each([
+    ["Red\u2013Team Lead", "red team"],
+    ["Red\u2014Team Lead", "red team"],
+    ["Penetration\u2013Tester", "penetration tester"],
+    ["Ethical\u2013Hacker", "ethical hacker"],
+    ["Security\u2013Certified", "security certified"],
+    ["SOC 2\u2013auditor", "soc 2 auditor"],
+    ["Red:Team", "red team"],
+    ["Red(Team) lead", "red team"],
+    ["Security,Certified", "security certified"],
+  ])("refuses %s, whose clause mark has no space beside it", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+  });
+
   it("keeps the clause rule off the offer's own claims in a typed field", () => {
     // "is secure" is an offer claim, matched as it always was: across a comma.
     expect(findProhibitedClaims("Acme Is, Secure Ltd", "typed_field")).toEqual(["is secure"]);
@@ -1615,10 +1631,11 @@ describe("a typed value may not claim to be the professional the review is not",
 
   // Refused although they may be innocent. Pinned so a change in either
   // direction is seen, and recorded in docs/RELEASE-RESCUE-INTERNAL.md. A
-  // slash is not a clause break, and "Red Team" as a surname and given name
-  // reads as the claim; the operator types the name another way.
+  // slash and a hyphen are not clause breaks, and "Red Team" as a surname and
+  // given name reads as the claim; the operator types the name another way.
   it.each([
     ["Alex Red / Team Lead", "red team"],
+    ["Erik Red - Team Lead", "red team"],
     ["Ruby Red Team", "red team"],
   ])("refuses %s, a known over-refusal", (value, claim) => {
     expect(findProhibitedClaims(value, "typed_field")).toEqual([claim]);
