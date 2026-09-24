@@ -206,11 +206,15 @@ export class SnapshotBudget {
    *
    * - the same path listed twice: which copy belongs to the commit cannot be
    *   decided, and a repeated file could stand in for one that was left out;
-   * - one path used as both a file and a directory, whether the directory is
-   *   an explicit tar entry or only implied by an entry under it. A git tree
-   *   lists no directories, so on the git path the directories are the ones
-   *   the listed paths imply, and a hostile tree that names a blob `x` beside a
-   *   subtree `x` is refused.
+   * - a path the entry rules would read used as a directory too, whether the
+   *   directory is an explicit tar entry or only implied by an entry under it.
+   *   A git tree lists no directories, so on the git path the directories are
+   *   the ones the listed paths imply, and a hostile tree that names a blob
+   *   `x` beside a subtree `x` is refused. Implied directories are only
+   *   tracked within `maxPathLength` and `maxPathDepth` (see
+   *   `readableAncestorsOf`), so two entries that are BOTH refused as too long
+   *   or too deep may share a path as file and directory; neither is read, and
+   *   each already leaves the text checks BLOCKED.
    */
   claimPath(path: string, kind: "entry" | "directory" = "entry"): string {
     const canonical = canonicalEntryPath(path);

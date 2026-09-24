@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -52,6 +52,7 @@ import {
 const LEAKY_PATH = "src/payments/live-keys.ts";
 
 let logged: string[];
+let stderrOnly: string[];
 
 beforeEach(() => {
   process.env.RELEASE_RESCUE_LOCAL_DIR = tempDir("rr-internal-failure-");
@@ -59,6 +60,7 @@ beforeEach(() => {
   failing.draft = false;
   failing.message = `failed at ${LEAKY_PATH}: ${FAKE_AWS_KEY} ${PROMPT_INJECTION}`;
   logged = [];
+  stderrOnly = [];
   for (const level of ["log", "info", "warn", "error", "debug"] as const) {
     vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
       logged.push(args.map(String).join(" "));
@@ -68,7 +70,9 @@ beforeEach(() => {
   // error without going through console would still be seen.
   for (const stream of [process.stdout, process.stderr]) {
     vi.spyOn(stream, "write").mockImplementation((chunk: string | Uint8Array) => {
-      logged.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      logged.push(text);
+      if (stream === process.stderr) stderrOnly.push(text);
       return true;
     });
   }
@@ -170,19 +174,31 @@ describe("a draft that cannot be sealed keeps the analysis and says what failed"
     expect(record.notes).not.toBeNull();
     expect(record.draft).toBeNull();
     expect(loadRun(record.runId)).toEqual(record);
+    // BLOCKED, but its ledger ran: the statement follows the ledger, not the status.
+    expect(runSummary(record).modelDependentAnalysis).toBe(
+      "NOT RUN: No model provider is authorized for Release Rescue, so only the automated checks in the ledger ran.",
+    );
     expect(JSON.stringify(record)).not.toContain("secret key is malformed");
     expect(logged.join("\n")).not.toContain("secret key is malformed");
   });
 });
 
 describe("the CLI says which stage failed, not that nothing was analysed", () => {
-  async function cliRun(options: { sha?: string; extra?: string[] } = {}) {
+  async function cliRun(options: { sha?: string; extra?: string[]; beforeConfirm?: string[] } = {}) {
     const repo = makeFixtureRepo({ "src/app.ts": "ok\n" });
     const allowlistPath = join(tempDir("rr-internal-failure-allowlist-"), "allowlist.json");
     writeAllowlist(allowlistPath, fixtureAllowlist());
     process.env.RELEASE_RESCUE_ALLOWLIST = allowlistPath;
     saveCheckout(FIXTURE_REPOSITORY, repo.path);
-    await main(["run", FIXTURE_REPOSITORY, "--sha", options.sha ?? repo.commitSha, "--confirm-ownership", ...(options.extra ?? [])]);
+    await main([
+      "run",
+      FIXTURE_REPOSITORY,
+      "--sha",
+      options.sha ?? repo.commitSha,
+      ...(options.beforeConfirm ?? []),
+      "--confirm-ownership",
+      ...(options.extra ?? []),
+    ]);
     return logged.join("");
   }
 
@@ -197,12 +213,46 @@ describe("the CLI says which stage failed, not that nothing was analysed", () =>
     const unwritable = join(tempDir("rr-internal-failure-out-"), "missing", "summary.json");
     try {
       const printed = await cliRun({ extra: ["--summary-out", unwritable] });
-      expect(printed).toContain("Draft ready and awaiting a named reviewer.");
-      expect(printed).toMatch(/The summary file could not be written\. The run is saved as [0-9a-f-]{36}\./);
+      const closing = printed.indexOf("Draft ready and awaiting a named reviewer.");
+      const notice = printed.search(/The summary file could not be written\. The run is saved as [0-9a-f-]{36}\./);
+      // The run is reported first, and the notice goes to stderr.
+      expect(closing).toBeGreaterThan(-1);
+      expect(notice).toBeGreaterThan(closing);
+      expect(stderrOnly.join("")).toMatch(/^The summary file could not be written\. The run is saved as [0-9a-f-]{36}\.\n$/);
       expect(printed).not.toContain("ENOENT");
       expect(process.exitCode).toBe(1);
     } finally {
       process.exitCode = 0;
+    }
+  });
+
+  it("writes the printed summary, owner-only, when the summary file can be written", async () => {
+    const out = join(tempDir("rr-internal-failure-out-"), "summary.json");
+    const printed = await cliRun({ extra: ["--summary-out", out] });
+    const written = readFileSync(out, "utf8");
+    expect(printed.startsWith(written)).toBe(true);
+    expect(JSON.parse(written).status).toBe("awaiting_review");
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    expect(stderrOnly).toEqual([]);
+  });
+
+  it.each([
+    ["last on the line", { extra: ["--summary-out"] }],
+    ["followed by another flag", { beforeConfirm: ["--summary-out"] }],
+  ])("refuses --summary-out %s without a value, before running anything", async (_name, options) => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exit");
+    }) as never);
+    // What an unchecked flag parser would write: a file named after the next flag.
+    const stray = join(process.cwd(), "--confirm-ownership");
+    try {
+      await expect(cliRun(options)).rejects.toThrow("exit");
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(stderrOnly.join("")).toBe("--summary-out needs a file path. Nothing was run.\n");
+      expect(existsSync(stray)).toBe(false);
+      expect(existsSync(join(localDir(), "runs")) ? readdirSync(join(localDir(), "runs")) : []).toEqual([]);
+    } finally {
+      rmSync(stray, { force: true });
     }
   });
 
@@ -216,6 +266,7 @@ describe("the CLI says which stage failed, not that nothing was analysed", () =>
   it("names a draft that could not be built after the analysis completed", async () => {
     failing.draft = true;
     const printed = await cliRun();
+    expect(printed).toContain('"modelDependentAnalysis": "NOT RUN: No model provider is authorized for Release Rescue, so only the automated checks in the ledger ran."');
     expect(printed).toContain("Run BLOCKED. The source was read and analysed, but no valid draft could be built");
     expect(printed).not.toContain("Nothing was analysed");
     expect(printed).not.toContain("failed at");

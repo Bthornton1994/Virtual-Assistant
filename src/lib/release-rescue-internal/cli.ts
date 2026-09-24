@@ -34,9 +34,15 @@ import {
 // Output is summaries: counts, codes, hashes, paths and line numbers. No
 // command prints file content.
 
+/**
+ * The value after `--name`, or undefined. A following flag is not a value, so
+ * `--summary-out --confirm-ownership` cannot write a file called
+ * `--confirm-ownership`.
+ */
 function flag(args: string[], name: string): string | undefined {
   const index = args.indexOf(`--${name}`);
-  return index >= 0 ? args[index + 1] : undefined;
+  const value = index >= 0 ? args[index + 1] : undefined;
+  return value === undefined || value.startsWith("--") ? undefined : value;
 }
 
 function has(args: string[], name: string): boolean {
@@ -147,6 +153,8 @@ export async function main(argv: string[]): Promise<void> {
       const retention = (flag(args, "retention") ?? "minimum_7_day") as RetentionPolicy;
       if (!(RETENTION_POLICIES as readonly string[]).includes(retention)) fail("Unknown retention policy.");
       const archive = flag(args, "archive");
+      if (has(args, "archive") && !archive) fail("--archive needs a file path. Nothing was run.");
+      if (has(args, "summary-out") && !flag(args, "summary-out")) fail("--summary-out needs a file path. Nothing was run.");
       try {
         const record = await startInternalRun({
           initiatedBy: CLI_INITIATOR,

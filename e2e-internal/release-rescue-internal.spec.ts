@@ -131,7 +131,11 @@ test("the full journey: acquire, analyze, review, sign exactly what is shown, ex
 
   // Acquisition and the analysis ledger.
   await expect(page.getByRole("heading", { name: "Source acquisition: ACQUIRED" })).toBeVisible();
-  await expect(page.getByText("Model-assisted analysis: NOT RUN.", { exact: false })).toBeVisible();
+  await expect(
+    page.getByText(
+      "Model-assisted analysis: NOT RUN. No model provider is authorized for Release Rescue, so only the automated checks in the ledger ran.",
+    ),
+  ).toBeVisible();
   await expect(page.getByText(/1 FAIL, 1 PASS, 0 BLOCKED, 30 NOT RUN\./)).toBeVisible();
   await expectNoRepositoryText(page);
 

@@ -144,9 +144,11 @@ function pad(data: Buffer): Buffer {
 
 function paxData(records: Record<string, string>): Buffer {
   const parts = Object.entries(records).map(([key, value]) => {
+    // A pax record's length counts bytes, as the reader does, not UTF-16 units.
     const body = ` ${key}=${value}\n`;
-    let length = body.length + 1;
-    while (`${length}${body}`.length !== length) length = `${length}${body}`.length;
+    const bytes = (length: number) => Buffer.byteLength(`${length}${body}`, "utf8");
+    let length = Buffer.byteLength(body, "utf8") + 1;
+    while (bytes(length) !== length) length = bytes(length);
     return `${length}${body}`;
   });
   return Buffer.from(parts.join(""), "utf8");

@@ -468,6 +468,24 @@ describe("a source lists each path once, however it spells it", () => {
     expect(ancestors[0]).toBe("z");
   });
 
+  it.each([
+    ["exactly maxPathLength characters", "f".repeat(SNAPSHOT_LIMITS.maxPathLength)],
+    ["exactly maxPathDepth segments", `${"s/".repeat(SNAPSHOT_LIMITS.maxPathDepth - 1)}f`],
+    ["a non-ASCII name", "\u{1F600}".repeat(200)],
+  ])("refuses a readable file of %s used as a directory too, in either order", async (_name, file) => {
+    const alone = await read([{ kind: "pax", records: { path: file } }, { kind: "file", name: "placeholder", data: "x\n" }]);
+    expect(alone.status === "acquired" && alone.files.map((entry) => entry.path)).toEqual([file]);
+    const fileEntry = [{ kind: "pax" as const, records: { path: file } }, { kind: "file" as const, name: "placeholder", data: "x\n" }];
+    for (const under of [
+      [{ kind: "pax" as const, records: { path: `${file}/inner.ts` } }, { kind: "file" as const, name: "placeholder", data: "x\n" }],
+      [{ kind: "pax" as const, records: { path: `${file}/link.ts` } }, { kind: "file" as const, name: "placeholder", data: "", typeflag: "2" }],
+      [{ kind: "pax" as const, records: { path: `${file}/` } }, { kind: "file" as const, name: "placeholder", data: "", typeflag: "5" }],
+    ]) {
+      expect(await refusalOf([...fileEntry, ...under])).toEqual(BOTH);
+      expect(await refusalOf([...under, ...fileEntry])).toEqual(BOTH);
+    }
+  });
+
   it("reads an archive of very deep paths without building every prefix, and still finds a conflict within the limits", async () => {
     // Eight distinct 60 KB paths. Building every prefix of each, as an earlier
     // version did, is quadratic and exhausts the heap; the bounded ancestors
@@ -581,6 +599,29 @@ describe("a source lists each path once, however it spells it", () => {
     const gitlinkBesideTree = t.commit(t.tree(t.entry("160000", "sub", t.blob), t.entry("40000", "sub", sub)));
     const gitlinkOutcome = await t.read(gitlinkBesideTree);
     expect(gitlinkOutcome.status === "blocked" && gitlinkOutcome.refusals[0].reason).toBe("duplicate_entry_path");
+  });
+
+  it("refuses a git blob at the depth limit beside a subtree of the same name, in either order", async () => {
+    const t = hostileTree();
+    const under = Buffer.from(t.tree(t.entry("100644", "y.ts", t.blob)), "hex");
+    for (const order of ["blob-first", "tree-first"] as const) {
+      const pair =
+        order === "blob-first"
+          ? [t.entry("100644", "f", t.blob), t.entry("40000", "f", under)]
+          : [t.entry("40000", "f", under), t.entry("100644", "f", t.blob)];
+      let level = t.tree(...pair);
+      for (let depth = 1; depth < SNAPSHOT_LIMITS.maxPathDepth; depth += 1) {
+        level = t.tree(t.entry("40000", "s", Buffer.from(level, "hex")));
+      }
+      const commitSha = t.commit(level);
+      const listed = t.git(["ls-tree", "-r", "--name-only", commitSha]).split("\n");
+      expect(listed.some((path) => path.split("/").length === SNAPSHOT_LIMITS.maxPathDepth), "control: a blob at the limit").toBe(true);
+      const outcome = await t.read(commitSha);
+      expect(outcome.status === "blocked" && outcome.refusals[0]).toEqual({
+        reason: "duplicate_entry_path",
+        detail: "The source uses one path as both a file and a directory.",
+      });
+    }
   });
 
   it("reads a git name that prints non-canonically under its canonical path", async () => {
