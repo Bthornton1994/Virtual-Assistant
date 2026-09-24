@@ -1,6 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The terminal's argument handling. Every command's arguments are checked in
@@ -9,6 +11,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // retention policy, or a summary written somewhere else.
 
 const started = vi.hoisted(() => ({ count: 0 }));
+const staging = vi.hoisted(() => ({ fixed: null as Buffer | null }));
+
+// The staged file's random suffix, made predictable only where a test asks.
+vi.mock("node:crypto", async (original) => {
+  const actual = await original<typeof import("node:crypto")>();
+  return {
+    ...actual,
+    randomBytes: ((size: number, ...rest: unknown[]) =>
+      staging.fixed && rest.length === 0 ? Buffer.from(staging.fixed) : (actual.randomBytes as (...a: unknown[]) => Buffer)(size, ...rest)) as typeof actual.randomBytes,
+  };
+});
 
 vi.mock("@/lib/release-rescue-internal/run", async (original) => {
   const actual = await original<typeof import("@/lib/release-rescue-internal/run")>();
@@ -22,7 +35,11 @@ vi.mock("@/lib/release-rescue-internal/run", async (original) => {
 });
 
 import { main } from "@/lib/release-rescue-internal/cli";
+import { addOperator } from "@/lib/release-rescue-internal/local-identity";
+import { signRunAsLocalOperator } from "@/lib/release-rescue-internal/review";
+import { CLI_INITIATOR, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { loadRun, localDir, saveCheckout } from "@/lib/release-rescue-internal/store";
+import { hashReleaseRescueReviewSubject } from "@/lib/release-rescue-report";
 import {
   FIXTURE_REPOSITORY,
   fixtureAllowlist,
@@ -64,7 +81,12 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   process.exitCode = 0;
+  staging.fixed = null;
   delete process.env.RELEASE_RESCUE_ALLOWLIST;
+  // A regression that took a stray option as a file name would write it in the
+  // working directory, which is the repository. Asserted absent in each
+  // refusal; removed here so a failing run leaves nothing behind.
+  for (const name of STRAYS) rmSync(join(process.cwd(), name), { force: true });
 });
 
 function runFiles(): string[] {
@@ -120,7 +142,7 @@ describe("run: every argument is checked before anything is read or written", ()
     ["--sha given twice", () => [...base(), "--sha", repo.commitSha, "--confirm-ownership"], "--sha was given more than once. Nothing was run."],
     ["--archive given twice", () => [...base(), "--confirm-ownership", "--archive", archive(), "--archive", archive()], "--archive was given more than once. Nothing was run."],
     ["--confirm-ownership given twice", () => [...base(), "--confirm-ownership", "--confirm-ownership"], "--confirm-ownership was given more than once. Nothing was run."],
-    ["an extra argument", () => [...base(), "--confirm-ownership", "extra"], "run takes 1 argument: run <owner/name> --sha <40-char sha> --confirm-ownership [--retention <policy>] [--archive <file.tar>] [--summary-out <file>]. Nothing was run."],
+    ["an extra argument", () => [...base(), "--confirm-ownership", "extra"], "run takes 1 argument: run <owner/name> --sha <40-char sha> --confirm-ownership [--retention <policy>] [--archive <file.tar|file.tar.gz>] [--summary-out <file>]. Nothing was run."],
   ];
 
   it.each(cases)("refuses %s, and neither runs nor writes anything", async (_name, argv, message) => {
@@ -140,6 +162,10 @@ describe("the other commands check their arguments the same way", () => {
     ["show with two run ids", ["show", "a", "b"], "show takes 1 argument: show <run id>. Nothing was run."],
     ["purge with a flag", ["purge", "--all"], "Unknown option --all for purge. Nothing was run."],
     ["checkout:set with one argument", ["checkout:set", FIXTURE_REPOSITORY], "checkout:set takes 2 arguments: checkout:set <owner/name> <absolute path>. Nothing was run."],
+    ["checkout:set with an option", ["checkout:set", FIXTURE_REPOSITORY, "/tmp/clone", "--force"], "Unknown option --force for checkout:set. Nothing was run."],
+    ["head with no argument", ["head"], "head takes 1 argument: head <owner/name>. Nothing was run."],
+    ["head with two arguments", ["head", FIXTURE_REPOSITORY, "extra"], "head takes 1 argument: head <owner/name>. Nothing was run."],
+    ["operator:add with a name that begins with -", ["operator:add", "--name", "-Ann"], "--name needs a value. Nothing was run."],
     ["an unknown command", ["frobnicate"], "Unknown command frobnicate. Run with no arguments for usage."],
   ];
 
@@ -154,7 +180,25 @@ describe("the other commands check their arguments the same way", () => {
     await main([]);
     expect(stdout.join("")).toContain("Release Rescue, internal local workflow");
     expect(stdout.join("")).toContain("Exit status:");
+    expect(stdout.join("")).toContain("[--archive <file.tar|file.tar.gz>]");
+    expect(stdout.join("")).toContain('--name " -Ann" for a display name that begins with one: names are trimmed.');
     expect(process.exit).not.toHaveBeenCalled();
+  });
+
+  it("refuses a display name that makes a claim before asking for a passphrase", async () => {
+    // Asked on a terminal, the prompt comes first and waits; nothing is typed
+    // here, so reaching it would hang the test rather than pass it.
+    const tty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    try {
+      await expect(main(["operator:add", "--name", "Certified pentester"])).rejects.toThrow("exit 1");
+    } finally {
+      if (tty) Object.defineProperty(process.stdin, "isTTY", tty);
+      else delete (process.stdin as { isTTY?: boolean }).isTTY;
+    }
+    expect(stderr.join("")).toBe("A display name may not make a claim about the review. Nothing was written.\n");
+    expect(stdout).toEqual([]);
+    expect(existsSync(join(localDir(), "operators.json"))).toBe(false);
   });
 });
 
@@ -193,6 +237,17 @@ describe("valid invocations still run", () => {
     expect(process.exitCode ?? 0).toBe(0);
   });
 
+  it("exits 1, after reporting a BLOCKED run, when its summary file cannot be written", async () => {
+    const out = join(work, "no-such-directory", "summary.json");
+    await main(["run", FIXTURE_REPOSITORY, "--sha", "f".repeat(40), "--confirm-ownership", "--summary-out", out]);
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(runFiles()).toHaveLength(1);
+    const runId = runFiles()[0].replace(/\.json$/, "");
+    expect(stdout.join("")).toContain("Run BLOCKED.");
+    expect(stderr.join("")).toBe(`The summary file could not be written. The run is saved as ${runId}.\n`);
+  });
+
   it("exits 2, after reporting the run, when the run is recorded as BLOCKED", async () => {
     const out = join(work, "summary.json");
     await main(["run", FIXTURE_REPOSITORY, "--sha", "f".repeat(40), "--confirm-ownership", "--summary-out", out]);
@@ -224,4 +279,157 @@ describe("the summary file is owner-only and replaces what was there", () => {
     expect(JSON.parse(readFileSync(out, "utf8")).status).toBe("awaiting_review");
     expect(readdirSync(work).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
+
+  it("writes to a name as long as the directory allows, because the staged name is short", async () => {
+    const out = join(work, `${"s".repeat(250)}.json`);
+    await main(["run", FIXTURE_REPOSITORY, "--sha", repo.commitSha, "--confirm-ownership", "--summary-out", out]);
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(JSON.parse(readFileSync(out, "utf8")).status).toBe("awaiting_review");
+  });
+
+  it("removes its staged file when the rename fails", async () => {
+    // A non-empty directory at the path cannot be replaced by a file.
+    const out = join(work, "summary.json");
+    mkdirSync(out);
+    writeFileSync(join(out, "keep.txt"), "kept\n");
+    await main(["run", FIXTURE_REPOSITORY, "--sha", repo.commitSha, "--confirm-ownership", "--summary-out", out]);
+    expect(process.exitCode).toBe(1);
+    expect(readFileSync(join(out, "keep.txt"), "utf8")).toBe("kept\n");
+    expect(readdirSync(work).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("does not remove a file it did not create at the staged name", async () => {
+    staging.fixed = Buffer.alloc(8, 0xab);
+    const staged = join(work, `.rr-local-${"ab".repeat(8)}.tmp`);
+    writeFileSync(staged, "someone else's\n");
+    const out = join(work, "summary.json");
+    await main(["run", FIXTURE_REPOSITORY, "--sha", repo.commitSha, "--confirm-ownership", "--summary-out", out]);
+    expect(process.exitCode).toBe(1);
+    expect(readFileSync(staged, "utf8")).toBe("someone else's\n");
+    expect(existsSync(out)).toBe(false);
+  });
+});
+
+describe("export reports a file it cannot write, and delivers nothing", () => {
+  it("exits 1 with a fixed sentence, and the run is still undelivered", async () => {
+    const operator = addOperator("Dana Okafor", "a long local test passphrase");
+    const record = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout" },
+    });
+    const shown = hashReleaseRescueReviewSubject(record.draft!.report);
+    const signed = signRunAsLocalOperator(
+      operator,
+      record.runId,
+      { reasonCode: "reviewed_findings_and_verdict_match_the_recorded_observations", approvedContentHash: shown },
+      new Date(),
+      { ownershipConfirmed: true },
+    );
+    expect(signed.ok, "control: the run is signed").toBe(true);
+    await expect(main(["export", record.runId, "--out", join(work, "no-such-directory", "report.json")])).rejects.toThrow("exit 1");
+    expect(stderr.join("")).toBe("The export file could not be written. Nothing was delivered.\n");
+    expect(stdout).toEqual([]);
+    expect(loadRun(record.runId)!.deliveredAt).toBeNull();
+
+    await main(["export", record.runId, "--out", join(work, "report.json")]);
+    expect(loadRun(record.runId)!.deliveredAt, "control: a writable path delivers").not.toBeNull();
+  });
+});
+
+// Through the real launcher, as an operator runs it: `npm run rr:local`.
+const execFileAsync = promisify(execFile);
+const LAUNCHER = [
+  "--experimental-strip-types",
+  "--disable-warning=ExperimentalWarning",
+  "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+  "scripts/release-rescue-local.mjs",
+];
+
+async function launch(argv: string[], input = ""): Promise<{ status: number; stdout: string; stderr: string }> {
+  const child = execFileAsync(process.execPath, [...LAUNCHER, ...argv], { cwd: process.cwd(), env: process.env, encoding: "utf8" });
+  child.child.stdin?.end(input);
+  try {
+    const { stdout, stderr } = await child;
+    return { status: 0, stdout, stderr };
+  } catch (error) {
+    const failed = error as { code?: number; stdout?: string; stderr?: string };
+    return { status: typeof failed.code === "number" ? failed.code : -1, stdout: failed.stdout ?? "", stderr: failed.stderr ?? "" };
+  }
+}
+
+/** Every byte of local state, by file, so a side effect anywhere shows. */
+function localState(): Record<string, string> {
+  const state: Record<string, string> = {};
+  const walk = (dir: string, prefix: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) walk(path, `${prefix}${name}/`);
+      else state[`${prefix}${name}`] = createHash("sha256").update(readFileSync(path)).digest("hex");
+    }
+  };
+  walk(localDir(), "");
+  return state;
+}
+
+describe("an inherited property name is an unknown option, through the real launcher", () => {
+  it("refuses --constructor, --toString, --__proto__ and --valueOf on every command that takes options or none", async () => {
+    const operator = addOperator("Dana Okafor", "a long local test passphrase");
+    // Created long ago and never delivered, so any command that reached the
+    // retention sweep would purge it.
+    const old = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout" },
+      now: new Date("2000-01-01T00:00:00Z"),
+    });
+    const before = localState();
+    expect(Object.keys(before)).toEqual(expect.arrayContaining(["checkouts.json", "operators.json", `runs/${old.runId}.json`]));
+
+    const commands: Array<[string, string[]]> = [
+      ["run", ["run", FIXTURE_REPOSITORY, "--sha", repo.commitSha, "--confirm-ownership"]],
+      ["operator:add", ["operator:add", "--name", "Kim Okafor"]],
+      ["operator:remove", ["operator:remove", operator.operatorId]],
+      ["checkout:set", ["checkout:set", FIXTURE_REPOSITORY, repo.path]],
+      ["head", ["head", FIXTURE_REPOSITORY]],
+      ["show", ["show", old.runId]],
+      ["export", ["export", old.runId, "--out", join(work, "report.json")]],
+      ["purge", ["purge"]],
+    ];
+    const invocations = commands.flatMap(([command, argv]) =>
+      ["constructor", "toString", "__proto__", "valueOf"].map((name) => ({ command, name, argv: [...argv, `--${name}`, "x"] })),
+    );
+    const results = await Promise.all(invocations.map((invocation) => launch(invocation.argv, "a long local test passphrase\n")));
+    invocations.forEach((invocation, index) => {
+      const label = `${invocation.command} --${invocation.name}`;
+      expect(results[index].stderr, label).toBe(`Unknown option --${invocation.name} for ${invocation.command}. Nothing was run.\n`);
+      expect(results[index].status, label).toBe(1);
+      expect(results[index].stdout, label).toBe("");
+    });
+    expect(localState()).toEqual(before);
+    expect(writtenFiles()).toEqual([]);
+
+    // Control: the same launcher, asked properly, does reach the sweep.
+    const purge = await launch(["purge"]);
+    expect(purge).toEqual({ status: 0, stdout: "Purged 1 run(s).\n", stderr: "" });
+  }, 60_000);
+
+  it("reports an unexpected failure in one sentence, with no stack trace", async () => {
+    rmSync(join(localDir(), "checkouts.json"));
+    mkdirSync(join(localDir(), "checkouts.json"));
+    const result = await launch(["checkout:list"]);
+    expect(result).toEqual({ status: 1, stdout: "", stderr: "The command failed unexpectedly (EISDIR).\n" });
+  }, 30_000);
+
+  it("accepts a display name that begins with - when it is written with a leading space", async () => {
+    const result = await launch(["operator:add", "--name", " -Ann Okafor"], "a long local test passphrase\n");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/^Operator created: -Ann Okafor \(/);
+  }, 30_000);
 });

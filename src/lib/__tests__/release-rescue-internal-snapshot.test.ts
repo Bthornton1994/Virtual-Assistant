@@ -189,6 +189,27 @@ describe("the tar reader reads what the archive contains, and nothing it only cl
     ]);
   });
 
+  it("keeps a backslash in an invalid name from spelling another name's escape", async () => {
+    // `k\xfe\x80` is how `6b fe 80` is written. Without escaping the backslash
+    // too, the six bytes `k \ x f e 0x80` would be written the same way.
+    const tar = buildTar(
+      withCommit([
+        { kind: "file", name: "a.ts", data: "a\n" },
+        { kind: "file", name: "kX", data: "one\n" },
+        { kind: "file", name: "kY", data: "two\n" },
+      ]),
+    );
+    const edited = editTarEntry(editTarEntry(tar, "kX", { name: Buffer.from([0x6b, 0xfe, 0x80]) }), "kY", {
+      name: Buffer.from([0x6b, 0x5c, 0x78, 0x66, 0x65, 0x80]),
+    });
+    const outcome = await readTarStream(tarStream(edited), SHA, { gzip: false });
+    expect(outcome.status).toBe("acquired");
+    if (outcome.status !== "acquired") return;
+    const paths = outcome.rejected.map((entry) => entry.path);
+    expect(paths).toEqual(["k\\xfe\\x80", "k\\x5cxfe\\x80"]);
+    expect(new Set(paths).size).toBe(2);
+  });
+
   it("names a pax path that is not valid UTF-8 exactly, as it does a ustar name", async () => {
     const paxEntry = (path: Buffer): Parameters<typeof buildTar>[0] => {
       const body = Buffer.concat([Buffer.from(" path="), path, Buffer.from("\n")]);
@@ -350,6 +371,126 @@ describe("the expansion ratio is the whole archive's, whatever the order of its 
     const outcome = await readTarArchive({ archivePath: path, commitSha: repo.commitSha });
     expect(outcome.status).toBe("acquired");
     expect(outcome.totals.expandedBytes / outcome.totals.streamBytes).toBeGreaterThan(LIMIT);
+  });
+
+  it("acquires an archive that expands past 16 MiB below 12x overall, whatever its order and read size", async () => {
+    // Nine highly compressible CSV files first, then twenty of noise: about
+    // 37 MB of tar in about 21 MB of gzip, 1.8x overall. The first 16 MiB
+    // expands from well under a twelfth of that, so a ratio taken over the
+    // bytes read so far refuses it; the whole archive's ratio does not.
+    const csv = (seed: number) => {
+      const rows: string[] = ["id,status,region,notes\n"];
+      let length = rows[0].length;
+      for (let id = seed * 1_000_000; length < 1_900_000; id += 1) {
+        const row = `${id},active,us-east-1,lorem ipsum dolor sit amet consectetur\n`;
+        rows.push(row);
+        length += row.length;
+      }
+      return rows.join("").slice(0, 1_900_000);
+    };
+    const entries: Parameters<typeof buildTar>[0] = [];
+    for (let index = 0; index < 9; index += 1) entries.push({ kind: "file", name: `data/table-${index}.csv`, data: csv(index) });
+    for (let index = 0; index < 20; index += 1) {
+      entries.push({ kind: "file", name: `assets/noise-${index}.bin`, data: incompressible(1_000_000, index + 1) });
+    }
+    const dir = tempDir("rr-internal-ratio-");
+    for (const [name, ordered] of [
+      ["compressible-first.tar.gz", entries],
+      ["compressible-last.tar.gz", [...entries].reverse()],
+    ] as const) {
+      const compressed = gzip(buildTar(withCommit([...ordered])));
+      expect(compressed.length * LIMIT, name).toBeGreaterThan(MEASURED_RATIO_FLOOR_BYTES);
+      for (const size of [700, 64 * 1024, compressed.length]) {
+        const outcome = await readTarStream(chunked(compressed, size), SHA, { gzip: true, inputBytes: compressed.length });
+        expect(outcome.status, `${name} read in ${size}-byte chunks`).toBe("acquired");
+        if (outcome.status !== "acquired") continue;
+        expect(outcome.files).toHaveLength(29);
+        expect(outcome.totals.expandedBytes).toBeGreaterThan(2 * MEASURED_RATIO_FLOOR_BYTES);
+        expect(outcome.totals.expandedBytes).toBeLessThan(LIMIT * compressed.length);
+      }
+      const path = join(dir, name);
+      writeFileSync(path, compressed);
+      expect((await readTarArchive({ archivePath: path, commitSha: SHA })).status, `${name} from a file`).toBe("acquired");
+    }
+  });
+
+  it("refuses any byte after the gzip data, the same way at every read size", async () => {
+    // gunzip stops at the end of its data and ignores trailing bytes that begin
+    // with a zero byte, so how much of the rest had been read used to depend on
+    // the chunking, and the refusal said the file had changed size. The input
+    // is now read to its end and the decision taken once. gunzip reads other
+    // trailing bytes as a second member: invalid, or valid and so data after
+    // the tar's end-of-archive marker. Each is the same at every read size.
+    const compressed = gzip(buildTar(withCommit([{ kind: "file", name: "a.ts", data: "a\n" }])));
+    const accepted = await readTarStream(chunked(compressed, 1), SHA, { gzip: true, inputBytes: compressed.length });
+    expect(accepted.status).toBe("acquired");
+    const FOLLOWED = "Data followed the gzip stream.";
+    const INVALID = "The archive is not valid gzip.";
+    const dir = tempDir("rr-internal-trailing-");
+    for (const [trailer, detail] of [
+      [Buffer.alloc(1), FOLLOWED],
+      [Buffer.alloc(60_000), FOLLOWED],
+      [Buffer.alloc(70_000), FOLLOWED],
+      [Buffer.alloc(200_000), FOLLOWED],
+      [Buffer.concat([Buffer.alloc(70_000), Buffer.from("trailing text\n")]), FOLLOWED],
+      [Buffer.from("\0trailing text\n"), FOLLOWED],
+      [Buffer.from("trailing text\n"), INVALID],
+      [Buffer.from([0x1f, 0x8b, 1, 2]), INVALID],
+      [compressed, "Data followed an end-of-archive marker."],
+    ] as const) {
+      const input = Buffer.concat([compressed, trailer]);
+      const details = new Set<string>();
+      // One-byte reads only where the input is small enough to read that way.
+      for (const size of [...(input.length < 1_000 ? [1] : []), 700, 64 * 1024, input.length]) {
+        for (const inputBytes of [input.length, undefined]) {
+          const outcome = await readTarStream(chunked(input, size), SHA, { gzip: true, inputBytes });
+          const label = `${trailer.length} trailing bytes, ${size}-byte reads, size ${inputBytes === undefined ? "unknown" : "known"}`;
+          expect(outcome.status, label).toBe("blocked");
+          if (outcome.status !== "blocked") continue;
+          expect(outcome.refusals, label).toHaveLength(1);
+          expect(outcome.refusals[0].reason, label).toBe("malformed_input");
+          details.add(outcome.refusals[0].detail);
+        }
+      }
+      const path = join(dir, `trailing-${trailer.length}-${trailer[0]}.tar.gz`);
+      writeFileSync(path, input);
+      const fromFile = await readTarArchive({ archivePath: path, commitSha: SHA });
+      expect(fromFile.status).toBe("blocked");
+      if (fromFile.status === "blocked") details.add(fromFile.refusals[0].detail);
+      expect([...details], `${trailer.length} trailing bytes`).toEqual([detail]);
+    }
+  }, 60_000);
+
+  it("covers the framing of 5,000 small files under the floor, but not of 5,000 in their own long directories", async () => {
+    // The floor's measured bound, pinned in both directions. `git archive`
+    // gives an entry over 100 bytes of path a pax record, so a file in its own
+    // deep directory costs two headers and two pax records before its data.
+    const flat: Parameters<typeof buildTar>[0] = [];
+    for (let index = 0; index < SNAPSHOT_LIMITS.maxFileCount; index += 1) {
+      flat.push({ kind: "file", name: `src/f${index}.ts`, data: `export const v${index} = ${index};\n` });
+    }
+    const flatTar = buildTar(withCommit(flat));
+    const flatOutcome = await readTarStream(chunked(gzip(flatTar), 64 * 1024), SHA, { gzip: true, inputBytes: gzip(flatTar).length });
+    expect(flatOutcome.status).toBe("acquired");
+    expect(flatOutcome.totals.expandedBytes).toBeLessThan(MEASURED_RATIO_FLOOR_BYTES);
+
+    const deep: Parameters<typeof buildTar>[0] = [];
+    for (let index = 0; index < SNAPSHOT_LIMITS.maxFileCount; index += 1) {
+      const directory = `packages/module-${index}/${"nested-directory-name/".repeat(4)}`;
+      deep.push({ kind: "pax", records: { path: directory } }, { kind: "file", name: "dir", data: "", typeflag: "5" });
+      deep.push({ kind: "pax", records: { path: `${directory}index.ts` } }, { kind: "file", name: "file", data: `export const v${index} = ${index};\n` });
+    }
+    const deepTar = buildTar(withCommit(deep));
+    const deepGzip = gzip(deepTar);
+    expect(deepTar.length).toBeGreaterThan(MEASURED_RATIO_FLOOR_BYTES);
+    expect(deepTar.length / deepGzip.length).toBeGreaterThan(LIMIT);
+    const refused = await readTarStream(chunked(deepGzip, 64 * 1024), SHA, { gzip: true, inputBytes: deepGzip.length });
+    expect(refused.status).toBe("blocked");
+    if (refused.status === "blocked") expect(refused.refusals[0].reason).toBe("expansion_ratio_exceeded");
+    // The same archive as a plain .tar, as the refusal says.
+    const plain = await readTarStream(chunked(deepTar, 64 * 1024), SHA, { gzip: false, inputBytes: deepTar.length });
+    expect(plain.status).toBe("acquired");
+    if (plain.status === "acquired") expect(plain.files).toHaveLength(SNAPSHOT_LIMITS.maxFileCount);
   });
 
   it("refuses a 150 MB bomb early, with the same decision and the same words at every read size", async () => {
@@ -916,6 +1057,25 @@ describe("a source lists each path once, however it spells it", () => {
     const gitlinkBesideTree = t.commit(t.tree(t.entry("160000", "sub", t.blob), t.entry("40000", "sub", sub)));
     const gitlinkOutcome = await t.read(gitlinkBesideTree);
     expect(gitlinkOutcome.status === "blocked" && gitlinkOutcome.refusals[0].reason).toBe("duplicate_entry_path");
+  });
+
+  it("does not compare a subtree that holds no path: an empty one beside a blob, or one name used for two subtrees", async () => {
+    // Recorded in docs/RELEASE-RESCUE-INTERNAL.md. A git tree lists directories
+    // only through the paths under them, so neither shape leaves a file unread
+    // or reads one twice; each file is still read once under its own path.
+    const t = hostileTree();
+    const empty = Buffer.from(t.tree(), "hex");
+    const emptyBesideBlob = await t.read(t.commit(t.tree(t.entry("100644", "x", t.blob), t.entry("40000", "x", empty))));
+    expect(emptyBesideBlob.status === "acquired" && emptyBesideBlob.files.map((file) => file.path)).toEqual(["x"]);
+
+    const holdsY = Buffer.from(t.tree(t.entry("100644", "y.ts", t.blob)), "hex");
+    const holdsZ = Buffer.from(t.tree(t.entry("100644", "z.ts", t.blob)), "hex");
+    const twoSubtrees = await t.read(t.commit(t.tree(t.entry("40000", "x", holdsY), t.entry("40000", "x", holdsZ))));
+    expect(twoSubtrees.status === "acquired" && twoSubtrees.files.map((file) => file.path)).toEqual(["x/y.ts", "x/z.ts"]);
+
+    // The same file reached through both is still a repeated path.
+    const repeated = await t.read(t.commit(t.tree(t.entry("40000", "x", holdsY), t.entry("40000", "x", holdsY))));
+    expect(repeated.status === "blocked" && repeated.refusals[0].reason).toBe("duplicate_entry_path");
   });
 
   it("refuses a git blob at the depth limit beside a subtree of the same name, in either order", async () => {

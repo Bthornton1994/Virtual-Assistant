@@ -1,12 +1,12 @@
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
-import { randomUUID } from "node:crypto";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { RETENTION_POLICIES, commitShaSchema, type RetentionPolicy } from "@/lib/release-rescue-intake";
 import { findAllowlisted, loadAllowlist } from "@/lib/release-rescue-internal/allowlist";
 import { resolveCheckoutHead } from "@/lib/release-rescue-internal/git-source";
-import { addOperator, loadOperators, removeOperator } from "@/lib/release-rescue-internal/local-identity";
+import { addOperator, displayNameProblem, loadOperators, removeOperator } from "@/lib/release-rescue-internal/local-identity";
 import { deliveryForRun, recordDelivery } from "@/lib/release-rescue-internal/review";
 import { CLI_INITIATOR, RunRefused, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { runSummary } from "@/lib/release-rescue-internal/summary";
@@ -50,8 +50,11 @@ function fail(message: string): never {
 // - `--flag=value` is refused, because nothing else here reads that form;
 // - an option that takes a value needs one: not missing, not empty, and not
 //   the next option (a value may not begin with `-`; write `./-x` for a file
-//   called `-x`);
+//   called `-x`, and ` -Ann` for a display name, which is trimmed);
 // - the number of plain arguments must be exact.
+//
+// Only a command's own declared names count: `--constructor` or `--__proto__`
+// is an unknown option, not a property every object inherits.
 
 type OptionKind = "value" | "switch";
 
@@ -93,7 +96,7 @@ const COMMANDS: Record<string, CommandSpec> = {
   },
   run: {
     usage:
-      "run <owner/name> --sha <40-char sha> --confirm-ownership [--retention <policy>] [--archive <file.tar>] [--summary-out <file>]",
+      "run <owner/name> --sha <40-char sha> --confirm-ownership [--retention <policy>] [--archive <file.tar|file.tar.gz>] [--summary-out <file>]",
     summary: "run a review up to the unsigned draft",
     arguments: 1,
     options: { sha: "value", "confirm-ownership": "switch", retention: "value", archive: "value", "summary-out": "value" },
@@ -121,7 +124,7 @@ function countOf(count: number): string {
 }
 
 function parseArguments(command: string, spec: CommandSpec, args: string[]): ParsedArguments {
-  const parsed: ParsedArguments = { arguments: [], values: {}, switches: new Set() };
+  const parsed: ParsedArguments = { arguments: [], values: Object.create(null) as Record<string, string>, switches: new Set() };
   const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -132,7 +135,7 @@ function parseArguments(command: string, spec: CommandSpec, args: string[]): Par
     const equals = token.indexOf("=");
     const spelled = equals < 0 ? token : token.slice(0, equals);
     const name = spelled.startsWith("--") ? spelled.slice(2) : "";
-    const kind = name ? spec.options[name] : undefined;
+    const kind = name && Object.hasOwn(spec.options, name) ? spec.options[name] : undefined;
     if (kind === undefined) refuse(`Unknown option ${spelled} for ${command}.`);
     if (equals >= 0) {
       refuse(kind === "value" ? `Write --${name} <value>, not --${name}=<value>.` : `Write --${name}, not --${name}=<value>.`);
@@ -160,15 +163,21 @@ function parseArguments(command: string, spec: CommandSpec, args: string[]): Par
  * target, created 0600, which is then renamed over it. So an existing file's
  * wider permissions are not kept, and a symlink at the path is replaced rather
  * than written through.
+ *
+ * The staged name is a fixed 30 characters, whatever the target is called, so
+ * any name the directory accepts can be written. It is removed on failure only
+ * if this call created it.
  */
 function writeOwnerOnly(path: string, text: string): void {
   const target = resolve(path);
-  const staged = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
+  const staged = join(dirname(target), `.rr-local-${randomBytes(8).toString("hex")}.tmp`);
+  let created = false;
   try {
     writeFileSync(staged, text, { mode: 0o600, flag: "wx" });
+    created = true;
     renameSync(staged, target);
   } catch (error) {
-    rmSync(staged, { force: true });
+    if (created) rmSync(staged, { force: true });
     throw error;
   }
 }
@@ -204,7 +213,10 @@ ${lines.join("\n")}
 
 Exit status: 0 when the command did what it says (for run, a draft is awaiting a
 reviewer); 1 when it was refused or failed, and for run when the summary file
-could not be written; 2 when run saved the run as BLOCKED.
+could not be written, BLOCKED or not; 2 when run saved the run as BLOCKED.
+
+A value may not begin with "-". Write ./-x for a file called -x, and
+--name " -Ann" for a display name that begins with one: names are trimmed.
 
 Local data lives in ${"${RELEASE_RESCUE_LOCAL_DIR:-.release-rescue-local}"} and is never committed.`;
 }
@@ -223,6 +235,10 @@ export async function main(argv: string[]): Promise<void> {
   switch (command) {
     case "operator:add": {
       const name = parsed.values.name;
+      // Checked before the prompt, so a name that will be refused does not cost
+      // the operator a passphrase first. `addOperator` checks it again.
+      const problem = displayNameProblem(name);
+      if (problem) fail(`${problem} Nothing was written.`);
       const passphrase = await readPassphrase("Passphrase (not shown): ");
       if (process.stdin.isTTY) {
         const repeated = await readPassphrase("Repeat passphrase: ");
@@ -324,7 +340,11 @@ export async function main(argv: string[]): Promise<void> {
       const outcome = deliveryForRun(first);
       if (outcome.status !== "deliverable") fail(`Withheld: ${outcome.blockers.join("; ")}`);
       const { view, contentHash, reviewer, checks } = outcome.decision;
-      writeOwnerOnly(parsed.values.out, `${JSON.stringify({ contentHash, reviewer, checks, report: view }, null, 2)}\n`);
+      try {
+        writeOwnerOnly(parsed.values.out, `${JSON.stringify({ contentHash, reviewer, checks, report: view }, null, 2)}\n`);
+      } catch {
+        fail("The export file could not be written. Nothing was delivered.");
+      }
       recordDelivery(first);
       process.stdout.write(`Exported to ${resolve(parsed.values.out)}\n`);
       return;

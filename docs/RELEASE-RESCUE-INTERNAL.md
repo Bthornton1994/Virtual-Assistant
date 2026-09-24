@@ -31,13 +31,15 @@ npm run rr:local -- run Bthornton1994/Loadout --sha <40-char sha> --confirm-owne
 The terminal has no signing command. Signing needs a signed-in session in the browser.
 
 The terminal checks every argument before it reads or writes anything. It refuses, with exit status 1:
-- an option the command does not take, including a misspelled one;
+- an option the command does not take, including a misspelled one, and a name every object inherits, such as `--constructor` or `--__proto__`;
 - an option given twice;
 - `--option=value` (write `--option value`);
-- an option with a missing or empty value, or one followed by another option. A value may not begin with `-`, so write `./-x` for a file called `-x`;
+- an option with a missing or empty value, or one followed by another option. A value may not begin with `-`, so write `./-x` for a file called `-x`, and `--name " -Ann"` for a display name that begins with `-` (names are trimmed);
 - the wrong number of arguments, a `--sha` that is not a full 40-character lowercase commit, and an unknown `--retention` policy.
 
-A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKED. It exits 1 if the summary file could not be written, after reporting the run. The summary file and an export are written owner-only (`0600`). An existing file at that path is replaced, and so is a symlink, which is not written through.
+`operator:add` checks the display name before it asks for a passphrase.
+
+A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKED. It exits 1 if the summary file could not be written, after reporting the run, whether or not the run was BLOCKED. The summary file and an export are written owner-only (`0600`), through a new file beside the target that is renamed over it. An existing file at that path is replaced, and so is a symlink, which is not written through. If an export cannot be written, the command says so in one sentence, exits 1, and records no delivery. Any other unexpected failure prints `The command failed unexpectedly.`, with the system error code when there is one, and exits 1. No stack trace or error text is printed.
 
 ## What a run does
 
@@ -59,6 +61,8 @@ A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKE
    - Directory entries. They hold no data: a directory, symlink, hard link or special entry that carries data is refused.
    - Path spelling. Paths are compared in the one spelling described below, so `./a.ts` in an archive is `a.ts`.
 
+   A symlink whose target holds a NUL byte cannot be written faithfully by `git archive`, because a tar link name ends at its first NUL. Its archive never matches the commit and is refused; review such a commit from the checkout.
+
    The run records the pinned tree's totals and its list of entries it did not read, not the archive's.
 
    These are all refused:
@@ -79,11 +83,15 @@ A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKE
 
    On the git path, a tree entry with a name git itself refuses (empty, `.`, `..`, or containing `/`) refuses the snapshot, rather than being read under another path. The one such name this does not see is a name containing `/` whose directory part is also a real subtree: a blob named `x/y.ts` beside a subtree `x` that holds no `y.ts`. It is read under the path it spells, which is also what `git archive` writes for it.
 
-   A source that lists one path twice, however it spells it, is refused. So is a source in which a file the rules would read (at most 400 UTF-16 characters and 24 segments) is also used as a directory. That covers the git path too, where a hostile tree object can repeat a name or put a blob beside a subtree of the same name. Two entries that are both refused as too long or too deep are not compared this way. Neither is read, and either one keeps the text checks from passing. GNU long-name records are refused, because `git archive` never writes them. A pax length must be plain decimal digits and must end exactly at its record's newline.
+   A source that lists one path twice, however it spells it, is refused. So is a source in which a file the rules would read (at most 400 UTF-16 characters and 24 segments) is also used as a directory. That covers the git path too, where a hostile tree object can repeat a name or put a blob beside a subtree of the same name that holds a path. A git subtree that holds no path is not compared this way: an empty subtree beside a blob of its name, and one name used for two subtrees, are not refused. Neither hides a file or reads one twice, because each file under them is still read once under its own path, and the same file reached through both is a repeated path. Two entries that are both refused as too long or too deep are not compared this way. Neither is read, and either one keeps the text checks from passing. GNU long-name records are refused, because `git archive` never writes them. A pax length must be plain decimal digits and must end exactly at its record's newline.
 
    **Limits.** Every limit in `SNAPSHOT_LIMITS` (file count, file size, total bytes, archive bytes, expansion ratio, path depth and length) is enforced against the bytes actually read, not the sizes the source declares. The file count is enforced before any blob is read.
 
-   A `.tar.gz` is judged on the whole archive's expansion ratio: its expanded bytes over the file's size, taken before it is read. It is refused once it expands past 12 times its size and past 16 MiB. The reader stops at that point, so a decompression bomb is stopped near the threshold rather than after it has expanded. Because the file's size is fixed and expanded bytes only grow, the decision does not depend on the order of the entries or on how the file is read. Below 16 MiB the ratio is not applied: tar framing alone (a 512-byte header per entry, and padding) makes a small repository, or one of many small files, expand far past 12x. A `.tar.gz` whose whole archive is over 12x and over 16 MiB is refused even when it is legitimate, with the reason and the advice to use a plain `.tar`, which has no ratio. A file that changes size while it is read is refused.
+   A `.tar.gz` is judged on the whole archive's expansion ratio: its expanded bytes over the file's size, taken before it is read. It is refused once it expands past 12 times its size and past 16 MiB. The reader stops at that point, so a decompression bomb is stopped near the threshold rather than after it has expanded. Because the file's size is fixed and expanded bytes only grow, the decision does not depend on the order of the entries or on how the file is read. A test reads a 21 MB archive that expands to 37 MB, with its compressible files first and then last, at three read sizes and from a file, and accepts it every time. Below 16 MiB the ratio is not applied: tar framing alone (a 512-byte header per entry, and padding) makes a small repository, or one of many small files, expand far past 12x. 16 MiB covers the framing of 5,000 small files with short paths. It does not cover 5,000 files each in its own directory with paths long enough to need pax records, which is about 18 MB of framing at nearly 30x. A `.tar.gz` like that, or any whose whole archive is over 12x and over 16 MiB, is refused even when it is legitimate, with the reason and the advice to use a plain `.tar`, which has no ratio. A file that changes size while it is read is refused.
+
+   A `.tar.gz` must end where its gzip data ends, and `git archive` writes nothing after it. Anything after it is refused, and the file is read to its end first, so the result does not depend on how the file is read. Gzip ignores trailing bytes that begin with a zero byte, and the reader refuses them as `Data followed the gzip stream.` Gzip reads any other trailing bytes as a second gzip member: one that is not valid is refused as `The archive is not valid gzip.`, and a valid one's content follows the tar's end-of-archive marker and is refused as such.
+
+   Every record carries `limitsVersion: release-rescue-snapshot-limits/v1`, the version the product's SQL schema stores. It names the `SNAPSHOT_LIMITS` values and the entry and whole-snapshot rules of `evaluateSnapshot`, which are unchanged. It does not name how this reader measures the expansion ratio (the whole archive's, with the 16 MiB floor), and a record does not say which ratio rule it was read under.
 
    Symlinks are recorded and not followed. Traversal, absolute paths, hard links, devices, submodules, and credential files are recorded and not read. Data after a tar's end-of-archive marker, other than zero padding, refuses the archive. If a limit is exceeded, or the source is malformed, the run is **BLOCKED** and produces no report.
 
@@ -117,7 +125,11 @@ A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKE
    - who started it, the repository and commit;
    - the check ledger and acquisition counts;
    - the report's hashes, verdict and finding count.
-- A display name may not make a claim about the review. It is held to the offer's prohibited claims and, as a typed value, to professional claims such as "penetration tester", "pentester" or "compliance certified" (`TYPED_FIELD_PROHIBITED_CLAIMS`). Signing checks it again. The guard is not complete: the forms it is known to miss, such as "Certified in compliance" or a credential acronym, are recorded in `src/lib/__tests__/release-rescue-claim-guard-residuals.ts`.
+- A display name may not make a claim about the review. It is held to the offer's prohibited claims and, as a typed value, to professional claims such as "penetration tester", "pentester", "ISO 27001 lead auditor" or "compliance certified" (`TYPED_FIELD_PROHIBITED_CLAIMS`). A possessive reads as the bare word, so "Pentester's" is refused. A typed-field phrase does not run across a comma or other clause break, so "Erik Red, Team Lead" is accepted and "Red Team Lead" is refused. Signing checks the name again.
+  - "Certified auditor" is not refused, because it is also an accounting credential.
+  - Two innocent names are refused and pinned by a test: "Alex Red / Team Lead" (a slash is not a clause break) and "Ruby Red Team". Write the name another way.
+  - The guard is not complete. The forms it is known to miss, such as "Certified in compliance", a credential acronym such as "CISSP", or a lookalike letter, are recorded in `src/lib/__tests__/release-rescue-claim-guard-residuals.ts`.
+- An operator registered before the professional claims were added may have a name the guard now refuses. That operator can still sign in, and `operator:list` and the terminal summary of a run they signed still show the name. A new signature by them is refused. A report they signed before is withheld at export, because the delivery gate reads the signer's name, and it is never delivered. It cannot be signed again, because it is no longer a draft. The only way forward is `operator:remove`, then `operator:add` with a name the guard accepts, then a new run for the new operator to sign. The earlier report stays withheld until retention purges it.
 - Operators exist only in this directory, and there is no default account. Sessions are HMAC-signed and last 8 hours. They end when the operator signs out (every copy of the cookie with them), when the operator is removed, or when the key changes. Five failed sign-ins lock the name for a minute.
 - The server is bound to `127.0.0.1`, which is what keeps it off the network. As defence in depth, the internal routes return 404 unless `RELEASE_RESCUE_INTERNAL=local` is set and none of `VERCEL`, `VERCEL_ENV` or `VERCEL_URL` is. The request must also be addressed to a loopback host and carry no `Forwarded` or `X-Real-IP` header, and no `X-Forwarded-*` value naming another host or address. No other kind of deployment is detected: do not run this mode anywhere but your own machine.
 - Reports record the repository's access mode as `customer_uploaded_archive`, the production mode for access that does not itself demonstrate control. A local clone doesn't either, which is why a named person confirms ownership.
@@ -134,7 +146,10 @@ A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKE
 ```bash
 npx vitest run src/lib/__tests__/release-rescue-internal-*.test.ts
 npm run build && npm run test:e2e:internal
+npm run proof:rr-internal
 ```
+
+`proof:rr-internal` undoes each guard added in the third review, one at a time, and runs the suite that should notice. It reports which named tests failed, and a comment-only control must fail none. It edits the source files while it runs, restores them afterwards, and will not start while those files have uncommitted changes.
 
 The browser journey runs against a throwaway repository and store under the system temp directory. It covers:
 

@@ -15,8 +15,17 @@ import {
 // so: "this function bounds the claim, the extractor bounds the reality". This
 // is the reality half. Every reader streams bytes through a `SnapshotBudget`,
 // which counts what arrived rather than what an index claimed, stops the moment
-// a limit is crossed, and then hands the measured figures to the same
-// `evaluateSnapshot` the claim half uses, so one rule decides both.
+// a limit is crossed, and then hands the measured sizes to the same
+// `evaluateSnapshot` the claim half uses, so the entry and whole-snapshot rules
+// are one rule for both. The expansion ratio is the exception: here it is the
+// whole archive's, with a floor (`MEASURED_RATIO_FLOOR_BYTES`), which the claim
+// half's rule is not.
+//
+// `limitsVersion` on every outcome is `SNAPSHOT_LIMITS_VERSION`, the shared
+// contract the SQL schema stores: the `SNAPSHOT_LIMITS` values and the
+// `evaluateSnapshot` rules, both unchanged. It does not name how this reader
+// measures the ratio, and a record does not say which ratio rule it was read
+// under.
 //
 // Source lives in memory only, for the length of one run. Nothing here writes a
 // file, and nothing here returns bytes to a caller that persists them.
@@ -187,8 +196,12 @@ export function emptyTotals(): MeasuredTotals {
  * Tar framing alone compresses far past the ratio: every entry takes a 512-byte
  * header and pads its data to 512 bytes, and `git archive` pads the whole
  * archive to 10 KiB. So a small repository, or one of many small files,
- * expands 12x to 80x without being a bomb. Sixteen MiB covers that framing for
- * `maxFileCount` entries and is harmless to expand; the absolute limits,
+ * expands 12x to 80x without being a bomb. Sixteen MiB is harmless to expand
+ * and covers that framing for `maxFileCount` small files with short paths
+ * (about 5 MB). It does not cover every shape at that count: 5,000 files each
+ * in its own directory, with paths long enough to need pax records, is about
+ * 18 MB of framing at nearly 30x and is refused, and has to be supplied as a
+ * plain `.tar`. Both are pinned by a test. The absolute limits,
  * `maxArchiveBytes` and `maxTotalBytes`, still apply at every size.
  */
 export const MEASURED_RATIO_FLOOR_BYTES = 16 * 1024 * 1024;
@@ -284,7 +297,10 @@ export class SnapshotBudget {
    *   directory is an explicit tar entry or only implied by an entry under it.
    *   A git tree lists no directories, so on the git path the directories are
    *   the ones the listed paths imply, and a hostile tree that names a blob
-   *   `x` beside a subtree `x` is refused. Implied directories are only
+   *   `x` beside a subtree `x` holding a path is refused. A subtree that holds
+   *   no path implies nothing: an empty subtree beside a blob of its name, or
+   *   one name used for two subtrees, is not refused, and each file under them
+   *   is still claimed once under its own path. Implied directories are only
    *   tracked within `maxPathLength` and `maxPathDepth` (see
    *   `readableAncestorsOf`), so two entries that are BOTH refused as too long
    *   or too deep may share a path as file and directory; neither is read, and

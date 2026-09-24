@@ -92,8 +92,12 @@ export const RELEASE_RESCUE_OFFER = {
  *
  * They apply to typed fields only (`ClaimTextSource`). Offer copy may say "Our
  * pentesters are not involved in this review", and a name cannot carry a
- * denial. What is still not caught is recorded in
- * `release-rescue-claim-guard-residuals.ts`.
+ * denial. Each is a phrase with no clause break inside it, so "Erik Red, Team
+ * Lead" is a name, and an ASCII possessive ("tester's") reads as the bare word.
+ * "Certified auditor" is deliberately not listed: it is also an accounting and
+ * internal-audit credential. What is still not caught is recorded in
+ * `release-rescue-claim-guard-residuals.ts`; what is refused although it may be
+ * innocent is pinned in `release-rescue-claim-guard.test.ts`.
  */
 export const TYPED_FIELD_PROHIBITED_CLAIMS = [
   "penetration tester",
@@ -105,11 +109,20 @@ export const TYPED_FIELD_PROHIBITED_CLAIMS = [
   "red teamer",
   "security auditor",
   "compliance auditor",
-  "certified auditor",
   "soc 2 auditor",
   "iso 27001 auditor",
   "security certified",
   "compliance certified",
+  "27001 lead auditor",
+  "type ii auditor",
+  "type 2 auditor",
+  "white hat hacker",
+  "purple team",
+  "qualified security assessor",
+  "hipaa certified",
+  "pci certified",
+  "gdpr certified",
+  "soc 2 compliant",
 ] as const;
 
 // --- Requested services -------------------------------------------------------------
@@ -887,8 +900,8 @@ function tokenizeClaimText(text: string, mode: TokenizerMode = BASELINE_MODE): C
  * module scope, because `RELEASE_RESCUE_OFFER` is defined in this file and
  * evaluation order would otherwise matter.
  */
-const claimStemsCache = new Map<TokenizerMode, ReadonlyArray<{ claim: string; stems: readonly string[] }>>();
-const typedClaimStemsCache = new Map<TokenizerMode, ReadonlyArray<{ claim: string; stems: readonly string[] }>>();
+const claimStemsCache = new Map<TokenizerMode, ReadonlyArray<ClaimStems>>();
+const typedClaimStemsCache = new Map<TokenizerMode, ReadonlyArray<ClaimStems>>();
 
 /** The claims a value from `source` may not make, in the order they are reported. */
 function prohibitedClaimsFor(source: ClaimTextSource): readonly string[] {
@@ -897,23 +910,37 @@ function prohibitedClaimsFor(source: ClaimTextSource): readonly string[] {
     : RELEASE_RESCUE_OFFER.prohibitedClaims;
 }
 
+type ClaimStems = { claim: string; stems: readonly string[]; contiguous?: true };
+
+/**
+ * The stems of every claim a value from `source` may not make.
+ *
+ * A typed-field professional claim is `contiguous`: it matches only when no
+ * clause break (a comma, semicolon, colon, parenthesis, or en or em dash) falls
+ * inside it. A slash and a hyphen are not clause breaks. Without that,
+ * "Erik Red, Team Lead" read as the claim "red team". The offer's own claims keep
+ * matching across a comma, as they did before, so "Acme Is, Secure Ltd" is still
+ * caught in a typed field and offer copy is judged exactly as it was.
+ */
 function prohibitedClaimStems(
   mode: TokenizerMode,
   source: ClaimTextSource = "offer_copy",
-): ReadonlyArray<{ claim: string; stems: readonly string[] }> {
+): ReadonlyArray<ClaimStems> {
   const cache = source === "typed_field" ? typedClaimStemsCache : claimStemsCache;
   let cached = cache.get(mode);
   if (!cached) {
+    const typedOnly = new Set<string>(TYPED_FIELD_PROHIBITED_CLAIMS);
     cached = prohibitedClaimsFor(source).map((claim) => ({
       claim,
       stems: tokenizeClaimText(claim, mode).map((token) => token.stem),
+      ...(typedOnly.has(claim) ? { contiguous: true as const } : {}),
     }));
     cache.set(mode, cached);
   }
   return cached;
 }
 
-function claimOccurrences(tokens: readonly ClaimToken[], wanted: readonly string[]): number[] {
+function claimOccurrences(tokens: readonly ClaimToken[], wanted: readonly string[], contiguous = false): number[] {
   if (wanted.length === 0) return [];
   const hits: number[] = [];
 
@@ -925,7 +952,7 @@ function claimOccurrences(tokens: readonly ClaimToken[], wanted: readonly string
         matched = false;
         break;
       }
-      if (offset > 0 && token.breakBefore === "sentence") {
+      if (offset > 0 && (token.breakBefore === "sentence" || (contiguous && token.breakBefore === "clause"))) {
         matched = false;
         break;
       }
@@ -1410,7 +1437,7 @@ function claimsUnderMode(text: string, mode: TokenizerMode, disclaimersMayLicens
  */
 function claimsInTokens(
   tokens: readonly ClaimToken[],
-  claims: ReadonlyArray<{ claim: string; stems: readonly string[] }>,
+  claims: ReadonlyArray<ClaimStems>,
   disclaimersMayLicense: boolean,
 ): string[] {
   if (tokens.length === 0) return [];
@@ -1420,8 +1447,8 @@ function claimsInTokens(
   const claimTokenIndices = new Set<number>();
   const occurrences = new Map<string, number[]>();
 
-  for (const { claim, stems } of claims) {
-    const hits = claimOccurrences(tokens, stems);
+  for (const { claim, stems, contiguous } of claims) {
+    const hits = claimOccurrences(tokens, stems, contiguous === true);
     occurrences.set(claim, hits);
     for (const hit of hits) {
       for (let offset = 0; offset < stems.length; offset += 1) claimTokenIndices.add(hit + offset);
@@ -1578,6 +1605,19 @@ export function findProhibitedClaimsUnderModes(
  */
 export type ClaimTextSource = "offer_copy" | "typed_field";
 
+/**
+ * The same tokens with an ASCII possessive removed: `tester's` reads as
+ * `tester`, `testers'` as `testers`. The tokenizer keeps `'` inside a word, so
+ * "penetration tester's" was one word the claim list never names. A curly
+ * apostrophe already splits the word. Applied to typed values only.
+ */
+function withoutPossessives(tokens: readonly ClaimToken[]): ClaimToken[] {
+  return tokens.map((token) => {
+    const bare = token.word.replace(/'s$/, "").replace(/(?<=s)'$/, "");
+    return bare === token.word || bare.length === 0 ? token : { ...token, word: bare, stem: stemWord(bare) };
+  });
+}
+
 export function findProhibitedClaims(
   text: string,
   source: ClaimTextSource = "offer_copy",
@@ -1586,14 +1626,18 @@ export function findProhibitedClaims(
   const found = new Set<string>();
 
   // One pass per DISTINCT tokenisation, not per mode. See `claimsInTokens`.
+  // A typed value is also read with possessives removed (`withoutPossessives`);
+  // offer copy is read exactly as before.
   const seen = new Set<string>();
   for (const mode of PROSE_MODES) {
-    const tokens = tokenizeClaimText(text, mode);
-    const key = tokens.map((token) => `${token.breakBefore}:${token.stem}`).join("\u0000");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    for (const claim of claimsInTokens(tokens, prohibitedClaimStems(mode, source), disclaimersMayLicense)) {
-      found.add(claim);
+    const plain = tokenizeClaimText(text, mode);
+    for (const tokens of source === "typed_field" ? [plain, withoutPossessives(plain)] : [plain]) {
+      const key = tokens.map((token) => `${token.breakBefore}:${token.stem}`).join("\u0000");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      for (const claim of claimsInTokens(tokens, prohibitedClaimStems(mode, source), disclaimersMayLicense)) {
+        found.add(claim);
+      }
     }
   }
 

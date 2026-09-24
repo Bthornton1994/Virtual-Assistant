@@ -31,4 +31,12 @@ export async function resolve(specifier, context, next) {
 register(`data:text/javascript,${encodeURIComponent(hook)}`, { data: { srcRoot } });
 
 const { main } = await import(pathToFileURL(`${srcRoot}lib/release-rescue-internal/cli.ts`).href);
-await main(process.argv.slice(2));
+try {
+  await main(process.argv.slice(2));
+} catch (error) {
+  // No stack trace and no error text: either can carry a path or file content.
+  // A system error's code, when there is one, is enough to act on.
+  const code = typeof error?.code === "string" && /^[A-Z][A-Z0-9_]*$/.test(error.code) ? ` (${error.code})` : "";
+  process.stderr.write(`The command failed unexpectedly${code}.\n`);
+  process.exitCode = 1;
+}

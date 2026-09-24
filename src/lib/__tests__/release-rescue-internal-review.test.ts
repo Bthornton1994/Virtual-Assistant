@@ -783,6 +783,22 @@ describe("an archive is bound to the commit by exact names and git blob ids, whe
     expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
   });
 
+  it("refuses a faithful archive of a symlink whose target holds a NUL byte", async () => {
+    // Recorded in docs/RELEASE-RESCUE-INTERNAL.md. A ustar link name ends at
+    // its first NUL, so `git archive` cannot write this target faithfully and
+    // the archive cannot match the commit. It fails closed: read the checkout.
+    const repo = makeFixtureRepo({ "src/ok.ts": "ok\n" });
+    const blob = execFileSync("git", ["-C", repo.path, "hash-object", "-w", "--stdin"], { env: gitEnv, input: Buffer.from("src/ok.ts\0x") })
+      .toString("utf8")
+      .trim();
+    gitIn(repo.path, "update-index", "--add", "--cacheinfo", `120000,${blob},link`);
+    gitIn(repo.path, "commit", "-q", "-m", "a symlink with a NUL in its target");
+    const commitSha = gitIn(repo.path, "rev-parse", "HEAD");
+    const record = await runArchive(repo, commitSha, archiveOf(repo, commitSha));
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
+  });
+
   it("refuses an archive that puts a hard link where the commit has a submodule", async () => {
     const sub = makeFixtureRepo({ "s.ts": "s\n" }, { remoteRef: "Bthornton1994/rr-internal-submodule" });
     const repo = makeFixtureRepo({ "src/a.ts": "a\n" });

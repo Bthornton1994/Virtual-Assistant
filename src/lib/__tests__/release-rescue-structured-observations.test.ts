@@ -1641,9 +1641,15 @@ describe("9. a code field holds a code, and nothing else, on the production path
 
     // Asserted as a set, so adding a residual that reaches these paths has to
     // be acknowledged here rather than silently widening the bound.
+    // The three credential acronyms are recorded typed-field residuals; they
+    // make no claim about the review and reach this path because they are
+    // single words.
     expect(shapeLegalResiduals.map((residual) => residual.value).sort()).toEqual([
       "ACMEISSecure",
       "AcmeISsecure",
+      "CEH",
+      "CISA",
+      "CISSP",
       "THISAPPISSECURE",
       "ThisAppISSECURE",
       "thisappissecureandfreeofvulnerabilities",
@@ -2813,16 +2819,16 @@ describe("9. a code field holds a code, and nothing else, on the production path
     // commit asserting three residuals were recorded when they were absent from
     // the repository entirely — worse than an unrecorded hole, because the next
     // round reads the message, believes the record exists, and does not look.
-    expect(CLAIM_GUARD_RESIDUALS.length, "if this changes, correct any published figure").toBe(29);
+    expect(CLAIM_GUARD_RESIDUALS.length, "if this changes, correct any published figure").toBe(40);
     const byMechanism = new Map<string, number>();
     for (const residual of CLAIM_GUARD_RESIDUALS) {
       byMechanism.set(residual.mechanism, (byMechanism.get(residual.mechanism) ?? 0) + 1);
     }
     expect(Object.fromEntries([...byMechanism].sort())).toEqual({
       all_caps_run: 6,
-      intra_word: 7,
+      intra_word: 9,
       no_boundary: 2,
-      word_insertion: 14,
+      word_insertion: 23,
     });
 
     // And the guard is not simply switched off: the plain form is still caught.
