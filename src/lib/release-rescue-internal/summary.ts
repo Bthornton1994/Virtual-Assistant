@@ -34,7 +34,7 @@ export function runSummary(record: RunRecord) {
       return counts;
     }, {}),
     notes: record.notes,
-    draftFailure: record.draftFailure ?? null,
+    processingFailure: record.processingFailure ?? null,
     report: report
       ? {
           verdict: report.verdict,

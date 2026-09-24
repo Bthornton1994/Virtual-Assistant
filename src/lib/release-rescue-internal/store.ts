@@ -145,10 +145,11 @@ export type RunRecord = {
   checkRuns: CheckRun[];
   notes: AnalysisNotes | null;
   /**
-   * Set when the source was read but no valid draft could be built. A fixed
-   * sentence, never the error text, which can quote a path.
+   * Set when the source was read but the analysis or the draft assembly
+   * failed. `message` is a fixed sentence, never the error text, which can
+   * name a file or quote what was being read.
    */
-  draftFailure?: string | null;
+  processingFailure?: { stage: "analysis" | "draft_assembly"; message: string } | null;
   draft: SealedReport | null;
   signed: (SealedReport & { signedAt: string; signedBy: string }) | null;
   deliveredAt: string | null;

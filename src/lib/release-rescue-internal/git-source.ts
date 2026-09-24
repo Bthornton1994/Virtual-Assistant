@@ -8,9 +8,13 @@ import {
   SnapshotBudget,
   SnapshotRefused,
   blockedBeforeReading,
+  canonicalEntryPath,
+  type AcquiredSnapshot,
+  type AcquisitionRefusal,
+  type RejectedEntry,
   type SnapshotOutcome,
 } from "@/lib/release-rescue-internal/snapshot";
-import { evaluateSnapshotEntry, type SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
+import type { SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
 
 // Reads one commit of a LOCAL git checkout, read-only, straight from its object
 // database.
@@ -349,7 +353,8 @@ export async function readGitCommit(request: GitSourceRequest): Promise<Snapshot
     const wanted: TreeEntry[] = [];
     for (const entry of entries) {
       const type = entryTypeForMode(entry.mode, entry.objectType);
-      if (budget.admit({ path: entry.path, type, declaredBytes: entry.declaredBytes })) wanted.push(entry);
+      const readAs = budget.admit({ path: entry.path, type, declaredBytes: entry.declaredBytes });
+      if (readAs !== null) wanted.push({ ...entry, path: readAs });
     }
     await readBlobs(checkout, wanted, budget);
     return budget.finish(source, commitSha);
@@ -364,54 +369,122 @@ function blobId(bytes: Buffer): string {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
+export type ArchiveVerification =
+  | {
+      matches: true;
+      /**
+       * What the pinned tree holds and the review does not read, classified as
+       * the git reader classifies it. The run records this rather than the
+       * archive's own list; the two differ only by submodules, which
+       * `git archive` writes as directories.
+       */
+      treeRejected: RejectedEntry[];
+    }
+  | { matches: false; refusal: AcquisitionRefusal };
+
 /**
- * Whether an archive's files are exactly the pinned commit's readable files.
+ * Whether an archive is exactly the pinned commit of the allowlisted clone.
  *
  * An archive declares its own commit, and `git archive` applies the
  * repository's `export-ignore` and `export-subst` attributes, so neither the
- * declaration nor the archive's content can be taken on trust. This compares
- * them with the tree of the allowlisted clone at the pinned commit: the same
- * set of paths the snapshot rules accept as files, each with the same git blob
- * id. A file hidden from the archive, added to it, or rewritten in it is a
- * mismatch. Returns null when they match, else the refusal.
+ * declaration nor the content can be taken on trust. The tree of the pinned
+ * commit is classified by the same budget the git reader uses, and then:
+ *
+ * - every file the tree's rules accept must appear in the archive exactly once,
+ *   under the same canonical path, with the same git blob id;
+ * - every entry the rules do not read (a symlink, a credential file, an
+ *   oversized file, an illegal path) must appear once with the same path and
+ *   the same reason, so an archive cannot drop one and turn an honest BLOCKED
+ *   into a PASS. A submodule is the one exception: `git archive` writes it as
+ *   a directory, which is not an entry;
+ * - nothing else may appear, and nothing may appear twice. The reader already
+ *   refuses a repeated path; this counts repeats again, so the comparison does
+ *   not depend on that.
+ *
+ * The detail gives counts only. A path is never put in it.
  */
-export async function archiveMismatch(
+export async function verifyArchiveAgainstTree(
   request: GitSourceRequest,
-  archiveFiles: ReadonlyArray<{ path: string; bytes: Buffer }>,
-): Promise<{ reason: "archive_commit_unverified" | Parameters<typeof blockedBeforeReading>[2]; detail: string } | null> {
+  archive: Pick<AcquiredSnapshot, "files" | "rejected">,
+): Promise<ArchiveVerification> {
+  const refuse = (reason: AcquisitionRefusal["reason"], detail: string): ArchiveVerification => ({
+    matches: false,
+    refusal: { reason, detail },
+  });
   let tree: PinnedTree;
   try {
     tree = await openPinnedTree(request);
   } catch {
-    return { reason: "reader_failed", detail: "The local git reader failed while checking the archive." };
+    return refuse("reader_failed", "The local git reader failed while checking the archive.");
   }
   if (!tree.ok) {
     const refusal = tree.outcome.status === "blocked" ? tree.outcome.refusals[0] : null;
-    return refusal ?? { reason: "reader_failed", detail: "The pinned commit could not be opened to check the archive." };
+    return refusal
+      ? { matches: false, refusal }
+      : refuse("reader_failed", "The pinned commit could not be opened to check the archive.");
   }
-  const expected = new Map<string, string>();
-  for (const entry of tree.entries) {
-    const type = entryTypeForMode(entry.mode, entry.objectType);
-    if (type === "file" && evaluateSnapshotEntry({ path: entry.path, type, sizeBytes: entry.declaredBytes }).accepted) {
-      expected.set(entry.path, entry.objectId);
+
+  const treeBudget = new SnapshotBudget(false);
+  const expectedFiles = new Map<string, string>();
+  const submodules = new Set<string>();
+  try {
+    for (const entry of tree.entries) {
+      const type = entryTypeForMode(entry.mode, entry.objectType);
+      const readAs = treeBudget.admit({ path: entry.path, type, declaredBytes: entry.declaredBytes });
+      if (readAs !== null) expectedFiles.set(readAs, entry.objectId);
+      else if (entry.objectType === "commit") submodules.add(canonicalEntryPath(entry.path));
     }
+  } catch (error) {
+    if (error instanceof SnapshotRefused) return { matches: false, refusal: error.refusal };
+    return refuse("reader_failed", "The pinned tree could not be classified to check the archive.");
   }
-  let missing = expected.size;
+  const expectedUnread = new Map(treeBudget.rejected.map((entry) => [entry.path, entry.reason]));
+
+  let missing = 0;
   let differing = 0;
   let extra = 0;
-  for (const file of archiveFiles) {
-    const id = expected.get(file.path);
-    if (id === undefined) extra += 1;
-    else {
-      missing -= 1;
-      if (blobId(file.bytes) !== id) differing += 1;
+  let repeated = 0;
+  const seen = new Set<string>();
+
+  const seenFiles = new Set<string>();
+  for (const file of archive.files) {
+    const path = canonicalEntryPath(file.path);
+    if (seen.has(path)) {
+      repeated += 1;
+      continue;
     }
+    seen.add(path);
+    seenFiles.add(path);
+    const id = expectedFiles.get(path);
+    if (id === undefined) extra += 1;
+    else if (blobId(file.bytes) !== id) differing += 1;
   }
-  if (missing === 0 && differing === 0 && extra === 0) return null;
-  return {
-    reason: "archive_commit_unverified",
-    detail: `The archive is not the pinned commit of the allowlisted clone: ${missing} of its files are missing, ${differing} differ and ${extra} are not in the commit.`,
-  };
+  for (const path of expectedFiles.keys()) if (!seenFiles.has(path)) missing += 1;
+
+  const seenUnread = new Set<string>();
+  for (const entry of archive.rejected) {
+    const path = canonicalEntryPath(entry.path);
+    if (seen.has(path)) {
+      repeated += 1;
+      continue;
+    }
+    seen.add(path);
+    seenUnread.add(path);
+    const reason = expectedUnread.get(path);
+    if (reason === undefined) extra += 1;
+    else if (reason !== entry.reason) differing += 1;
+  }
+  for (const path of expectedUnread.keys()) {
+    if (!seenUnread.has(path) && !submodules.has(path)) missing += 1;
+  }
+
+  if (missing === 0 && differing === 0 && extra === 0 && repeated === 0) {
+    return { matches: true, treeRejected: treeBudget.rejected };
+  }
+  return refuse(
+    "archive_commit_unverified",
+    `The archive is not the pinned commit of the allowlisted clone: ${missing} of the commit's entries are missing, ${differing} differ, ${extra} are not in the commit and ${repeated} are repeated.`,
+  );
 }
 
 /** The commit a checkout's branch points at, for pre-filling the pin. Read-only. */

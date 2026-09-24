@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { SNAPSHOT_LIMITS } from "@/lib/release-rescue-snapshot-limits";
 import { gitArgs, gitEnv, parseLsTree, readGitCommit, resolveCheckoutHead } from "@/lib/release-rescue-internal/git-source";
-import { SnapshotBudget, SnapshotRefused } from "@/lib/release-rescue-internal/snapshot";
+import { SnapshotBudget, SnapshotRefused, canonicalEntryPath } from "@/lib/release-rescue-internal/snapshot";
 import { readTarStream } from "@/lib/release-rescue-internal/tar-source";
 import {
   FIXTURE_REPOSITORY,
@@ -171,7 +171,7 @@ describe("the measured budget enforces the whole-snapshot limits on real bytes",
 
   it("refuses content whose measured length differs from what was declared", () => {
     const budget = new SnapshotBudget(false);
-    expect(budget.admit({ path: "a.ts", type: "file", declaredBytes: 10 })).toBe(true);
+    expect(budget.admit({ path: "a.ts", type: "file", declaredBytes: 10 })).toBe("a.ts");
     expect(() => budget.accept("a.ts", 10, Buffer.from("short"))).toThrow(/declared_size_mismatch/);
   });
 });
@@ -359,5 +359,114 @@ describe("limits stop the reader before it reads, and nothing hides past the end
       Buffer.alloc(10_240, 0),
     ]);
     expect((await readTarStream(Readable.from([archive]), sha, { gzip: false })).status).toBe("acquired");
+  });
+});
+
+describe("a source lists each path once, however it spells it", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const commit = { kind: "pax" as const, global: true, records: { comment: SHA } };
+  const read = (entries: Parameters<typeof buildTar>[0]) =>
+    readTarStream(Readable.from([buildTar([commit, ...entries])]), SHA, { gzip: false });
+  const refusalOf = async (entries: Parameters<typeof buildTar>[0]) => {
+    const outcome = await read(entries);
+    return outcome.status === "blocked" ? outcome.refusals[0] : null;
+  };
+
+  it("spells a path one way: empty and `.` segments dropped, `..` and absolute paths left for the rules", () => {
+    expect(canonicalEntryPath("./a.ts")).toBe("a.ts");
+    expect(canonicalEntryPath("././a.ts")).toBe("a.ts");
+    expect(canonicalEntryPath("a.ts/")).toBe("a.ts");
+    expect(canonicalEntryPath("src//a.ts")).toBe("src/a.ts");
+    expect(canonicalEntryPath("src/./a.ts")).toBe("src/a.ts");
+    expect(canonicalEntryPath("src/../a.ts")).toBe("src/../a.ts");
+    expect(canonicalEntryPath("/etc/passwd")).toBe("/etc/passwd");
+  });
+
+  it("refuses a file listed twice", async () => {
+    expect(
+      await refusalOf([
+        { kind: "file", name: "a.ts", data: "a\n" },
+        { kind: "file", name: "a.ts", data: "a\n" },
+      ]),
+    ).toEqual({ reason: "duplicate_entry_path", detail: "The source lists the same path more than once." });
+  });
+
+  it.each([
+    ["./a.ts", "a.ts"],
+    ["a.ts/", "a.ts"],
+    ["src//a.ts", "src/a.ts"],
+    ["src/./a.ts", "src/a.ts"],
+    ["./src//./a.ts", "src/a.ts"],
+  ])("refuses %s alongside %s: two spellings of one path", async (first, second) => {
+    const refusal = await refusalOf([
+      { kind: "file", name: first, data: "a\n" },
+      { kind: "file", name: second, data: "a\n" },
+    ]);
+    expect(refusal?.reason).toBe("duplicate_entry_path");
+  });
+
+  it("refuses a pax path that repeats another entry's path", async () => {
+    const refusal = await refusalOf([
+      { kind: "pax", records: { path: "src/a.ts" } },
+      { kind: "file", name: "harmless-looking-name", data: "a\n" },
+      { kind: "file", name: "src/a.ts", data: "a\n" },
+    ]);
+    expect(refusal?.reason).toBe("duplicate_entry_path");
+  });
+
+  it("refuses a file that shares its path with a directory", async () => {
+    const refusal = await refusalOf([
+      { kind: "file", name: "a.ts/", data: "", typeflag: "5" },
+      { kind: "file", name: "a.ts", data: "a\n" },
+    ]);
+    expect(refusal?.reason).toBe("duplicate_entry_path");
+  });
+
+  it("refuses an entry it does not read listed twice", async () => {
+    const refusal = await refusalOf([
+      { kind: "file", name: "a.ts", data: "a\n" },
+      { kind: "file", name: ".env", data: "X=1\n" },
+      { kind: "file", name: ".env", data: "X=1\n" },
+    ]);
+    expect(refusal?.reason).toBe("duplicate_entry_path");
+  });
+
+  it("records a single aliased entry under its canonical path", async () => {
+    const outcome = await read([{ kind: "file", name: "./src//./a.ts", data: "a\n" }]);
+    expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["src/a.ts"]);
+  });
+
+  it("refuses GNU long-name records rather than read an entry under a truncated path", async () => {
+    const refusal = await refusalOf([
+      { kind: "file", name: "././@LongLink", data: "src/a-very-long-name.ts\0", typeflag: "L" },
+      { kind: "file", name: "src/a-very-long-n", data: "a\n" },
+    ]);
+    expect(refusal).toEqual({ reason: "malformed_input", detail: "GNU long-name records are not supported; use git archive." });
+  });
+
+  it("refuses a git tree that names one path twice", async () => {
+    // `git mktree` refuses this, so the tree object is written byte by byte, as
+    // a hostile repository could.
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    const env = {
+      ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_AUTHOR_NAME: "fixture",
+      GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+      GIT_COMMITTER_NAME: "fixture",
+      GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+    };
+    const git = (args: string[], input?: Buffer) =>
+      execFileSync("git", ["-C", repo.path, ...args], { env, input }).toString("utf8").trim();
+    const blob = Buffer.from(git(["rev-parse", "HEAD:a.ts"]), "hex");
+    const entry = Buffer.concat([Buffer.from("100644 a.ts\0"), blob]);
+    const tree = git(["hash-object", "-t", "tree", "--literally", "-w", "--stdin"], Buffer.concat([entry, entry]));
+    const commitSha = git(["commit-tree", tree, "-m", "duplicate entry"]);
+    expect(git(["ls-tree", "-r", "--name-only", commitSha]).split("\n"), "control: git lists both").toEqual(["a.ts", "a.ts"]);
+
+    const outcome = await readGitCommit({ checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha });
+    expect(outcome.status === "blocked" && outcome.refusals[0].reason).toBe("duplicate_entry_path");
+    expect(outcome.totals.streamBytes).toBe(0);
   });
 });

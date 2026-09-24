@@ -27,7 +27,9 @@ import type { SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
 // Symlinks, hard links, devices and anything else that is not a regular file or
 // a directory are rejected by the shared snapshot rules and their content is
 // skipped unread. Paths come from the pax `path` record when present, so a pax
-// header cannot smuggle a traversal past a harmless-looking ustar name.
+// header cannot smuggle a traversal past a harmless-looking ustar name. Every
+// entry, directories included, claims its canonical path with the budget, so an
+// archive that lists one path twice, however it spells it, is refused.
 //
 // The archive must say which commit it is. `git archive` records the commit in
 // a global pax header; an archive whose recorded commit does not match the pin
@@ -106,11 +108,6 @@ function entryTypeForFlag(flag: string): SnapshotEntryType {
   return "other";
 }
 
-function normaliseName(name: string): string {
-  // A leading `./` is a tar convention, not a path segment.
-  return name.replace(/^(?:\.\/)+/, "").replace(/\/$/, "");
-}
-
 /**
  * The tar parser, over a stream of already-decompressed bytes.
  *
@@ -169,9 +166,17 @@ async function parseTar(
         return true;
       }
 
+      // GNU long-name records name the NEXT entry, and this reader does not
+      // apply them, so that entry's path would be a truncated one. `git archive`
+      // never writes them; it uses pax.
+      if (header.typeflag === "L" || header.typeflag === "K") {
+        throw new SnapshotRefused("malformed_input", "GNU long-name records are not supported; use git archive.");
+      }
       const pax = pending;
       pending = null;
-      const path = normaliseName(pax?.get("path") ?? header.name);
+      // The budget canonicalises the path (`./a.ts`, `a.ts/`, `src//a.ts` are
+      // one path) and refuses a second claim on it.
+      const path = pax?.get("path") ?? header.name;
       const paxSize = pax?.get("size");
       const size = paxSize !== undefined ? Number(paxSize) : header.size;
       if (!Number.isSafeInteger(size) || size < 0) throw new SnapshotRefused("malformed_input", "An entry size is malformed.");
@@ -180,18 +185,20 @@ async function parseTar(
 
       if (type === "directory") {
         // A directory holds no content and the files under it are judged on
-        // their own paths, so it is skipped rather than recorded as a rejection.
+        // their own paths, so it is skipped rather than recorded as a
+        // rejection. It still claims its path.
+        budget.claimPath(path);
         state = { kind: "data", remaining: size, padding: dataPadding, collect: null, onDone: () => undefined };
         return true;
       }
-      const read = budget.admit({ path, type, declaredBytes: type === "file" ? size : 0 });
+      const readAs = budget.admit({ path, type, declaredBytes: type === "file" ? size : 0 });
       state = {
         kind: "data",
         remaining: size,
         padding: dataPadding,
-        collect: read ? [] : null,
+        collect: readAs !== null ? [] : null,
         onDone: (data) => {
-          if (read) budget.accept(path, size, data);
+          if (readAs !== null) budget.accept(readAs, size, data);
         },
       };
       return true;

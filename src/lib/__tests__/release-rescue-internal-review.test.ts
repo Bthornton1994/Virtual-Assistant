@@ -14,11 +14,13 @@ import {
   SESSION_LIFETIME_MS,
 } from "@/lib/release-rescue-internal/local-identity";
 import { deliveryForRun, recordDelivery, signRunAsLocalOperator } from "@/lib/release-rescue-internal/review";
+import { verifyArchiveAgainstTree } from "@/lib/release-rescue-internal/git-source";
 import { CLI_INITIATOR, RunRefused, initiatorFromOperator, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { runSummary } from "@/lib/release-rescue-internal/summary";
 import { listRuns, loadRun, localDir, purgeAfter, saveCheckout, sweepRetention } from "@/lib/release-rescue-internal/store";
 import {
   FAKE_AWS_KEY,
+  FIXTURE_REPOSITORY,
   PROMPT_INJECTION,
   buildTar,
   fixtureAllowlist,
@@ -396,7 +398,7 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     gitArchive(repo, out);
     const record = await archiveRun(repo, out);
     expect(record.status).toBe("blocked");
-    expect(record.acquisition.refusals[0].detail).toContain("1 of its files are missing");
+    expect(record.acquisition.refusals[0].detail).toContain("1 of the commit's entries are missing");
   });
 
   it("refuses an archive with no allowlisted clone to check it against", async () => {
@@ -406,6 +408,133 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     const record = await archiveRun(repo, out);
     expect(record.status).toBe("blocked");
     expect(record.acquisition.refusals[0].reason).toBe("checkout_not_configured");
+  });
+
+  const tarOf = (commitSha: string, entries: Parameters<typeof buildTar>[0]) => {
+    const out = join(tempDir("rr-internal-archive-"), "hand-built.tar");
+    writeFileSync(out, buildTar([{ kind: "pax", global: true, records: { comment: commitSha } }, ...entries]));
+    return out;
+  };
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_AUTHOR_NAME: "fixture",
+    GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+    GIT_COMMITTER_NAME: "fixture",
+    GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+  };
+  const gitIn = (path: string, ...args: string[]) => execFileSync("git", ["-C", path, ...args], { env: gitEnv }).toString("utf8").trim();
+
+  it("refuses an archive that repeats one pinned file and omits the other: a BLOCKED run with no draft", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "alpha\n", "src/b.ts": "bravo\n" });
+    saveCheckout(FIXTURE_REPOSITORY, repo.path);
+    const record = await archiveRun(
+      repo,
+      tarOf(repo.commitSha, [
+        { kind: "file", name: "src/a.ts", data: "alpha\n" },
+        { kind: "file", name: "src/a.ts", data: "alpha\n" },
+      ]),
+    );
+    expect(record.status).toBe("blocked");
+    expect(record.draft).toBeNull();
+    expect(record.signed).toBeNull();
+    expect(record.checkRuns).toEqual([]);
+    expect(record.acquisition.refusals[0].reason).toBe("duplicate_entry_path");
+    expect(loadRun(record.runId)?.status).toBe("blocked");
+  });
+
+  it("refuses the same archive when the repeat is spelled differently", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "alpha\n", "src/b.ts": "bravo\n" });
+    saveCheckout(FIXTURE_REPOSITORY, repo.path);
+    const record = await archiveRun(
+      repo,
+      tarOf(repo.commitSha, [
+        { kind: "file", name: "src/a.ts", data: "alpha\n" },
+        { kind: "file", name: "./src//a.ts", data: "alpha\n" },
+      ]),
+    );
+    expect(record.status).toBe("blocked");
+    expect(record.draft).toBeNull();
+    expect(record.acquisition.refusals[0].reason).toBe("duplicate_entry_path");
+  });
+
+  it("does not depend on the reader for that: the tree comparison counts each path once", async () => {
+    // The files are handed straight to the comparison, as a reader that failed
+    // to refuse the repeat would hand them over.
+    const repo = makeFixtureRepo({ "src/a.ts": "alpha\n", "src/b.ts": "bravo\n" });
+    const a = { path: "src/a.ts", bytes: Buffer.from("alpha\n") };
+    const request = { checkoutPath: repo.path, repositoryRef: FIXTURE_REPOSITORY, commitSha: repo.commitSha };
+    for (const files of [[a, a], [a, { ...a, path: "./src/a.ts" }]]) {
+      const verification = await verifyArchiveAgainstTree(request, { files, rejected: [] });
+      expect(verification.matches).toBe(false);
+      if (!verification.matches) {
+        expect(verification.refusal.reason).toBe("archive_commit_unverified");
+        expect(verification.refusal.detail).toContain("1 of the commit's entries are missing");
+        expect(verification.refusal.detail).toContain("1 are repeated");
+      }
+    }
+    const b = { path: "src/b.ts", bytes: Buffer.from("bravo\n") };
+    expect((await verifyArchiveAgainstTree(request, { files: [a, b], rejected: [] })).matches).toBe(true);
+  });
+
+  it("refuses an archive that leaves out an entry the review would not read, so BLOCKED cannot become PASS", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "alpha\n", ".env": "X=1\n" });
+    saveCheckout(FIXTURE_REPOSITORY, repo.path);
+    const record = await archiveRun(repo, tarOf(repo.commitSha, [{ kind: "file", name: "src/a.ts", data: "alpha\n" }]));
+    expect(record.status).toBe("blocked");
+    expect(record.draft).toBeNull();
+    expect(record.acquisition.refusals[0].detail).toContain("1 of the commit's entries are missing");
+  });
+
+  it("refuses an archive that adds an entry the commit does not have, even one it would not read", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "alpha\n" });
+    saveCheckout(FIXTURE_REPOSITORY, repo.path);
+    const record = await archiveRun(
+      repo,
+      tarOf(repo.commitSha, [
+        { kind: "file", name: "src/a.ts", data: "alpha\n" },
+        { kind: "file", name: "link.ts", data: "", typeflag: "2" },
+      ]),
+    );
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals[0].detail).toContain("1 are not in the commit");
+  });
+
+  it("accepts a faithful `git archive` with a symlink, a credential file, an oversized file and a submodule, and records what the git reader records", async () => {
+    const sub = makeFixtureRepo({ "s.ts": "s\n" }, { remoteRef: "Bthornton1994/rr-internal-submodule" });
+    const repo = makeFixtureRepo(
+      { "src/a.ts": "alpha\n", ".env": "X=1\n", "assets/big.txt": "x".repeat(2_200_000) },
+      { symlinks: { "src/link.ts": "a.ts" } },
+    );
+    gitIn(repo.path, "update-index", "--add", "--cacheinfo", `160000,${sub.commitSha},vendor/sub`);
+    gitIn(repo.path, "commit", "-q", "-m", "add a submodule");
+    const commitSha = gitIn(repo.path, "rev-parse", "HEAD");
+    saveCheckout(FIXTURE_REPOSITORY, repo.path);
+    const out = join(tempDir("rr-internal-archive-"), "faithful.tar");
+    gitArchive(repo, out);
+
+    const viaArchive = await archiveRun({ path: repo.path, commitSha }, out);
+    const viaGit = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout", path: repo.path },
+      allowlist: fixtureAllowlist(),
+    });
+    expect(viaArchive.status).toBe("awaiting_review");
+    expect(viaArchive.acquisition.rejectedByReason).toEqual({
+      credential_file_not_read: 1,
+      file_too_large: 1,
+      symlink_not_followed: 1,
+      unsupported_entry_type: 1,
+    });
+    expect(viaArchive.acquisition.rejectedByReason).toEqual(viaGit.acquisition.rejectedByReason);
+    expect(viaArchive.acquisition.totals.rejectedCount).toBe(viaGit.acquisition.totals.rejectedCount);
+    expect(viaArchive.checkRuns).toEqual(viaGit.checkRuns);
+    expect(viaArchive.checkRuns.find((check) => check.checkId === "secrets.no_secrets_in_version_control")?.status).toBe("BLOCKED");
   });
 });
 

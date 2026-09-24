@@ -1,8 +1,8 @@
 import { RETENTION_POLICIES, type RetentionPolicy } from "@/lib/release-rescue-intake";
 import { findAllowlisted, loadAllowlist, type Allowlist } from "@/lib/release-rescue-internal/allowlist";
-import { analyzeSnapshot } from "@/lib/release-rescue-internal/checks";
+import { analyzeSnapshot, type Analysis } from "@/lib/release-rescue-internal/checks";
 import { buildDraftReport } from "@/lib/release-rescue-internal/draft-report";
-import { archiveMismatch, readGitCommit } from "@/lib/release-rescue-internal/git-source";
+import { readGitCommit, verifyArchiveAgainstTree } from "@/lib/release-rescue-internal/git-source";
 import type { LocalOperator } from "@/lib/release-rescue-internal/local-identity";
 import { blockedBeforeReading, type SnapshotOutcome } from "@/lib/release-rescue-internal/snapshot";
 import { checkoutFor, newRunId, saveRun, sealReport, type RunRecord } from "@/lib/release-rescue-internal/store";
@@ -10,6 +10,22 @@ import { readTarArchive } from "@/lib/release-rescue-internal/tar-source";
 
 // One internal review, end to end up to the draft: allowlist, pin, read,
 // analyse, assemble, seal, store. Signing is a separate step taken by a person.
+
+const ANALYSIS_FAILED =
+  "The source was read, but the automated analysis did not complete, so no check has a result and there is no report.";
+const DRAFT_FAILED =
+  "The source was read and analysed, but no valid draft could be built from the analysis, so there is no report.";
+
+function countByReason(rejected: ReadonlyArray<{ reason: string }>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const entry of rejected) counts[entry.reason] = (counts[entry.reason] ?? 0) + 1;
+  return counts;
+}
+
+function saveBlocked(record: RunRecord): RunRecord {
+  saveRun(record);
+  return record;
+}
 
 export type RunSource = { kind: "checkout"; path?: string } | { kind: "archive"; path: string };
 
@@ -79,19 +95,30 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
   if (input.source.kind === "archive") {
     // An archive is read with its own measured limits, then accepted only if
     // it is exactly the pinned commit of the allowlisted clone: its declared
-    // commit is its author's claim, not evidence. See `archiveMismatch`.
+    // commit is its author's claim, not evidence. See `verifyArchiveAgainstTree`.
     const checkoutPath = checkoutFor(entry.repositoryRef);
     if (!checkoutPath) {
       snapshot = notConfigured("tar_archive");
     } else {
       snapshot = await readTarArchive({ archivePath: input.source.path, commitSha: input.commitSha });
       if (snapshot.status === "acquired") {
-        const mismatch = await archiveMismatch(
+        const verification = await verifyArchiveAgainstTree(
           { checkoutPath, repositoryRef: entry.repositoryRef, commitSha: snapshot.commitSha },
-          snapshot.files,
+          snapshot,
         );
-        if (mismatch) {
-          snapshot = { ...blockedBeforeReading("tar_archive", snapshot.commitSha, mismatch.reason, mismatch.detail), totals: snapshot.totals };
+        if (!verification.matches) {
+          snapshot = {
+            ...blockedBeforeReading("tar_archive", snapshot.commitSha, verification.refusal.reason, verification.refusal.detail),
+            totals: snapshot.totals,
+          };
+        } else {
+          // The archive's own record of what it did not read is not what the
+          // run reports; the pinned tree's is. They differ only by submodules.
+          snapshot = {
+            ...snapshot,
+            rejected: verification.treeRejected,
+            totals: { ...snapshot.totals, rejectedCount: verification.treeRejected.length },
+          };
         }
       }
     }
@@ -119,11 +146,13 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
       status: snapshot.status,
       totals: snapshot.totals,
       refusals: snapshot.status === "blocked" ? snapshot.refusals : [],
-      rejectedByReason: {},
+      // Measured at acquisition, so it is on the record whether or not the
+      // analysis completes.
+      rejectedByReason: snapshot.status === "acquired" ? countByReason(snapshot.rejected) : {},
     },
     checkRuns: [],
     notes: null,
-    draftFailure: null,
+    processingFailure: null,
     draft: null,
     signed: null,
     deliveredAt: null,
@@ -136,8 +165,21 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
     return base;
   }
 
-  const analysis = analyzeSnapshot(snapshot);
+  // Everything after acquisition that can fail is caught here and recorded as
+  // a BLOCKED run, so a failure leaves a visible trace rather than an escaped
+  // exception. The error itself is neither stored nor logged: its text can
+  // name a file or quote what the analysis was reading.
+  let analysis: Analysis;
+  try {
+    analysis = analyzeSnapshot(snapshot);
+  } catch {
+    // No ledger and no notes: the analysis did not complete, so nothing it
+    // would have said is on the record.
+    return saveBlocked({ ...base, processingFailure: { stage: "analysis", message: ANALYSIS_FAILED } });
+  }
+
   let draft: ReturnType<typeof buildDraftReport>;
+  let sealed: ReturnType<typeof sealReport>;
   try {
     draft = buildDraftReport({
       runId,
@@ -147,23 +189,19 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
       retentionPolicy: input.retentionPolicy,
       now,
     });
+    sealed = sealReport("draft", runId, draft.report, draft.subjectHash);
   } catch {
-    // The ledger is kept so a reviewer can see what ran. The error text is not:
-    // it names schema paths and can quote a file name.
-    const blocked: RunRecord = {
+    // The analysis completed, so its ledger is kept for a reviewer to see.
+    return saveBlocked({
       ...base,
       checkRuns: analysis.checkRuns,
       notes: analysis.notes,
-      draftFailure: "The source was read, but no valid draft could be built from the analysis, so there is no report.",
-    };
-    saveRun(blocked);
-    return blocked;
+      processingFailure: { stage: "draft_assembly", message: DRAFT_FAILED },
+    });
   }
-  const sealed = sealReport("draft", runId, draft.report, draft.subjectHash);
   const record: RunRecord = {
     ...base,
     status: "awaiting_review",
-    acquisition: { ...base.acquisition, rejectedByReason: { ...analysis.notes.rejectedByReason } },
     checkRuns: analysis.checkRuns,
     notes: analysis.notes,
     draft: sealed,

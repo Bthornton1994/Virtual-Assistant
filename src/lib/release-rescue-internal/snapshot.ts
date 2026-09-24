@@ -31,6 +31,7 @@ export const ACQUISITION_REFUSAL_REASONS = [
   "commit_sha_malformed",
   "commit_not_found",
   "archive_commit_unverified",
+  "duplicate_entry_path",
   "malformed_input",
   "declared_size_mismatch",
   "too_many_files",
@@ -90,6 +91,24 @@ export class SnapshotRefused extends Error {
   }
 }
 
+/**
+ * The one spelling of an entry's path that every rule and every comparison
+ * keys on.
+ *
+ * A tar archive can spell one path several ways (`./a.ts`, `a.ts/`,
+ * `src//a.ts`, `src/./a.ts`), and a hostile git tree can carry a name that
+ * prints like another path. Empty and `.` segments name nothing, so they are
+ * dropped. `..` is kept, and an absolute path is left absolute, so the entry
+ * rules still refuse them.
+ */
+export function canonicalEntryPath(path: string): string {
+  if (path.startsWith("/")) return path;
+  return path
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".")
+    .join("/");
+}
+
 export function emptyTotals(): MeasuredTotals {
   return {
     entryCount: 0,
@@ -115,6 +134,7 @@ export class SnapshotBudget {
   readonly files: SnapshotFile[] = [];
   private readonly acceptedSizes: Array<{ path: string; type: SnapshotEntryType; sizeBytes: number }> = [];
   private admittedFiles = 0;
+  private readonly claimedPaths = new Set<string>();
   private readonly compressed: boolean;
 
   constructor(compressed: boolean) {
@@ -156,18 +176,36 @@ export class SnapshotBudget {
   }
 
   /**
-   * Classifies one entry by the documented per-entry rules. True when its
-   * content should be read.
+   * Claims one entry's path, in its canonical spelling, and returns that
+   * spelling. A source that lists the same path twice, however it spells it,
+   * is refused: which copy belongs to the commit cannot be decided, and a
+   * repeated file could stand in for one that was left out. Every entry claims
+   * its path, directories included, so a file cannot share a path with one.
    */
-  admit(entry: { path: string; type: SnapshotEntryType; declaredBytes: number }): boolean {
+  claimPath(path: string): string {
+    const canonical = canonicalEntryPath(path);
+    if (this.claimedPaths.has(canonical)) {
+      throw new SnapshotRefused("duplicate_entry_path", "The source lists the same path more than once.");
+    }
+    this.claimedPaths.add(canonical);
+    return canonical;
+  }
+
+  /**
+   * Claims the entry's path and classifies the entry by the documented
+   * per-entry rules. Returns the canonical path to read its content under, or
+   * null when its content is not read.
+   */
+  admit(entry: { path: string; type: SnapshotEntryType; declaredBytes: number }): string | null {
     this.totals.entryCount += 1;
-    const decision = evaluateSnapshotEntry({ path: entry.path, type: entry.type, sizeBytes: entry.declaredBytes });
+    const path = this.claimPath(entry.path);
+    const decision = evaluateSnapshotEntry({ path, type: entry.type, sizeBytes: entry.declaredBytes });
     if (!decision.accepted) {
       this.rejected.push({ path: decision.path, reason: decision.reason, detail: decision.detail });
       this.totals.rejectedCount += 1;
-      return false;
+      return null;
     }
-    if (entry.type !== "file") return false;
+    if (entry.type !== "file") return null;
     // Counted on admission, not on acceptance: the git reader admits every
     // entry before it reads any blob, and must stop before reading them.
     this.admittedFiles += 1;
@@ -177,7 +215,7 @@ export class SnapshotBudget {
         `More than ${SNAPSHOT_LIMITS.maxFileCount} files; the review stops rather than reads a partial snapshot.`,
       );
     }
-    return true;
+    return path;
   }
 
   /**

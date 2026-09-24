@@ -86,7 +86,9 @@ export default async function InternalRunPage({
             ))}
           </ul>
         ) : null}
-        {record.draftFailure ? <p className="text-sm text-bad">BLOCKED: {record.draftFailure}</p> : null}
+        {record.processingFailure ? (
+          <p className="text-sm text-bad">BLOCKED: {record.processingFailure.message}</p>
+        ) : null}
         {record.acquisition.refusals.map((refusal) => (
           <p key={refusal.reason} className="text-sm text-bad">
             BLOCKED ({refusal.reason}): {refusal.detail}
