@@ -1069,6 +1069,7 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/release-rescue-internal/checks.ts",
   "src/lib/release-rescue-internal/draft-report.ts",
   "src/lib/release-rescue-internal/git-source.ts",
+  "src/lib/release-rescue-internal/gzip-members.ts",
   "src/lib/release-rescue-internal/local-identity.ts",
   "src/lib/release-rescue-internal/mode.ts",
   "src/lib/release-rescue-internal/request-guard.ts",
