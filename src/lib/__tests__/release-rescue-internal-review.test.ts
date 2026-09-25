@@ -783,20 +783,42 @@ describe("an archive is bound to the commit by exact names and git blob ids, whe
     expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
   });
 
-  it("refuses a faithful archive of a symlink whose target holds a NUL byte", async () => {
-    // Recorded in docs/RELEASE-RESCUE-INTERNAL.md. A ustar link name ends at
-    // its first NUL, so `git archive` cannot write this target faithfully and
-    // the archive cannot match the commit. It fails closed: read the checkout.
+  it.each([
+    // Recorded in docs/RELEASE-RESCUE-INTERNAL.md. A target that fits the
+    // 100-byte ustar link name is written there, and that field ends at its
+    // first NUL, so the archive cannot match the commit. It fails closed: read
+    // the checkout.
+    ["a short target, in the ustar link name", "src/ok.ts\0x", "blocked"],
+    // A longer target is written as a pax `linkpath` record, which is
+    // length-delimited and keeps every byte, NUL included, so the archive is
+    // faithful and matches.
+    ["a long target, in a pax linkpath record", `src/${"deep/".repeat(30)}ok.ts\0x`, "awaiting_review"],
+  ])("reads a symlink whose target holds a NUL byte: %s", async (_form, target, status) => {
     const repo = makeFixtureRepo({ "src/ok.ts": "ok\n" });
-    const blob = execFileSync("git", ["-C", repo.path, "hash-object", "-w", "--stdin"], { env: gitEnv, input: Buffer.from("src/ok.ts\0x") })
+    const blob = execFileSync("git", ["-C", repo.path, "hash-object", "-w", "--stdin"], { env: gitEnv, input: Buffer.from(target) })
       .toString("utf8")
       .trim();
     gitIn(repo.path, "update-index", "--add", "--cacheinfo", `120000,${blob},link`);
     gitIn(repo.path, "commit", "-q", "-m", "a symlink with a NUL in its target");
     const commitSha = gitIn(repo.path, "rev-parse", "HEAD");
-    const record = await runArchive(repo, commitSha, archiveOf(repo, commitSha));
-    expect(record.status).toBe("blocked");
-    expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
+    const archive = archiveOf(repo, commitSha);
+    const pax = archive.includes(Buffer.from(` linkpath=${target}\n`));
+    expect(pax, "control: only the long target is written as a pax linkpath, NUL and all").toBe(target.length > 100);
+    const record = await runArchive(repo, commitSha, archive);
+    expect(record.status).toBe(status);
+    if (status === "blocked") expect(record.acquisition.refusals[0].reason).toBe("archive_commit_unverified");
+    // The checkout reads the same commit whichever form the archive used.
+    saveCheckout(ref(), repo.path);
+    const viaCheckout = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: ref(),
+      commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout" },
+      allowlist: fixtureAllowlist(),
+    });
+    expect(viaCheckout.status).toBe("awaiting_review");
   });
 
   it("refuses an archive that puts a hard link where the commit has a submodule", async () => {

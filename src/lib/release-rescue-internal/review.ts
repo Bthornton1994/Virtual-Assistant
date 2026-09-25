@@ -7,7 +7,7 @@ import {
 } from "@/lib/release-rescue-report";
 import { reviewSubmissionSchema } from "@/lib/release-rescue-review-session";
 import { findOperator, type LocalOperator } from "@/lib/release-rescue-internal/local-identity";
-import { loadRun, saveRun, sealIntact, sealReport, sweepRetention, type RunRecord } from "@/lib/release-rescue-internal/store";
+import { isRunId, loadRun, saveRun, sealIntact, sealReport, sweepRetention, type RunRecord } from "@/lib/release-rescue-internal/store";
 
 // Signing and export for internal runs.
 //
@@ -163,6 +163,9 @@ export type ExportOutcome =
  * broken is withheld before the production gate is even asked.
  */
 export function deliveryForRun(runId: string, now: Date = new Date()): ExportOutcome {
+  // Not a run id: nothing to look up, so nothing is swept either. A mistyped id
+  // must not be what purges the store.
+  if (!isRunId(runId)) return { status: "withheld", blockers: ["No such run."] };
   // Retention first, so a report past its window is never handed out just
   // because no page load happened to run the sweep.
   sweepRetention(now);

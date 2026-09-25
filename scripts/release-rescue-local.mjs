@@ -30,8 +30,9 @@ export async function resolve(specifier, context, next) {
 }`;
 register(`data:text/javascript,${encodeURIComponent(hook)}`, { data: { srcRoot } });
 
-const { main } = await import(pathToFileURL(`${srcRoot}lib/release-rescue-internal/cli.ts`).href);
 try {
+  // Loaded inside the try, so a CLI that fails to load is reported the same way.
+  const { main } = await import(pathToFileURL(`${srcRoot}lib/release-rescue-internal/cli.ts`).href);
   await main(process.argv.slice(2));
 } catch (error) {
   // No stack trace and no error text: either can carry a path or file content.

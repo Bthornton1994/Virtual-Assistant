@@ -340,6 +340,49 @@ describe("export reports a file it cannot write, and delivers nothing", () => {
   });
 });
 
+describe("an operator id or run id that names nothing", () => {
+  it("operator:remove of an unknown operator exits 1 and changes nothing", async () => {
+    const operator = addOperator("Dana Okafor", "a long local test passphrase");
+    const registry = readFileSync(join(localDir(), "operators.json"), "utf8");
+    await expect(main(["operator:remove", "00000000-0000-4000-8000-000000000000"])).rejects.toThrow("exit 1");
+    expect(stderr.join("")).toBe("No such operator. Nothing was removed.\n");
+    expect(stdout).toEqual([]);
+    expect(readFileSync(join(localDir(), "operators.json"), "utf8")).toBe(registry);
+    // Control: a real id is removed, and says so.
+    stderr.length = 0;
+    await main(["operator:remove", operator.operatorId]);
+    expect(stdout.join("")).toBe("Removed.\n");
+    expect(stderr).toEqual([]);
+  });
+
+  it("export of something that is not a run id withholds without sweeping retention", async () => {
+    // Created long ago and never delivered, so a retention sweep would purge it.
+    const old = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout" },
+      now: new Date("2000-01-01T00:00:00Z"),
+    });
+    const before = localState();
+    for (const id of ["not-a-run-id", "../operators", old.runId.toUpperCase(), `${old.runId}x`]) {
+      stderr.length = 0;
+      await expect(main(["export", id, "--out", join(work, "report.json")]), id).rejects.toThrow("exit 1");
+      expect(stderr.join(""), id).toBe("Withheld: No such run.\n");
+      expect(localState(), id).toEqual(before);
+    }
+    expect(loadRun(old.runId)!.status).toBe("awaiting_review");
+    expect(writtenFiles()).toEqual([]);
+    // Control: a well-formed id that names no run does reach the sweep, which purges the old run.
+    stderr.length = 0;
+    await expect(main(["export", "00000000-0000-4000-8000-000000000000", "--out", join(work, "report.json")])).rejects.toThrow("exit 1");
+    expect(stderr.join("")).toBe("Withheld: No such run.\n");
+    expect(loadRun(old.runId)!.status).toBe("purged");
+  });
+});
+
 // Through the real launcher, as an operator runs it: `npm run rr:local`.
 const execFileAsync = promisify(execFile);
 const LAUNCHER = [
@@ -435,6 +478,86 @@ describe("an inherited property name is an unknown option, through the real laun
     const result = await launch(["checkout:list"]);
     expect(result).toEqual({ status: 1, stdout: "", stderr: "The command failed unexpectedly (EISDIR).\n" });
   }, 30_000);
+
+  it("operator:add prints a refusal's fixed sentence, and nothing of any other error's text", async () => {
+    addOperator("Dana Okafor", "a long local test passphrase");
+    const duplicate = await launch(["operator:add", "--name", "dana okafor"], "a long local test passphrase\n");
+    expect(duplicate).toEqual({ status: 1, stdout: "", stderr: "An operator with that display name already exists. Nothing was written.\n" });
+    const short = await launch(["operator:add", "--name", "Kim Okafor"], "short\n");
+    expect(short).toEqual({ status: 1, stdout: "", stderr: "A passphrase must be at least 12 characters. Nothing was written.\n" });
+
+    const registry = join(localDir(), "operators.json");
+    const secret = "/srv/private/rr-secret-path";
+    const cases: Array<[string, () => void, string]> = [
+      ["a directory where the registry should be", () => {
+        rmSync(registry, { force: true, recursive: true });
+        mkdirSync(registry);
+      }, "The command failed unexpectedly (EISDIR).\n"],
+      ["a registry that is not JSON, holding a path and a second line", () => {
+        rmSync(registry, { force: true, recursive: true });
+        writeFileSync(registry, `not json ${secret}\nsecond line ${secret}\n`);
+      }, "The command failed unexpectedly.\n"],
+      ["a registry that fails its schema, with a path and a line break in a value", () => {
+        rmSync(registry, { force: true, recursive: true });
+        writeFileSync(registry, JSON.stringify({ schemaVersion: 1, operators: [{ operatorId: `${secret}\nsecond line`, displayName: secret }] }));
+      }, "The command failed unexpectedly.\n"],
+    ];
+    for (const [name, setUp, expected] of cases) {
+      setUp();
+      const result = await launch(["operator:add", "--name", "Kim Okafor"], "a long local test passphrase\n");
+      expect(result, name).toEqual({ status: 1, stdout: "", stderr: expected });
+      for (const leak of [secret, "second line", localDir(), "EISDIR:", "illegal operation", "Expected", "at "]) {
+        expect(result.stderr.includes(leak), `${name}: ${leak}`).toBe(false);
+      }
+    }
+  }, 60_000);
+
+  it("an export interrupted partway through its write leaves no partial file, keeps the destination, and delivers nothing", async () => {
+    const operator = addOperator("Dana Okafor", "a long local test passphrase");
+    const record = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout" },
+    });
+    const shown = hashReleaseRescueReviewSubject(record.draft!.report);
+    const signed = signRunAsLocalOperator(
+      operator,
+      record.runId,
+      { reasonCode: "reviewed_findings_and_verdict_match_the_recorded_observations", approvedContentHash: shown },
+      new Date(),
+      { ownershipConfirmed: true },
+    );
+    expect(signed.ok, "control: the run is signed").toBe(true);
+    const out = join(work, "report.json");
+    writeFileSync(out, "the previous export\n");
+
+    // A file size limit of 1 KiB: the exclusive open succeeds, and the write
+    // fails partway, the way a full disk would. SIGXFSZ is ignored so the write
+    // fails with EFBIG instead of killing the process.
+    const limited = await new Promise<{ status: number; stdout: string; stderr: string }>((done) => {
+      execFile(
+        "bash",
+        ["-c", 'trap "" XFSZ; ulimit -f 1; exec "$@"', "bash", process.execPath, ...LAUNCHER, "export", record.runId, "--out", out],
+        { cwd: process.cwd(), env: process.env, encoding: "utf8" },
+        (error, stdout, stderr) => done({ status: error ? ((error as { code?: number }).code ?? -1) : 0, stdout, stderr }),
+      );
+    });
+    expect(limited).toEqual({ status: 1, stdout: "", stderr: "The export file could not be written. Nothing was delivered.\n" });
+    expect(readdirSync(work).sort()).toEqual(["allowlist.json", "report.json"]);
+    expect(readFileSync(out, "utf8")).toBe("the previous export\n");
+    expect(loadRun(record.runId)!.deliveredAt).toBeNull();
+
+    // Control: the report is larger than the limit, so the limit is what failed
+    // the write; without it the same export succeeds.
+    const unlimited = await launch(["export", record.runId, "--out", out]);
+    expect(unlimited.status, unlimited.stderr).toBe(0);
+    expect(statSync(out).size).toBeGreaterThan(1024);
+    expect(loadRun(record.runId)!.deliveredAt).not.toBeNull();
+    expect(readdirSync(work).sort()).toEqual(["allowlist.json", "report.json"]);
+  }, 60_000);
 
   it("accepts a display name that begins with - when it is written with a leading space", async () => {
     const result = await launch(["operator:add", "--name", " -Ann Okafor"], "a long local test passphrase\n");

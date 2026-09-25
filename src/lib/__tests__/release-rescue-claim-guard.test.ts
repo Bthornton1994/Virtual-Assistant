@@ -1563,6 +1563,93 @@ describe("a typed value may not claim to be the professional the review is not",
     }
   });
 
+  // The tokenizer keeps `'` as a word character, so a single-quoted claim word
+  // was one token the list never names. Each value is also read with the
+  // quotes at a word's edges removed, in addition to the plain reading.
+  it.each([
+    ["Dana Okafor, 'Penetration Tester'", "penetration tester"],
+    ["Dana 'Pentester' Okafor", "pentester"],
+    ["'Penetration' 'Tester'", "penetration tester"],
+    ["Kim 'Red' Teamer", "red teamer"],
+    ["'Pentester's' desk", "pentester"],
+    ["''Pentester''", "pentester"],
+    ["Pen ' tester", "pen tester"],
+  ])("refuses the single-quoted typed value %s", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+  });
+
+  it.each([
+    ["'SOC 2 certified'", "soc 2 certified"],
+    ["Book a 'penetration test' today.", "penetration test"],
+    ["We are 'ISO 27001 certified'.", "iso 27001 certified"],
+    ["Your application 'is secure'.", "is secure"],
+  ])("refuses the single-quoted claim %s as offer copy and as a typed value", (value, claim) => {
+    expect(findProhibitedClaims(value, "offer_copy")).toContain(claim);
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+  });
+
+  it("does not read a quote as a claim, or as joining two clauses", () => {
+    for (const value of [
+      "Kim 'Red' Okafor",
+      "Dana 'Purple' Okafor",
+      "Chris 'Pen' Okafor",
+      "Dana 'DJ' Okafor, Security Lead",
+      "Dana Okafor, 'Team Lead'",
+      "'Tis Okafor",
+      "Dana O'Tester",
+      "O'Brien Tester",
+      // The quote's own break passes to the next word, so a lone quote after a
+      // comma does not join "Red" to "Team".
+      "Kim 'Red', Team Lead",
+      "Erik Red, ' Team Lead",
+      "Pen ', tester",
+      "'",
+      "' '",
+    ]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
+      expect(findProhibitedClaims(value, "offer_copy"), value).toEqual([]);
+    }
+  });
+
+  it("still licenses a quoted denial or referral in offer copy", () => {
+    for (const value of [
+      "This review is not a 'penetration test'.",
+      "We do not offer a 'penetration test'.",
+      "Customers who need 'penetration testing' should engage a qualified specialist.",
+    ]) {
+      expect(findProhibitedClaims(value, "offer_copy"), value).toEqual([]);
+    }
+  });
+
+  it.each([
+    ["ISO 27001:2022 Lead Auditor", "27001 2022 lead auditor"],
+    ["ISO/IEC 27001:2013 Lead Auditor", "27001 2013 lead auditor"],
+    ["ISO 27001:2005 Lead Auditor", "27001 2005 lead auditor"],
+    ["PCI DSS certified", "pci dss certified"],
+    ["PCI-DSS Certified", "pci dss certified"],
+    ["Whitehat Hacker", "whitehat hacker"],
+    ["Purple Teamer", "purple teamer"],
+    ["Dana Okafor, Purple-Teamer", "purple teamer"],
+  ])("refuses the credential spelling %s", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+    // Typed values only, like every professional claim.
+    expect(findProhibitedClaims(value, "offer_copy")).toEqual([]);
+  });
+
+  it("does not refuse a title that only shares a word with those spellings", () => {
+    for (const value of [
+      "ISO 27001:2022 Implementation Lead",
+      "ISO 9001:2015 Lead Auditor",
+      "Lead Auditor, Finance",
+      "PCI DSS Program Manager",
+      "Whitehat Labs Office Manager",
+      "Dana Purple, Team Lead",
+      "Hacker News reader",
+    ]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
+    }
+  });
+
   // A typed-field phrase does not run across a comma or other clause break:
   // "Erik Red, Team Lead" is a name and a title, not a claim to be a red team.
   it("reads a typed-field phrase only within one clause", () => {

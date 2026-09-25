@@ -107,6 +107,13 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
   // Deliberately not listed: also an accounting and internal-audit credential,
   // and refusing it refused "Dana Okafor, CPA, Certified Auditor".
   { mechanism: "word_insertion", value: "Certified auditor" },
+  // Measured when single-quoted words and the colon-edition, `PCI DSS`,
+  // `whitehat` and `purple teamer` spellings were added. Each rule names the
+  // exact phrase; a year other than the three ISO/IEC 27001 editions, a version
+  // between the words, or the word order reversed still goes through.
+  { mechanism: "word_insertion", value: "ISO 27001:2017 Lead Auditor" },
+  { mechanism: "word_insertion", value: "PCI DSS v4.0 certified" },
+  { mechanism: "word_insertion", value: "Certified Whitehat" },
 
   // Audit 23 widened this class with invisible characters and non-ASCII
   // letterforms. Exact stem matching cannot close it — each is a different

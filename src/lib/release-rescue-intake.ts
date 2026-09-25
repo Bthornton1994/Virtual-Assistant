@@ -114,13 +114,22 @@ export const TYPED_FIELD_PROHIBITED_CLAIMS = [
   "security certified",
   "compliance certified",
   "27001 lead auditor",
+  // The edition written after a colon: `27001:2022` is two tokens, so the
+  // phrase above does not reach `lead`. The three ISO/IEC editions, no more;
+  // any other year is a recorded residual.
+  "27001 2005 lead auditor",
+  "27001 2013 lead auditor",
+  "27001 2022 lead auditor",
   "type ii auditor",
   "type 2 auditor",
   "white hat hacker",
+  "whitehat hacker",
   "purple team",
+  "purple teamer",
   "qualified security assessor",
   "hipaa certified",
   "pci certified",
+  "pci dss certified",
   "gdpr certified",
   "soc 2 compliant",
 ] as const;
@@ -1614,15 +1623,54 @@ export type ClaimTextSource = "offer_copy" | "typed_field";
 
 /**
  * The same tokens with an ASCII possessive removed: `tester's` reads as
- * `tester`, `testers'` as `testers`. The tokenizer keeps `'` inside a word, so
- * "penetration tester's" was one word the claim list never names. A curly
- * apostrophe already splits the word. Applied to typed values only.
+ * `tester`. The tokenizer keeps `'` inside a word, so "penetration tester's"
+ * was one word the claim list never names. A plural possessive (`testers'`) is
+ * read by `withoutEdgeQuotes`, and a curly apostrophe already splits the word.
+ * Applied to typed values only.
  */
 function withoutPossessives(tokens: readonly ClaimToken[]): ClaimToken[] {
   return tokens.map((token) => {
-    const bare = token.word.replace(/'s$/, "").replace(/(?<=s)'$/, "");
+    const bare = token.word.replace(/'s$/, "");
     return bare === token.word || bare.length === 0 ? token : { ...token, word: bare, stem: stemWord(bare) };
   });
+}
+
+const BREAK_STRENGTH: Record<ClaimToken["breakBefore"], number> = { none: 0, clause: 1, sentence: 2 };
+
+/**
+ * The same tokens with ASCII single quotes removed from the edges of each word:
+ * `'Pentester'` reads as `pentester`. The tokenizer keeps `'` as a word
+ * character so that `don't` and `O'Brien` stay one word, which also kept a
+ * quoted claim word whole, and so unmatched: "Dana 'Pentester' Okafor" and
+ * "Book a 'penetration test'" passed. A `'` between two word characters is left
+ * where it is. A token that was only quotes is dropped, and the next token takes
+ * the stronger of the two breaks, so a quote never joins two clauses.
+ *
+ * Read IN ADDITION to the plain tokens, for both sources, so it can add a
+ * detection and never remove one: a quoted word that was a denial or a
+ * referral in this reading is still a claim in the plain one.
+ */
+function withoutEdgeQuotes(tokens: readonly ClaimToken[]): ClaimToken[] {
+  const kept: ClaimToken[] = [];
+  let dropped: ClaimToken | null = null;
+  for (const token of tokens) {
+    const bare = token.word.replace(/^'+|'+$/g, "");
+    if (bare.length === 0) {
+      dropped = dropped === null ? token : { ...token, breakBefore: strongerBreak(dropped, token), spacedBefore: dropped.spacedBefore || token.spacedBefore };
+      continue;
+    }
+    let next = bare === token.word ? token : { ...token, word: bare, stem: stemWord(bare) };
+    if (dropped !== null) {
+      next = { ...next, breakBefore: strongerBreak(dropped, next), spacedBefore: dropped.spacedBefore || next.spacedBefore };
+      dropped = null;
+    }
+    kept.push(next);
+  }
+  return kept;
+}
+
+function strongerBreak(a: ClaimToken, b: ClaimToken): ClaimToken["breakBefore"] {
+  return BREAK_STRENGTH[a.breakBefore] >= BREAK_STRENGTH[b.breakBefore] ? a.breakBefore : b.breakBefore;
 }
 
 export function findProhibitedClaims(
@@ -1633,12 +1681,18 @@ export function findProhibitedClaims(
   const found = new Set<string>();
 
   // One pass per DISTINCT tokenisation, not per mode. See `claimsInTokens`.
-  // A typed value is also read with possessives removed (`withoutPossessives`);
-  // offer copy is read exactly as before.
+  // Every value is also read with edge quotes removed (`withoutEdgeQuotes`),
+  // and a typed value with possessives removed as well (`withoutPossessives`).
+  // Each is an extra reading in the union, never a replacement.
   const seen = new Set<string>();
   for (const mode of PROSE_MODES) {
     const plain = tokenizeClaimText(text, mode);
-    for (const tokens of source === "typed_field" ? [plain, withoutPossessives(plain)] : [plain]) {
+    const unquoted = withoutEdgeQuotes(plain);
+    const readings =
+      source === "typed_field"
+        ? [plain, withoutPossessives(plain), unquoted, withoutPossessives(unquoted)]
+        : [plain, unquoted];
+    for (const tokens of readings) {
       const key = tokens
         .map((token) => `${token.breakBefore === "clause" && token.spacedBefore ? "spaced-clause" : token.breakBefore}:${token.stem}`)
         .join("\u0000");

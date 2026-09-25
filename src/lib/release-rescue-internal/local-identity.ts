@@ -107,16 +107,23 @@ export function displayNameProblem(displayName: string): string | null {
   return null;
 }
 
+/**
+ * Why `addOperator` would not create an operator, in one fixed sentence that is
+ * safe to print. Anything else it throws (a registry it cannot read or parse)
+ * is not this, and a caller must not print that error's text.
+ */
+export class OperatorRefused extends Error {}
+
 /** Adds an operator. Called from the terminal only; see `scripts/release-rescue-local.mjs`. */
 export function addOperator(displayName: string, passphrase: string, now: Date = new Date()): LocalOperator {
   const problem = displayNameProblem(displayName);
-  if (problem) throw new Error(problem);
+  if (problem) throw new OperatorRefused(problem);
   if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
-    throw new Error(`A passphrase must be at least ${MIN_PASSPHRASE_LENGTH} characters.`);
+    throw new OperatorRefused(`A passphrase must be at least ${MIN_PASSPHRASE_LENGTH} characters.`);
   }
   const operators = loadOperators();
   if (operators.some((operator) => operator.displayName.toLowerCase() === displayName.trim().toLowerCase())) {
-    throw new Error("An operator with that display name already exists.");
+    throw new OperatorRefused("An operator with that display name already exists.");
   }
   const operator: LocalOperator = operatorSchema.parse({
     // A UUID, because that is what a report's `reviewedBy.operatorUserId` is.

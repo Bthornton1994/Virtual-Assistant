@@ -2,11 +2,11 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { randomBytes } from "node:crypto";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { RETENTION_POLICIES, commitShaSchema, type RetentionPolicy } from "@/lib/release-rescue-intake";
 import { findAllowlisted, loadAllowlist } from "@/lib/release-rescue-internal/allowlist";
 import { resolveCheckoutHead } from "@/lib/release-rescue-internal/git-source";
-import { addOperator, displayNameProblem, loadOperators, removeOperator } from "@/lib/release-rescue-internal/local-identity";
+import { OperatorRefused, addOperator, displayNameProblem, loadOperators, removeOperator } from "@/lib/release-rescue-internal/local-identity";
 import { deliveryForRun, recordDelivery } from "@/lib/release-rescue-internal/review";
 import { CLI_INITIATOR, RunRefused, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { runSummary } from "@/lib/release-rescue-internal/summary";
@@ -166,17 +166,31 @@ function parseArguments(command: string, spec: CommandSpec, args: string[]): Par
  *
  * The staged name is a fixed 30 characters, whatever the target is called, so
  * any name the directory accepts can be written. It is removed on failure only
- * if this call created it.
+ * if this call created it, and this call has created it as soon as the
+ * exclusive open succeeds: a write that fails partway (a full disk, a file
+ * size limit) leaves no partial copy behind, and the target is untouched.
  */
 function writeOwnerOnly(path: string, text: string): void {
   const target = resolve(path);
   const staged = join(dirname(target), `.rr-local-${randomBytes(8).toString("hex")}.tmp`);
   let created = false;
+  let fd: number | null = null;
   try {
-    writeFileSync(staged, text, { mode: 0o600, flag: "wx" });
+    fd = openSync(staged, "wx", 0o600);
     created = true;
+    const bytes = Buffer.from(text, "utf8");
+    for (let offset = 0; offset < bytes.length; ) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    closeSync(fd);
+    fd = null;
     renameSync(staged, target);
   } catch (error) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already failing; the removal below is what matters.
+      }
+    }
     if (created) rmSync(staged, { force: true });
     throw error;
   }
@@ -248,7 +262,11 @@ export async function main(argv: string[]): Promise<void> {
         const operator = addOperator(name, passphrase);
         process.stdout.write(`Operator created: ${operator.displayName} (${operator.operatorId})\n`);
       } catch (error) {
-        fail(error instanceof Error ? error.message : "The operator could not be created.");
+        // Only a refusal's fixed sentence is printed. Anything else (a registry
+        // that cannot be read or parsed) goes to the launcher, which prints one
+        // sentence and at most a system error code, never the error's text.
+        if (error instanceof OperatorRefused) fail(`${error.message} Nothing was written.`);
+        throw error;
       }
       return;
     }
@@ -259,7 +277,10 @@ export async function main(argv: string[]): Promise<void> {
       return;
     }
     case "operator:remove": {
-      process.stdout.write(removeOperator(first) ? "Removed.\n" : "No such operator.\n");
+      // An id that names no operator is a failure, as `show` treats a run id
+      // that names no run, so a script is not told it removed someone.
+      if (!removeOperator(first)) fail("No such operator. Nothing was removed.");
+      process.stdout.write("Removed.\n");
       return;
     }
     case "checkout:set": {

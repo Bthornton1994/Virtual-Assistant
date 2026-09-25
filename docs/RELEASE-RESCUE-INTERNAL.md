@@ -61,7 +61,7 @@ A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKE
    - Directory entries. They hold no data: a directory, symlink, hard link or special entry that carries data is refused.
    - Path spelling. Paths are compared in the one spelling described below, so `./a.ts` in an archive is `a.ts`.
 
-   A symlink whose target holds a NUL byte cannot be written faithfully by `git archive`, because a tar link name ends at its first NUL. Its archive never matches the commit and is refused; review such a commit from the checkout.
+   A symlink target of up to 100 bytes is written in the tar header's link name, which ends at its first NUL. So if such a target holds a NUL byte, its archive never matches the commit and is refused; review such a commit from the checkout. A longer target is written as a pax `linkpath` record, which keeps every byte, NUL included, so that archive matches and is read. Both forms are tested.
 
    The run records the pinned tree's totals and its list of entries it did not read, not the archive's.
 
@@ -125,7 +125,7 @@ A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKE
    - who started it, the repository and commit;
    - the check ledger and acquisition counts;
    - the report's hashes, verdict and finding count.
-- A display name may not make a claim about the review. It is held to the offer's prohibited claims and, as a typed value, to professional claims such as "penetration tester", "pentester", "ISO 27001 lead auditor" or "compliance certified" (`TYPED_FIELD_PROHIBITED_CLAIMS`). A possessive reads as the bare word, so "Pentester's" is refused. A typed-field phrase does not run across a comma or other clause mark with a space beside it, so "Erik Red, Team Lead" is accepted and "Red Team Lead" is refused. A mark with no space beside it joins the words: "Red–Team Lead" and "Penetration(Tester)" are refused. Signing checks the name again.
+- A display name may not make a claim about the review. It is held to the offer's prohibited claims and, as a typed value, to professional claims such as "penetration tester", "pentester", "ISO 27001 lead auditor" or "compliance certified" (`TYPED_FIELD_PROHIBITED_CLAIMS`). A possessive reads as the bare word, so "Pentester's" is refused. So does a word in single quotes, as a typed value and as offer copy: "Dana 'Pentester' Okafor" and "Book a 'penetration test'" are refused, and "Kim 'Red' Okafor" is accepted. "ISO 27001:2022 Lead Auditor" (and the 2005 and 2013 editions), "PCI DSS certified", "Whitehat Hacker" and "Purple Teamer" are refused as typed values; each rule is the exact phrase, so "ISO 27001:2017 Lead Auditor", "PCI DSS v4.0 certified" and "Certified Whitehat" still pass and are recorded as residuals. A typed-field phrase does not run across a comma or other clause mark with a space beside it, so "Erik Red, Team Lead" is accepted and "Red Team Lead" is refused. A mark with no space beside it joins the words: "Red–Team Lead" and "Penetration(Tester)" are refused. Signing checks the name again.
   - "Certified auditor" is not refused, because it is also an accounting credential. It is recorded as a residual.
   - The same clause rule lets "Penetration, Tester", "Red – Team Lead", "Security: Certified" and "Ethical (Hacker)" through. They are recorded as residuals.
   - Three innocent names are refused and pinned by a test: "Alex Red / Team Lead" and "Erik Red - Team Lead" (a slash and a hyphen are not clause breaks) and "Ruby Red Team". Write the name another way.
