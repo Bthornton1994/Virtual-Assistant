@@ -1,9 +1,7 @@
 import { createHash, type Hash } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { createGunzip } from "node:zlib";
 import type { Readable } from "node:stream";
-import { finished } from "node:stream/promises";
 import { commitShaSchema } from "@/lib/release-rescue-intake";
 import {
   SnapshotBudget,
@@ -13,6 +11,7 @@ import {
   exactText,
   type SnapshotOutcome,
 } from "@/lib/release-rescue-internal/snapshot";
+import { gunzipMembers, type GzipTrailing } from "@/lib/release-rescue-internal/gzip-members";
 import { SNAPSHOT_LIMITS, type SnapshotEntryType } from "@/lib/release-rescue-snapshot-limits";
 
 // Reads a tar archive produced by `git archive`, plain or gzip-compressed,
@@ -23,10 +22,11 @@ import { SNAPSHOT_LIMITS, type SnapshotEntryType } from "@/lib/release-rescue-sn
 //
 // - the compressed bytes are counted as they are read, against `maxArchiveBytes`;
 // - the decompressed bytes are counted as they are produced, against
-//   `maxTotalBytes` and the expansion ratio over the file's whole size (see
-//   `SnapshotBudget`), so a decompression bomb stops near the line rather than
-//   after it has filled memory, and the decision does not depend on the order
-//   of the entries or the size of the reads;
+//   `maxTotalBytes` and the expansion ratio over the file's compressed data,
+//   its size less the gzip framing read so far (see `SnapshotBudget`), so a
+//   decompression bomb stops at the line rather than after it has filled
+//   memory, and the decision does not depend on the order of the entries or
+//   the size of the reads;
 // - each header's size is the size the parser then consumes, and a stream that
 //   ends inside an entry is malformed, never "probably fine".
 //
@@ -307,6 +307,14 @@ export type TarSourceRequest = {
   commitSha: string;
 };
 
+/** The input's chunks, each counted against the budget as it is read. */
+async function* counted(input: Readable, budget: SnapshotBudget): AsyncGenerator<Buffer> {
+  for await (const chunk of input as AsyncIterable<Buffer>) {
+    budget.countStream(chunk.length);
+    yield chunk;
+  }
+}
+
 /**
  * Reads a tar or tar.gz from a readable stream. Exposed for tests.
  *
@@ -314,13 +322,14 @@ export type TarSourceRequest = {
  * file's is. It lets the expansion ratio stop a bomb as it expands, and the
  * stream must then be exactly that long.
  *
- * A gzip input must end where its gzip data ends; `git archive` writes nothing
- * after it. `gunzip` ignores trailing bytes that begin with a zero byte, so the
- * rest of the input is read to its end before the decision and those bytes are
- * refused as "Data followed the gzip stream." Any other trailing bytes gunzip
- * reads as a second member, refused as invalid gzip or, when valid, as data
- * after the tar's end-of-archive marker, unless it holds nothing or only zeros:
- * that is accepted like a plain tar's zero padding.
+ * A gzip input is read member by member (`gunzipMembers`), and must end where
+ * its gzip data ends; `git archive` writes nothing after it. As with gunzip,
+ * trailing bytes that begin with a zero byte end the gzip data: the rest of the
+ * input is read to its end before the decision, and those bytes are refused as
+ * "Data followed the gzip stream." Any other trailing bytes are read as another
+ * member, refused as invalid gzip or, when valid, as data after the tar's
+ * end-of-archive marker, unless it holds nothing or only zeros: that is
+ * accepted like a plain tar's zero padding.
  */
 export async function readTarStream(
   input: Readable,
@@ -343,46 +352,15 @@ export async function readTarStream(
   }
   try {
     let stream: AsyncIterable<Buffer>;
-    let afterGzip = async () => {};
+    let afterGzip = () => {};
     if (options.gzip) {
-      const gunzip = createGunzip();
-      let inputRefusal: unknown = null;
-      input.on("data", (chunk: Buffer) => {
-        try {
-          budget.countStream(chunk.length);
-        } catch (error) {
-          inputRefusal = error;
-          input.destroy();
-          gunzip.destroy(error as Error);
-        }
-      });
-      // `pipe` does not pass a read error on, so a failing file would leave the
-      // gunzip stream, and the run, waiting forever. Forward it, so the loop
-      // below rejects and the catch records the run as BLOCKED.
-      input.on("error", (error) => gunzip.destroy(error));
-      // Once gunzip has ended, input still arriving is written to a stream that
-      // is gone. The loop below has its own listener, so this one only keeps
-      // that late error from being unhandled.
-      gunzip.on("error", () => {});
-      input.pipe(gunzip);
-      stream = gunzip;
-      afterGzip = async () => {
-        // `unpipe` leaves the input paused; the counting listener reads the rest.
-        input.unpipe(gunzip);
-        input.resume();
-        try {
-          await finished(input);
-        } catch (error) {
-          throw inputRefusal ?? error;
-        }
-        if (inputRefusal) throw inputRefusal;
+      const trailing: GzipTrailing = { bytes: false };
+      stream = gunzipMembers(counted(input, budget), (bytes) => budget.countFraming(bytes), trailing);
+      afterGzip = () => {
         // A size change is `finish`'s to report; only an input read as stated
-        // is judged for bytes after its gzip data. `bytesWritten` is what
-        // gunzip consumed, however the input was split into reads.
+        // is judged for bytes after its gzip data.
         const readAsStated = options.inputBytes === undefined || budget.totals.streamBytes === options.inputBytes;
-        if (readAsStated && budget.totals.streamBytes > gunzip.bytesWritten) {
-          throw new SnapshotRefused("malformed_input", "Data followed the gzip stream.");
-        }
+        if (readAsStated && trailing.bytes) throw new SnapshotRefused("malformed_input", "Data followed the gzip stream.");
       };
     } else {
       stream = input;
@@ -392,7 +370,7 @@ export async function readTarStream(
       budget,
       options.gzip ? (bytes) => budget.countExpanded(bytes) : (bytes) => budget.countStream(bytes),
     );
-    await afterGzip();
+    afterGzip();
     if (recordedCommit !== sha.data) {
       return budget.blocked(source, sha.data, {
         reason: "archive_commit_unverified",

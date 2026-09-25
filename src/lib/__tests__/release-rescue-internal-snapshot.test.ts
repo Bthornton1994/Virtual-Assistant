@@ -1,9 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { createGzip } from "node:zlib";
+import { createGzip, crc32, deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { SNAPSHOT_LIMITS } from "@/lib/release-rescue-snapshot-limits";
 import { gitArgs, gitEnv, parseLsTree, readGitCommit, resolveCheckoutHead } from "@/lib/release-rescue-internal/git-source";
@@ -14,6 +14,7 @@ import {
   canonicalEntryPath,
   readableAncestorsOf,
 } from "@/lib/release-rescue-internal/snapshot";
+import { MAX_GZIP_MEMBERS } from "@/lib/release-rescue-internal/gzip-members";
 import { parsePax, readTarArchive, readTarStream } from "@/lib/release-rescue-internal/tar-source";
 import {
   FAKE_AWS_KEY,
@@ -518,8 +519,11 @@ describe("the expansion ratio is the whole archive's, whatever the order of its 
       // Stopped near the threshold, not after expanding 150 MB.
       expect(outcome.totals.expandedBytes).toBeLessThan(MEASURED_RATIO_FLOOR_BYTES + 2 * 1024 * 1024);
     }
+    // One member with a 10-byte header (no optional fields) and an 8-byte
+    // trailer: the rest is compressed data.
+    expect(compressed[3], "control: no optional header fields").toBe(0);
     expect([...details]).toEqual([
-      `The archive's ${compressed.length} bytes expand past ${MEASURED_RATIO_FLOOR_BYTES} bytes, more than ${LIMIT}x its size. A plain .tar is not subject to this limit.`,
+      `The archive's ${compressed.length - 18} bytes of compressed data expand past ${MEASURED_RATIO_FLOOR_BYTES} bytes, more than ${LIMIT}x their size. A plain .tar is not subject to this limit.`,
     ]);
   });
 
@@ -1010,13 +1014,24 @@ describe("a source lists each path once, however it spells it", () => {
     expect(outcome.status === "blocked" && outcome.refusals[0].reason).toBe("malformed_input");
   });
 
-  it("records the one such name it does not see: a name holding `/` beside a real subtree of that directory", async () => {
-    // Documented in docs/RELEASE-RESCUE-INTERNAL.md. If this starts being
-    // refused, the documented limitation is overstated and should be removed.
+  it("records the names it does not see: a name holding `/` beside a real subtree of its directory", async () => {
+    // Documented in docs/RELEASE-RESCUE-INTERNAL.md. If either starts being
+    // refused, the documented limitation is overstated and should be narrowed.
     const t = hostileTree();
     const sub = Buffer.from(t.tree(t.entry("100644", "z.ts", t.blob)), "hex");
-    const outcome = await t.read(t.commit(t.tree(t.entry("40000", "x", sub), t.entry("100644", "x/y.ts", t.blob))));
-    expect(outcome.status === "acquired" && outcome.files.map((file) => file.path)).toEqual(["x/y.ts", "x/z.ts"]);
+    // A blob named `x/y.ts` beside a subtree `x`.
+    const blob = await t.read(t.commit(t.tree(t.entry("40000", "x", sub), t.entry("100644", "x/y.ts", t.blob))));
+    expect(blob.status === "acquired" && blob.files.map((file) => file.path)).toEqual(["x/y.ts", "x/z.ts"]);
+    // A SUBTREE named `x/y` beside a subtree `x`: `ls-tree -r -t` lists `x/y`
+    // as a subtree, so every path under it has a listed directory.
+    const inner = Buffer.from(t.tree(t.entry("100644", "w.ts", t.blob)), "hex");
+    const subtree = await t.read(t.commit(t.tree(t.entry("40000", "x", sub), t.entry("40000", "x/y", inner))));
+    expect(subtree.status === "acquired" && subtree.files.map((file) => file.path)).toEqual(["x/y/w.ts", "x/z.ts"]);
+    // Control: without the real `x`, both are refused.
+    for (const shape of [t.tree(t.entry("100644", "x/y.ts", t.blob)), t.tree(t.entry("40000", "x/y", inner))]) {
+      const refused = await t.read(t.commit(shape));
+      expect(refused.status === "blocked" && refused.refusals[0].reason).toBe("malformed_input");
+    }
   });
 
   it("names a path that is not valid UTF-8 exactly, so two such names stay two entries, and reads neither", async () => {
@@ -1139,4 +1154,259 @@ describe("a source lists each path once, however it spells it", () => {
     expect(outcome.status === "blocked" && outcome.refusals[0].reason).toBe("duplicate_entry_path");
     expect(outcome.totals.streamBytes).toBe(0);
   });
+});
+
+describe("the tar parser's framing guards hold at their boundaries", () => {
+  const MAX_PAX_BYTES = 64 * 1024;
+  /** A pax header of exactly `length` bytes of records, as raw blocks. */
+  function paxOfLength(length: number, typeflag: "x" | "g"): Buffer {
+    // One record: `<digits> x-rr=<value>\n`, whose length counts its own
+    // digits. A key the reader ignores, so a global header keeps the commit.
+    const digits = String(length).length;
+    const value = "a".repeat(length - digits - " x-rr=\n".length);
+    const data = Buffer.from(`${length} x-rr=${value}\n`, "latin1");
+    expect(data.length).toBe(length);
+    const padding = Buffer.alloc((512 - (data.length % 512)) % 512);
+    return Buffer.concat([tarHeader(typeflag === "g" ? "pax_global_header" : "PaxHeader", data.length, typeflag), data, padding]);
+  }
+  const file = { kind: "file" as const, name: "a.ts", data: "a\n" };
+
+  it.each(["x", "g"] as const)("accepts a %s pax header of exactly 64 KiB and refuses one byte more", async (typeflag) => {
+    for (const [length, status] of [
+      [MAX_PAX_BYTES, "acquired"],
+      [MAX_PAX_BYTES + 1, "blocked"],
+    ] as const) {
+      const tar = buildTar(withCommit([{ kind: "raw", block: paxOfLength(length, typeflag) }, file]));
+      const outcome = await readTarStream(tarStream(tar), SHA, { gzip: false });
+      expect(outcome.status, `${length} bytes`).toBe(status);
+      if (outcome.status === "blocked") {
+        expect(outcome.refusals[0]).toEqual({ reason: "malformed_input", detail: "A pax header is oversized." });
+      } else {
+        expect(outcome.files.map((entry) => entry.path)).toEqual(["a.ts"]);
+      }
+    }
+  });
+
+  it("refuses an entry after a single zero block, and accepts the zero blocks that end an archive", async () => {
+    const zero = Buffer.alloc(512);
+    const header = buildTar([{ kind: "file", name: "b.ts", data: "b\n" }], { terminate: false });
+    const cases: Array<[string, Buffer, string | null]> = [
+      ["one zero block, then an entry", Buffer.concat([zero, header, zero, zero]), "Data followed an end-of-archive marker."],
+      ["one zero block, then a block holding one nonzero byte", Buffer.concat([zero, Buffer.from([1]), Buffer.alloc(511), zero, zero]), "Data followed an end-of-archive marker."],
+      ["two zero blocks, then a nonzero byte", Buffer.concat([zero, zero, Buffer.from([1])]), "Data followed an end-of-archive marker."],
+      ["one zero block and nothing after it", zero, "The archive ended before its end-of-archive marker."],
+      ["two zero blocks", Buffer.concat([zero, zero]), null],
+      ["two zero blocks and 10 KiB of zero padding", Buffer.concat([zero, zero, Buffer.alloc(10_240)]), null],
+    ];
+    for (const [label, tail, detail] of cases) {
+      const tar = Buffer.concat([buildTar(withCommit([file]), { terminate: false }), tail]);
+      const outcome = await readTarStream(tarStream(tar), SHA, { gzip: false });
+      if (detail === null) {
+        expect(outcome.status, label).toBe("acquired");
+      } else {
+        expect(outcome.status === "blocked" && outcome.refusals[0], label).toEqual({ reason: "malformed_input", detail });
+      }
+    }
+  });
+
+  it("reads a pax size only as one to fifteen ASCII digits", async () => {
+    const withSize = (size: string) =>
+      buildTar(withCommit([{ kind: "pax", records: { size } }, { kind: "file", name: "a.ts", data: "a\n" }]));
+    for (const size of ["2", "02", "000000000000002"]) {
+      const outcome = await readTarStream(tarStream(withSize(size)), SHA, { gzip: false });
+      expect(outcome.status === "acquired" && outcome.files.map((entry) => [entry.path, entry.bytes.toString("utf8")]), size).toEqual([
+        ["a.ts", "a\n"],
+      ]);
+    }
+    for (const size of ["", "0000000000000002", "+2", "-2", " 2", "2 ", "0x2", "2.0", "1e0", "２", "٢"]) {
+      const outcome = await readTarStream(tarStream(withSize(size)), SHA, { gzip: false });
+      expect(outcome.status === "blocked" && outcome.refusals[0], JSON.stringify(size)).toEqual({
+        reason: "malformed_input",
+        detail: "An entry size is malformed.",
+      });
+    }
+  });
+});
+
+describe("gzip framing is not compressed data: a padded header or a run of empty members cannot raise the ratio's threshold", () => {
+  const LIMIT = SNAPSHOT_LIMITS.maxExpansionRatio;
+  const PAD = 12 * 1024 * 1024;
+  /** A single-member gzip with optional header fields added, and FHCRC when asked. */
+  function withHeaderFields(member: Buffer, fields: { extra?: Buffer; name?: Buffer; comment?: Buffer; hcrc?: boolean }): Buffer {
+    expect(member[3], "control: the member had no optional fields").toBe(0);
+    const fixed = Buffer.from(member.subarray(0, 10));
+    const parts: Buffer[] = [];
+    if (fields.extra) {
+      fixed[3] |= 0x04;
+      const size = Buffer.alloc(2);
+      size.writeUInt16LE(fields.extra.length, 0);
+      parts.push(size, fields.extra);
+    }
+    if (fields.name) {
+      fixed[3] |= 0x08;
+      parts.push(fields.name, Buffer.from([0]));
+    }
+    if (fields.comment) {
+      fixed[3] |= 0x10;
+      parts.push(fields.comment, Buffer.from([0]));
+    }
+    if (fields.hcrc) fixed[3] |= 0x02;
+    const header = Buffer.concat([fixed, ...parts]);
+    const hcrc = Buffer.alloc(fields.hcrc ? 2 : 0);
+    if (fields.hcrc) hcrc.writeUInt16LE(crc32(header) & 0xffff, 0);
+    return Buffer.concat([header, hcrc, member.subarray(10)]);
+  }
+  const EMPTY_MEMBER = gzip(Buffer.alloc(0));
+  const emptyMembers = (bytes: number) => Buffer.concat(Array.from({ length: Math.ceil(bytes / EMPTY_MEMBER.length) }, () => EMPTY_MEMBER));
+
+  async function readAt(input: Buffer, size: number) {
+    return readTarStream(chunked(input, size), SHA, { gzip: true, inputBytes: input.length });
+  }
+
+  it("refuses a bomb behind a 12 MB header comment, name or extra field as early as the bare bomb", async () => {
+    const bare = await zeroBomb(130_000_000);
+    // What the file-size ratio accepted: 130 MB is under 12 times the padded file.
+    expect(130_000_000).toBeLessThan(LIMIT * (bare.length + PAD));
+    const padded: Array<[string, Buffer]> = [
+      ["bare", bare],
+      ["a 12 MB comment", withHeaderFields(bare, { comment: Buffer.alloc(PAD, 0x61) })],
+      ["a 12 MB name", withHeaderFields(bare, { name: Buffer.alloc(PAD, 0x61) })],
+      ["a 12 MB comment, a 64 KiB extra field, a name and a header CRC", withHeaderFields(bare, { extra: Buffer.alloc(0xffff, 0x62), name: Buffer.from("commit.tar"), comment: Buffer.alloc(PAD, 0x61), hcrc: true })],
+    ];
+    for (const [label, input] of padded) {
+      for (const size of [64 * 1024, 1024 * 1024]) {
+        const outcome = await readAt(input, size);
+        expect(outcome.status === "blocked" && outcome.refusals[0].reason, `${label}, ${size}-byte reads`).toBe("expansion_ratio_exceeded");
+        // Stopped at the floor, as the bare bomb is, not at 12 times the padding.
+        expect(outcome.totals.expandedBytes, label).toBeLessThan(MEASURED_RATIO_FLOOR_BYTES + 2 * 1024 * 1024);
+        if (outcome.status === "blocked") {
+          expect(outcome.refusals[0].detail).toBe(
+            `The archive's ${bare.length - 18} bytes of compressed data expand past ${MEASURED_RATIO_FLOOR_BYTES} bytes, more than ${LIMIT}x their size. A plain .tar is not subject to this limit.`,
+          );
+        }
+      }
+    }
+  }, 60_000);
+
+  it("refuses a run of empty members past the member bound, before or after a bomb, and reads up to it", async () => {
+    const bare = await zeroBomb(130_000_000);
+    const members = emptyMembers(PAD);
+    const tooMany = { reason: "malformed_input", detail: `The archive has more than ${MAX_GZIP_MEMBERS} gzip members.` };
+    // 12 MB of empty members in front: refused at member 4,097, before the
+    // bomb has expanded at all.
+    const before = await readAt(Buffer.concat([members, bare]), 64 * 1024);
+    expect(before.status === "blocked" && before.refusals[0]).toEqual(tooMany);
+    expect(before.totals.expandedBytes).toBe(0);
+    // Behind the tar they hold nothing, which is accepted as padding, and the
+    // bomb has expanded under the threshold the whole file allowed, never past
+    // 12 times its size, before they are read.
+    const afterInput = Buffer.concat([bare, members]);
+    const after = await readAt(afterInput, 64 * 1024);
+    expect(after.status === "blocked" && after.refusals[0]).toEqual(tooMany);
+    expect(after.totals.expandedBytes).toBeLessThanOrEqual(LIMIT * afterInput.length);
+
+    // The bound itself: the tar in one member and 4,095 empty ones is read,
+    // and one more is refused. So many members barely move the threshold: each
+    // empty one is two bytes of compressed data.
+    const tar = gzip(buildTar(withCommit([{ kind: "file", name: "a.ts", data: "a\n" }])));
+    const atBound = await readAt(Buffer.concat([tar, emptyMembers(EMPTY_MEMBER.length * (MAX_GZIP_MEMBERS - 1))]), 64 * 1024);
+    expect(atBound.status).toBe("acquired");
+    const overBound = await readAt(Buffer.concat([tar, emptyMembers(EMPTY_MEMBER.length * MAX_GZIP_MEMBERS)]), 64 * 1024);
+    expect(overBound.status === "blocked" && overBound.refusals[0]).toEqual(tooMany);
+    const flood = await readAt(Buffer.concat([emptyMembers(EMPTY_MEMBER.length * (MAX_GZIP_MEMBERS - 1)), bare]), 64 * 1024);
+    expect(flood.status === "blocked" && flood.refusals[0].reason).toBe("expansion_ratio_exceeded");
+    expect(flood.totals.expandedBytes).toBeLessThan(MEASURED_RATIO_FLOOR_BYTES + 2 * 1024 * 1024);
+  }, 60_000);
+
+  it("still accepts a gzip with a name, a comment, an extra field and a header CRC, and empty or zero members after it", async () => {
+    const tar = buildTar(withCommit([{ kind: "file", name: "a.ts", data: "a\n" }]));
+    const shapes: Array<[string, Buffer]> = [
+      ["plain", gzip(tar)],
+      ["every optional field", withHeaderFields(gzip(tar), { extra: Buffer.from("xy\0z"), name: Buffer.from("commit.tar"), comment: Buffer.from("made by hand"), hcrc: true })],
+      ["an empty member first", Buffer.concat([EMPTY_MEMBER, gzip(tar)])],
+      ["the tar split over two members", Buffer.concat([gzip(tar.subarray(0, 700)), gzip(tar.subarray(700))])],
+      ["an empty member and a zero member after it", Buffer.concat([gzip(tar), EMPTY_MEMBER, gzip(Buffer.alloc(10_240))])],
+    ];
+    for (const [label, input] of shapes) {
+      for (const size of [1, 700, input.length]) {
+        const outcome = await readAt(input, size);
+        expect(outcome.status, `${label}, ${size}-byte reads`).toBe("acquired");
+        if (outcome.status === "acquired") expect(outcome.files.map((file) => file.path)).toEqual(["a.ts"]);
+      }
+    }
+  });
+
+  it("refuses what gunzip refuses: a bad header CRC, reserved flags, another method, and a bad member CRC or length", async () => {
+    const good = gzip(buildTar(withCommit([{ kind: "file", name: "a.ts", data: "a\n" }])));
+    const flip = (input: Buffer, at: number, mask: number) => {
+      const copy = Buffer.from(input);
+      copy[at] ^= mask;
+      return copy;
+    };
+    const hcrc = withHeaderFields(good, { hcrc: true });
+    const cases: Array<[string, Buffer]> = [
+      ["a header CRC that does not match", flip(hcrc, 10, 0x01)],
+      ["a reserved flag bit", flip(good, 3, 0x20)],
+      ["compression method 7", flip(good, 2, 0x0f)],
+      ["a member CRC that does not match", flip(good, good.length - 8, 0x01)],
+      ["a member length that does not match", flip(good, good.length - 4, 0x01)],
+      ["a truncated trailer", good.subarray(0, good.length - 3)],
+      ["a header that ends in its name", Buffer.concat([withHeaderFields(good, { name: Buffer.from("n") }).subarray(0, 11)])],
+    ];
+    for (const [label, input] of cases) {
+      for (const size of [1, 700]) {
+        const outcome = await readAt(input, size);
+        expect(outcome.status === "blocked" && outcome.refusals[0], `${label}, ${size}-byte reads`).toEqual({
+          reason: "malformed_input",
+          detail: "The archive is not valid gzip.",
+        });
+      }
+    }
+  });
+
+  it("reads what git archive and gzip write", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "a\n" });
+    const dir = tempDir("rr-internal-real-gzip-");
+    const tar = join(dir, "commit.tar");
+    writeFileSync(tar, execFileSync("git", ["-C", repo.path, "archive", "--format=tar", repo.commitSha], { env: gitEnv() }));
+    const fromGit = join(dir, "git.tar.gz");
+    writeFileSync(fromGit, execFileSync("git", ["-C", repo.path, "archive", "--format=tar.gz", repo.commitSha], { env: gitEnv() }));
+    // `gzip` records the file's name, so its header has FNAME set.
+    execFileSync("gzip", ["-k", tar]);
+    const fromGzip = `${tar}.gz`;
+    expect(readFileSync(fromGzip)[3] & 0x08, "control: gzip wrote a name").toBe(0x08);
+    for (const archivePath of [fromGit, fromGzip]) {
+      const outcome = await readTarArchive({ archivePath, commitSha: repo.commitSha });
+      expect(outcome.status, archivePath).toBe("acquired");
+      if (outcome.status === "acquired") expect(outcome.files.map((file) => file.path)).toEqual(["src/a.ts"]);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("records the residual: deflate data padded with empty blocks still counts as compressed data", async () => {
+    // Recorded in docs/RELEASE-RESCUE-INTERNAL.md. An empty stored block is
+    // five bytes of deflate that decode to nothing. They are compressed data,
+    // not framing, so padding the data this way raises the threshold as the
+    // header used to. What stays bounded: 12 times the file's size, and
+    // `maxTotalBytes`. If this starts being refused, narrow the record.
+    const tar = Buffer.concat([
+      buildTar(withCommit([{ kind: "file", name: "ok.ts", data: "ok\n" }]), { terminate: false }),
+      tarHeader("zeros.bin", 40_000_000, "0"),
+      Buffer.alloc(40_000_000 + 1024),
+    ]);
+    const bomb = deflateRawSync(tar);
+    const emptyStored = Buffer.from([0x00, 0x00, 0x00, 0xff, 0xff]);
+    const padding = Buffer.concat(Array.from({ length: 700_000 }, () => emptyStored));
+    const trailer = Buffer.alloc(8);
+    trailer.writeUInt32LE(crc32(tar), 0);
+    trailer.writeUInt32LE(tar.length % 2 ** 32, 4);
+    const header = Buffer.from([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff]);
+    const unpadded = Buffer.concat([header, bomb, trailer]);
+    const padded = Buffer.concat([header, padding, bomb, trailer]);
+    const control = await readAt(unpadded, 64 * 1024);
+    expect(control.status === "blocked" && control.refusals[0].reason, "control: the bomb alone is refused").toBe("expansion_ratio_exceeded");
+    const outcome = await readAt(padded, 64 * 1024);
+    expect(outcome.status).toBe("acquired");
+    expect(outcome.totals.expandedBytes).toBeLessThanOrEqual(LIMIT * padded.length);
+  }, 60_000);
 });

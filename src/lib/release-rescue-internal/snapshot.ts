@@ -18,8 +18,8 @@ import {
 // a limit is crossed, and then hands the measured sizes to the same
 // `evaluateSnapshot` the claim half uses, so the entry and whole-snapshot rules
 // are one rule for both. The expansion ratio is the exception: here it is the
-// whole archive's, with a floor (`MEASURED_RATIO_FLOOR_BYTES`), which the claim
-// half's rule is not.
+// whole archive's, over its compressed data rather than its gzip framing, with
+// a floor (`MEASURED_RATIO_FLOOR_BYTES`), which the claim half's rule is not.
 //
 // `limitsVersion` on every outcome is `SNAPSHOT_LIMITS_VERSION`, the shared
 // contract the SQL schema stores: the `SNAPSHOT_LIMITS` values and the
@@ -211,15 +211,20 @@ export const MEASURED_RATIO_FLOOR_BYTES = 16 * 1024 * 1024;
  *
  * `compressed` says whether `streamBytes` and `expandedBytes` differ. For a
  * compressed source the expansion ratio is the whole archive's: expanded bytes
- * over the input's total size, refused only past `MEASURED_RATIO_FLOOR_BYTES`.
+ * over its compressed data, which is the input's total size less the gzip
+ * framing (`countFraming`), refused only past `MEASURED_RATIO_FLOOR_BYTES`.
  *
  * When the input's size is known before reading (`inputBytes`, a file's size),
- * the reader stops as soon as the bytes produced pass that threshold. Expanded
- * bytes only grow, so stopping early is the decision the finished archive
- * would get anyway: it does not depend on the order of the entries or on how
- * the input is split into reads. A decompression bomb is stopped near the
- * threshold rather than after it has expanded. The input must then be exactly
- * that size, so a file that changes while it is read is refused.
+ * the reader stops as soon as the bytes produced pass the threshold. Expanded
+ * bytes only grow and framing only grows, so the threshold only falls, and
+ * stopping early is the decision the finished archive would get anyway: it
+ * does not depend on the order of the entries or on how the input is split
+ * into reads. A bomb whose framing comes first (a padded header, or empty
+ * members in front) is stopped at the threshold its compressed data allows.
+ * Framing that comes after the data is only known once it is read, so until
+ * then the bomb is held to the higher threshold the file's size allows, and
+ * never past `maxTotalBytes`. The input must be exactly `inputBytes` long, so a
+ * file that changes while it is read is refused.
  *
  * Without `inputBytes`, the same rule is applied once, at the end.
  */
@@ -237,6 +242,8 @@ export class SnapshotBudget {
   private readonly directoryPaths = new Set<string>();
   private readonly compressed: boolean;
   private readonly inputBytes: number | undefined;
+  /** Input bytes known to be gzip framing, not compressed data: see `countFraming`. */
+  private framingBytes = 0;
   private readonly blobIds = new Map<string, string>();
 
   constructor(compressed: boolean, inputBytes?: number) {
@@ -272,18 +279,34 @@ export class SnapshotBudget {
     }
   }
 
+  /**
+   * Input bytes that are gzip framing rather than compressed data: a member's
+   * header, optional fields included, and its 8-byte trailer. They produce no
+   * output, so they are not counted in the ratio's denominator, and a header
+   * padded with a long comment, or a run of empty members, cannot raise the
+   * threshold. Framing only grows, so the threshold only falls: the next
+   * expanded byte is judged against it, and `finish` against the final one.
+   */
+  countFraming(bytes: number): void {
+    this.framingBytes += bytes;
+  }
+
   private sizeChanged(): SnapshotRefused {
     return new SnapshotRefused("malformed_input", "The archive changed size while it was read.");
   }
 
-  /** The ratio rule over an input of `inputBytes`, or null when it holds. */
+  /**
+   * The ratio rule over an input of `inputBytes`, or null when it holds. The
+   * denominator is the compressed data: the input less the framing read so far.
+   */
   private ratioRefusal(inputBytes: number): AcquisitionRefusal | null {
     if (!this.compressed) return null;
-    const threshold = Math.max(MEASURED_RATIO_FLOOR_BYTES, SNAPSHOT_LIMITS.maxExpansionRatio * inputBytes);
+    const compressedBytes = inputBytes - this.framingBytes;
+    const threshold = Math.max(MEASURED_RATIO_FLOOR_BYTES, SNAPSHOT_LIMITS.maxExpansionRatio * compressedBytes);
     if (this.totals.expandedBytes <= threshold) return null;
     return {
       reason: "expansion_ratio_exceeded",
-      detail: `The archive's ${inputBytes} bytes expand past ${threshold} bytes, more than ${SNAPSHOT_LIMITS.maxExpansionRatio}x its size. A plain .tar is not subject to this limit.`,
+      detail: `The archive's ${compressedBytes} bytes of compressed data expand past ${threshold} bytes, more than ${SNAPSHOT_LIMITS.maxExpansionRatio}x their size. A plain .tar is not subject to this limit.`,
     };
   }
 

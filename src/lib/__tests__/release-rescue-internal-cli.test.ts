@@ -167,6 +167,11 @@ describe("the other commands check their arguments the same way", () => {
     ["head with two arguments", ["head", FIXTURE_REPOSITORY, "extra"], "head takes 1 argument: head <owner/name>. Nothing was run."],
     ["operator:add with a name that begins with -", ["operator:add", "--name", "-Ann"], "--name needs a value. Nothing was run."],
     ["an unknown command", ["frobnicate"], "Unknown command frobnicate. Run with no arguments for usage."],
+    // Names every object inherits are not commands: the lookup reads only the
+    // table's own names.
+    ...["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"].map(
+      (name): [string, string[], string] => [`the inherited name ${name} as a command`, [name], `Unknown command ${name}. Run with no arguments for usage.`],
+    ),
   ];
 
   it.each(cases)("refuses %s", async (_name, argv, message) => {

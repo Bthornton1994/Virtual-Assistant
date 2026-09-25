@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Proof that the fixes from the third review of the internal Release Rescue
+ * Proof that the fixes from the third and later reviews of the internal Release Rescue
  * workflow are each held by a test that fails without them.
  *
  * Each entry below undoes ONE guard, by an exact textual replacement, and runs
@@ -26,7 +26,9 @@ import { join } from "node:path";
 const INTAKE = "src/lib/release-rescue-intake.ts";
 const SNAPSHOT = "src/lib/release-rescue-internal/snapshot.ts";
 const TAR = "src/lib/release-rescue-internal/tar-source.ts";
+const GZIP = "src/lib/release-rescue-internal/gzip-members.ts";
 const CLI = "src/lib/release-rescue-internal/cli.ts";
+const REVIEW = "src/lib/release-rescue-internal/review.ts";
 const LAUNCHER = "scripts/release-rescue-local.mjs";
 
 const CLAIM_SUITE = "src/lib/__tests__/release-rescue-claim-guard.test.ts";
@@ -46,8 +48,8 @@ const MUTANTS = [
     id: "M-POSSESSIVE-OFFER",
     guard: "possessives are read as bare words in typed fields only, not in offer copy",
     file: INTAKE,
-    from: 'source === "typed_field" ? [plain, withoutPossessives(plain)] : [plain]',
-    to: "[plain, withoutPossessives(plain)]",
+    from: "        : [plain, unquoted];",
+    to: "        : [plain, withoutPossessives(plain), unquoted, withoutPossessives(unquoted)];",
     suite: CLAIM_SUITE,
   },
   {
@@ -91,19 +93,99 @@ const MUTANTS = [
     suite: SNAPSHOT_SUITE,
   },
   {
-    id: "M-GZIP-DRAIN",
-    guard: "bytes after the gzip data are read and refused",
-    file: TAR,
-    from: "    await afterGzip();\n",
+    id: "M-GZIP-FRAMING",
+    guard: "a member's header and trailer are counted as framing, not compressed data",
+    file: GZIP,
+    from: "    onFraming((await readHeader(reader)) + TRAILER_BYTES);\n",
+    to: "    await readHeader(reader);\n",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-RATIO-FRAMING",
+    guard: "the ratio's denominator is the input less its framing",
+    file: SNAPSHOT,
+    from: "    const compressedBytes = inputBytes - this.framingBytes;\n",
+    to: "    const compressedBytes = inputBytes;\n",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-GZIP-MEMBERS",
+    guard: "a gzip input may have at most 4,096 members",
+    file: GZIP,
+    from: "    if (members > MAX_GZIP_MEMBERS) {\n",
+    to: "    if (false) {\n",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-GZIP-LEFTOVER",
+    guard: "the bytes after a member's deflate data are given back and read as its trailer",
+    file: GZIP,
+    from: "          reader.unread(chunk.subarray(chunk.length - unused));\n",
     to: "",
     suite: SNAPSHOT_SUITE,
   },
   {
-    id: "M-GZIP-RESUME",
-    guard: "the rest of a gzip file is read after gunzip ends",
-    file: TAR,
-    from: "        input.resume();\n",
+    id: "M-GZIP-CRC",
+    guard: "a member's CRC-32 and length are checked",
+    file: GZIP,
+    from: "    if (trailer.readUInt32LE(0) !== crc >>> 0 || trailer.readUInt32LE(4) !== size % 2 ** 32) throw notGzip();\n",
     to: "",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-GZIP-HCRC",
+    guard: "a header CRC is checked",
+    file: GZIP,
+    from: "    if (stored.readUInt16LE(0) !== (crc & 0xffff)) throw notGzip();\n",
+    to: "",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-GZIP-TRAILING",
+    guard: "bytes after the gzip data that begin with a zero byte are reported and refused",
+    file: GZIP,
+    from: "      trailing.bytes = true;\n",
+    to: "",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-GZIP-DRAIN",
+    guard: "bytes after the gzip data are read to the end before the decision",
+    file: GZIP,
+    from: "      while ((await reader.next()) !== null) {\n        // read to the end, so the input's size is measured whole\n      }\n",
+    to: "",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-GZIP-FEED-ERROR",
+    guard: "an input that fails while a member is inflated ends the read instead of hanging it",
+    file: GZIP,
+    from: "    feeding.catch((error: unknown) => inflate.destroy(error as Error));\n",
+    to: "    feeding.catch(() => undefined);\n",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-PAX-CAP",
+    guard: "a pax header over 64 KiB is refused",
+    file: TAR,
+    from: '        if (header.size > MAX_PAX_BYTES) throw new SnapshotRefused("malformed_input", "A pax header is oversized.");\n',
+    to: "",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-ZERO-BLOCK",
+    guard: "an entry after a single zero block is refused",
+    file: TAR,
+    from: '      if (zeroBlocks > 0) throw new SnapshotRefused("malformed_input", "Data followed an end-of-archive marker.");\n',
+    to: "",
+    suite: SNAPSHOT_SUITE,
+  },
+  {
+    id: "M-PAX-DIGITS",
+    guard: "a pax size is one to fifteen ASCII digits",
+    file: TAR,
+    from: "if (paxSize !== undefined && !/^[0-9]{1,15}$/.test(paxSize)) {",
+    to: "if (false) {",
     suite: SNAPSHOT_SUITE,
   },
   {
@@ -112,6 +194,38 @@ const MUTANTS = [
     file: CLI,
     from: "name && Object.hasOwn(spec.options, name) ? spec.options[name]",
     to: "name ? spec.options[name]",
+    suite: CLI_SUITE,
+  },
+  {
+    id: "M-OWN-COMMAND",
+    guard: "only the command table's own names are commands, so `constructor` is unknown",
+    file: CLI,
+    from: "const spec = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;",
+    to: "const spec = COMMANDS[command];",
+    suite: CLI_SUITE,
+  },
+  {
+    id: "M-ADD-RAW-ERROR",
+    guard: "operator:add prints a refusal's sentence and no other error's text",
+    file: CLI,
+    from: "        if (error instanceof OperatorRefused) fail(`${error.message} Nothing was written.`);\n        throw error;",
+    to: '        fail(error instanceof Error ? error.message : "The operator could not be created.");',
+    suite: CLI_SUITE,
+  },
+  {
+    id: "M-REMOVE-UNKNOWN",
+    guard: "operator:remove of an unknown operator exits 1",
+    file: CLI,
+    from: '      if (!removeOperator(first)) fail("No such operator. Nothing was removed.");\n      process.stdout.write("Removed.\\n");',
+    to: '      process.stdout.write(removeOperator(first) ? "Removed.\\n" : "No such operator.\\n");',
+    suite: CLI_SUITE,
+  },
+  {
+    id: "M-EXPORT-ID-FIRST",
+    guard: "an export id that is not a run id is withheld before the retention sweep",
+    file: REVIEW,
+    from: '  if (!isRunId(runId)) return { status: "withheld", blockers: ["No such run."] };\n',
+    to: "",
     suite: CLI_SUITE,
   },
   {
@@ -136,6 +250,15 @@ const MUTANTS = [
     file: CLI,
     from: "if (created) rmSync",
     to: "rmSync",
+    suite: CLI_SUITE,
+  },
+  {
+    id: "M-STAGED-OPEN",
+    guard: "a staged file is tracked for removal as soon as it is opened, before it is written",
+    file: CLI,
+    // The predecessor marked it created only after the write had succeeded.
+    from: "    created = true;\n    const bytes = Buffer.from(text, \"utf8\");\n    for (let offset = 0; offset < bytes.length; ) offset += writeSync(fd, bytes, offset, bytes.length - offset);\n    closeSync(fd);\n    fd = null;\n",
+    to: "    const bytes = Buffer.from(text, \"utf8\");\n    for (let offset = 0; offset < bytes.length; ) offset += writeSync(fd, bytes, offset, bytes.length - offset);\n    closeSync(fd);\n    fd = null;\n    created = true;\n",
     suite: CLI_SUITE,
   },
   {

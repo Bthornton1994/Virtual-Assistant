@@ -358,10 +358,9 @@ async function openPinnedTree(request: GitSourceRequest): Promise<PinnedTree> {
  * a directory `x` that does not exist. A path's segments are checked, and its
  * directory must be one of the subtrees `-t` lists.
  *
- * One such name is not seen: a name containing `/` whose directory part is
- * also a real subtree, as a blob named `x/y.ts` beside a subtree `x` that holds
- * no `y.ts`. It is read under the path it spells, which is what `git archive`
- * writes for it.
+ * Such a name is not seen when its directory part is also a real subtree: a
+ * blob named `x/y.ts`, or a subtree named `x/y`, beside a subtree `x`. Each
+ * path is read under the path it spells, which is what `git archive` writes.
  */
 function holdsNameGitRefuses(entries: readonly TreeEntry[]): boolean {
   const subtrees = new Set(entries.filter((entry) => entry.objectType === "tree").map((entry) => entry.path));
