@@ -226,22 +226,32 @@ export function ownerForAuthority(owner: RequestStep["owner"], actionClass: Acti
 // Accepted and cancelled requests cannot move again. A delivered request can
 // be reopened, so a raise puts it back to plan approval like active work.
 const TERMINAL_STATUSES: readonly RequestStatus[] = ["accepted", "cancelled"];
-// Before the plan is put to the customer; answering the last clarification
-// creates the plan approval at the request's (raised) class.
+// Statuses in which the customer is not yet deciding a plan. Answering the
+// last clarification puts the plan to the customer at the request's class.
 const PRE_PLAN_STATUSES: readonly RequestStatus[] = ["draft", "needs_clarification"];
 
+export type RaisePlan = {
+  /** Request the action approvals the raised class requires. */
+  requestApprovals: boolean;
+  /** Request a new plan approval at the raised class. */
+  newPlanApproval: boolean;
+  /** Move the request back to awaiting plan approval. */
+  returnToPlanApproval: boolean;
+};
+
 /**
- * What a raise in authority requires of a request in a given status.
- * - "record": the request is finished; stored records are realigned only.
- * - "approvals": the plan has not been put to the customer yet (it will be,
- *   at the raised class); newly required action approvals are requested.
- * - "reapprove": the customer approved, or is approving, a plan at the lower
- *   class; the request returns to plan approval at the raised class.
+ * What a raise in authority requires of a request. Accepted and cancelled
+ * requests only have their stored records realigned. Any request that already
+ * had a plan approval needs a new one at the raised class: an approval given
+ * at the lower class never authorizes the raised work. A request still being
+ * clarified keeps its status; the new plan approval waits with it.
  */
-export function reapprovalAfterRaise(status: RequestStatus): "record" | "approvals" | "reapprove" {
-  if (TERMINAL_STATUSES.includes(status)) return "record";
-  if (PRE_PLAN_STATUSES.includes(status)) return "approvals";
-  return "reapprove";
+export function reapprovalAfterRaise(status: RequestStatus, hadPlanApproval: boolean): RaisePlan {
+  if (TERMINAL_STATUSES.includes(status)) return { requestApprovals: false, newPlanApproval: false, returnToPlanApproval: false };
+  if (PRE_PLAN_STATUSES.includes(status)) {
+    return { requestApprovals: true, newPlanApproval: hadPlanApproval, returnToPlanApproval: false };
+  }
+  return { requestApprovals: true, newPlanApproval: true, returnToPlanApproval: true };
 }
 
 /**
