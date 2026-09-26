@@ -58,7 +58,15 @@ import {
   nowIso,
   uid,
 } from "@/lib/domain";
-import { delegationAI } from "@/lib/ai";
+import { delegationAI, mockAI } from "@/lib/ai";
+import {
+  bindPlanToAuthority,
+  raiseRiskForScope,
+  resolveApprovalRequirements,
+  resolveRequestRisk,
+  routeForActionClass,
+} from "@/lib/ai-authority";
+import { validateExecutionPlan, validatedOrFallback } from "@/lib/ai-validate";
 
 export type StoreData = {
   users: UserRecord[];
@@ -1155,10 +1163,10 @@ export class MemoryStore {
       this.data.workstreams.find((w) => w.organizationId === organizationId) ||
       null;
 
-    const actionClass =
-      input.externalCommunication && risk.actionClass === "prepare_only"
-        ? "external_execution"
-        : risk.actionClass;
+    // Authority is decided in code: the model's classification can only raise
+    // the deterministic floor derived from the request itself.
+    const authority = resolveRequestRisk(input, risk);
+    const actionClass = authority.actionClass;
 
     const playbook = input.playbookId ? this.data.playbooks.find((p) => p.id === input.playbookId) : null;
     if (playbook) assertOrgAccess(actor, playbook.organizationId);
@@ -1182,7 +1190,7 @@ export class MemoryStore {
       deliverable: input.deliverable,
       priority: triage.priority,
       status: missingContext.length ? "needs_clarification" : "awaiting_plan_approval",
-      riskLevel: risk.riskLevel,
+      riskLevel: authority.riskLevel,
       approvalLevel: actionClass,
       dueAt: input.dueAt,
       createdBy: actor.id,
@@ -1212,32 +1220,35 @@ export class MemoryStore {
       updatedAt: nowIso(),
     };
 
-    const [plan, approvalNeeds, routing, automation] = await Promise.all([
-      delegationAI.generateExecutionPlan({
-        title: request.title,
-        objective: request.objective,
-        description: request.description,
-        deliverable: request.deliverable,
-        workstreamName: ws?.name,
-        actionClass,
-      }),
-      delegationAI.determineApprovalRequirements({
-        title: request.title,
-        description: request.description,
-        actionClass,
-        externalCommunication: input.externalCommunication,
-      }),
-      delegationAI.suggestExecutor({
-        actionClass,
-        workstreamName: ws?.name,
-        title: request.title,
-      }),
+    const planInput = {
+      title: request.title,
+      objective: request.objective,
+      description: request.description,
+      deliverable: request.deliverable,
+      workstreamName: ws?.name,
+      actionClass,
+    };
+    const approvalInput = {
+      title: request.title,
+      description: request.description,
+      actionClass,
+      externalCommunication: input.externalCommunication,
+    };
+    const [planRaw, approvalRaw, automation] = await Promise.all([
+      delegationAI.generateExecutionPlan(planInput),
+      delegationAI.determineApprovalRequirements(approvalInput),
       delegationAI.identifyAutomationOpportunity({
         title: request.title,
         actionClass,
         recurring: input.recurring,
       }),
     ]);
+    const plan = bindPlanToAuthority(
+      validatedOrFallback(planRaw, validateExecutionPlan, await mockAI.generateExecutionPlan(planInput)),
+      authority,
+    );
+    const approvalNeeds = resolveApprovalRequirements(approvalInput, approvalRaw);
+    const routing = routeForActionClass(actionClass);
     if (pbVersion) {
       plan.steps = pbVersion.steps.map((title) => ({
         title,
@@ -1273,7 +1284,7 @@ export class MemoryStore {
     }
     this.audit(actor, "request.created", "request", request.id, organizationId, { title: request.title });
     this.audit(actor, "ai.action", "request", request.id, organizationId, {
-      fn: "triageRequest+classifyWorkstream+identifyMissingContext+generateExecutionPlan+classifyRisk+determineApprovalRequirements+suggestExecutor+identifyAutomationOpportunity",
+      fn: "triageRequest+classifyWorkstream+identifyMissingContext+generateExecutionPlan+classifyRisk+determineApprovalRequirements+identifyAutomationOpportunity",
       actionClass,
       missingContext,
       workstreamSlug: classified.workstreamSlug,
@@ -1346,7 +1357,18 @@ export class MemoryStore {
       throw new AuthzError();
     }
     Object.assign(req, patch, { updatedAt: nowIso() });
-    this.audit(actor, "request.scope_updated", "request", id, req.organizationId, patch as Record<string, unknown>);
+    // Edited scope can raise the request's authority, never lower it.
+    const raised = raiseRiskForScope(req);
+    const metadata: Record<string, unknown> = { ...patch };
+    if (raised) {
+      metadata.authorityRaised = {
+        from: { actionClass: req.approvalLevel, riskLevel: req.riskLevel },
+        to: { actionClass: raised.actionClass, riskLevel: raised.riskLevel },
+      };
+      req.approvalLevel = raised.actionClass;
+      req.riskLevel = raised.riskLevel;
+    }
+    this.audit(actor, "request.scope_updated", "request", id, req.organizationId, metadata);
     return req;
   }
 

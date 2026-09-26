@@ -5,7 +5,16 @@ import type {
   RequestRecord,
   RiskLevel,
 } from "@/lib/domain";
-import { WORKSTREAM_TEMPLATES, blocksWithoutApproval, identifyMissingContext as domainMissingContext } from "@/lib/domain";
+import { WORKSTREAM_TEMPLATES, identifyMissingContext as domainMissingContext } from "@/lib/domain";
+import {
+  classifyRequestRisk,
+  planRequiresApproval,
+  requiredApprovals,
+  resolveApprovalRequirements,
+  resolveRequestRisk,
+  restrictModelStepOwners,
+  routeForActionClass,
+} from "@/lib/ai-authority";
 
 export type TriageResult = {
   workstreamSlug: string;
@@ -22,13 +31,6 @@ export type RoutingSuggestion = {
   skillHints: string[];
   reason: string;
   humanRequired: boolean;
-};
-
-export type QaResult = {
-  passed: boolean;
-  score: number;
-  checklist: Array<{ item: string; ok: boolean }>;
-  residualRisk: string;
 };
 
 export type PlaybookDraft = {
@@ -50,10 +52,6 @@ export type AutomationOpportunity = {
   step: string;
   reason: string;
   requiresHumanApproval: boolean;
-};
-
-export type OutcomeSummary = {
-  summary: string;
 };
 
 export interface DelegationAI {
@@ -99,24 +97,6 @@ export interface DelegationAI {
     workstreamName?: string;
     title: string;
   }): Promise<RoutingSuggestion>;
-  suggestRouting(input: {
-    actionClass: ActionClass;
-    workstreamName?: string;
-    title: string;
-  }): Promise<RoutingSuggestion>;
-  qaDeliverable(input: {
-    objective: string;
-    deliverable: string;
-    notes: string;
-    actionClass: ActionClass;
-  }): Promise<QaResult>;
-  summarizeOutcome(input: {
-    title: string;
-    deliverable: string;
-    actionsTaken: string[];
-    exceptions: string[];
-    nextStep: string;
-  }): Promise<OutcomeSummary>;
   generatePlaybook(input: {
     title: string;
     objective: string;
@@ -127,34 +107,6 @@ export interface DelegationAI {
     actionClass: ActionClass;
     recurring: boolean;
   }): Promise<AutomationOpportunity>;
-}
-
-const SENSITIVE =
-  /\b(wire|transfer funds|bank|payroll|password|credential|contract sign|nda|legal|lawsuit|publish|buy|purchase|commit|prod access|production access|delete account|invoice pay)\b/i;
-const EXTERNAL =
-  /\b(email (the )?client|send to|outreach|call the|publish|post on|linkedin|customer email)\b/i;
-
-function inferActionClass(input: {
-  title: string;
-  description: string;
-  externalCommunication: boolean;
-}): { actionClass: ActionClass; riskLevel: RiskLevel; reasons: string[] } {
-  const text = `${input.title} ${input.description}`;
-  const reasons: string[] = [];
-  if (SENSITIVE.test(text)) {
-    reasons.push("Language indicates consequential, financial, or access-changing work.");
-    return { actionClass: "sensitive_execution", riskLevel: "critical", reasons };
-  }
-  if (input.externalCommunication || EXTERNAL.test(text)) {
-    reasons.push("Work may communicate or act outside the organization.");
-    return { actionClass: "external_execution", riskLevel: "high", reasons };
-  }
-  if (/\b(draft|research|brief|summar|organize|file|prep)\b/i.test(text)) {
-    reasons.push("Framed as preparation, research, or drafting.");
-    return { actionClass: "prepare_only", riskLevel: "low", reasons };
-  }
-  reasons.push("Internal reversible work with no sensitive markers.");
-  return { actionClass: "low_risk_execution", riskLevel: "medium", reasons };
 }
 
 function inferWorkstream(text: string) {
@@ -174,42 +126,9 @@ function inferWorkstream(text: string) {
   return "executive-operations";
 }
 
-function routeFor(input: { actionClass: ActionClass; workstreamName?: string; title: string }): RoutingSuggestion {
-  if (input.actionClass === "sensitive_execution") {
-    return {
-      executor: "specialist",
-      skillHints: ["sensitive-ops", "qa"],
-      reason: "Sensitive execution is human-owned. AI may only prepare materials.",
-      humanRequired: true,
-    };
-  }
-  if (input.actionClass === "external_execution") {
-    return {
-      executor: "operator",
-      skillHints: ["communications"],
-      reason: "External action requires an accountable operator after approval.",
-      humanRequired: true,
-    };
-  }
-  if (input.actionClass === "prepare_only") {
-    return {
-      executor: "ai",
-      skillHints: ["research", "drafting"],
-      reason: "Preparation work can be AI-assisted with operator review.",
-      humanRequired: false,
-    };
-  }
-  return {
-    executor: "operator",
-    skillHints: ["general-ops"],
-    reason: "Low-risk execution is operator-led with light automation.",
-    humanRequired: true,
-  };
-}
-
 export const mockAI: DelegationAI = {
   async triageRequest(input) {
-    const risk = inferActionClass(input);
+    const risk = classifyRequestRisk(input);
     const classified = await mockAI.classifyWorkstream(input);
     const estimatedEffort =
       risk.actionClass === "sensitive_execution"
@@ -238,38 +157,16 @@ export const mockAI: DelegationAI = {
   },
 
   async determineApprovalRequirements(input) {
-    const kinds: ApprovalKind[] = ["execution_plan"];
-    const reasons: string[] = ["Every request presents an execution plan before work enters the queue."];
-    if (input.actionClass === "external_execution" || input.externalCommunication || /\b(email|send|outreach|follow-up)\b/i.test(`${input.title} ${input.description}`)) {
-      kinds.push("external_email");
-      reasons.push("Outbound communication is prepared only until the customer approves sending.");
-    }
-    if (/\b(crm|hubspot|salesforce).*(delete|overwrite|merge)\b/i.test(`${input.title} ${input.description}`)) {
-      kinds.push("crm_destructive_change");
-      reasons.push("Destructive CRM changes require an explicit approval object.");
-    }
-    if (/\bvendor\b/i.test(`${input.title} ${input.description}`) && input.externalCommunication) {
-      kinds.push("vendor_communication");
-      reasons.push("Vendor communication is an approval object.");
-    }
-    if (input.actionClass === "sensitive_execution") {
-      kinds.push("sensitive_action");
-      reasons.push("Sensitive execution never proceeds without explicit approval.");
-    }
-    return {
-      kinds: [...new Set(kinds)],
-      reasons,
-      requiresCustomerDecision: kinds.length > 0,
-    };
+    return requiredApprovals(input);
   },
 
   async suggestExecutor(input) {
-    return routeFor(input);
+    return routeForActionClass(input.actionClass);
   },
 
   async generateExecutionPlan(input) {
     const template = WORKSTREAM_TEMPLATES.find((t) => t.name === input.workstreamName);
-    const approvalsRequired = blocksWithoutApproval(input.actionClass) || input.actionClass === "external_execution";
+    const approvalsRequired = planRequiresApproval(input.actionClass);
     return {
       summary: `Managed path to “${input.deliverable || input.objective}”. AI will classify and draft; a human operator owns judgment and delivery.`,
       actionClass: input.actionClass,
@@ -317,31 +214,7 @@ export const mockAI: DelegationAI = {
   },
 
   async classifyRisk(input) {
-    return inferActionClass(input);
-  },
-
-  async suggestRouting(input) {
-    return routeFor(input);
-  },
-
-  async qaDeliverable(input) {
-    const hasObjective = input.notes.toLowerCase().includes(input.objective.slice(0, 12).toLowerCase()) || input.notes.length > 40;
-    const checklist = [
-      { item: "Matches stated objective", ok: hasObjective },
-      { item: "Deliverable type is present", ok: input.deliverable.length > 0 },
-      { item: "Authority limits respected", ok: input.actionClass !== "sensitive_execution" || /approv/i.test(input.notes) },
-      { item: "Residual uncertainty disclosed", ok: true },
-    ];
-    const score = Math.round((checklist.filter((c) => c.ok).length / checklist.length) * 100);
-    return {
-      passed: score >= 75,
-      score,
-      checklist,
-      residualRisk:
-        input.actionClass === "sensitive_execution"
-          ? "Sensitive work must remain customer-authorized."
-          : "Standard residual risk: source freshness and unstated preferences.",
-    };
+    return classifyRequestRisk(input);
   },
 
   async generatePlaybook(input) {
@@ -361,13 +234,6 @@ export const mockAI: DelegationAI = {
         "AI must not independently send, purchase, publish, commit, transfer funds, or change access.",
         "Do not reuse confidential material from another organization.",
       ],
-    };
-  },
-
-  async summarizeOutcome(input) {
-    const exceptions = input.exceptions.length ? ` Exceptions: ${input.exceptions.join("; ")}.` : "";
-    return {
-      summary: `${input.title}: delivered ${input.deliverable}. ${input.actionsTaken.join("; ") || "No actions listed."}${exceptions} Next: ${input.nextStep || "None recorded."}`,
     };
   },
 
@@ -452,25 +318,14 @@ export const delegationAI: DelegationAI = {
     const live = parseJson<ExecutionPlan>(
       await liveComplete(`Create an execution plan JSON with summary, actionClass, riskLevel, steps[{title,detail,owner}], approvalsRequired, automationCandidates, humanOwned. Input: ${JSON.stringify(input)}`),
     );
-    return live ?? mockAI.generateExecutionPlan(input);
+    return live ? restrictModelStepOwners(live, input.actionClass) : mockAI.generateExecutionPlan(input);
   },
   async classifyRisk(input) {
-    const live = parseJson<{ riskLevel: RiskLevel; actionClass: ActionClass; reasons: string[] }>(
+    // The model may only raise the deterministic classification.
+    const suggestion = parseJson<unknown>(
       await liveComplete(`Classify risk JSON {riskLevel, actionClass, reasons}. Sensitive execution if funds, access, legal, or publish. Input: ${JSON.stringify(input)}`),
     );
-    return live ?? mockAI.classifyRisk(input);
-  },
-  async suggestRouting(input) {
-    const live = parseJson<RoutingSuggestion>(
-      await liveComplete(`Routing JSON {executor, skillHints, reason, humanRequired}. Input: ${JSON.stringify(input)}`),
-    );
-    return live ?? mockAI.suggestRouting(input);
-  },
-  async qaDeliverable(input) {
-    const live = parseJson<QaResult>(
-      await liveComplete(`QA JSON {passed, score, checklist[{item,ok}], residualRisk}. Input: ${JSON.stringify(input)}`),
-    );
-    return live ?? mockAI.qaDeliverable(input);
+    return resolveRequestRisk(input, suggestion);
   },
   async classifyWorkstream(input) {
     const live = parseJson<{ workstreamSlug: string; rationale: string }>(
@@ -485,28 +340,21 @@ export const delegationAI: DelegationAI = {
     return live ?? mockAI.identifyMissingContext(input);
   },
   async determineApprovalRequirements(input) {
-    const live = parseJson<ApprovalRequirement>(
+    // The model may add approval kinds; policy-required kinds always remain.
+    const suggestion = parseJson<unknown>(
       await liveComplete(`Approval requirements JSON {kinds, reasons, requiresCustomerDecision}. Never omit execution_plan. Never allow autonomous send/pay/publish. Input: ${JSON.stringify(input)}`),
     );
-    return live ?? mockAI.determineApprovalRequirements(input);
+    return resolveApprovalRequirements(input, suggestion);
   },
   async suggestExecutor(input) {
-    const live = parseJson<RoutingSuggestion>(
-      await liveComplete(`Executor JSON {executor, skillHints, reason, humanRequired}. Sensitive work is never unsupervised AI. Input: ${JSON.stringify(input)}`),
-    );
-    return live ?? mockAI.suggestExecutor(input);
+    // Routing is decided by the action class alone; no model call.
+    return routeForActionClass(input.actionClass);
   },
   async generatePlaybook(input) {
     const live = parseJson<PlaybookDraft>(
       await liveComplete(`Playbook JSON {title, objective, steps, clientPreferences, warnings}. Input: ${JSON.stringify(input)}`),
     );
     return live ?? mockAI.generatePlaybook(input);
-  },
-  async summarizeOutcome(input) {
-    const live = parseJson<OutcomeSummary>(
-      await liveComplete(`Outcome summary JSON {summary}. Do not claim unapproved external action. Input: ${JSON.stringify(input)}`),
-    );
-    return live ?? mockAI.summarizeOutcome(input);
   },
   async identifyAutomationOpportunity(input) {
     const live = parseJson<AutomationOpportunity>(
@@ -524,9 +372,6 @@ export {
   classifyRisk,
   determineApprovalRequirements,
   suggestExecutor,
-  suggestRouting,
-  qaDeliverable,
-  summarizeOutcome,
   generatePlaybook,
   identifyAutomationOpportunity,
 };
@@ -551,15 +396,6 @@ async function determineApprovalRequirements(input: Parameters<DelegationAI["det
 }
 async function suggestExecutor(input: Parameters<DelegationAI["suggestExecutor"]>[0]) {
   return delegationAI.suggestExecutor(input);
-}
-async function suggestRouting(input: Parameters<DelegationAI["suggestRouting"]>[0]) {
-  return delegationAI.suggestRouting(input);
-}
-async function qaDeliverable(input: Parameters<DelegationAI["qaDeliverable"]>[0]) {
-  return delegationAI.qaDeliverable(input);
-}
-async function summarizeOutcome(input: Parameters<DelegationAI["summarizeOutcome"]>[0]) {
-  return delegationAI.summarizeOutcome(input);
 }
 async function generatePlaybook(input: Parameters<DelegationAI["generatePlaybook"]>[0]) {
   return delegationAI.generatePlaybook(input);
