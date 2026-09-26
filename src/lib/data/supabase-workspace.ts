@@ -41,12 +41,17 @@ import {
 } from "@/lib/domain";
 import { delegationAI, mockAI } from "@/lib/ai";
 import {
-  validateApprovalRequirement,
+  bindPlanToAuthority,
+  raiseRiskForScope,
+  resolveApprovalRequirements,
+  resolveRequestRisk,
+  routeForActionClass,
+} from "@/lib/ai-authority";
+import {
   validateAutomation,
   validateExecutionPlan,
   validateMissingContext,
   validatePlaybookDraft,
-  validateRouting,
   validateTriage,
   validatedOrFallback,
 } from "@/lib/ai-validate";
@@ -544,8 +549,10 @@ export class SupabaseWorkspaceRepository {
       workstreams.find((w) => WORKSTREAM_TEMPLATES.find((t) => t.id === w.templateId)?.slug === classified.workstreamSlug) ||
       workstreams[0] ||
       null;
-    const actionClass =
-      input.externalCommunication && risk.actionClass === "prepare_only" ? "external_execution" : risk.actionClass;
+    // Authority is decided in code: the model's classification can only raise
+    // the deterministic floor derived from the request itself.
+    const authority = resolveRequestRisk(input, risk);
+    const actionClass = authority.actionClass;
     const playbook = input.playbookId ? (await db.from("playbooks").select("*").eq("id", input.playbookId).maybeSingle()).data : null;
     if (playbook) assertOrgAccess(actor, playbook.organization_id);
     const pbVersion = playbook
@@ -565,7 +572,7 @@ export class SupabaseWorkspaceRepository {
       deliverable: input.deliverable,
       priority: triage.priority,
       status: missingContext.length ? "needs_clarification" : "awaiting_plan_approval",
-      risk_level: risk.riskLevel,
+      risk_level: authority.riskLevel,
       approval_level: actionClass,
       due_at: input.dueAt,
       created_by: actor.id,
@@ -589,55 +596,35 @@ export class SupabaseWorkspaceRepository {
     };
     const { error } = await db.from("requests").insert(row);
     if (error) dbFail(error);
-    const [planRaw, approvalRaw, routingRaw, automationRaw] = await Promise.all([
-      delegationAI.generateExecutionPlan({
-        title: input.title,
-        objective: input.objective,
-        description: input.description,
-        deliverable: input.deliverable,
-        workstreamName: ws?.name,
-        actionClass,
-      }),
-      delegationAI.determineApprovalRequirements({
-        title: input.title,
-        description: input.description,
-        actionClass,
-        externalCommunication: input.externalCommunication,
-      }),
-      delegationAI.suggestExecutor({
-        actionClass,
-        workstreamName: ws?.name,
-        title: input.title,
-      }),
+    const planInput = {
+      title: input.title,
+      objective: input.objective,
+      description: input.description,
+      deliverable: input.deliverable,
+      workstreamName: ws?.name,
+      actionClass,
+    };
+    const approvalInput = {
+      title: input.title,
+      description: input.description,
+      actionClass,
+      externalCommunication: input.externalCommunication,
+    };
+    const [planRaw, approvalRaw, automationRaw] = await Promise.all([
+      delegationAI.generateExecutionPlan(planInput),
+      delegationAI.determineApprovalRequirements(approvalInput),
       delegationAI.identifyAutomationOpportunity({
         title: input.title,
         actionClass,
         recurring: input.recurring,
       }),
     ]);
-    const plan = validatedOrFallback(
-      planRaw,
-      validateExecutionPlan,
-      await mockAI.generateExecutionPlan({
-        title: input.title,
-        objective: input.objective,
-        description: input.description,
-        deliverable: input.deliverable,
-        workstreamName: ws?.name,
-        actionClass,
-      }),
+    const plan = bindPlanToAuthority(
+      validatedOrFallback(planRaw, validateExecutionPlan, await mockAI.generateExecutionPlan(planInput)),
+      authority,
     );
-    const approvalNeeds = validatedOrFallback(
-      approvalRaw,
-      validateApprovalRequirement,
-      await mockAI.determineApprovalRequirements({
-        title: input.title,
-        description: input.description,
-        actionClass,
-        externalCommunication: input.externalCommunication,
-      }),
-    );
-    const routing = validatedOrFallback(routingRaw, validateRouting, await mockAI.suggestExecutor({ actionClass, workstreamName: ws?.name, title: input.title }));
+    const approvalNeeds = resolveApprovalRequirements(approvalInput, approvalRaw);
+    const routing = routeForActionClass(actionClass);
     const automation = validatedOrFallback(
       automationRaw,
       validateAutomation,
@@ -722,6 +709,10 @@ export class SupabaseWorkspaceRepository {
     const req = await this.getRequest(actor, id);
     if (!canMutateOpsQueue(actor) && actor.id !== req.createdBy && actor.role !== "client_admin") throw new AuthzError();
     const db = await this.client();
+    const title = typeof patch.title === "string" ? patch.title : req.title;
+    const description = typeof patch.description === "string" ? patch.description : req.description;
+    // Edited scope can raise the request's authority, never lower it.
+    const raised = raiseRiskForScope({ ...req, title, description });
     const { data, error } = await db
       .from("requests")
       .update({
@@ -730,13 +721,21 @@ export class SupabaseWorkspaceRepository {
         description: patch.description ?? req.description,
         deliverable: patch.deliverable ?? req.deliverable,
         due_at: patch.dueAt === undefined ? req.dueAt : patch.dueAt,
+        ...(raised ? { approval_level: raised.actionClass, risk_level: raised.riskLevel } : {}),
         updated_at: nowIso(),
       })
       .eq("id", id)
       .select("*")
       .single();
     if (error) dbFail(error);
-    await this.audit(actor, "request.scope_updated", "request", id, req.organizationId, patch);
+    const metadata: Record<string, unknown> = { ...patch };
+    if (raised) {
+      metadata.authorityRaised = {
+        from: { actionClass: req.approvalLevel, riskLevel: req.riskLevel },
+        to: { actionClass: raised.actionClass, riskLevel: raised.riskLevel },
+      };
+    }
+    await this.audit(actor, "request.scope_updated", "request", id, req.organizationId, metadata);
     return this.mapRequest(data);
   }
 

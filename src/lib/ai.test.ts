@@ -13,7 +13,7 @@ describe("AI abstraction (deterministic mock)", () => {
   });
 
   it("never routes sensitive work to unsupervised AI", async () => {
-    const route = await mockAI.suggestRouting({
+    const route = await mockAI.suggestExecutor({
       actionClass: "sensitive_execution",
       title: "Pay vendor",
     });
@@ -49,14 +49,6 @@ describe("AI abstraction (deterministic mock)", () => {
       recurring: true,
     });
     expect(auto.requiresHumanApproval).toBe(true);
-    const summary = await mockAI.summarizeOutcome({
-      title: "Conference follow-up",
-      deliverable: "Follow-up pack",
-      actionsTaken: ["Drafted emails"],
-      exceptions: ["Two duplicates"],
-      nextStep: "Capture playbook",
-    });
-    expect(summary.summary).toMatch(/Follow-up pack/);
     const exec = await mockAI.suggestExecutor({
       actionClass: "sensitive_execution",
       title: "Pay vendor",

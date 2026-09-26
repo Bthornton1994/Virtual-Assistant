@@ -1025,6 +1025,7 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/ai-app-release-rescue/engagement.ts",
   "src/lib/ai-app-release-rescue/intake.ts",
   "src/lib/ai-app-release-rescue/payment.ts",
+  "src/lib/ai-authority.ts",
   "src/lib/ai-validate.ts",
   "src/lib/ai.ts",
   "src/lib/assignment-to-envelope.ts",
