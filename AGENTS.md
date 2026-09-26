@@ -128,7 +128,7 @@ The `interface-review`, `explain-interface`, `variant`, and `break` skills are e
 
 Read `.claude/skills/design-taste-frontend/SKILL.md` when the task sets visual direction for a marketing page, and `.claude/skills/redesign-existing-projects/SKILL.md` when it refines an existing surface.
 
-- Apply the source brief inference, preserve-mode audit, and final pre-flight as review checks.
+- When one of these skills is loaded, apply its source brief inference, preserve-mode audit, and final pre-flight as review checks.
 - Use the skills only on the surfaces named in `docs/DESIGN_ENGINEERING.md`. They do not supersede the product vision or authorize a visual rewrite.
 - Keep user-facing text plain and specific. Avoid decorative labels, fake precision, and dash flourishes in new visible copy while preserving required product terminology and disclaimers.
 - Do not copy image-generation, GSAP, fixed visual-preset, or landing-page patterns into product, trust, benefits, analyzer, or operational surfaces unless the surface is in scope, the interaction is justified, and dependencies are checked.

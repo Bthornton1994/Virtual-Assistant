@@ -69,9 +69,9 @@ This repository vendors a focused subset of Leonxlnx's `taste-skill` collection 
 
 ### How agents use it
 
-- Start with the core skill's design read and the redesign skill's scan, diagnose, and fix sequence.
+- Load only the one that fits the task. Use the core skill's design read when setting visual direction for a marketing page, and the redesign skill's scan, diagnose, and fix sequence when refining an existing surface.
 - Treat an existing surface as preserve-mode unless an owner explicitly approves an overhaul.
-- Use the core pre-flight for accessibility, mobile collapse, reduced motion, copy clarity, visual hierarchy, and performance. Do not treat its landing-page patterns as requirements for product surfaces.
+- When the core skill is loaded, use its pre-flight for accessibility, mobile collapse, reduced motion, copy clarity, visual hierarchy, and performance. Do not treat its landing-page patterns as requirements for product surfaces.
 - Keep this project's tokens, information architecture, copy voice, data semantics, privacy, safety, and release controls authoritative.
 
 ### Project application map
@@ -120,6 +120,6 @@ A direct conflict follows the scope of the surface being changed. A shared primi
 - Use the existing design system and the smallest relevant skill from `docs/EXTERNAL-AGENT-SKILLS.md`; do not introduce a parallel visual system.
 - Use `no-ai-design-slop` as a removal-first review. Preserve product-specific identity, useful density, honest placeholders, and explicit states.
 - Use `no-ai-slop` for visible copy. Preserve supported claims and approved disclaimers; do not add invented proof or inflated outcomes.
-- Use `frontend-ui-engineering` for keyboard access, responsive behavior, loading, empty, error, and focus states.
+- Use `frontend-ui-engineering` when building or restructuring components, layouts, or interface states. For a narrower keyboard, focus, or state fix, use the skill that owns it, such as `fixing-accessibility`.
 - Use `source-driven-development` for framework-specific changes and `verification-before-completion` before completion claims.
 - Scope: marketing routes and shared UI primitives. Product behavior, data handling, scoring, benefits, commerce, authority, and release gates remain outside this design layer.
