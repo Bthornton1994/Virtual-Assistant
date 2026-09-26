@@ -64,7 +64,7 @@ This repository vendors a focused subset of Leonxlnx's `taste-skill` collection 
   - `.claude/skills/design-taste-frontend/SKILL.md`
   - `.claude/skills/redesign-existing-projects/SKILL.md`
 - Local modifications to `design-taste-frontend` (against `ccbc15639c97057cbfcf32ecebc38ef716e4bb37`), to carry forward on any upstream update:
-  - Removed the palette-rotation rule in section 4.2 and the matching pre-flight question. Both required remembering the palette of a previously generated project, and the agent has no such record. The override rule against defaulting to beige and brass, and the pre-flight check against that default, are unchanged.
+  - Removed every instruction that required remembering a previously generated project, because the agent has no such record: the palette-rotation rule in section 4.2 and its pre-flight question, the rule against reusing a serif across consecutive projects in section 4.1, the "rotate, do not reuse" wording on the default palette alternatives, and the pre-flight question about the previous project's serif. The font pool and palette alternatives remain as options to choose from by fit. The override rule against defaulting to beige and brass, and the pre-flight checks against that default and against Fraunces and Instrument Serif, are unchanged.
   - The image-generation step in section 4.8 now applies when the brief needs new imagery, the surface is in scope for generated imagery under this repository's instructions, and a tool is available. It is no longer an unconditional requirement whenever any tool exists. Step 2 now applies when generated imagery is unavailable or out of scope.
 
 ### How agents use it
@@ -106,13 +106,14 @@ The upstream collection also contains image-generation, image-to-code, Stitch, l
 
 ## Precedence
 
-When vendored UI skills disagree, resolve the conflict by scope, in this order:
+Project-specific instructions come first: `AGENTS.md`, `VISION.md`, `DESIGN.md`, this file, and the governing Delegation Spec. They override every vendored skill.
 
-1. Project-specific instructions come first: `AGENTS.md`, `VISION.md`, `DESIGN.md`, this file, and the governing Delegation Spec.
-2. `design-taste-frontend` guides visual direction on marketing pages.
-3. `baseline-ui` guides implementation and quality on product interfaces, including the operational app and shared UI primitives.
+Below them, two vendored skills split the interface by surface. Neither outranks the other.
 
-A direct conflict follows the scope of the surface being changed. For example, on a marketing page `design-taste-frontend` governs gradients, headline letter-spacing, and whether to add motion. On a product interface the `baseline-ui` rules on those points govern. Rules that do not conflict apply on both kinds of surface.
+- `design-taste-frontend` guides visual direction on marketing pages.
+- `baseline-ui` guides implementation and quality on product interfaces, including the operational app and shared UI primitives.
+
+A direct conflict follows the scope of the surface being changed. A shared primitive keeps the `baseline-ui` rules, because it also renders on product interfaces; a marketing page that needs a different treatment styles its own instance, not the shared primitive. For example, on a marketing page `design-taste-frontend` governs gradients, headline letter-spacing, and whether to add motion. On a product interface the `baseline-ui` rules on those points govern. Rules that do not conflict apply on both kinds of surface.
 
 ## External UI and copy quality gates
 

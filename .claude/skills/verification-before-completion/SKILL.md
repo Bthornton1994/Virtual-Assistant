@@ -43,6 +43,7 @@ A linter does not check compilation, and a partial check does not prove the whol
 - Trusting an agent's success report.
 - Relying on partial verification.
 - Making an exception for this one case.
+- Wanting to be finished because the work has been long or tiring. Fatigue is not evidence.
 
 When one of these appears, run the verification before saying more.
 
