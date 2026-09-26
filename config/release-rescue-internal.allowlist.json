@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "release-rescue-internal-allowlist/v1",
+  "repositories": [
+    {
+      "repositoryRef": "Bthornton1994/StageForge",
+      "defaultBranch": "main",
+      "application": {
+        "name": "StageForge",
+        "description": "Scene runtime and verification layer for interactive browser 3D, run as a Vite app and a Node CLI.",
+        "primaryStack": "typescript_vite_node_cli",
+        "usesAiFeatures": true
+      },
+      "criticalWorkflow": {
+        "name": "Verify a scene manifest",
+        "description": "An operator runs the stageforge workflow command against a scene manifest and reads the verification report it writes.",
+        "entryPoint": "scripts/stageforge.mjs",
+        "handlesCustomerData": false,
+        "triggersExternalActions": false
+      }
+    },
+    {
+      "repositoryRef": "Bthornton1994/three-white-lights",
+      "defaultBranch": "main",
+      "application": {
+        "name": "Three White Lights",
+        "description": "Design and build documents for the Three White Lights lighthouse scene.",
+        "primaryStack": "markdown_documents",
+        "usesAiFeatures": false
+      },
+      "criticalWorkflow": {
+        "name": "Hand off the build prompt",
+        "description": "A builder reads the build prompt and the vision documents before starting implementation.",
+        "entryPoint": "BUILD_PROMPT_CLAUDE.md",
+        "handlesCustomerData": false,
+        "triggersExternalActions": false
+      }
+    },
+    {
+      "repositoryRef": "Bthornton1994/Loadout",
+      "defaultBranch": "main",
+      "application": {
+        "name": "Loadout",
+        "description": "Powerlifting equipment marketplace built as a Next.js static export.",
+        "primaryStack": "next_js_web_app",
+        "usesAiFeatures": false
+      },
+      "criticalWorkflow": {
+        "name": "Equip items and save a loadout",
+        "description": "A visitor browses equipment, equips items, and saves the resulting loadout.",
+        "entryPoint": "src/app",
+        "handlesCustomerData": false,
+        "triggersExternalActions": false
+      }
+    }
+  ]
+}

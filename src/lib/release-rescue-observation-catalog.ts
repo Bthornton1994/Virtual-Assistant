@@ -342,6 +342,10 @@ export const ASSESSMENT_RATIONALE_CODES = [
   "not_applicable_to_this_application",
   "not_assessed_outside_agreed_scope",
   "not_assessed_snapshot_lacked_the_evidence",
+  "not_assessed_automated_check_found_no_instance",
+  "not_assessed_automated_check_could_not_read_everything",
+  "not_assessed_automated_check_found_instances_it_cannot_cite",
+  "not_assessed_requires_a_reviewers_reading",
 ] as const;
 
 export type AssessmentRationaleCode = (typeof ASSESSMENT_RATIONALE_CODES)[number];
@@ -389,6 +393,30 @@ export const ASSESSMENT_RATIONALE_CATALOG: Readonly<
   not_assessed_snapshot_lacked_the_evidence: {
     code: "not_assessed_snapshot_lacked_the_evidence",
     text: "This check was not assessed because the reviewed snapshot did not contain the evidence it needs.",
+    outcomes: ["not_assessed"],
+  },
+  // The four below are what an automated-only run says about a check it did
+  // not assess. They exist so that "not run" is a stated reason rather than a
+  // borrowed one: none of the older codes described an automated check that
+  // ran and found nothing, and borrowing one would misstate why.
+  not_assessed_automated_check_found_no_instance: {
+    code: "not_assessed_automated_check_found_no_instance",
+    text: "An automated check read every file it covers in the reviewed snapshot and recorded no instance of this problem. An automated check finding nothing does not show the control holds, so this check is left for a reviewer to assess.",
+    outcomes: ["not_assessed"],
+  },
+  not_assessed_automated_check_could_not_read_everything: {
+    code: "not_assessed_automated_check_could_not_read_everything",
+    text: "An automated check for this ran but could not read every file it covers, so this check was not assessed.",
+    outcomes: ["not_assessed"],
+  },
+  not_assessed_automated_check_found_instances_it_cannot_cite: {
+    code: "not_assessed_automated_check_found_instances_it_cannot_cite",
+    text: "An automated check for this recorded instances of the problem in files whose names this report cannot show safely, so it cannot cite them. This check was not assessed and needs a reviewer to look.",
+    outcomes: ["not_assessed"],
+  },
+  not_assessed_requires_a_reviewers_reading: {
+    code: "not_assessed_requires_a_reviewers_reading",
+    text: "This check needs a reviewer to read and judge the code, and that was not done in this review.",
     outcomes: ["not_assessed"],
   },
 };
@@ -1007,6 +1035,7 @@ export const ENGAGEMENT_LIMITATION_CODES = [
   "infrastructure_outside_the_repository_not_reviewed",
   "accessibility_reviewed_only_on_the_critical_workflow",
   "dependency_advisories_current_as_of_the_reviewed_commit",
+  "review_limited_to_automated_checks",
 ] as const;
 
 export type StandingLimitationCode = (typeof STANDING_LIMITATION_CODES)[number];
@@ -1036,6 +1065,8 @@ export const LIMITATION_CATALOG: Readonly<Record<LimitationCode, string>> = {
     "Accessibility was reviewed on the critical workflow only, not across the whole application.",
   dependency_advisories_current_as_of_the_reviewed_commit:
     "Dependency advisories are current as of the reviewed commit. New advisories published since then are not reflected.",
+  review_limited_to_automated_checks:
+    "This review ran only the automated checks this report names. Every other check needs a reviewer to read the code and is marked not assessed.",
 };
 
 /** The limitations every report carries, in the order they are rendered. */

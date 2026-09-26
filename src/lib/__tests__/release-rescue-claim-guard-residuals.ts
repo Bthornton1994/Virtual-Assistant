@@ -28,7 +28,13 @@ export type ResidualMechanism =
   /** A character substituted, doubled or inserted inside a claim word. Each is a different token to the matcher. */
   | "intra_word"
   /** No word boundary of any kind — no separator, no case transition. */
-  | "no_boundary";
+  | "no_boundary"
+  /**
+   * A spaced clause mark between the words of a typed-field professional
+   * claim. Such a phrase is read within one clause, so that "Erik Red, Team
+   * Lead" is a name; the same shape lets "Penetration, Tester" through.
+   */
+  | "clause_break";
 
 export type ClaimGuardResidual = {
   readonly mechanism: ResidualMechanism;
@@ -73,7 +79,41 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
   { mechanism: "word_insertion", value: "Acme Is 2 Secure Ltd" },
   { mechanism: "word_insertion", value: "Zero Vulnerabilities Ltd" },
   { mechanism: "word_insertion", value: "Acme Free From Vulnerabilities Ltd" },
-  { mechanism: "word_insertion", value: "Acme Is Secure's Ltd" },
+  // Measured when the typed-field list gained the professional claims
+  // ("penetration tester", "compliance certified", ...). A credential that
+  // reorders the list's words, puts one between them, or is spelled as an
+  // acronym or a synonym the list does not carry still goes through.
+  { mechanism: "word_insertion", value: "Certified in compliance" },
+  { mechanism: "word_insertion", value: "Certified compliance professional" },
+  { mechanism: "word_insertion", value: "Certified Security Professional" },
+  { mechanism: "word_insertion", value: "Certified by SOC 2" },
+  { mechanism: "word_insertion", value: "Compliance certifier" },
+  { mechanism: "word_insertion", value: "Dana Okafor, OSCP" },
+  // Measured with the typed-field rules for possessives, clause breaks and the
+  // narrow compliance and credential phrases in place. Credential acronyms and
+  // near-synonyms are not matched, because matching them broadly would refuse
+  // ordinary names and titles; each is recorded rather than guessed at.
+  { mechanism: "word_insertion", value: "CISSP" },
+  { mechanism: "word_insertion", value: "CEH" },
+  { mechanism: "word_insertion", value: "OSCP certified" },
+  { mechanism: "word_insertion", value: "CREST certified" },
+  { mechanism: "word_insertion", value: "PCI QSA" },
+  { mechanism: "word_insertion", value: "CISA" },
+  { mechanism: "word_insertion", value: "Certified Information Systems Auditor" },
+  { mechanism: "word_insertion", value: "offensive security professional" },
+  { mechanism: "word_insertion", value: "appsec auditor" },
+  { mechanism: "word_insertion", value: "security researcher" },
+  { mechanism: "word_insertion", value: "bug bounty hunter" },
+  // Deliberately not listed: also an accounting and internal-audit credential,
+  // and refusing it refused "Dana Okafor, CPA, Certified Auditor".
+  { mechanism: "word_insertion", value: "Certified auditor" },
+  // Measured when single-quoted words and the colon-edition, `PCI DSS`,
+  // `whitehat` and `purple teamer` spellings were added. Each rule names the
+  // exact phrase; a year other than the three ISO/IEC 27001 editions, a version
+  // between the words, or the word order reversed still goes through.
+  { mechanism: "word_insertion", value: "ISO 27001:2017 Lead Auditor" },
+  { mechanism: "word_insertion", value: "PCI DSS v4.0 certified" },
+  { mechanism: "word_insertion", value: "Certified Whitehat" },
 
   // Audit 23 widened this class with invisible characters and non-ASCII
   // letterforms. Exact stem matching cannot close it — each is a different
@@ -94,12 +134,24 @@ export const CLAIM_GUARD_RESIDUALS: readonly ClaimGuardResidual[] = [
   { mechanism: "intra_word", value: "is secu re", needsCarrier: true },
   { mechanism: "intra_word", value: "ｉｓ ｓｅｃｕｒｅ", needsCarrier: true },
   { mechanism: "intra_word", value: "ıs secure", needsCarrier: true },
+  // A lookalike letter inside a typed-field professional claim: Cyrillic `е`
+  // and fullwidth letters are different tokens to the matcher.
+  { mechanism: "intra_word", value: "P\u0435n tester" },
+  { mechanism: "intra_word", value: "\uff50\uff45\uff4e\uff54\uff45\uff53\uff54\uff45\uff52" },
 
   // The floor case: strip every boundary and there is nothing for a tokenizer
   // to find without searching for claim text inside longer words, which would
   // flag ordinary values.
   { mechanism: "no_boundary", value: "thisappissecureandfreeofvulnerabilities" },
   { mechanism: "no_boundary", value: "THISAPPISSECURE" },
+
+  // Measured when typed-field professional claims became clause-bounded. A
+  // clause mark with no space beside it ("Red–Team", "Red(Team)") still joins
+  // the words and is refused; with a space it separates them.
+  { mechanism: "clause_break", value: "Penetration, Tester" },
+  { mechanism: "clause_break", value: "Red – Team Lead" },
+  { mechanism: "clause_break", value: "Security: Certified" },
+  { mechanism: "clause_break", value: "Ethical (Hacker)" },
 ];
 
 /**

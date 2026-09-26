@@ -13,7 +13,7 @@ import {
   SWEEP_CONNECTIVES,
   UNRECOGNISED_DENIAL_PHRASINGS,
 } from "./release-rescue-claim-guard-residuals";
-import { RELEASE_RESCUE_OFFER, findProhibitedClaims } from "@/lib/release-rescue-intake";
+import { RELEASE_RESCUE_OFFER, TYPED_FIELD_PROHIBITED_CLAIMS, findProhibitedClaims } from "@/lib/release-rescue-intake";
 import {
   assetIsItsOwnText,
   collectedByTheRunner,
@@ -1487,5 +1487,274 @@ describe("the offer's claim list", () => {
     for (const claim of RELEASE_RESCUE_OFFER.prohibitedClaims) {
       expect(claim, claim).toBe(claim.toLowerCase());
     }
+  });
+});
+
+describe("a typed value may not claim to be the professional the review is not", () => {
+  // A reviewer's display name is the signature line of a delivered report. The
+  // offer's list names the refused services ("penetration test"), not the
+  // people who perform them, so these went through as typed values.
+  const REPORTED = ["Certified penetration tester", "certified pentester", "certified pen tester", "Compliance certified"];
+  const VARIANTS = [
+    "OSCP certified penetration tester",
+    "Jane Doe, pentester",
+    "Jane Doe - Pen-Tester",
+    "Dana Okafor, PenTester",
+    "Senior Penetration Testers Ltd",
+    "Security certified",
+    "Compliance-certified reviewer",
+    "Certified Ethical Hacker",
+    "Acme red teamer",
+    "Dana Okafor, security auditor",
+    "SOC 2 compliance auditor",
+    "SOC 2 auditor",
+    "ISO 27001 auditor",
+    "Ethical hacking lead",
+    "Red team lead",
+  ];
+
+  it.each([...REPORTED, ...VARIANTS])("refuses %s in a typed field", (value) => {
+    expect(findProhibitedClaims(value, "typed_field")).not.toEqual([]);
+  });
+
+  it("leaves offer copy as it was: the benign sentence still passes, and nothing new is reported there", () => {
+    expect(findProhibitedClaims("Our pentesters are not involved in this review.")).toEqual([]);
+    for (const value of [...REPORTED, ...VARIANTS]) {
+      for (const claim of findProhibitedClaims(value)) {
+        expect(RELEASE_RESCUE_OFFER.prohibitedClaims as readonly string[], value).toContain(claim);
+      }
+    }
+  });
+
+  it("reports the typed-field claims by their own names, after the offer's", () => {
+    expect(findProhibitedClaims("Certified penetration tester", "typed_field")).toEqual(["penetration tester"]);
+    expect(findProhibitedClaims("Pentest lead and pentester", "typed_field")).toEqual(["pentest", "pentesting", "pentester"]);
+  });
+
+  it("keeps the typed-field list lowercase and apart from the offer's", () => {
+    for (const claim of TYPED_FIELD_PROHIBITED_CLAIMS) {
+      expect(claim, claim).toBe(claim.toLowerCase());
+      expect(RELEASE_RESCUE_OFFER.prohibitedClaims as readonly string[], claim).not.toContain(claim);
+    }
+  });
+
+  it("does not refuse an ordinary reviewer name or job title", () => {
+    for (const value of ["Dana Okafor", "Dana Okafor, Staff Engineer", "QA Tester", "Test Lead", "Certified Scrum Master", "Security Engineer"]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
+    }
+  });
+
+  // A possessive is the claim word with `'s` (or a bare `'` after `s`) on the
+  // end. The tokenizer keeps the apostrophe inside the word, so these passed.
+  it.each([
+    ["Acme Penetration Tester's Office", "penetration tester"],
+    ["Dana Okafor, pentester's lead", "pentester"],
+    ["Acme Pentesters' Guild", "pentester"],
+    ["Red Team's Dana Okafor", "red team"],
+    ["Acme Ethical Hacker's Desk", "ethical hacker"],
+    ["Acme Is Secure's Ltd", "is secure"],
+  ])("reads the possessive in %s as the bare word", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+  });
+
+  it("does not treat a lone apostrophe or a quoted word as a possessive", () => {
+    for (const value of ["Dana O'Tester", "Kim 'Red' Okafor", "Dana Okafor's team"]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
+    }
+  });
+
+  // The tokenizer keeps `'` as a word character, so a single-quoted claim word
+  // was one token the list never names. Each value is also read with the
+  // quotes at a word's edges removed, in addition to the plain reading.
+  it.each([
+    ["Dana Okafor, 'Penetration Tester'", "penetration tester"],
+    ["Dana 'Pentester' Okafor", "pentester"],
+    ["'Penetration' 'Tester'", "penetration tester"],
+    ["Kim 'Red' Teamer", "red teamer"],
+    ["'Pentester's' desk", "pentester"],
+    ["''Pentester''", "pentester"],
+    ["Pen ' tester", "pen tester"],
+  ])("refuses the single-quoted typed value %s", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+  });
+
+  it.each([
+    ["'SOC 2 certified'", "soc 2 certified"],
+    ["Book a 'penetration test' today.", "penetration test"],
+    ["We are 'ISO 27001 certified'.", "iso 27001 certified"],
+    ["Your application 'is secure'.", "is secure"],
+  ])("refuses the single-quoted claim %s as offer copy and as a typed value", (value, claim) => {
+    expect(findProhibitedClaims(value, "offer_copy")).toContain(claim);
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+  });
+
+  it("does not read a quote as a claim, or as joining two clauses", () => {
+    for (const value of [
+      "Kim 'Red' Okafor",
+      "Dana 'Purple' Okafor",
+      "Chris 'Pen' Okafor",
+      "Dana 'DJ' Okafor, Security Lead",
+      "Dana Okafor, 'Team Lead'",
+      "'Tis Okafor",
+      "Dana O'Tester",
+      "O'Brien Tester",
+      // The quote's own break passes to the next word, so a lone quote after a
+      // comma does not join "Red" to "Team".
+      "Kim 'Red', Team Lead",
+      "Erik Red, ' Team Lead",
+      "Pen ', tester",
+      "'",
+      "' '",
+    ]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
+      expect(findProhibitedClaims(value, "offer_copy"), value).toEqual([]);
+    }
+  });
+
+  it("still licenses a quoted denial or referral in offer copy", () => {
+    for (const value of [
+      "This review is not a 'penetration test'.",
+      "We do not offer a 'penetration test'.",
+      "Customers who need 'penetration testing' should engage a qualified specialist.",
+    ]) {
+      expect(findProhibitedClaims(value, "offer_copy"), value).toEqual([]);
+    }
+  });
+
+  it.each([
+    ["ISO 27001:2022 Lead Auditor", "27001 2022 lead auditor"],
+    ["ISO/IEC 27001:2013 Lead Auditor", "27001 2013 lead auditor"],
+    ["ISO 27001:2005 Lead Auditor", "27001 2005 lead auditor"],
+    ["PCI DSS certified", "pci dss certified"],
+    ["PCI-DSS Certified", "pci dss certified"],
+    ["Whitehat Hacker", "whitehat hacker"],
+    ["Purple Teamer", "purple teamer"],
+    ["Dana Okafor, Purple-Teamer", "purple teamer"],
+  ])("refuses the credential spelling %s", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+    // Typed values only, like every professional claim.
+    expect(findProhibitedClaims(value, "offer_copy")).toEqual([]);
+  });
+
+  it("does not refuse a title that only shares a word with those spellings", () => {
+    for (const value of [
+      "ISO 27001:2022 Implementation Lead",
+      "ISO 9001:2015 Lead Auditor",
+      "Lead Auditor, Finance",
+      "PCI DSS Program Manager",
+      "Whitehat Labs Office Manager",
+      "Dana Purple, Team Lead",
+      "Hacker News reader",
+    ]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
+    }
+  });
+
+  // A typed-field phrase does not run across a comma or other clause break:
+  // "Erik Red, Team Lead" is a name and a title, not a claim to be a red team.
+  it("reads a typed-field phrase only within one clause", () => {
+    for (const value of ["Erik Red, Team Lead", "Kim Security, Certified", "Chris Red (Team Lead)", "Dana Ethical; Hacker News reader"]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
+    }
+    for (const value of ["Red Team Lead", "Erik Okafor, Red Team Lead", "Kim Okafor, Security Certified"]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).not.toEqual([]);
+    }
+  });
+
+  // A clause mark only separates the words when a space is beside it. These
+  // were refused before the clause rule and must stay refused.
+  it.each([
+    ["Red\u2013Team Lead", "red team"],
+    ["Red\u2014Team Lead", "red team"],
+    ["Penetration\u2013Tester", "penetration tester"],
+    ["Ethical\u2013Hacker", "ethical hacker"],
+    ["Security\u2013Certified", "security certified"],
+    ["SOC 2\u2013auditor", "soc 2 auditor"],
+    ["Red:Team", "red team"],
+    ["Red(Team) lead", "red team"],
+    ["Security,Certified", "security certified"],
+  ])("refuses %s, whose clause mark has no space beside it", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+  });
+
+  it("keeps the clause rule off the offer's own claims in a typed field", () => {
+    // "is secure" is an offer claim, matched as it always was: across a comma.
+    expect(findProhibitedClaims("Acme Is, Secure Ltd", "typed_field")).toEqual(["is secure"]);
+  });
+
+  // The narrow additions. Each is a phrase with no ordinary reading in a name.
+  it.each([
+    ["ISO 27001 Lead Auditor", "27001 lead auditor"],
+    ["ISO/IEC 27001 lead auditor", "27001 lead auditor"],
+    ["SOC 2 Type II auditor", "type ii auditor"],
+    ["SOC 2 Type 2 auditor", "type 2 auditor"],
+    ["Dana Okafor, white-hat hacker", "white hat hacker"],
+    ["White hat hacker", "white hat hacker"],
+    ["Purple team lead", "purple team"],
+    ["Qualified Security Assessor", "qualified security assessor"],
+    ["HIPAA certified reviewer", "hipaa certified"],
+    ["PCI certified", "pci certified"],
+    ["GDPR certified", "gdpr certified"],
+    ["SOC 2 compliant reviewer", "soc 2 compliant"],
+  ])("refuses %s in a typed field", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toContain(claim);
+  });
+
+  it("accepts names and titles that share a word with a typed-field claim", () => {
+    for (const value of [
+      "Jane Hacker",
+      "Tom Tester",
+      "Compliance Lead",
+      "Red Teamwork Ltd",
+      "Dana, security audit lead",
+      "Dana Okafor, CPA, Certified Auditor",
+      "Certified Internal Auditor",
+      "Purple Rain Ltd",
+      "Lead Auditor",
+    ]) {
+      expect(findProhibitedClaims(value, "typed_field"), value).toEqual([]);
+    }
+  });
+
+  // Refused although they may be innocent. Pinned so a change in either
+  // direction is seen, and recorded in docs/RELEASE-RESCUE-INTERNAL.md. A
+  // slash and a hyphen are not clause breaks, and "Red Team" as a surname and
+  // given name reads as the claim; the operator types the name another way.
+  it.each([
+    ["Alex Red / Team Lead", "red team"],
+    ["Erik Red - Team Lead", "red team"],
+    ["Ruby Red Team", "red team"],
+  ])("refuses %s, a known over-refusal", (value, claim) => {
+    expect(findProhibitedClaims(value, "typed_field")).toEqual([claim]);
+  });
+});
+
+describe("offer copy is read exactly as before the typed-field rules", () => {
+  // Measured with the guard as it stood before possessives, clause-bounded
+  // typed phrases and the narrow additions, and pinned. The typed-field rules
+  // are gated to `typed_field`, so none of these may move.
+  const PINNED: ReadonlyArray<readonly [string, readonly string[]]> = [
+    ["Our pentesters are not involved in this review.", []],
+    ["This review is not a penetration test.", []],
+    ["A penetration tester's report is a different engagement.", []],
+    ["The report's findings are not a security guarantee.", []],
+    ["Acme Is, Secure Ltd", ["is secure"]],
+    ["Acme Is Secure's Ltd", []],
+    ["Red, team exercises are out of scope.", []],
+    ["We do not provide a red team exercise.", []],
+    ["Your application is secure.", ["is secure"]],
+    ["Customers who need penetration testing should engage a qualified specialist.", []],
+    ["It is not a compliance certification, and no ISO 27001 lead auditor is involved.", []],
+    ["This review's scope is one repository, one application, and one critical workflow.", []],
+  ];
+
+  it.each(PINNED)("reads %s as it did", (text, expected) => {
+    expect(findProhibitedClaims(text)).toEqual(expected);
+    expect(findProhibitedClaims(text, "offer_copy")).toEqual(expected);
+  });
+
+  it("still refuses a typed value the offer copy may say", () => {
+    // The same sentence, typed into a field, is a claim: a name carries no denial.
+    expect(findProhibitedClaims("Our pentesters are not involved in this review.", "typed_field")).toContain("pentester");
   });
 });
