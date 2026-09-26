@@ -10,6 +10,9 @@ import { describe, expect, it } from "vitest";
 // `timing-observation` check whose failure is advisory and is never silently
 // retried. D-018 is unchanged: `verify` runs the complete SQL proof suite and
 // `proof:claim-guard`. `proof:rr-internal` is a blocking step of that same gate.
+// `test:e2e:internal` is a blocking step after the build and the SQL proofs.
+// It exercises the local browser journey. It does not make the workflow a
+// production deployment.
 //
 // None of that is visible from inside a test run, so this reads the
 // configuration. It cannot see branch protection: whether a check is REQUIRED
@@ -82,6 +85,8 @@ describe("verify is still the whole release gate", () => {
       "npm run proof:rr-internal",
       "npm run build",
       "npm run proof:sql",
+      "npx playwright install --with-deps chromium",
+      "npm run test:e2e:internal",
     ]);
     expect(verify).not.toContain("timing-observation");
   });
