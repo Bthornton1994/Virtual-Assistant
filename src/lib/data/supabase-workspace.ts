@@ -766,6 +766,24 @@ export class SupabaseWorkspaceRepository {
     return (data ?? []).some((a) => approvalCovers({ kind, actionClass: a.action_class as ActionClass }, req));
   }
 
+  /**
+   * The checks every path to "delivered" must pass, whether through
+   * deliverRequest or transitionRequest: current QA, the plan approved at the
+   * current class, and covering outbound and sensitive approvals.
+   */
+  private async assertDeliverable(db: SupabaseClient, req: RequestRecord) {
+    if (!(await this.hasCurrentPassedQa(db, req))) throw new DomainError("QA must pass before delivery");
+    if (await this.planApprovalOutstanding(db, req)) {
+      throw new DomainError("The execution plan must be approved at the request's current authority before delivery");
+    }
+    if ((req.approvalLevel === "external_execution" || req.externalCommunication) && !(await this.hasCoveringApproval(db, req, "external_email"))) {
+      throw new DomainError("Outbound action requires customer approval before delivery");
+    }
+    if (req.approvalLevel === "sensitive_execution" && !(await this.hasCoveringApproval(db, req, "sensitive_action"))) {
+      throw new DomainError("Sensitive action requires customer approval before delivery");
+    }
+  }
+
   /** Whether a passed QA review stands for the request's current authority. */
   private async hasCurrentPassedQa(db: SupabaseClient, req: RequestRecord) {
     const { data: plans } = await db
@@ -879,6 +897,7 @@ export class SupabaseWorkspaceRepository {
     if (to === "delivered") {
       const { data } = await db.from("deliveries").select("id").eq("request_id", id);
       if (!data?.length) throw new DomainError("Deliver through a delivery package that records the outcome");
+      await this.assertDeliverable(db, req);
     }
     if (to === "in_progress" && blocksWithoutApproval(req.approvalLevel)) {
       if (!(await this.hasCoveringApproval(db, req, "sensitive_action"))) {
@@ -1245,16 +1264,7 @@ export class SupabaseWorkspaceRepository {
     const { data: existing } = await db.from("deliveries").select("*").eq("request_id", requestId).maybeSingle();
     if (existing && req.status === "delivered") return existing;
     if (req.status !== "ready_to_deliver" && req.status !== "qa") throw new DomainError("Only checked work can be delivered");
-    if (!(await this.hasCurrentPassedQa(db, req))) throw new DomainError("QA must pass before delivery");
-    if (await this.planApprovalOutstanding(db, req)) {
-      throw new DomainError("The execution plan must be approved at the request's current authority before delivery");
-    }
-    if ((req.approvalLevel === "external_execution" || req.externalCommunication) && !(await this.hasCoveringApproval(db, req, "external_email"))) {
-      throw new DomainError("Outbound action requires customer approval before delivery");
-    }
-    if (req.approvalLevel === "sensitive_execution" && !(await this.hasCoveringApproval(db, req, "sensitive_action"))) {
-      throw new DomainError("Sensitive action requires customer approval before delivery");
-    }
+    await this.assertDeliverable(db, req);
     if (existing) {
       // A reopened request is redelivered with its original package once the checks above pass.
       await db.from("requests").update({ status: "delivered", updated_at: nowIso() }).eq("id", requestId);

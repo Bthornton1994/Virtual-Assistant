@@ -1399,6 +1399,27 @@ export class MemoryStore {
     return approved.length > 0 && !approved.some((a) => approvalCovers(a, req));
   }
 
+  /**
+   * The checks every path to "delivered" must pass, whether through
+   * deliverRequest or transitionRequest: current QA, the plan approved at the
+   * current class, and covering outbound and sensitive approvals.
+   */
+  private assertDeliverable(req: RequestRecord) {
+    if (!this.hasCurrentPassedQa(req)) {
+      throw new DomainError("QA must pass before delivery");
+    }
+    if (this.planApprovalOutstanding(req)) {
+      throw new DomainError("The execution plan must be approved at the request's current authority before delivery");
+    }
+    const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
+    if (needsOutbound && !this.hasCoveringApproval(req, "external_email")) {
+      throw new DomainError("Outbound action requires customer approval before delivery");
+    }
+    if (req.approvalLevel === "sensitive_execution" && !this.hasCoveringApproval(req, "sensitive_action")) {
+      throw new DomainError("Sensitive action requires customer approval before delivery");
+    }
+  }
+
   /** Whether a passed QA review stands for the request's current authority. */
   private hasCurrentPassedQa(req: RequestRecord) {
     const decided = this.data.approvals
@@ -1475,8 +1496,11 @@ export class MemoryStore {
     if (to === "in_progress" && this.planApprovalOutstanding(req)) {
       throw new DomainError("The execution plan must be approved at the request's current authority before work starts");
     }
-    if (to === "delivered" && !this.data.deliveries.some((d) => d.requestId === req.id)) {
-      throw new DomainError("Deliver through a delivery package that records the outcome");
+    if (to === "delivered") {
+      if (!this.data.deliveries.some((d) => d.requestId === req.id)) {
+        throw new DomainError("Deliver through a delivery package that records the outcome");
+      }
+      this.assertDeliverable(req);
     }
     if (to === "in_progress" && blocksWithoutApproval(req.approvalLevel)) {
       if (!this.hasCoveringApproval(req, "sensitive_action")) {
@@ -1770,19 +1794,8 @@ export class MemoryStore {
     if (req.status !== "ready_to_deliver" && req.status !== "qa") {
       throw new DomainError("Only checked work can be delivered");
     }
-    if (!this.hasCurrentPassedQa(req)) {
-      throw new DomainError("QA must pass before delivery");
-    }
-    if (this.planApprovalOutstanding(req)) {
-      throw new DomainError("The execution plan must be approved at the request's current authority before delivery");
-    }
+    this.assertDeliverable(req);
     const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
-    if (needsOutbound && !this.hasCoveringApproval(req, "external_email")) {
-      throw new DomainError("Outbound action requires customer approval before delivery");
-    }
-    if (req.approvalLevel === "sensitive_execution" && !this.hasCoveringApproval(req, "sensitive_action")) {
-      throw new DomainError("Sensitive action requires customer approval before delivery");
-    }
     const from = req.status;
     if (existing) {
       // A reopened request is redelivered with its original package once the checks above pass.
