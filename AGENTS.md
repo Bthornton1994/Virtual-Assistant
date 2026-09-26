@@ -114,19 +114,19 @@ See `docs/ENGINEERING-EXECUTION-PRINCIPLES.md` for the full standard and its rel
 
 ## UI design engineering skills
 
-For UI or interaction work, read `docs/DESIGN_ENGINEERING.md` and `.claude/skills/emil-design-eng/SKILL.md` before editing. Use the supporting `animate`, `review-animations`, `improve-animations`, `find-animation-opportunities`, `animation-vocabulary`, `apple-design`, `pick-ui-library`, and `prototype` skills when the task calls for implementation, review, planning, vocabulary, gesture/material guidance, library selection, or genuine variant exploration.
+For UI or interaction work, read the project design guidance (`DESIGN.md` and `docs/DESIGN_ENGINEERING.md`) and then only the skill that matches the task. Do not load every UI skill. `docs/DESIGN_ENGINEERING.md` sets which skill governs which surface when they disagree. Use `emil-design-eng` for interaction, motion, and component craft, and the supporting `animate`, `review-animations`, `improve-animations`, `find-animation-opportunities`, `animation-vocabulary`, `apple-design`, `pick-ui-library`, and `prototype` skills when the task calls for implementation, review, planning, vocabulary, gesture/material guidance, library selection, or genuine variant exploration.
 
 The project's existing vision, security, privacy, accessibility, safety, data, and release rules remain authoritative. These skills guide interface craft and never authorize a merge, deployment, data write, external communication, or product-behavior change.
 
 ## Additional interface-quality skills
 
-For broader interface work, read `docs/DESIGN_ENGINEERING.md` and the relevant `.claude/skills/better-*/SKILL.md` file before editing. Use `better-interface` to coordinate a holistic review and route each finding to its owning domain skill.
+For broader interface work, read the one `.claude/skills/better-*/SKILL.md` file that owns the domain being changed. Use `better-interface` to coordinate a holistic review and route each finding to its owning domain skill.
 
 The `interface-review`, `explain-interface`, `variant`, and `break` skills are explicitly user-invoked. Do not start them implicitly. These skills guide interface craft and never authorize product-behavior changes, data writes, external communication, merges, deployments, or other consequential actions.
 
 ## Taste skill and redesign guidance
 
-For existing UI work, read `docs/DESIGN_ENGINEERING.md`, `.claude/skills/design-taste-frontend/SKILL.md`, and `.claude/skills/redesign-existing-projects/SKILL.md` before editing.
+Read `.claude/skills/design-taste-frontend/SKILL.md` when the task sets visual direction for a marketing page, and `.claude/skills/redesign-existing-projects/SKILL.md` when it refines an existing surface.
 
 - Apply the source brief inference, preserve-mode audit, and final pre-flight as review checks.
 - Use the skills only on the surfaces named in `docs/DESIGN_ENGINEERING.md`. They do not supersede the product vision or authorize a visual rewrite.
@@ -136,11 +136,11 @@ For existing UI work, read `docs/DESIGN_ENGINEERING.md`, `.claude/skills/design-
 
 ## UI Skills from ibelick
 
-For UI work, use the vendored `ui-skills-root` routing layer to select the smallest useful context. Use `baseline-ui` for spacing, hierarchy, typography, touch targets, and interaction polish; `fixing-accessibility` for controls, forms, focus, and semantics; `fixing-motion-performance` for animation and scroll-linked behavior; and `improve-ui` for evidence-backed surface audits and bounded implementation plans.
+For UI work, use the vendored `ui-skills-root` routing layer to select the smallest useful context. Use `baseline-ui` on product interfaces for spacing, hierarchy, typography, touch targets, and interaction polish; `fixing-accessibility` for controls, forms, focus, and semantics; `fixing-motion-performance` for animation and scroll-linked behavior; and `improve-ui` for evidence-backed surface audits and bounded implementation plans.
 
 These files are vendored from `https://github.com/ibelick/ui-skills` at commit `f2dadf221a166a79606b337d08ce0b04d0d2bfd9` and are reference material, not a runtime dependency. Existing Emil, Jakub, and Leon guidance, `VISION.md`, Delegation Specs, security, tenant isolation, and release controls remain authoritative.
 
-Apply this guidance to marketing routes and shared UI primitives. Preserve operational density and explicit outcome, access, approval, logging, verification, and tenant-isolation language. UI polish must not imply autonomous authority or hidden execution.
+Apply this guidance to product interfaces, shared UI primitives, and responsive navigation. On marketing routes, `design-taste-frontend` governs visual direction where the two conflict, as `docs/DESIGN_ENGINEERING.md` sets out. Preserve operational density and explicit outcome, access, approval, logging, verification, and tenant-isolation language. UI polish must not imply autonomous authority or hidden execution.
 
 
 ## External agent stack from linked Grok and Cursor setup

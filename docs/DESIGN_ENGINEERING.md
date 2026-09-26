@@ -12,7 +12,7 @@ Virtual Assistant uses a focused, vendored subset of Emil Kowalski's UI skills t
 ## How agents use the skills
 
 - Read this file and `VISION.md` before UI work.
-- Read `.claude/skills/emil-design-eng/SKILL.md` for every UI change.
+- Read `.claude/skills/emil-design-eng/SKILL.md` when the change involves interaction, motion, or component craft.
 - Use `animate` for a new interaction, `review-animations` for motion review, and `find-animation-opportunities` or `improve-animations` before proposing additional motion.
 - Use `pick-ui-library` before adding a third-party UI primitive. Use `prototype` only when multiple materially different directions are needed.
 
@@ -63,6 +63,9 @@ This repository vendors a focused subset of Leonxlnx's `taste-skill` collection 
 - Vendored files:
   - `.claude/skills/design-taste-frontend/SKILL.md`
   - `.claude/skills/redesign-existing-projects/SKILL.md`
+- Local modifications to `design-taste-frontend` (against `ccbc15639c97057cbfcf32ecebc38ef716e4bb37`), to carry forward on any upstream update:
+  - Removed the palette-rotation rule in section 4.2 and the matching pre-flight question. Both required remembering the palette of a previously generated project, and the agent has no such record. The override rule against defaulting to beige and brass, and the pre-flight check against that default, are unchanged.
+  - The image-generation step in section 4.8 now applies when the brief needs new imagery, the surface is in scope for generated imagery under this repository's instructions, and a tool is available. It is no longer an unconditional requirement whenever any tool exists. Step 2 now applies when generated imagery is unavailable or out of scope.
 
 ### How agents use it
 
@@ -96,10 +99,20 @@ The upstream collection also contains image-generation, image-to-code, Stitch, l
 - Use the existing product stack and primitives. Do not add a UI library, migrate animation libraries, add a CLI or runtime dependency, or create a parallel design system solely because the upstream collection mentions one.
 - Use `improve-ui` as an evidence gate for coherent surfaces. It is read-only on product source and plans bounded work; implementation remains governed by this repository's instructions and the owner-approved task.
 
-- Scope: marketing routes, shared UI primitives, and responsive navigation.
+- Scope: product interfaces, shared UI primitives, and responsive navigation. On marketing routes the baseline rules apply where they do not conflict with the marketing visual direction; see Precedence.
 - Preserve: outcome, access, approval, logging, verification, tenant-isolation, and Delegation Spec language.
 - Exclude: operational authority changes, autonomous execution claims, customer-data behavior, and dashboard rewrites.
 
+
+## Precedence
+
+When vendored UI skills disagree, resolve the conflict by scope, in this order:
+
+1. Project-specific instructions come first: `AGENTS.md`, `VISION.md`, `DESIGN.md`, this file, and the governing Delegation Spec.
+2. `design-taste-frontend` guides visual direction on marketing pages.
+3. `baseline-ui` guides implementation and quality on product interfaces, including the operational app and shared UI primitives.
+
+A direct conflict follows the scope of the surface being changed. For example, on a marketing page `design-taste-frontend` governs gradients, headline letter-spacing, and whether to add motion. On a product interface the `baseline-ui` rules on those points govern. Rules that do not conflict apply on both kinds of surface.
 
 ## External UI and copy quality gates
 

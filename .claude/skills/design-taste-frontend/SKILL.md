@@ -203,7 +203,6 @@ LLMs default to clichés. Override these defaults proactively. Each rule has a c
     - **Terracotta + Slate:** warm rust against cool grey, no brass
     - **Olive + Brick + Paper:** muted olive plus brick-red accent
     - **Pure monochrome + single saturated pop:** off-white + off-black + one bright accent (electric blue, emerald, hot pink, etc.)
-  * **Palette-rotation rule:** if the previous premium-consumer project you generated used the beige+brass family, this one MUST use a different family. Do not ship the same warm-craft palette twice in a row.
   * **Override:** the beige+brass+espresso palette is acceptable ONLY when the brand brief explicitly names those colors, or when the brand identity is genuinely vintage / artisan / warm-craft AND you can articulate why this specific palette fits this specific brand. Default-reaching for it because "this is a cookware brief" is banned.
 
 ### 4.3 Layout Diversification
@@ -264,8 +263,8 @@ LLMs default to "static successful state only." Always implement full cycles:
 Landing pages and portfolios are **visual products**. Text-only pages with fake-screenshot divs are slop.
 
 **Priority order for visual assets:**
-1. **Image-generation tool first.** If ANY image-gen tool is available in the environment (`generate_image`, MCP image tool, IDE-integrated gen, OpenAI image tools, etc.) you MUST use it to create section-specific assets: hero photography, product shots, texture backgrounds, mood images. Generate at the right aspect ratio for the section. Do not skip this step because hand-rolled CSS feels faster.
-2. **Real web images second.** When no gen tool is available, use real photography sources. Acceptable defaults:
+1. **Image-generation tool first, when the task calls for new imagery.** If the brief needs section-specific assets (hero photography, product shots, texture backgrounds, mood images), the surface is in scope for generated imagery under the project's instructions, and an image-generation tool is available, use it and generate at the section's aspect ratio. A generated image beats hand-rolled CSS standing in for a photo. When the brief supplies its own assets, use them. When the project restricts generated imagery on this surface, go to step 2.
+2. **Real web images second.** When generated imagery is not available or not in scope, use real photography sources. Acceptable defaults:
    * `https://picsum.photos/seed/{descriptive-seed}/{w}/{h}` for placeholder photography (seed should describe the section, e.g. `marrow-cookware-kitchen`)
    * Actual stock or brand URLs when the brief provides them
    * Open-license sources (Unsplash via direct URL, Pexels) if explicitly allowed
@@ -925,7 +924,7 @@ Run this matrix before outputting code. This is the last filter.
 - [ ] **CTA Button Wrap**: no CTA label wraps to 2+ lines at desktop?
 - [ ] **Form Contrast Check**: form inputs, placeholders, focus rings, labels all pass WCAG AA against the section background?
 - [ ] **Serif discipline**: if a serif is used, it is NOT Fraunces or Instrument_Serif (or it is, with explicit brand justification)? Different serif from your previous project?
-- [ ] **Premium-consumer palette check**: if the brief is premium-consumer (cookware / wellness / artisan / luxury), the palette is NOT the AI-default beige+brass+oxblood+espresso family? Different family from your previous premium-consumer project?
+- [ ] **Premium-consumer palette check**: if the brief is premium-consumer (cookware / wellness / artisan / luxury), the palette is NOT the AI-default beige+brass+oxblood+espresso family?
 - [ ] **Italic descender clearance**: every italic word with `y g j p q` has `leading-[1.1]` min + `pb-1` reserve?
 - [ ] **Hero fits the viewport**: headline ≤ 2 lines, subtext ≤ 20 words AND ≤ 4 lines, CTA visible without scroll, font scale planned around image?
 - [ ] **Hero top padding**: max `pt-24` at desktop, hero content does not float halfway down the viewport?

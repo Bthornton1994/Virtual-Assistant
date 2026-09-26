@@ -14,10 +14,19 @@ The linked @Av1dlive source post recommends a Grok Bot and Cursor Cloud Agent wo
 | `no-ai-design-slop` | [MengTo/Skills](https://github.com/MengTo/Skills) at `321c769739b823de5eb94eb3a52aa1974fe783a2` | Use a removal-first, product-specific review for UI surfaces and responsive states |
 | `verification-before-completion` | [obra/superpowers](https://github.com/obra/superpowers) at `b36e0829c6d0140e93cfef2ca599b1b07d4a7797` | Require fresh evidence before claiming a fix, passing check, completion, commit, or PR |
 
+### Local modifications
+
+These vendored files differ from their pinned source. A later update from upstream must carry these changes forward or record why it drops them.
+
+| Skill | Pinned source | Local change |
+| --- | --- | --- |
+| `frontend-ui-engineering` | `addyosmani/agent-skills` at `d2c37ef6225dd8726cdd369a8030307f48592d26` | The accessibility reference pointed to `../../references/accessibility-checklist.md`, which was not vendored. It now points to the vendored `fixing-accessibility` and `better-accessibility` skills. |
+| `verification-before-completion` | `obra/superpowers` at `b36e0829c6d0140e93cfef2ca599b1b07d4a7797` | Rewritten in plain language. Every requirement is kept: fresh evidence from the current message, the five-step gate, the claim-to-evidence table, the red-green regression cycle, checking delegated work against the VCS diff, and the list of moments the rule applies. The frontmatter is unchanged. |
+
 ## Operating order
 
 1. Read this repository's `AGENTS.md`, `VISION.md`, design documentation, and product-specific safety or release files before changing code.
-2. For UI changes, use `frontend-ui-engineering` with the existing Emil, Jakub, Leon, and ibelick guidance. Preserve local tokens, primitives, density, and product identity.
+2. For UI changes, use `frontend-ui-engineering` together with the one Emil, Jakub, Leon, or ibelick skill that matches the task, following the routing and precedence in `docs/DESIGN_ENGINEERING.md`. Preserve local tokens, primitives, density, and product identity.
 3. For visible copy, use `no-ai-slop` and preserve every supported claim. Do not add metrics, testimonials, partners, outcomes, or other proof that the repository cannot verify.
 4. For UI audits, use `no-ai-design-slop` to remove or correct the highest-impact supported problem. Do not replace the product with a generic visual system.
 5. For framework-specific code, use `source-driven-development` and cite the official documentation in the implementation record or handoff.
