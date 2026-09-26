@@ -1406,8 +1406,11 @@ export class MemoryStore {
     for (const step of this.data.steps) {
       if (step.requestId === req.id && step.status !== "done") step.owner = ownerForAuthority(step.owner, req.approvalLevel);
     }
-    const next = reapprovalAfterRaise(req.status);
-    if (next === "record") return;
+    const next = reapprovalAfterRaise(
+      req.status,
+      this.data.approvals.some((a) => a.requestId === req.id && a.kind === "execution_plan"),
+    );
+    if (!next.requestApprovals) return;
     for (const approval of this.data.approvals) {
       if (approval.requestId === req.id && approval.status === "pending") {
         approval.actionClass = req.approvalLevel;
@@ -1424,15 +1427,20 @@ export class MemoryStore {
         { advanceStatus: false },
       );
     }
-    if (next === "reapprove") {
+    if (next.newPlanApproval) {
       const from = req.status;
-      this.createApprovalRecord(actor, req, {
-        kind: "execution_plan",
-        action: "Approve execution plan",
-        description: this.data.plans[req.id]?.summary ?? "Scope changed; the plan needs approval at the raised authority.",
-        riskLevel: this.data.plans[req.id]?.riskLevel ?? req.riskLevel,
-        actionClass: req.approvalLevel,
-      });
+      this.createApprovalRecord(
+        actor,
+        req,
+        {
+          kind: "execution_plan",
+          action: "Approve execution plan",
+          description: this.data.plans[req.id]?.summary ?? "Scope changed; the plan needs approval at the raised authority.",
+          riskLevel: this.data.plans[req.id]?.riskLevel ?? req.riskLevel,
+          actionClass: req.approvalLevel,
+        },
+        { advanceStatus: next.returnToPlanApproval },
+      );
       if (req.status !== from) {
         this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, { from, to: req.status, reason: "authority_raised" });
       }
@@ -1450,8 +1458,11 @@ export class MemoryStore {
     }
     if (to === "queued") {
       const held =
-        req.status === "awaiting_plan_approval" ? !this.hasCoveringApproval(req, "execution_plan") : this.planApprovalOutstanding(req);
+        this.planApprovalOutstanding(req) || (req.status === "awaiting_plan_approval" && !this.hasCoveringApproval(req, "execution_plan"));
       if (held) throw new DomainError("Execution plan must be approved before the request enters the queue");
+    }
+    if (to === "in_progress" && this.planApprovalOutstanding(req)) {
+      throw new DomainError("The execution plan must be approved at the request's current authority before work starts");
     }
     if (to === "delivered" && !this.data.deliveries.some((d) => d.requestId === req.id)) {
       throw new DomainError("Deliver through a delivery package that records the outcome");
@@ -1625,14 +1636,12 @@ export class MemoryStore {
     const req = this.data.requests.find((r) => r.id === approval.requestId);
     if (req) {
       const from = req.status;
-      const planPending = this.data.approvals.some(
-        (a) => a.requestId === req.id && a.kind === "execution_plan" && a.status === "pending",
-      );
+      const planOutstanding = this.planApprovalOutstanding(req);
       if (approval.kind === "execution_plan") {
         // A plan approved below the request's class does not queue it.
         if (decision === "rejected") req.status = "cancelled";
         else if (approvalCovers(approval, req)) req.status = "queued";
-      } else if (planPending || req.status === "awaiting_plan_approval") {
+      } else if (planOutstanding || req.status === "awaiting_plan_approval") {
         // The plan must be approved first; an action approval does not move the request past it.
       } else if (decision === "rejected") {
         req.status = "blocked";

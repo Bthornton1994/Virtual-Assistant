@@ -494,3 +494,79 @@ describe("approvals given before a raise do not authorize the raised request", (
     expect(db.tables.audit_events.some((e) => e.action === "request.status_changed" && (e.metadata as Record<string, unknown>).reason === "authority_raised")).toBe(true);
   });
 });
+
+describe("a raise during clarification still needs plan approval at the raised class", () => {
+  async function queuedPrepareOnly() {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const manager = store.actorFromUser("usr_manager")!;
+    const created = await store.createRequest(founder, {
+      ...FUNDS_TRANSFER,
+      title: "Research brief",
+      objective: "Prepare the draft",
+      description: "Draft a research brief comparing three vendors with pricing details.",
+      deliverable: "Draft",
+    });
+    const id = created.request.id;
+    for (const a of store.getRequestBundle(founder, id).approvals) store.decideApproval(founder, a.id, "approved", "ok");
+    expect(store.getRequest(founder, id).status).toBe("queued");
+    return { store, founder, manager, id };
+  }
+
+  it("does not let an action approval start the raised work", async () => {
+    const { store, founder, manager, id } = await queuedPrepareOnly();
+    store.askClarification(manager, id, "Which vendor?");
+    store.updateRequestScope(manager, id, { description: "Draft the brief, then wire the $40k deposit from the operating bank account." });
+    const bundle = store.getRequestBundle(founder, id);
+    expect(bundle.request.status).toBe("needs_clarification");
+    const pending = bundle.approvals.filter((a) => a.status === "pending");
+    expect(pending.map((a) => a.kind).sort()).toEqual(["execution_plan", "sensitive_action"]);
+    store.decideApproval(founder, pending.find((a) => a.kind === "sensitive_action")!.id, "approved", "ok");
+    expect(store.getRequest(founder, id).status).toBe("needs_clarification");
+  });
+
+  it("does not let a rejected action approval be worked around by ops", async () => {
+    const { store, founder, manager, id } = await queuedPrepareOnly();
+    store.askClarification(manager, id, "Which list?");
+    store.updateRequestScope(manager, id, { description: "Draft the brief with pricing, then send to the client list." });
+    const email = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "external_email" && a.status === "pending")!;
+    store.decideApproval(founder, email.id, "rejected", "no");
+    const status = store.getRequest(founder, id).status;
+    expect(status).toBe("needs_clarification");
+    expect(() => store.transitionRequest(manager, id, "in_progress")).toThrow();
+  });
+
+  it("holds the queue after a mid-work clarification until the new plan approval is decided", async () => {
+    const { store, founder, manager, id } = await queuedPrepareOnly();
+    store.transitionRequest(manager, id, "in_progress");
+    const question = store.askClarification(manager, id, "Which quarter?");
+    store.answerClarification(founder, question.id, "Q3");
+    expect(store.getRequest(founder, id).status).toBe("awaiting_plan_approval");
+    expect(() => store.transitionRequest(manager, id, "queued")).toThrow(/must be approved/);
+  });
+
+  it("Supabase workspace: an action approval does not start raised work during clarification", async () => {
+    const ORG = "11111111-1111-4111-8111-111111111111";
+    const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "owner@example.com", name: "Owner", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+    const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "ops@example.com", name: "Ops", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+    db = createFakeDb({
+      workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "Back office", status: "active", created_at: "", updated_at: "" }],
+    });
+    stubModel(HOSTILE);
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, { ...FUNDS_TRANSFER, title: "Research brief", objective: "Summarize vendors", description: "Draft a summary of vendor options.", deliverable: "Brief" });
+    const id = String(db.tables.requests[0].id);
+    Object.assign(db.tables.approvals.find((a) => a.kind === "execution_plan")!, { status: "approved" });
+    Object.assign(db.tables.requests[0], { status: "needs_clarification" });
+
+    await repo.updateRequestScope(manager, id, { description: "Draft the summary, then wire the $40k deposit from the operating bank account." });
+    expect(db.tables.requests[0].status).toBe("needs_clarification");
+    const pending = db.tables.approvals.filter((a) => a.status === "pending");
+    expect(pending.map((a) => a.kind).sort()).toEqual(["execution_plan", "sensitive_action"]);
+    await repo.decideApproval(client, String(pending.find((a) => a.kind === "sensitive_action")!.id), "approved", "ok");
+    expect(db.tables.requests[0].status).toBe("needs_clarification");
+    Object.assign(db.tables.requests[0], { status: "blocked" });
+    await expect(repo.transitionRequest(manager, id, "in_progress")).rejects.toThrow(/before work starts/);
+  });
+});

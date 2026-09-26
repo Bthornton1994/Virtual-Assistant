@@ -800,8 +800,9 @@ export class SupabaseWorkspaceRepository {
         await db.from("request_steps").update({ owner }).eq("id", step.id);
       }
     }
-    const next = reapprovalAfterRaise(req.status);
-    if (next === "record") return;
+    const { data: planApprovals } = await db.from("approvals").select("id").eq("request_id", req.id).eq("kind", "execution_plan");
+    const next = reapprovalAfterRaise(req.status, Boolean(planApprovals?.length));
+    if (!next.requestApprovals) return;
     await db
       .from("approvals")
       .update({ action_class: req.approvalLevel, risk_level: req.riskLevel })
@@ -816,16 +817,21 @@ export class SupabaseWorkspaceRepository {
         { advanceStatus: false },
       );
     }
-    if (next === "reapprove") {
+    if (next.newPlanApproval) {
       const bound = plan ? bindPlanToAuthority(plan, authority) : null;
-      await this.createApprovalRecord(actor, req, {
-        kind: "execution_plan",
-        action: "Approve execution plan",
-        description: bound?.summary ?? "Scope changed; the plan needs approval at the raised authority.",
-        riskLevel: bound?.riskLevel ?? req.riskLevel,
-        actionClass: req.approvalLevel,
-      });
-      if (req.status !== "awaiting_plan_approval" && req.status !== "cancelled") {
+      await this.createApprovalRecord(
+        actor,
+        req,
+        {
+          kind: "execution_plan",
+          action: "Approve execution plan",
+          description: bound?.summary ?? "Scope changed; the plan needs approval at the raised authority.",
+          riskLevel: bound?.riskLevel ?? req.riskLevel,
+          actionClass: req.approvalLevel,
+        },
+        { advanceStatus: next.returnToPlanApproval },
+      );
+      if (next.returnToPlanApproval && req.status !== "awaiting_plan_approval") {
         await this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
           from: req.status,
           to: "awaiting_plan_approval",
@@ -845,10 +851,12 @@ export class SupabaseWorkspaceRepository {
     const db = await this.client();
     if (to === "queued") {
       const held =
-        req.status === "awaiting_plan_approval"
-          ? !(await this.hasCoveringApproval(db, req, "execution_plan"))
-          : await this.planApprovalOutstanding(db, req);
+        (await this.planApprovalOutstanding(db, req)) ||
+        (req.status === "awaiting_plan_approval" && !(await this.hasCoveringApproval(db, req, "execution_plan")));
       if (held) throw new DomainError("Execution plan must be approved before the request enters the queue");
+    }
+    if (to === "in_progress" && (await this.planApprovalOutstanding(db, req))) {
+      throw new DomainError("The execution plan must be approved at the request's current authority before work starts");
     }
     if (to === "delivered") {
       const { data } = await db.from("deliveries").select("id").eq("request_id", id);
@@ -1013,18 +1021,13 @@ export class SupabaseWorkspaceRepository {
       .single();
     if (error) dbFail(error);
     const req = await this.getRequest(actor, approval.request_id);
-    const { data: pendingPlan } = await db
-      .from("approvals")
-      .select("id")
-      .eq("request_id", req.id)
-      .eq("kind", "execution_plan")
-      .eq("status", "pending");
+    const planOutstanding = await this.planApprovalOutstanding(db, req);
     let next = req.status;
     if (approval.kind === "execution_plan") {
       // A plan approved below the request's class does not queue it.
       if (decision === "rejected") next = "cancelled";
       else if (approvalCovers({ actionClass: approval.action_class as ActionClass }, req)) next = "queued";
-    } else if (pendingPlan?.length || req.status === "awaiting_plan_approval") {
+    } else if (planOutstanding || req.status === "awaiting_plan_approval") {
       // The plan must be approved first; an action approval does not move the request past it.
     } else if (decision === "rejected") next = "blocked";
     else if (approval.kind === "sensitive_action") next = "in_progress";
