@@ -796,7 +796,9 @@ export class SupabaseWorkspaceRepository {
       .filter((a) => a.decided_at && approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req))
       .map((a) => String(a.decided_at))
       .sort();
-    const planDecidedAt = decided.at(-1) ?? null;
+    // The earliest covering decision: re-approving at the same class does not
+    // void QA, while a raise (whose first covering decision is newer) does.
+    const planDecidedAt = decided[0] ?? null;
     const { data: reviews } = await db.from("qa_reviews").select("created_at").eq("request_id", req.id).eq("passed", true);
     return (reviews ?? []).some((q) => qaCountsForAuthority({ createdAt: String(q.created_at) }, planDecidedAt));
   }
@@ -810,7 +812,7 @@ export class SupabaseWorkspaceRepository {
   private async planApprovalOutstanding(db: SupabaseClient, req: RequestRecord) {
     const { data } = await db.from("approvals").select("status, action_class").eq("request_id", req.id).eq("kind", "execution_plan");
     const plans = data ?? [];
-    if (plans.some((a) => a.status === "pending")) return true;
+    if (plans.some((a) => a.status === "pending" && approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req))) return true;
     const approved = plans.filter((a) => a.status === "approved");
     return approved.length > 0 && !approved.some((a) => approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req));
   }
@@ -1008,14 +1010,17 @@ export class SupabaseWorkspaceRepository {
   ) {
     if (!canRequestCustomerApproval(actor) && !isClientRole(actor.role)) throw new AuthzError();
     const db = await this.client();
-    const { data: existing } = await db
+    // Reuse a pending approval of this kind only if it covers the request; one
+    // requested before a raise does not, so a fresh one is requested.
+    const { data: pendingOfKind } = await db
       .from("approvals")
       .select("*")
       .eq("request_id", req.id)
       .eq("kind", input.kind)
-      .eq("status", "pending")
-      .eq("action_class", input.actionClass)
-      .maybeSingle();
+      .eq("status", "pending");
+    const existing = (pendingOfKind ?? []).find((a) =>
+      approvalCovers({ kind: input.kind, actionClass: a.action_class as ActionClass }, req),
+    );
     if (existing) {
       await this.advanceRequestForApproval(db, req, input.kind, options);
       return this.mapApproval(existing);
@@ -1063,10 +1068,11 @@ export class SupabaseWorkspaceRepository {
     const req = await this.getRequest(actor, approval.request_id);
     const planOutstanding = await this.planApprovalOutstanding(db, req);
     let next = req.status;
-    if (approval.kind === "execution_plan") {
-      // A plan approved below the request's class does not queue it.
-      if (decision === "rejected") next = "cancelled";
-      else if (approvalCovers({ kind: "execution_plan", actionClass: approval.action_class as ActionClass }, req)) next = "queued";
+    if (!approvalCovers({ kind: approval.kind as ApprovalKind, actionClass: approval.action_class as ActionClass }, req)) {
+      // An approval requested before a raise no longer covers the request:
+      // its decision is recorded but does not queue, block or cancel it.
+    } else if (approval.kind === "execution_plan") {
+      next = decision === "rejected" ? "cancelled" : "queued";
     } else if (planOutstanding || req.status === "awaiting_plan_approval") {
       // The plan must be approved first; an action approval does not move the request past it.
     } else if (decision === "rejected") next = "blocked";

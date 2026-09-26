@@ -800,3 +800,89 @@ describe("a decision records the class the customer was shown", () => {
     expect(db.tables.approvals.find((a) => a.id === plan.id)).toMatchObject({ status: "pending", action_class: "sensitive_execution" });
   });
 });
+
+describe("approvals requested before a raise do not hold or undo the raised request", () => {
+  const RESEARCH = { ...FUNDS_TRANSFER, title: "Research brief", objective: "Prepare the draft", description: "Draft a research brief comparing three vendors with pricing details.", deliverable: "Draft" };
+  const WIRE = { description: "Draft the brief, then wire the $40k deposit from the operating bank account." };
+
+  it("in-memory store: a stale plan approval neither holds nor cancels the re-approved request", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const manager = store.actorFromUser("usr_manager")!;
+    const id = (await store.createRequest(founder, RESEARCH)).request.id;
+    const stale = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "execution_plan")!;
+    store.updateRequestScope(manager, id, WIRE);
+    for (const a of store.getRequestBundle(founder, id).approvals.filter((x) => x.status === "pending" && x.actionClass === "sensitive_execution")) {
+      store.decideApproval(founder, a.id, "approved", "ok");
+    }
+    // Plan and sensitive action approved at the raised class: work may start.
+    const approvedStatus = store.getRequest(founder, id).status;
+    expect(["queued", "in_progress"]).toContain(approvedStatus);
+    if (approvedStatus === "queued") store.transitionRequest(manager, id, "in_progress");
+    expect(store.getRequest(founder, id).status).toBe("in_progress");
+    // Rejecting the outdated plan approval is recorded and changes nothing else.
+    store.decideApproval(founder, stale.id, "rejected", "outdated");
+    expect(store.getRequest(founder, id).status).toBe("in_progress");
+    expect(store.data.approvals.find((a) => a.id === stale.id)?.status).toBe("rejected");
+  });
+
+  it("Supabase workspace: a stale plan approval neither holds nor cancels the re-approved request", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const ORG = "11111111-1111-4111-8111-111111111111";
+    const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "o@example.com", name: "O", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+    const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "p@example.com", name: "P", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+    db = createFakeDb({ workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "B", status: "active", created_at: "", updated_at: "" }] });
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, RESEARCH);
+    const id = String(db.tables.requests[0].id);
+    const stale = db.tables.approvals.find((a) => a.kind === "execution_plan")!;
+    await repo.updateRequestScope(manager, id, WIRE);
+    for (const a of db.tables.approvals.filter((x) => x.status === "pending" && x.action_class === "sensitive_execution")) {
+      await repo.decideApproval(client, String(a.id), "approved", "ok");
+    }
+    expect(db.tables.requests[0].status).toBe("queued");
+    await repo.decideApproval(client, String(stale.id), "rejected", "outdated");
+    expect(db.tables.requests[0].status).toBe("queued");
+    await expect(repo.transitionRequest(manager, id, "in_progress")).resolves.toBeTruthy();
+  });
+
+  it("reuses a pending outbound approval that already covers a legacy request", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const manager = store.actorFromUser("usr_manager")!;
+    const id = (await store.createRequest(founder, { ...RESEARCH, externalCommunication: true })).request.id;
+    // A row written before this change: low_risk_execution with external communication.
+    const req = store.data.requests.find((r) => r.id === id)!;
+    req.approvalLevel = "low_risk_execution";
+    for (const a of store.data.approvals.filter((x) => x.requestId === id)) a.actionClass = "low_risk_execution";
+    const plan = store.data.approvals.find((a) => a.requestId === id && a.kind === "execution_plan")!;
+    store.decideApproval(founder, plan.id, "approved", "ok");
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.createQaReview(manager, id, { passed: true, score: 90, notes: "" });
+    expect(store.data.approvals.filter((a) => a.requestId === id && a.kind === "external_email" && a.status === "pending")).toHaveLength(1);
+  });
+
+  it("keeps a QA pass when the plan is re-approved at the same class", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const manager = store.actorFromUser("usr_manager")!;
+    const id = (await store.createRequest(founder, RESEARCH)).request.id;
+    for (const a of store.getRequestBundle(founder, id).approvals) store.decideApproval(founder, a.id, "approved", "ok");
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.createQaReview(manager, id, { passed: true, score: 90, notes: "" });
+    // Order the events explicitly: first plan decision, then QA, then the re-approval (now).
+    store.data.approvals.find((a) => a.requestId === id && a.kind === "execution_plan")!.decidedAt = "2001-01-01T00:00:00.000Z";
+    store.data.qaReviews.find((q) => q.requestId === id)!.createdAt = "2002-01-01T00:00:00.000Z";
+    const again = store.createApproval(manager, id, "prepare_only", "Confirm the plan again", "execution_plan");
+    store.decideApproval(founder, again.id, "approved", "ok");
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.transitionRequest(manager, id, "ready_to_deliver");
+    expect(() => store.deliverRequest(manager, id, { summary: "p", deliverables: ["x"], attachments: [], actionsTaken: [], exceptions: [], unresolvedDecisions: [], nextStep: "" })).not.toThrow();
+  });
+});

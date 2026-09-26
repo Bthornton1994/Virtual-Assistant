@@ -1394,7 +1394,7 @@ export class MemoryStore {
    */
   private planApprovalOutstanding(req: RequestRecord) {
     const plans = this.data.approvals.filter((a) => a.requestId === req.id && a.kind === "execution_plan");
-    if (plans.some((a) => a.status === "pending")) return true;
+    if (plans.some((a) => a.status === "pending" && approvalCovers(a, req))) return true;
     const approved = plans.filter((a) => a.status === "approved");
     return approved.length > 0 && !approved.some((a) => approvalCovers(a, req));
   }
@@ -1426,7 +1426,9 @@ export class MemoryStore {
       .filter((a) => a.requestId === req.id && a.kind === "execution_plan" && a.status === "approved" && approvalCovers(a, req) && a.decidedAt)
       .map((a) => a.decidedAt as string)
       .sort();
-    const planDecidedAt = decided.at(-1) ?? null;
+    // The earliest covering decision: re-approving at the same class does not
+    // void QA, while a raise (whose first covering decision is newer) does.
+    const planDecidedAt = decided[0] ?? null;
     return this.data.qaReviews.some((q) => q.requestId === req.id && q.passed && qaCountsForAuthority(q, planDecidedAt));
   }
 
@@ -1611,8 +1613,10 @@ export class MemoryStore {
     options?: { advanceStatus?: boolean },
   ) {
     if (!canRequestCustomerApproval(actor) && !isClientRole(actor.role)) throw new AuthzError();
+    // Reuse a pending approval of this kind only if it covers the request; one
+    // requested before a raise does not, so a fresh one is requested.
     const existing = this.data.approvals.find(
-      (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending" && a.actionClass === input.actionClass,
+      (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending" && approvalCovers(a, req),
     );
     const advance = options?.advanceStatus !== false;
     if (existing) {
@@ -1669,10 +1673,12 @@ export class MemoryStore {
     if (req) {
       const from = req.status;
       const planOutstanding = this.planApprovalOutstanding(req);
-      if (approval.kind === "execution_plan") {
+      if (!approvalCovers(approval, req)) {
+        // An approval requested before a raise no longer covers the request:
+        // its decision is recorded but does not queue, block or cancel it.
+      } else if (approval.kind === "execution_plan") {
         // A plan approved below the request's class does not queue it.
-        if (decision === "rejected") req.status = "cancelled";
-        else if (approvalCovers(approval, req)) req.status = "queued";
+        req.status = decision === "rejected" ? "cancelled" : "queued";
       } else if (planOutstanding || req.status === "awaiting_plan_approval") {
         // The plan must be approved first; an action approval does not move the request past it.
       } else if (decision === "rejected") {
