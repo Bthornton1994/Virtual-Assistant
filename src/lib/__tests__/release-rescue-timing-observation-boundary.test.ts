@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 // 2,000ms assertions move to a visible, separately named, non-required
 // `timing-observation` check whose failure is advisory and is never silently
 // retried. D-018 is unchanged: `verify` runs the complete SQL proof suite and
-// `proof:claim-guard`.
+// `proof:claim-guard`. `proof:rr-internal` is a blocking step of that same gate.
 //
 // None of that is visible from inside a test run, so this reads the
 // configuration. It cannot see branch protection: whether a check is REQUIRED
@@ -79,6 +79,7 @@ describe("verify is still the whole release gate", () => {
       "npm run typecheck",
       "npm test",
       "npm run proof:claim-guard",
+      "npm run proof:rr-internal",
       "npm run build",
       "npm run proof:sql",
     ]);

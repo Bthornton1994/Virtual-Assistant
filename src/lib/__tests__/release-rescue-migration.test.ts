@@ -405,16 +405,22 @@ describe("the documented proof base", () => {
     expect(workflow, "verify.yml must run the claim-guard mutation proof").toContain(
       "npm run proof:claim-guard",
     );
+    expect(workflow, "verify.yml must run the internal mutation proof").toContain("npm run proof:rr-internal");
     expect(workflow, "verify.yml must run the complete SQL proof suite").toContain("npm run proof:sql");
     expect(workflow, "SQL proofs run on disposable Postgres 16").toMatch(/image:\s*postgres:16/);
     expect(pkg.scripts["proof:claim-guard"]).toBe("node scripts/claim-guard-mutation-proof.mjs");
+    expect(pkg.scripts["proof:rr-internal"]).toBe("node scripts/release-rescue-internal-mutation-proof.mjs");
     expect(pkg.scripts["proof:sql"]).toBe("node scripts/run-release-rescue-sql-proofs.mjs");
     expect(pkg.scripts.verify, "local verify must still run claim-guard").toContain("proof:claim-guard");
+    expect(pkg.scripts.verify, "local verify must run the internal mutation proof").toContain(
+      "proof:rr-internal",
+    );
     expect(pkg.scripts.verify.split("&&").map((part: string) => part.trim())).toEqual([
       "npm run lint",
       "npm run typecheck",
       "npm test",
       "npm run proof:claim-guard",
+      "npm run proof:rr-internal",
       "npm run build",
     ]);
   });

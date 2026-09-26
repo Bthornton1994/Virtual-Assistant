@@ -43,5 +43,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run proof:claim-guard
+      - run: npm run proof:rr-internal
       - run: npm run build
       - run: npm run proof:sql

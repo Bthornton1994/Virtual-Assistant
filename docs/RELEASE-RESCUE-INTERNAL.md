@@ -157,7 +157,7 @@ npm run build && npm run test:e2e:internal
 npm run proof:rr-internal
 ```
 
-`proof:rr-internal` undoes each guard added in the third review, one at a time, and runs the suite that should notice. It reports which named tests failed, and a comment-only control must fail none. It edits the source files while it runs, restores them afterwards, and will not start while those files have uncommitted changes.
+`proof:rr-internal` undoes each guard added in the third review, one at a time, and runs the suite that should notice. It reports which named tests failed, and a comment-only control must fail none. It edits the source files while it runs, restores them afterwards, and will not start while those files have uncommitted changes. GitHub Actions `verify` and local `npm run verify` both run it, after `proof:claim-guard` and before the build. That is release-gate coverage for these guards. It does not make this workflow production-ready, and it does not enable the mode on Vercel or any public deployment.
 
 The browser journey runs against a throwaway repository and store under the system temp directory. It covers:
 
