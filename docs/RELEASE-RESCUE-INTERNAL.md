@@ -98,7 +98,7 @@ A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKE
 
    `git archive` writes nothing after a `.tar.gz`'s gzip data. The file is read to its end before the decision, so the result does not depend on how the file is read. As with gzip, trailing bytes that begin with a zero byte end the gzip data, and the reader refuses them as `Data followed the gzip stream.` Any other trailing bytes are read as another gzip member. One that is not valid is refused as `The archive is not valid gzip.` A valid one's content follows the tar's end-of-archive marker, and is refused unless it is empty or only zeros, which is accepted like a plain tar's zero padding, so no content can be hidden there.
 
-   Every record carries `limitsVersion: release-rescue-snapshot-limits/v1`, the version the product's SQL schema stores. It names the `SNAPSHOT_LIMITS` values and the entry and whole-snapshot rules of `evaluateSnapshot`, which are unchanged. It does not name how this reader measures the expansion ratio (the whole archive's, over its compressed data, with the 16 MiB floor), and a record does not say which ratio rule it was read under.
+   Every outcome carries `limitsVersion: release-rescue-snapshot-limits/v1`, the version the product's SQL schema stores. It names the `SNAPSHOT_LIMITS` values and the entry and whole-snapshot rules of `evaluateSnapshot`, which are unchanged. It does not name how this reader measures the expansion ratio. A run record does. `acquisition.measuredRatio.rule` is `whole-archive/compressed-data/16MiB-floor`: the whole archive's expanded bytes over its compressed data, with the 16 MiB floor. `acquisition.measuredRatio.applied` is true only when the source was a compressed archive, so a git checkout or a plain tar names the rule and says it was not applied. A record written before this field existed has neither `limitsVersion` nor `measuredRatio` on its acquisition, and the run page says so instead of inventing them. The SQL token stays `release-rescue-snapshot-limits/v1`. `release_rescue_snapshot_recorded` treats any non-empty text as "a snapshot was recorded", and renaming that token would say the claim half used this floor.
 
    Symlinks are recorded and not followed. Traversal, absolute paths, hard links, devices, submodules, and credential files are recorded and not read. Data after a tar's end-of-archive marker, other than zero padding, refuses the archive. If a limit is exceeded, or the source is malformed, the run is **BLOCKED** and produces no report.
 
@@ -146,7 +146,7 @@ A run exits 0 when its draft awaits a reviewer and 2 when it was saved as BLOCKE
 
 - **Model-assisted analysis: NOT RUN.** No model provider is authorized for this workflow, so every check that needs one stays `not_assessed`. The limitation `ai_assisted_review_residual_risk` still appears, because the product's assembler adds it to every report.
 - **The other 30 rubric checks are NOT RUN.** They need a reviewer's reading. The signed report says so, check by check.
-- **No production path.** The local store is not the Supabase schema. None of the database-enforced invariants apply here: row-level security, immutability triggers, and the scheduled sweep. The local identity is not Supabase Auth. This mode refuses to start on a deployment.
+- **No production path.** The local store is not the Supabase schema. None of the database-enforced invariants apply here: row-level security, immutability triggers, and the scheduled sweep. The local identity is not Supabase Auth. This mode refuses to start on a deployment. Operating the local workflow, including backup and rollback, is `docs/RELEASE-RESCUE-INTERNAL-OPS.md`. The hosting choice is unmade, and the decision packet leaves it blank: `docs/RELEASE-RESCUE-DEPLOY-TARGET-DECISION.md`.
 - **No running system** is contacted, and no repository is modified.
 
 ## Tests
@@ -158,6 +158,8 @@ npm run proof:rr-internal
 ```
 
 `proof:rr-internal` undoes each guard added in the third review, one at a time, and runs the suite that should notice. It reports which named tests failed, and a comment-only control must fail none. It edits the source files while it runs, restores them afterwards, and will not start while those files have uncommitted changes. GitHub Actions `verify` and local `npm run verify` both run it, after `proof:claim-guard` and before the build. That is release-gate coverage for these guards. It does not make this workflow production-ready, and it does not enable the mode on Vercel or any public deployment.
+
+GitHub Actions `verify` also runs `npm run test:e2e:internal` after `proof:sql`, against the build that job already produced, after installing Chromium. The job does not set `RELEASE_RESCUE_INTERNAL`. The journey sets that variable only on its own server, bound to `127.0.0.1`, with a throwaway store. Local `npm run verify` does not install a browser and does not run the journey; use the command above when you want it on your machine. A green journey shows that this local path still signs and withholds. It is not a production deployment.
 
 The browser journey runs against a throwaway repository and store under the system temp directory. It covers:
 

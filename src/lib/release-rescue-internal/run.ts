@@ -147,6 +147,8 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
     status: "blocked",
     acquisition: {
       status: snapshot.status,
+      limitsVersion: snapshot.limitsVersion,
+      measuredRatio: snapshot.measuredRatio,
       totals: snapshot.totals,
       refusals: snapshot.status === "blocked" ? snapshot.refusals : [],
       // Measured at acquisition, so it is on the record whether or not the

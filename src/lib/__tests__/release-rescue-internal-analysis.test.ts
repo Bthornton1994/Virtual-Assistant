@@ -4,7 +4,7 @@ import { RELEASE_RESCUE_RUBRIC_V1 } from "@/lib/release-rescue-rubric";
 import { validateReleaseRescueReport } from "@/lib/release-rescue-report";
 import { IMPLEMENTED_CHECK_IDS, analyzeSnapshot } from "@/lib/release-rescue-internal/checks";
 import { buildDraftReport } from "@/lib/release-rescue-internal/draft-report";
-import type { AcquiredSnapshot, RejectedEntry } from "@/lib/release-rescue-internal/snapshot";
+import { measuredRatio, type AcquiredSnapshot, type RejectedEntry } from "@/lib/release-rescue-internal/snapshot";
 import {
   FAKE_AWS_KEY,
   FAKE_GITHUB_TOKEN,
@@ -27,6 +27,7 @@ function snapshot(files: Record<string, string | Buffer>, rejected: RejectedEntr
     source: "git_objects",
     commitSha: SHA,
     limitsVersion: SNAPSHOT_LIMITS_VERSION,
+    measuredRatio: measuredRatio(false),
     files: Object.entries(files).map(([path, text]) => ({ path, bytes: typeof text === "string" ? Buffer.from(text, "utf8") : text })),
     rejected,
     totals: { entryCount: 0, acceptedFileCount: 0, rejectedCount: 0, streamBytes: 0, expandedBytes: 0, acceptedBytes: 0 },

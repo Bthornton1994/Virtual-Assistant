@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it } from "vitest";
 import { hashReleaseRescueReviewSubject } from "@/lib/release-rescue-report";
-import { SNAPSHOT_LIMITS } from "@/lib/release-rescue-snapshot-limits";
+import { SNAPSHOT_LIMITS, SNAPSHOT_LIMITS_VERSION } from "@/lib/release-rescue-snapshot-limits";
 import { internalModeDecision, isLoopbackRequest } from "@/lib/release-rescue-internal/mode";
 import {
   addOperator,
@@ -18,7 +18,7 @@ import {
 } from "@/lib/release-rescue-internal/local-identity";
 import { deliveryForRun, recordDelivery, signRunAsLocalOperator } from "@/lib/release-rescue-internal/review";
 import { verifyArchiveAgainstTree } from "@/lib/release-rescue-internal/git-source";
-import { blobId } from "@/lib/release-rescue-internal/snapshot";
+import { MEASURED_EXPANSION_RATIO_RULE, blobId, describeAcquisitionLimits } from "@/lib/release-rescue-internal/snapshot";
 import { CLI_INITIATOR, RunRefused, initiatorFromOperator, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { runSummary } from "@/lib/release-rescue-internal/summary";
 import { listRuns, loadRun, localDir, purgeAfter, saveCheckout, sweepRetention } from "@/lib/release-rescue-internal/store";
@@ -428,6 +428,8 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     const record = await archiveRun(repo, out);
     expect(record.status).toBe("awaiting_review");
     expect(record.source).toBe("tar_archive");
+    expect(record.acquisition.limitsVersion).toBe(SNAPSHOT_LIMITS_VERSION);
+    expect(record.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: false });
   });
 
   // A `.tar.gz` is judged on the whole archive's ratio, so a small repository
@@ -483,6 +485,9 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     expect(archived.checkRuns).toEqual(checkout.checkRuns);
     expect(archived.acquisition.totals.acceptedFileCount).toBe(checkout.acquisition.totals.acceptedFileCount);
     expect(archived.acquisition.totals.acceptedBytes).toBe(checkout.acquisition.totals.acceptedBytes);
+    expect(archived.acquisition.limitsVersion).toBe(SNAPSHOT_LIMITS_VERSION);
+    expect(archived.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: true });
+    expect(checkout.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: false });
   });
 
   it("refuses an archive that only claims the pinned commit", async () => {
@@ -869,6 +874,31 @@ describe("a record written by the previous version still says why it is BLOCKED"
     expect(loaded.processingFailure).toEqual({ stage: "draft_assembly", message: legacy.draftFailure });
     expect("draftFailure" in loaded).toBe(false);
     expect(runSummary(loaded).processingFailure?.message).toBe(legacy.draftFailure);
+  });
+
+  it("loads a record written before the ratio rule was stored, and does not invent one", async () => {
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    const record = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout", path: repo.path },
+      allowlist: fixtureAllowlist(),
+    });
+    const stored = JSON.parse(readFileSync(storedRunPath(record.runId), "utf8"));
+    delete stored.acquisition.limitsVersion;
+    delete stored.acquisition.measuredRatio;
+    writeFileSync(storedRunPath(record.runId), JSON.stringify(stored));
+
+    const loaded = loadRun(record.runId)!;
+    expect(loaded.acquisition.limitsVersion).toBeUndefined();
+    expect(loaded.acquisition.measuredRatio).toBeUndefined();
+    expect(describeAcquisitionLimits(loaded.acquisition)).toEqual({
+      limits: "This record does not store a shared limits version.",
+      ratio: "This record does not name an expansion ratio rule.",
+    });
   });
 
   it("keeps a processingFailure the record already has, whatever a legacy field says", async () => {

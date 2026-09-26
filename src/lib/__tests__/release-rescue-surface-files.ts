@@ -1022,6 +1022,7 @@ export const EXPECTED_SURFACE_FILES = [
   "src/lib/ai-app-release-rescue/constants.ts",
   "src/lib/ai-app-release-rescue/demo-cookie.ts",
   "src/lib/ai-app-release-rescue/demo-fixtures.ts",
+  "src/lib/ai-app-release-rescue/echo-safe-fields.ts",
   "src/lib/ai-app-release-rescue/engagement.ts",
   "src/lib/ai-app-release-rescue/intake.ts",
   "src/lib/ai-app-release-rescue/payment.ts",

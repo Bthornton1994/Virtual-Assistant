@@ -46,3 +46,10 @@ jobs:
       - run: npm run proof:rr-internal
       - run: npm run build
       - run: npm run proof:sql
+      # Local internal browser journey against a throwaway store. It does not
+      # switch this job into internal mode, and it does not enable the workflow
+      # on Vercel or any other host.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Internal Release Rescue browser journey
+        run: npm run test:e2e:internal

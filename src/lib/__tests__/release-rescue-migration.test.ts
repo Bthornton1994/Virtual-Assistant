@@ -407,6 +407,9 @@ describe("the documented proof base", () => {
     );
     expect(workflow, "verify.yml must run the internal mutation proof").toContain("npm run proof:rr-internal");
     expect(workflow, "verify.yml must run the complete SQL proof suite").toContain("npm run proof:sql");
+    expect(workflow, "verify.yml must run the internal browser journey after the build").toContain(
+      "npm run test:e2e:internal",
+    );
     expect(workflow, "SQL proofs run on disposable Postgres 16").toMatch(/image:\s*postgres:16/);
     expect(pkg.scripts["proof:claim-guard"]).toBe("node scripts/claim-guard-mutation-proof.mjs");
     expect(pkg.scripts["proof:rr-internal"]).toBe("node scripts/release-rescue-internal-mutation-proof.mjs");

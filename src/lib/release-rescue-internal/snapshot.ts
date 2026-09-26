@@ -24,8 +24,9 @@ import {
 // `limitsVersion` on every outcome is `SNAPSHOT_LIMITS_VERSION`, the shared
 // contract the SQL schema stores: the `SNAPSHOT_LIMITS` values and the
 // `evaluateSnapshot` rules, both unchanged. It does not name how this reader
-// measures the ratio, and a record does not say which ratio rule it was read
-// under.
+// measures the ratio. The run record does, in `measuredRatio`: the rule id
+// below, and whether that rule judged this source. A compressed archive is
+// judged by it. A git checkout or a plain tar is not.
 //
 // Source lives in memory only, for the length of one run. Nothing here writes a
 // file, and nothing here returns bytes to a caller that persists them.
@@ -76,6 +77,7 @@ export type AcquiredSnapshot = {
   source: SnapshotSourceKind;
   commitSha: string;
   limitsVersion: typeof SNAPSHOT_LIMITS_VERSION;
+  measuredRatio: MeasuredRatio;
   files: SnapshotFile[];
   rejected: RejectedEntry[];
   totals: MeasuredTotals;
@@ -92,6 +94,7 @@ export type BlockedSnapshot = {
   source: SnapshotSourceKind;
   commitSha: string | null;
   limitsVersion: typeof SNAPSHOT_LIMITS_VERSION;
+  measuredRatio: MeasuredRatio;
   refusals: AcquisitionRefusal[];
   totals: MeasuredTotals;
 };
@@ -205,6 +208,43 @@ export function emptyTotals(): MeasuredTotals {
  * `maxArchiveBytes` and `maxTotalBytes`, still apply at every size.
  */
 export const MEASURED_RATIO_FLOOR_BYTES = 16 * 1024 * 1024;
+
+/**
+ * How this reader measures a `.tar.gz` expansion ratio: the whole archive's
+ * expanded bytes over its compressed data, refused only past the 16 MiB floor.
+ *
+ * This is not `SNAPSHOT_LIMITS_VERSION`. That token is the shared
+ * `evaluateSnapshot` contract the SQL column stores, and that function has no
+ * floor. Putting this rule's name into that token would say the claim half and
+ * any SQL row used a rule they do not.
+ */
+export const MEASURED_EXPANSION_RATIO_RULE = "whole-archive/compressed-data/16MiB-floor" as const;
+
+export type MeasuredRatio = {
+  rule: typeof MEASURED_EXPANSION_RATIO_RULE;
+  /** True only when the source was compressed, so this rule judged its bytes. */
+  applied: boolean;
+};
+
+export function measuredRatio(applied: boolean): MeasuredRatio {
+  return { rule: MEASURED_EXPANSION_RATIO_RULE, applied };
+}
+
+/** Sentences for the internal run page. They quote the stored record, not the current constant. */
+export function describeAcquisitionLimits(acquisition: {
+  limitsVersion?: string;
+  measuredRatio?: MeasuredRatio;
+}): { limits: string; ratio: string } {
+  const limits = acquisition.limitsVersion
+    ? `Shared limits version ${acquisition.limitsVersion}. It names the snapshot limits and the evaluateSnapshot rules. It does not name the expansion ratio rule.`
+    : "This record does not store a shared limits version.";
+  const ratio = !acquisition.measuredRatio
+    ? "This record does not name an expansion ratio rule."
+    : acquisition.measuredRatio.applied
+      ? `Expansion ratio rule ${acquisition.measuredRatio.rule}. It was applied to this source.`
+      : `Expansion ratio rule ${acquisition.measuredRatio.rule}. It was not applied, because this source is not a compressed archive.`;
+  return { limits, ratio };
+}
 
 /**
  * Enforces the snapshot limits on measured bytes, as they arrive.
@@ -427,6 +467,7 @@ export class SnapshotBudget {
         source,
         commitSha,
         limitsVersion: SNAPSHOT_LIMITS_VERSION,
+        measuredRatio: measuredRatio(this.compressed),
         refusals: decision.refusals.map((refusal) => ({ reason: refusal.reason, detail: refusal.detail })),
         totals: this.totals,
       };
@@ -436,6 +477,7 @@ export class SnapshotBudget {
       source,
       commitSha,
       limitsVersion: SNAPSHOT_LIMITS_VERSION,
+      measuredRatio: measuredRatio(this.compressed),
       files: [...this.files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
       rejected: this.rejected,
       totals: this.totals,
@@ -449,6 +491,7 @@ export class SnapshotBudget {
       source,
       commitSha,
       limitsVersion: SNAPSHOT_LIMITS_VERSION,
+      measuredRatio: measuredRatio(this.compressed),
       refusals: [refusal],
       totals: this.totals,
     };
@@ -466,6 +509,7 @@ export function blockedBeforeReading(
     source,
     commitSha,
     limitsVersion: SNAPSHOT_LIMITS_VERSION,
+    measuredRatio: measuredRatio(false),
     refusals: [{ reason, detail }],
     totals: emptyTotals(),
   };
