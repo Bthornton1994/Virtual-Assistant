@@ -1118,6 +1118,12 @@ export class MemoryStore {
     if (!isClientRole(actor.role) && actor.role !== "platform_admin") throw new AuthzError();
     const organizationId = actor.organizationId;
     if (!organizationId) throw new AuthzError("No organization");
+    if (input.workstreamId) {
+      const requested = this.data.workstreams.find((w) => w.id === input.workstreamId);
+      if (requested && requested.organizationId !== organizationId) {
+        throw new AuthzError("Cross-tenant access denied");
+      }
+    }
     const [triage, classified, risk, missingResult] = await Promise.all([
       delegationAI.triageRequest({
         title: input.title,
@@ -1344,6 +1350,16 @@ export class MemoryStore {
     const req = this.getRequest(actor, id);
     if (!canMutateOpsQueue(actor) && actor.id !== req.createdBy && actor.role !== "client_admin") {
       throw new AuthzError();
+    }
+    if (patch.workstreamId) {
+      const ws = this.data.workstreams.find((w) => w.id === patch.workstreamId);
+      if (!ws) throw new DomainError("Workstream not found");
+      if (ws.organizationId !== req.organizationId) throw new AuthzError("Cross-tenant access denied");
+    }
+    if (patch.playbookId) {
+      const pb = this.data.playbooks.find((p) => p.id === patch.playbookId);
+      if (!pb) throw new DomainError("Playbook not found");
+      if (pb.organizationId !== req.organizationId) throw new AuthzError("Cross-tenant access denied");
     }
     Object.assign(req, patch, { updatedAt: nowIso() });
     this.audit(actor, "request.scope_updated", "request", id, req.organizationId, patch as Record<string, unknown>);
@@ -1877,6 +1893,14 @@ export class MemoryStore {
     },
   ) {
     if (!canWritePlaybook(actor)) throw new AuthzError();
+    if (input.workstreamId) {
+      const ws = this.data.workstreams.find((w) => w.id === input.workstreamId);
+      if (!ws) throw new DomainError("Workstream not found");
+      assertOrgAccess(actor, ws.organizationId);
+      if (actor.organizationId && ws.organizationId !== actor.organizationId) {
+        throw new AuthzError("Cross-tenant access denied");
+      }
+    }
     const fromWorkstream = input.workstreamId
       ? this.data.workstreams.find((w) => w.id === input.workstreamId)?.organizationId
       : null;
