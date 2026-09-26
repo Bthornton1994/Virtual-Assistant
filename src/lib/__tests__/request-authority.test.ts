@@ -387,3 +387,110 @@ describe("raising authority after the plan was approved", () => {
     await expect(repo.transitionRequest(manager, id, "queued")).rejects.toThrow(/must be approved/);
   });
 });
+
+describe("approvals given before a raise do not authorize the raised request", () => {
+  const PACK = {
+    summary: "Prepared pack.",
+    deliverables: ["Pack"],
+    attachments: [] as string[],
+    actionsTaken: [] as string[],
+    exceptions: [] as string[],
+    unresolvedDecisions: [] as string[],
+    nextStep: "Customer reviews",
+  };
+
+  async function approvedPrepareOnly(title: string, description: string) {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const manager = store.actorFromUser("usr_manager")!;
+    const created = await store.createRequest(founder, { ...FUNDS_TRANSFER, title, objective: "Prepare the draft", description, deliverable: "Draft" });
+    const id = created.request.id;
+    expect(created.request.approvalLevel).toBe("prepare_only");
+    for (const a of store.getRequestBundle(founder, id).approvals) store.decideApproval(founder, a.id, "approved", "ok");
+    expect(store.getRequest(founder, id).status).toBe("queued");
+    return { store, founder, manager, id };
+  }
+
+  it("keeps the request at plan approval when only a raised action approval is decided", async () => {
+    const { store, founder, manager, id } = await approvedPrepareOnly("Research brief", "Draft a research brief comparing three vendors with pricing details.");
+    store.transitionRequest(manager, id, "in_progress");
+    store.updateRequestScope(manager, id, { description: "Draft the brief, then wire the $40k deposit from the operating bank account." });
+    const pending = store.getRequestBundle(founder, id).approvals.filter((a) => a.status === "pending");
+    store.decideApproval(founder, pending.find((a) => a.kind === "sensitive_action")!.id, "approved", "ok");
+    expect(store.getRequest(founder, id).status).toBe("awaiting_plan_approval");
+    // Detouring through triage does not skip the pending plan approval either.
+    store.transitionRequest(manager, id, "triage");
+    expect(() => store.transitionRequest(manager, id, "queued")).toThrow(/must be approved/);
+  });
+
+  it("does not accept an outbound approval given at a lower class", async () => {
+    const { store, founder, manager, id } = await approvedPrepareOnly("Draft follow-up email for the team", "Draft the follow-up notes for the team with the decisions and owners from Tuesday.");
+    const before = store.getRequestBundle(founder, id).approvals;
+    expect(before.find((a) => a.kind === "external_email")).toMatchObject({ status: "approved", actionClass: "prepare_only" });
+    store.updateRequestScope(manager, id, { description: "Draft the follow-up notes with the decisions and owners, then send to the client list." });
+    expect(store.getRequest(founder, id).approvalLevel).toBe("external_execution");
+    const plan = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "execution_plan" && a.status === "pending")!;
+    store.decideApproval(founder, plan.id, "approved", "ok");
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.createQaReview(manager, id, { passed: true, score: 90, notes: "Ready." });
+    // QA asks for outbound approval at the raised class instead of using the old one.
+    expect(store.getRequest(founder, id).status).toBe("awaiting_action_approval");
+    expect(() => store.deliverRequest(manager, id, PACK)).toThrow();
+  });
+
+  it("does not redeliver a reopened, raised request on its old package", async () => {
+    const { store, founder, manager, id } = await approvedPrepareOnly("Research brief", "Draft a research brief comparing three vendors with pricing details.");
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.createQaReview(manager, id, { passed: true, score: 90, notes: "Ready." });
+    store.deliverRequest(manager, id, PACK);
+    store.transitionRequest(manager, id, "in_progress");
+    store.updateRequestScope(manager, id, { description: "Now transfer funds to the chosen vendor." });
+    const request = store.getRequest(founder, id);
+    expect(request).toMatchObject({ status: "awaiting_plan_approval", approvalLevel: "sensitive_execution" });
+    expect(() => store.deliverRequest(manager, id, PACK)).toThrow();
+    const audits = store.getRequestBundle(founder, id).audits;
+    expect(audits.some((a) => a.action === "request.status_changed" && a.metadata.reason === "authority_raised")).toBe(true);
+  });
+
+  it("stamps a manually requested approval at no lower than the request's class", async () => {
+    const { store, founder, manager, id } = await approvedPrepareOnly("Research brief", "Draft a research brief comparing three vendors with pricing details.");
+    store.updateRequestScope(manager, id, { description: "Transfer funds to the vendor." });
+    // Clear the pending plan approval so the request creates a new one.
+    for (const a of store.getRequestBundle(founder, id).approvals.filter((x) => x.status === "pending")) {
+      store.decideApproval(founder, a.id, "approved", "ok");
+    }
+    const approval = store.createApproval(manager, id, "prepare_only", "Re-confirm plan", "execution_plan");
+    expect(approval.status).toBe("pending");
+    expect(approval.actionClass).toBe("sensitive_execution");
+  });
+
+  it("Supabase workspace: an action approval does not skip the pending plan re-approval", async () => {
+    const ORG = "11111111-1111-4111-8111-111111111111";
+    const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "owner@example.com", name: "Owner", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+    const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "ops@example.com", name: "Ops", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+    db = createFakeDb({
+      workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "Back office", status: "active", created_at: "", updated_at: "" }],
+    });
+    stubModel(HOSTILE);
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, { ...FUNDS_TRANSFER, title: "Research brief", objective: "Summarize vendors", description: "Draft a summary of vendor options.", deliverable: "Brief" });
+    const id = String(db.tables.requests[0].id);
+    Object.assign(db.tables.approvals.find((a) => a.kind === "execution_plan")!, { status: "approved" });
+    Object.assign(db.tables.requests[0], { status: "in_progress" });
+
+    await repo.updateRequestScope(manager, id, { description: "Draft the summary, then wire the $40k deposit from the operating bank account." });
+    const sensitive = db.tables.approvals.find((a) => a.kind === "sensitive_action" && a.status === "pending")!;
+    await repo.decideApproval(client, String(sensitive.id), "approved", "ok");
+    expect(db.tables.requests[0].status).toBe("awaiting_plan_approval");
+    const plan = db.tables.approvals.find((a) => a.kind === "execution_plan" && a.status === "pending")!;
+    await repo.decideApproval(client, String(plan.id), "approved", "ok");
+    const count = db.tables.approvals.length;
+    const manual = await repo.createApproval(manager, id, "prepare_only", "Re-confirm plan", "execution_plan");
+    expect(db.tables.approvals.length).toBe(count + 1); // a new approval, not the pending one
+    expect(manual.actionClass).toBe("sensitive_execution");
+    expect(db.tables.audit_events.some((e) => e.action === "request.status_changed" && (e.metadata as Record<string, unknown>).reason === "authority_raised")).toBe(true);
+  });
+});
