@@ -45,6 +45,7 @@ import {
   ownerForAuthority,
   approvalClassFor,
   approvalCovers,
+  qaCountsForAuthority,
   raiseRiskForScope,
   reapprovalAfterRaise,
   requiredApprovals,
@@ -762,7 +763,24 @@ export class SupabaseWorkspaceRepository {
       .eq("request_id", req.id)
       .eq("kind", kind)
       .eq("status", "approved");
-    return (data ?? []).some((a) => approvalCovers({ actionClass: a.action_class as ActionClass }, req));
+    return (data ?? []).some((a) => approvalCovers({ kind, actionClass: a.action_class as ActionClass }, req));
+  }
+
+  /** Whether a passed QA review stands for the request's current authority. */
+  private async hasCurrentPassedQa(db: SupabaseClient, req: RequestRecord) {
+    const { data: plans } = await db
+      .from("approvals")
+      .select("action_class, decided_at")
+      .eq("request_id", req.id)
+      .eq("kind", "execution_plan")
+      .eq("status", "approved");
+    const decided = (plans ?? [])
+      .filter((a) => a.decided_at && approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req))
+      .map((a) => String(a.decided_at))
+      .sort();
+    const planDecidedAt = decided.at(-1) ?? null;
+    const { data: reviews } = await db.from("qa_reviews").select("created_at").eq("request_id", req.id).eq("passed", true);
+    return (reviews ?? []).some((q) => qaCountsForAuthority({ createdAt: String(q.created_at) }, planDecidedAt));
   }
 
   /**
@@ -776,7 +794,7 @@ export class SupabaseWorkspaceRepository {
     const plans = data ?? [];
     if (plans.some((a) => a.status === "pending")) return true;
     const approved = plans.filter((a) => a.status === "approved");
-    return approved.length > 0 && !approved.some((a) => approvalCovers({ actionClass: a.action_class as ActionClass }, req));
+    return approved.length > 0 && !approved.some((a) => approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req));
   }
 
   /** Bring a request's plan, steps and approvals up to its raised authority. */
@@ -1026,15 +1044,21 @@ export class SupabaseWorkspaceRepository {
     if (approval.kind === "execution_plan") {
       // A plan approved below the request's class does not queue it.
       if (decision === "rejected") next = "cancelled";
-      else if (approvalCovers({ actionClass: approval.action_class as ActionClass }, req)) next = "queued";
+      else if (approvalCovers({ kind: "execution_plan", actionClass: approval.action_class as ActionClass }, req)) next = "queued";
     } else if (planOutstanding || req.status === "awaiting_plan_approval") {
       // The plan must be approved first; an action approval does not move the request past it.
     } else if (decision === "rejected") next = "blocked";
-    else if (approval.kind === "sensitive_action") next = "in_progress";
-    else {
-      const { data: qa } = await db.from("qa_reviews").select("id").eq("request_id", req.id).eq("passed", true);
-      if (qa?.length) next = "ready_to_deliver";
-      else if (req.status === "awaiting_action_approval") next = req.assignedOperatorId ? "in_progress" : "queued";
+    else if (approval.kind === "sensitive_action") {
+      if (approvalCovers({ kind: "sensitive_action", actionClass: approval.action_class as ActionClass }, req)) next = "in_progress";
+    } else if (req.status === "awaiting_action_approval") {
+      if (await this.hasCurrentPassedQa(db, req)) next = "ready_to_deliver";
+      else {
+        // Resuming work passes the same sensitive gate as transitionRequest.
+        const resume = req.assignedOperatorId ? "in_progress" : "queued";
+        const sensitiveHeld =
+          resume === "in_progress" && blocksWithoutApproval(req.approvalLevel) && !(await this.hasCoveringApproval(db, req, "sensitive_action"));
+        if (!sensitiveHeld) next = resume;
+      }
     }
     await db.from("requests").update({ status: next, updated_at: nowIso() }).eq("id", req.id);
     await this.audit(actor, "approval.decided", "approval", approvalId, approval.organization_id, { decision, kind: approval.kind });
@@ -1221,8 +1245,7 @@ export class SupabaseWorkspaceRepository {
     const { data: existing } = await db.from("deliveries").select("*").eq("request_id", requestId).maybeSingle();
     if (existing && req.status === "delivered") return existing;
     if (req.status !== "ready_to_deliver" && req.status !== "qa") throw new DomainError("Only checked work can be delivered");
-    const { data: passedQa } = await db.from("qa_reviews").select("id").eq("request_id", requestId).eq("passed", true).limit(1);
-    if (!passedQa?.length) throw new DomainError("QA must pass before delivery");
+    if (!(await this.hasCurrentPassedQa(db, req))) throw new DomainError("QA must pass before delivery");
     if (await this.planApprovalOutstanding(db, req)) {
       throw new DomainError("The execution plan must be approved at the request's current authority before delivery");
     }

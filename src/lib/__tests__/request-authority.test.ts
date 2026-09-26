@@ -570,3 +570,122 @@ describe("a raise during clarification still needs plan approval at the raised c
     await expect(repo.transitionRequest(manager, id, "in_progress")).rejects.toThrow(/before work starts/);
   });
 });
+
+describe("approval decisions pass the same gates as transitions", () => {
+  const PACK = {
+    summary: "Prepared pack.",
+    deliverables: ["Pack"],
+    attachments: [] as string[],
+    actionsTaken: [] as string[],
+    exceptions: [] as string[],
+    unresolvedDecisions: [] as string[],
+    nextStep: "Customer reviews",
+  };
+
+  function memory() {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    return { store, founder: store.actorFromUser("usr_founder")!, manager: store.actorFromUser("usr_manager")! };
+  }
+
+  function approveAllPending(store: MemoryStore, founder: Actor, id: string) {
+    for (const a of store.getRequestBundle(founder, id).approvals.filter((x) => x.status === "pending")) {
+      store.decideApproval(founder, a.id, "approved", "ok");
+    }
+  }
+
+  it("does not start raised sensitive work when only an outbound approval is decided", async () => {
+    const { store, founder, manager } = memory();
+    const created = await store.createRequest(founder, {
+      ...FUNDS_TRANSFER,
+      title: "Customer update",
+      objective: "Tell the customer about the new release",
+      description: "Prepare the customer update on the new release with the key changes and dates.",
+      deliverable: "Customer update",
+      externalCommunication: true,
+    });
+    const id = created.request.id;
+    expect(created.request.approvalLevel).toBe("external_execution");
+    approveAllPending(store, founder, id);
+    const operatorId = store.data.operators[0].id;
+    store.data.requests.find((r) => r.id === id)!.assignedOperatorId = operatorId;
+    store.transitionRequest(manager, id, "in_progress");
+
+    store.updateRequestScope(manager, id, { description: "Prepare the customer update, then wire the $40k deposit from the operating bank account." });
+    const plan = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "execution_plan" && a.status === "pending")!;
+    store.decideApproval(founder, plan.id, "approved", "ok");
+    expect(() => store.transitionRequest(manager, id, "in_progress")).toThrow(/Sensitive execution/);
+    const email = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "external_email" && a.status === "pending")!;
+    store.decideApproval(founder, email.id, "approved", "ok");
+    expect(store.getRequest(founder, id).status).not.toBe("in_progress");
+  });
+
+  it("does not let a QA pass from before a raise stand for the raised work", async () => {
+    const { store, founder, manager } = memory();
+    const created = await store.createRequest(founder, {
+      ...FUNDS_TRANSFER,
+      title: "Research brief",
+      objective: "Prepare the draft",
+      description: "Draft a research brief comparing three vendors with pricing details.",
+      deliverable: "Draft",
+    });
+    const id = created.request.id;
+    approveAllPending(store, founder, id);
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.createQaReview(manager, id, { passed: true, score: 90, notes: "Ready." });
+    // Ensure the re-approval is decided strictly after the old QA review.
+    const qa = store.data.qaReviews.find((q) => q.requestId === id)!;
+    qa.createdAt = "2000-01-01T00:00:00.000Z";
+
+    store.updateRequestScope(manager, id, { description: "Draft the research brief with pricing details, then send to the client list." });
+    approveAllPending(store, founder, id);
+    expect(store.getRequest(founder, id).status).not.toBe("ready_to_deliver");
+    expect(() => store.deliverRequest(manager, id, PACK)).toThrow();
+  });
+
+  it("still delivers existing sensitive outbound work whose outbound approval was recorded at external_execution", async () => {
+    const { store, founder, manager } = memory();
+    const created = await store.createRequest(founder, {
+      ...FUNDS_TRANSFER,
+      title: "Vendor payment notice",
+      objective: "Pay the vendor and tell them",
+      description: "Transfer funds to the vendor and send them the remittance advice by email.",
+      deliverable: "Remittance advice",
+      externalCommunication: true,
+    });
+    const id = created.request.id;
+    expect(created.request.approvalLevel).toBe("sensitive_execution");
+    // An outbound approval recorded before this change was stamped external_execution.
+    const outbound = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "external_email")!;
+    outbound.actionClass = "external_execution";
+    approveAllPending(store, founder, id);
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.createQaReview(manager, id, { passed: true, score: 90, notes: "Ready." });
+    expect(store.getRequest(founder, id).status).toBe("ready_to_deliver");
+    expect(() => store.deliverRequest(manager, id, PACK)).not.toThrow();
+  });
+});
+
+describe("Supabase workspace: approval decisions pass the transition gates", () => {
+  it("does not start sensitive work when only an outbound approval is decided", async () => {
+    const ORG = "11111111-1111-4111-8111-111111111111";
+    const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "owner@example.com", name: "Owner", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+    db = createFakeDb({
+      workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "Back office", status: "active", created_at: "", updated_at: "" }],
+    });
+    vi.stubEnv("XAI_API_KEY", "");
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, { ...FUNDS_TRANSFER, externalCommunication: true, description: "Transfer funds to the vendor and send them the remittance advice by email." });
+    const request = db.tables.requests[0];
+    expect(request.approval_level).toBe("sensitive_execution");
+    Object.assign(db.tables.approvals.find((a) => a.kind === "execution_plan")!, { status: "approved", decided_at: "2026-01-01T00:00:00.000Z" });
+    Object.assign(request, { status: "awaiting_action_approval", assigned_operator_id: "44444444-4444-4444-8444-444444444444" });
+    const email = db.tables.approvals.find((a) => a.kind === "external_email" && a.status === "pending")!;
+    expect(db.tables.approvals.find((a) => a.kind === "sensitive_action")?.status).toBe("pending");
+
+    await repo.decideApproval(client, String(email.id), "approved", "ok");
+    expect(request.status).toBe("awaiting_action_approval");
+  });
+});

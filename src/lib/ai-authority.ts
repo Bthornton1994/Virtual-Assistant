@@ -254,14 +254,37 @@ export function reapprovalAfterRaise(status: RequestStatus, hadPlanApproval: boo
   return { requestApprovals: true, newPlanApproval: true, returnToPlanApproval: true };
 }
 
+// Outbound approvals authorize an outbound action; the sensitive part of a
+// request is authorized separately by its sensitive_action approval.
+const OUTBOUND_KINDS: readonly ApprovalKind[] = ["external_email", "vendor_communication", "crm_destructive_change"];
+
 /**
- * An approval authorizes the class it was given at. One recorded at a lower
- * class than the request now holds (because its scope was raised since) does
- * not satisfy any gate. An unknown class covers nothing.
+ * An approval authorizes the class it was given at. One recorded below the
+ * class it must cover (because the request's scope was raised since) does not
+ * satisfy any gate. A plan approval must cover the request's class; an
+ * outbound approval must cover the request's class up to external_execution.
+ * An unknown class covers nothing.
  */
-export function approvalCovers(approval: { actionClass: ActionClass | null | undefined }, request: { approvalLevel: ActionClass }): boolean {
+export function approvalCovers(
+  approval: { kind?: ApprovalKind; actionClass: ActionClass | null | undefined },
+  request: { approvalLevel: ActionClass },
+): boolean {
   const given = rank(ACTION_CLASSES, approval.actionClass);
-  return given >= 0 && given >= rank(ACTION_CLASSES, request.approvalLevel);
+  const needed =
+    approval.kind && OUTBOUND_KINDS.includes(approval.kind)
+      ? Math.min(rank(ACTION_CLASSES, request.approvalLevel), rank(ACTION_CLASSES, "external_execution"))
+      : rank(ACTION_CLASSES, request.approvalLevel);
+  return given >= 0 && given >= needed;
+}
+
+/**
+ * Whether a passed QA review counts for the request's current authority. It
+ * must be recorded no earlier than the latest covering plan approval was
+ * decided, so a review from before a raise does not stand for the raised
+ * work. A request with no dated covering plan approval accepts any pass.
+ */
+export function qaCountsForAuthority(review: { createdAt: string }, planDecidedAt: string | null): boolean {
+  return !planDecidedAt || review.createdAt >= planDecidedAt;
 }
 
 /** The class to record on a new approval: its own class, or the request's if stricter. */
