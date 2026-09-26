@@ -87,7 +87,27 @@ export class SupabaseWorkspaceRepository {
   ) {
     if (options?.advanceStatus === false || req.status === "cancelled") return;
     const next = kind === "execution_plan" ? "awaiting_plan_approval" : "awaiting_action_approval";
-    await db.from("requests").update({ status: next, updated_at: nowIso() }).eq("id", req.id);
+    await this.writeRequestIfUnchanged(db, req, { status: next });
+  }
+
+  /**
+   * Write request fields only if the request still has the status and action
+   * class the caller checked its gates against. Supabase calls here are not
+   * one transaction, so a concurrent change (such as a scope raise) between
+   * the check and the write makes the write fail instead of overwriting it.
+   */
+  private async writeRequestIfUnchanged(db: SupabaseClient, req: RequestRecord, patch: Record<string, unknown>) {
+    const { data, error } = await db
+      .from("requests")
+      .update({ ...patch, updated_at: nowIso() })
+      .eq("id", req.id)
+      .eq("status", req.status)
+      .eq("approval_level", req.approvalLevel)
+      .select("*")
+      .maybeSingle();
+    if (error) dbFail(error);
+    if (!data) throw new DomainError("The request changed while this action ran; reload and try again");
+    return data;
   }
 
   private mapOrg(row: Record<string, unknown>): Organization {
@@ -724,21 +744,14 @@ export class SupabaseWorkspaceRepository {
       description: text("description"),
       deliverable: text("deliverable"),
     });
-    const { data, error } = await db
-      .from("requests")
-      .update({
-        title: patch.title ?? req.title,
-        objective: patch.objective ?? req.objective,
-        description: patch.description ?? req.description,
-        deliverable: patch.deliverable ?? req.deliverable,
-        due_at: patch.dueAt === undefined ? req.dueAt : patch.dueAt,
-        ...(raised ? { approval_level: raised.actionClass, risk_level: raised.riskLevel } : {}),
-        updated_at: nowIso(),
-      })
-      .eq("id", id)
-      .select("*")
-      .single();
-    if (error) dbFail(error);
+    const data = await this.writeRequestIfUnchanged(db, req, {
+      title: patch.title ?? req.title,
+      objective: patch.objective ?? req.objective,
+      description: patch.description ?? req.description,
+      deliverable: patch.deliverable ?? req.deliverable,
+      due_at: patch.dueAt === undefined ? req.dueAt : patch.dueAt,
+      ...(raised ? { approval_level: raised.actionClass, risk_level: raised.riskLevel } : {}),
+    });
     const metadata: Record<string, unknown> = { ...patch };
     if (raised) {
       metadata.authorityRaised = {
@@ -812,9 +825,11 @@ export class SupabaseWorkspaceRepository {
   private async planApprovalOutstanding(db: SupabaseClient, req: RequestRecord) {
     const { data } = await db.from("approvals").select("status, action_class").eq("request_id", req.id).eq("kind", "execution_plan");
     const plans = data ?? [];
-    if (plans.some((a) => a.status === "pending" && approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req))) return true;
-    const approved = plans.filter((a) => a.status === "approved");
-    return approved.length > 0 && !approved.some((a) => approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req));
+    const covers = (a: { action_class: unknown }) => approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req);
+    if (plans.some((a) => a.status === "pending" && covers(a))) return true;
+    // Once any plan approval exists, the request is held until one is approved
+    // at its current class, whatever state the other plan approvals are in.
+    return plans.length > 0 && !plans.some((a) => a.status === "approved" && covers(a));
   }
 
   /** Bring a request's plan, steps and approvals up to its raised authority. */
@@ -911,8 +926,7 @@ export class SupabaseWorkspaceRepository {
         throw new DomainError("Sensitive execution cannot proceed without explicit approval");
       }
     }
-    const { data, error } = await db.from("requests").update({ status: to, updated_at: nowIso() }).eq("id", id).select("*").single();
-    if (error) dbFail(error);
+    const data = await this.writeRequestIfUnchanged(db, req, { status: to });
     await this.audit(actor, "request.status_changed", "request", id, req.organizationId, { from: req.status, to, note });
     return this.mapRequest(data);
   }
@@ -1088,7 +1102,7 @@ export class SupabaseWorkspaceRepository {
         if (!sensitiveHeld) next = resume;
       }
     }
-    await db.from("requests").update({ status: next, updated_at: nowIso() }).eq("id", req.id);
+    await this.writeRequestIfUnchanged(db, req, { status: next });
     await this.audit(actor, "approval.decided", "approval", approvalId, approval.organization_id, { decision, kind: approval.kind });
     await this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, { from: req.status, to: next });
     return this.mapApproval(data);
@@ -1135,7 +1149,7 @@ export class SupabaseWorkspaceRepository {
       .select("*")
       .single();
     if (error) dbFail(error);
-    await db.from("requests").update({ status: "needs_clarification", updated_at: nowIso() }).eq("id", requestId);
+    await this.writeRequestIfUnchanged(db, req, { status: "needs_clarification" });
     return data as Clarification;
   }
 
@@ -1151,8 +1165,10 @@ export class SupabaseWorkspaceRepository {
       .eq("id", clarificationId);
     const { data: open } = await db.from("clarifications").select("id").eq("request_id", row.request_id).is("answer", null);
     if (!open?.length) {
-      const req = await this.getRequest(actor, row.request_id);
-      await db.from("requests").update({ missing_context: [], status: "awaiting_plan_approval", updated_at: nowIso() }).eq("id", req.id);
+      const current = await this.getRequest(actor, row.request_id);
+      const moved = await this.writeRequestIfUnchanged(db, current, { missing_context: [], status: "awaiting_plan_approval" });
+      // The plan approval is requested at the class the request holds now.
+      const req = this.mapRequest(moved);
       const { data: plan } = await db.from("execution_plans").select("plan").eq("request_id", req.id).maybeSingle();
       await this.createApprovalRecord(actor, req, {
         kind: "execution_plan",
@@ -1238,7 +1254,7 @@ export class SupabaseWorkspaceRepository {
     if (error) dbFail(error);
     if (input.notes) await this.addComment(actor, requestId, input.notes, "internal");
     if (!input.passed) {
-      await db.from("requests").update({ status: "revision_required", updated_at: nowIso() }).eq("id", requestId);
+      await this.writeRequestIfUnchanged(db, req, { status: "revision_required" });
     } else {
       const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
       if (needsOutbound && !(await this.hasCoveringApproval(db, req, "external_email"))) {
@@ -1250,7 +1266,7 @@ export class SupabaseWorkspaceRepository {
           actionClass: approvalClassFor("external_execution", req),
         });
       } else {
-        await db.from("requests").update({ status: "ready_to_deliver", updated_at: nowIso() }).eq("id", requestId);
+        await this.writeRequestIfUnchanged(db, req, { status: "ready_to_deliver" });
       }
     }
     const after = await this.getRequest(actor, requestId);
@@ -1276,7 +1292,7 @@ export class SupabaseWorkspaceRepository {
     await this.assertDeliverable(db, req);
     if (existing) {
       // A reopened request is redelivered with its original package once the checks above pass.
-      await db.from("requests").update({ status: "delivered", updated_at: nowIso() }).eq("id", requestId);
+      await this.writeRequestIfUnchanged(db, req, { status: "delivered" });
       await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, { from: req.status, to: "delivered" });
       return existing;
     }
@@ -1303,7 +1319,7 @@ export class SupabaseWorkspaceRepository {
       }
       dbFail(error);
     }
-    await db.from("requests").update({ status: "delivered", updated_at: nowIso() }).eq("id", requestId);
+    await this.writeRequestIfUnchanged(db, req, { status: "delivered" });
     await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, { from: req.status, to: "delivered" });
     return data;
   }

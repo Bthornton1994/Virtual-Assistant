@@ -1395,8 +1395,9 @@ export class MemoryStore {
   private planApprovalOutstanding(req: RequestRecord) {
     const plans = this.data.approvals.filter((a) => a.requestId === req.id && a.kind === "execution_plan");
     if (plans.some((a) => a.status === "pending" && approvalCovers(a, req))) return true;
-    const approved = plans.filter((a) => a.status === "approved");
-    return approved.length > 0 && !approved.some((a) => approvalCovers(a, req));
+    // Once any plan approval exists, the request is held until one is approved
+    // at its current class, whatever state the other plan approvals are in.
+    return plans.length > 0 && !plans.some((a) => a.status === "approved" && approvalCovers(a, req));
   }
 
   /**

@@ -886,3 +886,79 @@ describe("approvals requested before a raise do not hold or undo the raised requ
     expect(() => store.deliverRequest(manager, id, { summary: "p", deliverables: ["x"], attachments: [], actionsTaken: [], exceptions: [], unresolvedDecisions: [], nextStep: "" })).not.toThrow();
   });
 });
+
+describe("Supabase workspace: a raise that lands mid-action is not overwritten", () => {
+  const ORG = "11111111-1111-4111-8111-111111111111";
+  const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "o@example.com", name: "O", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+  const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "p@example.com", name: "P", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+  const OUT = { ...FUNDS_TRANSFER, title: "Client update", objective: "Update the client", description: "Prepare the weekly status summary and send to the client contacts list.", deliverable: "Update" };
+  const WIRE = { description: "Prepare the weekly status summary, send to the client contacts, and wire the deposit from the operating bank account." };
+
+  async function setup(input = OUT) {
+    vi.stubEnv("XAI_API_KEY", "");
+    db = createFakeDb({ workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "B", status: "active", created_at: "", updated_at: "" }] });
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, input);
+    const req = db.tables.requests[0];
+    return { repo, req, id: String(req.id) };
+  }
+
+  /** Run `raise` to completion just before the next requests update that sets `status` executes. */
+  function raiseBeforeStatusWrite(status: string, raise: () => Promise<unknown>) {
+    const from = db.from.bind(db);
+    let fired = false;
+    db.from = (table: string) => {
+      const builder = from(table);
+      if (table !== "requests") return builder;
+      const update = builder.update.bind(builder);
+      builder.update = (patch: Record<string, unknown>) => {
+        const query = update(patch);
+        if (!fired && patch.status === status) {
+          fired = true;
+          const then = query.then.bind(query);
+          query.then = ((ok, bad) => raise().then(() => then(ok, bad), bad)) as typeof query.then;
+        }
+        return query;
+      };
+      return builder;
+    };
+  }
+
+  it("transitionRequest does not start work after a concurrent raise", async () => {
+    const { repo, req, id } = await setup();
+    const plan = db.tables.approvals.find((a) => a.kind === "execution_plan")!;
+    await repo.decideApproval(client, String(plan.id), "approved", "ok");
+    expect(req.status).toBe("queued");
+    raiseBeforeStatusWrite("in_progress", () => repo.updateRequestScope(manager, id, WIRE));
+    await expect(repo.transitionRequest(manager, id, "in_progress")).rejects.toThrow(/changed while this action ran/);
+    expect(req).toMatchObject({ approval_level: "sensitive_execution", status: "awaiting_plan_approval" });
+  });
+
+  it("decideApproval does not resume work after a concurrent raise", async () => {
+    const { repo, req, id } = await setup();
+    const plan = db.tables.approvals.find((a) => a.kind === "execution_plan")!;
+    await repo.decideApproval(client, String(plan.id), "approved", "ok");
+    Object.assign(req, { status: "awaiting_action_approval", assigned_operator_id: "44444444-4444-4444-8444-444444444444" });
+    const email = db.tables.approvals.find((a) => a.kind === "external_email" && a.status === "pending")!;
+    raiseBeforeStatusWrite("in_progress", () => repo.updateRequestScope(manager, id, WIRE));
+    await expect(repo.decideApproval(client, String(email.id), "approved", "ok")).rejects.toThrow(/changed while this action ran/);
+    expect(req.status).not.toBe("in_progress");
+  });
+
+  it("answerClarification does not overwrite a concurrent raise, and a retry asks at the raised class", async () => {
+    const { repo, req, id } = await setup({ ...OUT, description: "Short.", deliverable: "" });
+    expect(req.status).toBe("needs_clarification");
+    const questions = [...db.tables.clarifications];
+    expect(questions.length).toBeGreaterThan(0);
+    for (const q of questions.slice(0, -1)) await repo.answerClarification(client, String(q.id), "Answered");
+    raiseBeforeStatusWrite("awaiting_plan_approval", () => repo.updateRequestScope(manager, id, WIRE));
+    // Answering the last question races the raise and fails instead of overwriting it.
+    await expect(repo.answerClarification(client, String(questions.at(-1)!.id), "Answered")).rejects.toThrow(/changed while this action ran/);
+    expect(req).toMatchObject({ approval_level: "sensitive_execution", status: "needs_clarification" });
+    expect(db.tables.approvals.some((a) => a.kind === "execution_plan" && a.action_class !== "sensitive_execution")).toBe(false);
+    // Retrying the answer puts the plan to the customer at the raised class.
+    await repo.answerClarification(client, String(questions.at(-1)!.id), "Answered");
+    expect(req.status).toBe("awaiting_plan_approval");
+    expect(db.tables.approvals.find((a) => a.kind === "execution_plan")).toMatchObject({ status: "pending", action_class: "sensitive_execution" });
+  });
+});
