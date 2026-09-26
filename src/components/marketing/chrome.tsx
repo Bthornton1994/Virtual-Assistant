@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Wordmark } from "@/components/brand";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
 const links = [
@@ -62,9 +62,7 @@ export function MarketingHeader() {
           <Link href="/login" className="text-sm text-ink-soft hover:text-ink">
             Log in
           </Link>
-          <Link href="/book">
-            <Button size="sm">Start Delegating</Button>
-          </Link>
+          <ButtonLink href="/book" size="sm">Start Delegating</ButtonLink>
         </div>
         <button
           type="button"
@@ -119,11 +117,9 @@ export function MarketingHeader() {
           >
             Log in
           </Link>
-          <Link href="/book" className="mt-4" onClick={() => setOpen(false)}>
-            <Button className="w-full" size="lg">
-              Start Delegating
-            </Button>
-          </Link>
+          <ButtonLink href="/book" className="mt-4 w-full" size="lg" onClick={() => setOpen(false)}>
+            Start Delegating
+          </ButtonLink>
         </nav>
       </div>
     </header>
@@ -142,7 +138,7 @@ export function MarketingFooter() {
         </div>
         <div className="grid grid-cols-2 gap-10 text-sm">
           <div className="space-y-2">
-            <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">Product</p>
+            <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/65">Product</p>
             <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/how-it-works">
               How it works
             </Link>
@@ -155,9 +151,12 @@ export function MarketingFooter() {
             <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/book">
               Start Delegating
             </Link>
+            <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/ai-app-release-rescue">
+              AI App Release Rescue
+            </Link>
           </div>
           <div className="space-y-2">
-            <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/50">Company</p>
+            <p className="text-[11px] uppercase tracking-[0.16em] text-accent-fg/65">Company</p>
             <Link className="block text-accent-fg/80 hover:text-accent-fg" href="/security">
               Security
             </Link>

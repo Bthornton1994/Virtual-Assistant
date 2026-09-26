@@ -1,6 +1,5 @@
-import Link from "next/link";
 import { HeroDashboard, LiveDemo, OperationsCatalog, PainStream } from "@/components/marketing/home-interactive";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 
 export const metadata = { title: "Give us the work. Get your time back." };
 
@@ -22,14 +21,10 @@ export default function HomePage() {
               Your managed operations team for inbox, scheduling, CRM, research, follow-up, customer operations, reporting, and the work between.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Link href="/book">
-                <Button size="lg">Start Delegating</Button>
-              </Link>
-              <Link href="/how-it-works">
-                <Button size="lg" variant="secondary">
-                  See How It Works
-                </Button>
-              </Link>
+              <ButtonLink href="/book" size="lg">Start Delegating</ButtonLink>
+              <ButtonLink href="/how-it-works" size="lg" variant="secondary">
+                See How It Works
+              </ButtonLink>
             </div>
           </div>
           <HeroDashboard />
@@ -177,11 +172,9 @@ export default function HomePage() {
           </div>
           <p className="mt-8 text-lg">And the things that require your judgment are waiting in one place.</p>
           <p className="mt-10 text-2xl font-semibold">That’s Delegation Cloud.</p>
-          <Link href="/book" className="mt-8 inline-block">
-            <Button size="lg" className="bg-[#c5a46e] text-[#111410] hover:bg-[#d4b56a]">
-              Find What I Should Delegate
-            </Button>
-          </Link>
+          <ButtonLink href="/book" size="lg" className="mt-8 bg-[#c5a46e] text-[#111410] hover:bg-[#d4b56a]">
+            Find What I Should Delegate
+          </ButtonLink>
         </div>
       </section>
     </>

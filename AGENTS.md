@@ -58,6 +58,16 @@ Treat explicit authority, required approvals, least-privilege access, organizati
 
 Only edit `VISION.md` when the task explicitly authorizes a governing decision change. Small fixes need no formal vision analysis, but they must preserve these boundaries. Report validation and any remaining vision tension before handoff.
 
+## AI App Release Rescue
+
+For work on the release-readiness review workstream — intake, repository access, the audit rubric, findings, report integrity, or retention — read `docs/AI-APP-RELEASE-RESCUE-V1.md` first.
+
+The offer is a fixed-price review of one repository, one application, and one critical workflow, with a separate remediation sprint. Never describe it as a penetration test, a compliance certification, or a security guarantee; `findProhibitedClaims` in `src/lib/release-rescue-intake.ts` is the single list governing both report text and the marketing surface. It takes a `source`: offer copy may carry a disclaimer that licenses a claim it denies, a value a person typed into a field may not. Both production call sites read typed fields. The guard is not complete, and its known residuals are recorded exactly in `src/lib/__tests__/release-rescue-claim-guard-residuals.ts` — a zero from it is evidence, not a verdict.
+
+The review is prepare-only. Severity is derived from recorded observations, never chosen by an executor. Coverage, counts, and the verdict are computed in deterministic code and rejected when a stored value disagrees. Delivery requires a named human reviewer holding manager authority. Repository access is read-only, time-boxed, customer-revocable, and never stored as a credential.
+
+`VISION.md` § Scope and non-goals now admits bounded technical assurance work, on stated terms (decision `D-009`). Those terms are the boundary: prepare-only authority, read-only revocable access with ownership established by an accountable human where the access method does not demonstrate control, deterministic severity and completion, a named human signature before delivery, and remediation as a separate engagement. A proposal that needs to attack a running system, certify compliance, take production access, or promise an unverifiable outcome is out of scope regardless of demand. Admission is not launch: payment activation, production access, and any increase in executor authority remain separate owner decisions.
+
 ## Software Factory model economy
 
 Canonical pins live in `docs/SOFTWARE-FACTORY-MODEL-ECONOMY-V1.md` and the three project agents under `.cursor/agents/`. Do not add more Software Factory agents unless an owner decision changes that policy.

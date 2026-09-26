@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 
 export const metadata = { title: "For operators" };
 
@@ -20,9 +19,7 @@ export default function ForAssistantsPage() {
         </p>
       </div>
       <div className="mt-10">
-        <Link href="/login">
-          <Button>Operator sign in</Button>
-        </Link>
+        <ButtonLink href="/login">Operator sign in</ButtonLink>
       </div>
     </div>
   );

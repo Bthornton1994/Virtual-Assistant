@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { addPlaybookVersionAction } from "@/app/actions/requests";
 import { PageHeader, StatusBadge } from "@/components/product";
-import { Button, Field, Input, Textarea } from "@/components/ui";
+import { Button, ButtonLink, Field, Input, Textarea } from "@/components/ui";
 import { requireClient } from "@/lib/auth";
 import { AuthzError, DomainError } from "@/lib/domain";
 import { getWorkspace } from "@/lib/workspace";
@@ -44,9 +44,7 @@ export default async function PlaybookDetailPage({ params }: { params: Promise<{
         title={playbook.title}
         description={playbook.objective}
         actions={
-          <Link href={`/app/requests/new?playbookId=${playbook.id}`}>
-            <Button>Use this playbook</Button>
-          </Link>
+          <ButtonLink href={`/app/requests/new?playbookId=${playbook.id}`}>Use this playbook</ButtonLink>
         }
       />
       {current ? (

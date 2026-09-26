@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui";
+import { ButtonLink } from "@/components/ui";
 import { SOLUTIONS } from "@/lib/solutions";
 
 export const metadata = { title: "What we take on" };
@@ -29,9 +29,7 @@ export default function SolutionsPage() {
         ))}
       </div>
       <div className="mt-12">
-        <Link href="/book">
-          <Button size="lg">Start Delegating</Button>
-        </Link>
+        <ButtonLink href="/book" size="lg">Start Delegating</ButtonLink>
       </div>
     </div>
   );

@@ -143,6 +143,18 @@ Customers are buying managed capacity, reliability, and increasing operational l
 
 Initial workstreams include executive operations, inbox, sales support, meetings, research, customer operations, content operations, and back-office operations.
 
+Delegation Cloud also performs bounded technical assurance work, where the outcome the customer delegates is a verified judgment rather than a change to their systems. The release-readiness review is the first such workstream: a fixed-scope, fixed-price review of one repository, one application, and one critical workflow, delivered as an evidence-backed report a named human has signed.
+
+This is admitted on narrow terms, and the terms are the point.
+
+- Assurance work is prepare-only. It reads, judges, and reports. It never changes a customer's code, configuration, or environment.
+- It is not penetration testing, not compliance certification, and not a guarantee about an application's security. It must never be described as any of those, in a report or on a marketing surface.
+- Access is read-only, time-boxed, revocable by the customer, and never held by us as a credential. Granting access must require an action only someone who controls the code can perform; where it does not, ownership is established by an accountable human before the review begins.
+- Severity, coverage, and completion are computed by deterministic code from recorded observations. An executor's own account of its work is evidence, never the verdict.
+- Remediation is a separate engagement. A reviewer must not be the party that profits from implementing what it recommended unless the customer chooses that separately.
+
+Delegation Cloud does not become a security consultancy. A proposal that requires attacking a running system, certifying compliance against a framework, taking production access or customer end-user data, or promising an outcome we cannot verify stays out of scope regardless of demand.
+
 Delegation Cloud is not a freelancer marketplace, staffing directory, hourly virtual-assistant agency, unmanaged software toolkit, employee-surveillance product, or autonomous system with unlimited authority. It does not launch by taking custody of funds, practicing law, making regulated decisions, or independently performing high-risk purchases.
 
 ## Decision tests

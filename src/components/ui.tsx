@@ -1,5 +1,7 @@
 import { cloneElement, isValidElement, useId } from "react";
+import Link from "next/link";
 import { cn } from "@/lib/cn";
+import type { ComponentProps } from "react";
 import type {
   ButtonHTMLAttributes,
   HTMLAttributes,
@@ -9,30 +11,48 @@ import type {
   TextareaHTMLAttributes,
 } from "react";
 
+type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+type ButtonSize = "sm" | "md" | "lg";
+
+function buttonClasses(variant: ButtonVariant, size: ButtonSize, className?: string) {
+  return cn(
+    "inline-flex min-h-11 items-center justify-center gap-2 rounded-md font-medium transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-50",
+    size === "sm" && "min-h-11 px-2.5 text-xs",
+    size === "md" && "min-h-11 px-3.5 text-sm",
+    size === "lg" && "h-12 px-5 text-[15px]",
+    variant === "primary" && "bg-accent text-accent-fg hover:bg-accent-hover",
+    variant === "secondary" && "border border-line-strong bg-surface text-ink hover:bg-bg-elevated",
+    variant === "ghost" && "text-ink-soft hover:bg-black/5",
+    variant === "danger" && "bg-bad text-white hover:bg-[#7a2424]",
+    className,
+  );
+}
+
 export function Button({
   className,
   variant = "primary",
   size = "md",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-  size?: "sm" | "md" | "lg";
+  variant?: ButtonVariant;
+  size?: ButtonSize;
 }) {
   return (
-    <button
-      className={cn(
-        "inline-flex min-h-11 items-center justify-center gap-2 rounded-md font-medium transition-[transform,background-color,border-color,color,box-shadow] duration-150 ease-[var(--ease-ui-out)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold disabled:cursor-not-allowed disabled:opacity-50",
-        size === "sm" && "min-h-11 px-2.5 text-xs",
-        size === "md" && "min-h-11 px-3.5 text-sm",
-        size === "lg" && "h-12 px-5 text-[15px]",
-        variant === "primary" && "bg-accent text-accent-fg hover:bg-accent-hover",
-        variant === "secondary" && "border border-line-strong bg-surface text-ink hover:bg-bg-elevated",
-        variant === "ghost" && "text-ink-soft hover:bg-black/5",
-        variant === "danger" && "bg-bad text-white hover:bg-[#7a2424]",
-        className,
-      )}
-      {...props}
-    />
+    <button className={buttonClasses(variant, size, className)} {...props} />
+  );
+}
+
+export function ButtonLink({
+  className,
+  variant = "primary",
+  size = "md",
+  ...props
+}: ComponentProps<typeof Link> & {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+}) {
+  return (
+    <Link className={buttonClasses(variant, size, className)} {...props} />
   );
 }
 
@@ -104,21 +124,50 @@ export function Field({
   label,
   children,
   hint,
+  error,
 }: {
   label: string;
   children: ReactNode;
   hint?: string;
+  error?: string;
 }) {
   const generatedId = useId();
-  const child = isValidElement<{ id?: string }>(children) ? children : null;
+  const hintId = `${generatedId}-hint`;
+  const errorId = `${generatedId}-error`;
+  const child = isValidElement<{
+    id?: string;
+    "aria-describedby"?: string;
+    "aria-invalid"?: boolean | "true" | "false";
+  }>(children)
+    ? children
+    : null;
   const controlId = child?.props.id ?? generatedId;
-  const control = child ? cloneElement(child, { id: controlId }) : children;
+  const describedBy =
+    [child?.props["aria-describedby"], hint ? hintId : undefined, error ? errorId : undefined]
+      .filter(Boolean)
+      .join(" ") || undefined;
+  const control = child
+    ? cloneElement(child, {
+        id: controlId,
+        "aria-invalid": error ? true : child.props["aria-invalid"],
+        "aria-describedby": describedBy,
+      })
+    : children;
 
   return (
     <div className="space-y-1">
       <Label htmlFor={child ? controlId : undefined}>{label}</Label>
       {control}
-      {hint ? <p className="text-xs text-muted">{hint}</p> : null}
+      {hint ? (
+        <p id={hintId} className="text-xs text-muted">
+          {hint}
+        </p>
+      ) : null}
+      {error ? (
+        <p id={errorId} className="text-xs text-bad" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
