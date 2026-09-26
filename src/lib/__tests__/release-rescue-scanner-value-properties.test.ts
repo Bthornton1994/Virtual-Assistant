@@ -289,9 +289,8 @@ describe("ordinary security prose survives, because holding a report costs the c
 
 describe("the scan stays bounded as the input grows", () => {
   // An absolute ceiling only. HOW the cost grows is measured once, by the
-  // median doubling-ratio, in release-rescue-credential-scanner.test.ts
-  // ("the scan is near-linear on adversarial input"), and these shapes are
-  // in that list.
+  // exponent, in release-rescue-credential-scanner.test.ts ("the scan is
+  // near-linear on adversarial input"), and these shapes are in that list.
   //
   // This block used to also assert `time(80KB) / time(40KB) < 3`, calling 3
   // "the line between linear and quadratic" (S-014). It was not. MAX_SCAN_LENGTH

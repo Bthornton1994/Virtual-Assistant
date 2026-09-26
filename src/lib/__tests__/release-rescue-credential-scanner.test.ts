@@ -144,47 +144,193 @@ describe("safe text stays readable, because a false positive blocks a delivery",
   }
 });
 
-// Growth over real doublings. Linear is a 2x step (exponent 1); quadratic is a
-// 4x step (exponent 2). S-005 replaced skippable per-step ratios with the
-// whole-range exponent so a 20ms floor could not hide S-004. S-018 is the
-// inverse: the exponent ceiling of 1.5 sat inside runner noise. The shape
-// that distinguishes a near-quadratic path (S-004: 3.10, 3.48, 3.70) from a
-// single descheduled sample (fb3110e: 2.18, 2.32, 4.68) is the median of
-// those adjacent doubling ratios.
-function doublingGrowth(timings: number[]) {
+// Growth over real doublings, measured as the whole-range exponent.
+//
+// Linear is a 2x step (exponent 1.0); quadratic is a 4x step (exponent 2.0).
+// S-005 replaced skippable per-step ratios with this exponent so a 20ms floor
+// could not hide S-004 a second time. S-018 then replaced the exponent with
+// the median of the three adjacent doubling ratios against 3.
+//
+// Audit 48 measured what that swap actually did, and the two gates turn out
+// not to be ordered by strength: they ask different questions. A median of
+// three discards the largest ratio, so a cost that only turns super-linear in
+// the FINAL doubling passes it untouched. [1, 2, 4, 256] has a median ratio of
+// 2.00 against a bar of 3, and a whole-range exponent of 2.667. The mirror
+// case [1, 8, 16, 32] is the same: median 2.00, exponent 1.667. Neither series
+// is noise. Both are growth the median cannot see, because the sample that
+// carries the growth is the one the median throws away.
+//
+// So the whole-range exponent is the authoritative gate again. It reads the
+// largest sample rather than discarding it, and it is the single number every
+// series below is measured against.
+const MAX_GROWTH_EXPONENT = 1.5;
+
+/**
+ * The whole-range growth exponent over a series of equal doublings.
+ *
+ * ORDER IS PART OF THE CALCULATION: the first and last samples are the
+ * endpoints and the divisor is the number of steps between them, so the same
+ * numbers in a different order are a different answer. `depends on the order
+ * of the samples` below pins that, because a future rewrite that sorts or
+ * reverses the series would otherwise pass every other test here.
+ */
+function growthExponent(timings: readonly number[]): number {
   const doublings = timings.length - 1;
-  const ratios = timings.slice(1).map((value, index) => value / timings[index]);
-  const ordered = [...ratios].sort((left, right) => left - right);
-  const middle = Math.floor(ordered.length / 2);
-  const medianRatio =
-    ordered.length % 2 === 0
-      ? (ordered[middle - 1] + ordered[middle]) / 2
-      : ordered[middle];
-  const exponent = Math.log2(timings[doublings] / timings[0]) / doublings;
-  return { ratios, medianRatio, exponent };
+  return Math.log2(timings[doublings] / timings[0]) / doublings;
 }
 
-describe("the growth assertion still fails quadratic and ignores one spike", () => {
-  it("rejects a pure n^2 series", () => {
-    const growth = doublingGrowth([1, 4, 16, 64]);
-    expect(growth.exponent).toBeCloseTo(2, 5);
-    expect(growth.medianRatio).toBe(4);
-    expect(growth.medianRatio).toBeGreaterThanOrEqual(3);
+/**
+ * THE gate. The live measurement below and the recorded-series table both
+ * decide through this one function, so growth is judged in exactly one place.
+ *
+ * WHAT THAT BUYS, measured rather than asserted. Rewriting this function to
+ * judge by the median of adjacent ratios instead - the S-018 change - fails 3
+ * tests in this file. When the table recomputed the comparison itself, the
+ * same rewrite left it green.
+ *
+ * WHAT IT DOES NOT BUY, stated because a partial guard described as a whole
+ * one is how S-014 and S-018 happened. Deleting the call below and writing a
+ * median assertion inline at the live site still passes every test here: 55
+ * of 55. No test can observe another test's assertion, so that residual is
+ * closed by reading the diff, not by running it. What this function does is
+ * make such a change a visible deletion rather than a silent drift.
+ */
+function exceedsGrowthCeiling(timings: readonly number[]): boolean {
+  const exponent = growthExponent(timings);
+
+  // FAIL CLOSED on a number that is not a number. A zero timing is reachable:
+  // `performance.now()` has finite resolution, so a fast enough scan can
+  // measure 0, and two of them give 0 / 0 = NaN. Returning `NaN >= 1.5`, which
+  // is false, would report such a run as within budget. The assertion this
+  // helper replaced compared with `toBeLessThan` and failed on NaN by
+  // accident; that behaviour is kept here on purpose.
+  if (!Number.isFinite(exponent)) return true;
+
+  return exponent >= MAX_GROWTH_EXPONENT;
+}
+
+describe("the growth gate, on recorded series rather than on the clock", () => {
+  // Deterministic. These are numbers that were measured, or the textbook shape
+  // of the thing being measured, so the gate itself is tested without a clock
+  // anywhere near it. `verdict` is what the live gate must say about each one.
+  const SERIES: ReadonlyArray<{
+    label: string;
+    timings: readonly number[];
+    exponent: number;
+    verdict: "rejects" | "accepts";
+  }> = [
+    // Textbook quadratic: every step is 4x.
+    { label: "a pure n^2 series", timings: [1, 4, 16, 64], exponent: 2, verdict: "rejects" },
+    // S-004's shape. RECONSTRUCTED, not recorded: what the ledger and the
+    // scanner's own comment record are the three ratios 3.10, 3.48, 3.70 and a
+    // whole-range exponent of 1.771. This series is built back from those
+    // two-decimal ratios, so it measures 1.772960 rather than 1.771 - the
+    // difference is rounding in the published ratios, not a second
+    // measurement. What matters here is the SHAPE: the ratios rise together,
+    // which is super-linear growth rather than one descheduled sample.
+    { label: "the S-004 near-quadratic shape", timings: [10, 31, 107.88, 399.156], exponent: 1.772960264105, verdict: "rejects" },
+    // Growth confined to the last doubling. Median 2.00 — invisible to S-018.
+    { label: "growth that starts only in the last doubling", timings: [1, 2, 4, 256], exponent: 2.666666666667, verdict: "rejects" },
+    // Growth confined to the first doubling. Median 2.00 — also invisible.
+    { label: "growth that stops after the first doubling", timings: [1, 8, 16, 32], exponent: 1.666666666667, verdict: "rejects" },
+    // Textbook linear: every step is 2x.
+    { label: "a pure linear series", timings: [1, 2, 4, 8], exponent: 1, verdict: "accepts" },
+    // `password=` repeated, measured at these sizes while S-014 was open. A
+    // mild super-linear residual, recorded rather than smoothed, and the
+    // closest real series to the ceiling on the accepting side.
+    { label: "the measured `password=` residual", timings: [10.8, 24, 56.5, 145.2], exponent: 1.249646078611, verdict: "accepts" },
+    // THE EXPONENT'S OWN BLIND BAND, stated rather than left to be discovered.
+    // It bounds growth across the whole range, not any single step, so a late
+    // spike small enough in total is admitted: over three doublings the
+    // ceiling permits last/first < 2^4.5 = 22.627, which on an otherwise
+    // linear series leaves room for a final step of up to 22.627 / 4 = 5.657x.
+    // This series spikes 5.00x at the end and is accepted. The median gate
+    // this replaces had the mirror blind spot and a wider one - it discarded
+    // the largest ratio outright, so [1, 2, 4, 256] passed at 64x. Neither
+    // estimator sees every shape; this one at least cannot ignore the sample
+    // that carries the growth.
+    { label: "a late spike small enough to stay inside the ceiling", timings: [1, 2, 4, 20], exponent: 1.4406426982957876, verdict: "accepts" },
+  ];
+
+  it("covers every series in the table", () => {
+    // Deleting a row deletes a test, and a deleted test does not fail. The
+    // count is pinned so removing coverage has to be deliberate.
+    expect(SERIES).toHaveLength(7);
+    expect(SERIES.filter((row) => row.verdict === "rejects")).toHaveLength(4);
+    expect(SERIES.filter((row) => row.verdict === "accepts")).toHaveLength(3);
   });
 
-  it("rejects the S-004 rising-ratio series", () => {
-    // Recorded before the line-index fix: 3.10, 3.48, 3.70 on `<password>`.
-    const growth = doublingGrowth([10, 31, 107.88, 399.156]);
-    expect(growth.ratios[0]).toBeCloseTo(3.1, 5);
-    expect(growth.medianRatio).toBeCloseTo(3.48, 5);
-    expect(growth.medianRatio).toBeGreaterThanOrEqual(3);
+  for (const row of SERIES) {
+    it(`${row.verdict}: ${row.label}`, () => {
+      const exponent = growthExponent(row.timings);
+
+      expect(exponent).toBeCloseTo(row.exponent, 10);
+      // Through the SAME function the live gate calls, not a copy of its
+      // comparison. This is what makes the table describe the gate.
+      expect(exceedsGrowthCeiling(row.timings)).toBe(row.verdict === "rejects");
+    });
+  }
+
+  it("pins the ceiling the live gate reads", () => {
+    // The table brackets this number from both sides: the closest ACCEPTED
+    // series measures 1.440643 and the closest REJECTED one 1.666667, so
+    // moving the ceiling anywhere outside (1.440643, 1.666667] already fails a
+    // row above. This fixes it inside that bracket, so changing it has to be
+    // deliberate rather than a quiet edit that no test notices.
+    expect(MAX_GROWTH_EXPONENT).toBe(1.5);
   });
 
-  it("accepts the fb3110e CI spike that flipped exponent 1.522", () => {
-    const growth = doublingGrowth([12.73, 27.75, 64.32, 301.28]);
-    expect(growth.exponent).toBeGreaterThan(1.5);
-    expect(growth.exponent).toBeCloseTo(1.522, 2);
-    expect(growth.medianRatio).toBeLessThan(3);
+  it("records the fb3110e false positive the ceiling cannot avoid", () => {
+    // NOT a defect, and NOT desired behaviour. This is the one series in this
+    // file that the gate gets WRONG, and it is here because a gate's known
+    // false positives belong beside it rather than only in a commit message.
+    //
+    // GitHub Actions measured it on fb3110e, a ledger-only commit: markdown
+    // this test never reads, with the scanner byte-identical to its green
+    // parent. No defect was present, and the gate still says reject.
+    const timings = [12.73, 27.75, 64.32, 301.28];
+
+    expect(growthExponent(timings)).toBeCloseTo(1.521600193571, 10);
+    expect(exceedsGrowthCeiling(timings)).toBe(true);
+
+    // The margin is NEGATIVE, by this much: at a ceiling of 1.5 the largest
+    // last sample this first sample permits is 12.73 * 2^4.5 = 288.047ms, and
+    // the run measured 301.28ms - over the allowance by 4.59%. The ceiling has
+    // no room on the high side against a measurement already observed on CI
+    // hardware with nothing wrong.
+    const allowance = timings[0] * 2 ** (MAX_GROWTH_EXPONENT * 3);
+    expect(allowance).toBeCloseTo(288.047, 3);
+    expect(timings[3]).toBeGreaterThan(allowance);
+    expect(timings[3] / allowance - 1).toBeCloseTo(0.0459, 4);
+
+    // Restoring the exponent re-instates this failure. That is the blocker on
+    // this change, recorded rather than dissolved: every workaround available
+    // here was excluded - raising the ceiling, sleeping, retrying, or going
+    // back to a median whose blind spot is worse. What would actually fix it
+    // changes production code or release policy, which is an owner decision
+    // and not this file's to take.
+  });
+
+  it("treats an unmeasurable series as over the ceiling, not under it", () => {
+    // Three ways the arithmetic can stop producing a number, and what the gate
+    // must say about each. None of these is a scan that ran within budget.
+    expect(growthExponent([0, 0, 0, 0])).toBeNaN();
+    expect(exceedsGrowthCeiling([0, 0, 0, 0])).toBe(true);
+
+    expect(growthExponent([0, 1, 2, 4])).toBe(Number.POSITIVE_INFINITY);
+    expect(exceedsGrowthCeiling([0, 1, 2, 4])).toBe(true);
+
+    expect(growthExponent([1, 2, 4, 0])).toBe(Number.NEGATIVE_INFINITY);
+    expect(exceedsGrowthCeiling([1, 2, 4, 0])).toBe(true);
+  });
+
+  it("depends on the order of the samples", () => {
+    // The exponent is an endpoint measurement over an ORDERED series, so the
+    // same four numbers in a different order are a different answer. Growth is
+    // a property of the order the sizes were measured in; a rewrite that
+    // sorted the timings first would still satisfy every other test here.
+    expect(growthExponent([1, 2, 4, 256])).toBeCloseTo(2.666666666667, 10);
+    expect(growthExponent([1, 256, 4, 2])).toBeCloseTo(0.333333333333, 10);
   });
 });
 
@@ -208,16 +354,21 @@ describe("the scan is near-linear on adversarial input", () => {
   // ran, and it failed at 3.81. The escape hatch was hiding a genuine
   // near-quadratic path in `collectOpaqueTokensNearCredentialNouns`, since fixed.
   //
-  // S-005 therefore asserted the growth EXPONENT across the whole range rather
-  // than adjacent ratios with a skip. That closed the skip. It did not close
-  // the threshold: on fb3110e, `repeated assignments` measured
-  // 12.73 → 27.75 → 64.32 → 301.28ms, exponent 1.522 against a 1.5 ceiling.
-  // The first two doublings were 2.18× and 2.32× (the 1.25 residual S-014
-  // recorded); the last was 4.68× — a spike, not the rising 3.10, 3.48, 3.70
-  // of S-004. The assertion is now the median adjacent-doubling ratio against
-  // 3, the midpoint of linear (2) and quadratic (4) on a real doubling. One
-  // noisy sample cannot flip it, a quadratic series still does, and nothing
-  // is skipped. The exponent stays in the failure detail.
+  // So the assertion is the growth EXPONENT across the whole range rather than
+  // adjacent ratios with a skip. Over three doublings linear is 1.0 and
+  // quadratic is 2.0, nothing can be skipped, and every sample is read.
+  //
+  // S-018 replaced that exponent with the median of the three adjacent
+  // doubling ratios, because on fb3110e this shape measured
+  // 12.73 -> 27.75 -> 64.32 -> 301.28ms, exponent 1.522 against the 1.5
+  // ceiling, on a ledger-only commit. Audit 48 measured the replacement: a
+  // median of three DISCARDS the largest ratio, so super-linear growth
+  // confined to the final doubling passes it. That is not a stricter or a
+  // looser gate than the exponent, it is a blind one in the direction this
+  // test exists to watch, and the audit reproduced it by size-gating the
+  // scanner and still getting a green suite. The exponent is authoritative
+  // again, and the per-step ratios are kept in the failure detail, where they
+  // diagnose without deciding.
   const SHAPES: Array<[string, (size: number) => string]> = [
     ["scheme-like run", (n) => `a${".b".repeat(n / 2)}=value12345`],
     ["identifier run", (n) => `${"A".repeat(n)}_PASSWORD=x`],
@@ -228,8 +379,8 @@ describe("the scan is near-linear on adversarial input", () => {
     ["pem prefix", (n) => `-----BEGIN ${"A ".repeat(n / 2)}`],
     // The four shapes that release-rescue-scanner-value-properties.test.ts
     // measured with an adjacent-ratio check at a clipped size (S-014). They are
-    // measured here, by the median doubling-ratio (S-018), and the ratio check
-    // is gone. Measured on 2026-09-18: exponents 1.25, 1.10, 1.01 and 1.00.
+    // measured here, by the exponent, and the ratio check is gone. Measured on
+    // 2026-09-18: 1.25, 1.10, 1.01 and 1.00.
     ["repeated assignments", (n) => "password=".repeat(Math.ceil(n / 9)).slice(0, n)],
     ["repeated flags with values", (n) => "--password x ".repeat(Math.ceil(n / 13)).slice(0, n)],
     ["credential nouns in prose", (n) => "the password is not stored here. ".repeat(Math.ceil(n / 33)).slice(0, n)],
@@ -270,21 +421,74 @@ describe("the scan is near-linear on adversarial input", () => {
         return best;
       });
 
-      const growth = doublingGrowth(timings);
-      const detail = `${label}: ${timings.map((t) => t.toFixed(2)).join(" -> ")}ms, ratios ${growth.ratios.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")}, median ${growth.medianRatio.toFixed(2)}x, exponent ${growth.exponent.toFixed(3)}`;
+      const exponent = growthExponent(timings);
+      // Diagnostics only. The per-step ratios say WHERE a failure came from;
+      // they decide nothing, and no assertion reads them.
+      const ratios = timings.slice(1).map((value, index) => value / timings[index]);
+      const detail = `${label}: ${timings.map((t) => t.toFixed(2)).join(" -> ")}ms, ratios ${ratios.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")}, exponent ${exponent.toFixed(3)}`;
 
-      // On a real doubling, linear is 2x and quadratic is 4x. The median of
-      // those per-step ratios is the shape: S-004's near-quadratic path was
-      // 3.10, 3.48, 3.70 (median 3.48); the fb3110e CI failure was 2.18, 2.32,
-      // 4.68 (median 2.32) with a whole-range exponent of 1.522 that crossed
-      // the old 1.5 line because the last sample was descheduled. 3 sits
-      // between linear and quadratic on a doubling, and one noisy sample
-      // cannot move the median across it.
-      expect(growth.medianRatio, detail).toBeLessThan(3);
+      // 1.0 is linear and 2.0 is quadratic over these three real doublings.
+      // Decided by `exceedsGrowthCeiling`, the same function the recorded-series
+      // table calls, so that table cannot stay green while this verdict changes.
+      // The ceiling itself is bracketed there by series that must be accepted
+      // and series that must be rejected, so it cannot drift here either.
+      expect(exceedsGrowthCeiling(timings), detail).toBe(false);
       // And an absolute ceiling, so "linear but enormous" still fails.
       expect(timings[timings.length - 1], `${label} took ${timings[timings.length - 1]}ms at 64KB`).toBeLessThan(2_000);
     });
   }
+
+  it("measures on sizes that ascend by a real doubling", () => {
+    // The exponent divides by the NUMBER of steps and reads only the endpoints,
+    // so it means nothing unless every step is one real doubling in ascending
+    // order. The sizes are derived from the bound for that reason; this pins
+    // the property the derivation is supposed to guarantee.
+    // Properties, not literals. Writing [8_000, 16_000, 32_000, 64_000] here
+    // would re-couple the test to the numbers the derivation from
+    // MAX_SCAN_LENGTH exists to stop drifting, and would fail for the wrong
+    // reason if that bound ever legitimately changed.
+    expect(SCAN_SIZES).toHaveLength(4);
+    for (let index = 1; index < SCAN_SIZES.length; index += 1) {
+      expect(SCAN_SIZES[index] / SCAN_SIZES[index - 1]).toBe(2);
+      expect(Number.isInteger(SCAN_SIZES[index])).toBe(true);
+    }
+    expect(SCAN_SIZES[SCAN_SIZES.length - 1]).toBe(MAX_SCAN_LENGTH);
+  });
+
+  it("gives the timed function a real doubling of text on every shape", () => {
+    // The sizes doubling is not enough: a generator can overshoot the bound and
+    // have the scan clip it, which is exactly how S-005 and S-014 came to call a
+    // 1.6x step a doubling. What has to double is the text actually read.
+    //
+    // `redactSecrets` reads it in TWO stages and only one of them clips. The
+    // detector pass runs its regexes over the whole string; `findCredentialSpans`
+    // is the stage bounded by MAX_SCAN_LENGTH. Three shapes overshoot the bound
+    // by 11-13 characters at the top size, so their clipped step is 1.99925
+    // rather than 2 - 0.04% short, which is why the tolerance here is two
+    // decimals rather than exact. Both stages are checked, because a generator
+    // that broke either would make the exponent's divisor a lie.
+    //
+    // Those same three shapes pay something the other eight do not: crossing
+    // the bound makes `findCredentialSpans` take a 64,000-character slice, so
+    // the copy lands on the LAST sample only - the numerator of the exponent.
+    // It biases those three UPWARD, against the change, which is the safe
+    // direction for a gate and the reason it is recorded here rather than
+    // corrected for.
+    expect(SHAPES).toHaveLength(11);
+
+    for (const [label, make] of SHAPES) {
+      const read = SCAN_SIZES.map((size) => make(size).length);
+      const spanScanned = read.map((length) => Math.min(length, MAX_SCAN_LENGTH));
+
+      for (let index = 1; index < read.length; index += 1) {
+        expect(read[index] / read[index - 1], `${label} detector pass: ${read.join(", ")}`).toBeCloseTo(2, 2);
+        expect(
+          spanScanned[index] / spanScanned[index - 1],
+          `${label} span scan: ${spanScanned.join(", ")}`,
+        ).toBeCloseTo(2, 2);
+      }
+    }
+  });
 
   it("bounds what it will read at all", () => {
     const { truncated } = findCredentialSpans("a".repeat(MAX_SCAN_LENGTH + 1));
