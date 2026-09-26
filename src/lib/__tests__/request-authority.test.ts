@@ -689,3 +689,56 @@ describe("Supabase workspace: approval decisions pass the transition gates", () 
     expect(request.status).toBe("awaiting_action_approval");
   });
 });
+
+describe("every path to delivered passes the delivery checks", () => {
+  const PACK = { summary: "p", deliverables: ["x"], attachments: [] as string[], actionsTaken: [] as string[], exceptions: [] as string[], unresolvedDecisions: [] as string[], nextStep: "" };
+  const BRIEF = { ...FUNDS_TRANSFER, title: "Research brief", objective: "Prepare the draft", description: "Draft a research brief comparing three vendors with pricing details.", deliverable: "Draft" };
+  const RAISE = { description: "Draft the brief, then send to the client list and post on linkedin." };
+
+  it("in-memory store: a reopened, raised request cannot be walked to delivered on its old package", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const manager = store.actorFromUser("usr_manager")!;
+    const id = (await store.createRequest(founder, BRIEF)).request.id;
+    for (const a of store.getRequestBundle(founder, id).approvals) store.decideApproval(founder, a.id, "approved", "ok");
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.createQaReview(manager, id, { passed: true, score: 90, notes: "" });
+    store.deliverRequest(manager, id, PACK);
+    store.transitionRequest(manager, id, "in_progress");
+    store.updateRequestScope(manager, id, RAISE);
+    const plan = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "execution_plan" && a.status === "pending")!;
+    store.decideApproval(founder, plan.id, "approved", "ok");
+    store.transitionRequest(manager, id, "in_progress");
+    store.transitionRequest(manager, id, "qa");
+    store.transitionRequest(manager, id, "ready_to_deliver");
+    expect(() => store.transitionRequest(manager, id, "delivered")).toThrow(/QA must pass|Outbound action/);
+    expect(store.getRequest(founder, id).status).toBe("ready_to_deliver");
+  });
+
+  it("Supabase workspace: a reopened, raised request cannot be walked to delivered on its old package", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const ORG = "11111111-1111-4111-8111-111111111111";
+    const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "o@example.com", name: "O", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+    const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "p@example.com", name: "P", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+    db = createFakeDb({ workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "B", status: "active", created_at: "", updated_at: "" }] });
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, BRIEF);
+    const id = String(db.tables.requests[0].id);
+    for (const a of db.tables.approvals.filter((x) => x.status === "pending")) await repo.decideApproval(client, String(a.id), "approved", "ok");
+    await repo.transitionRequest(manager, id, "in_progress");
+    await repo.transitionRequest(manager, id, "qa");
+    await repo.createQaReview(manager, id, { passed: true, score: 90, notes: "" });
+    await repo.deliverRequest(manager, id, PACK);
+    await repo.transitionRequest(manager, id, "in_progress");
+    await repo.updateRequestScope(manager, id, RAISE);
+    const plan = db.tables.approvals.find((a) => a.kind === "execution_plan" && a.status === "pending")!;
+    await repo.decideApproval(client, String(plan.id), "approved", "ok");
+    await repo.transitionRequest(manager, id, "in_progress");
+    await repo.transitionRequest(manager, id, "qa");
+    await repo.transitionRequest(manager, id, "ready_to_deliver");
+    await expect(repo.transitionRequest(manager, id, "delivered")).rejects.toThrow(/QA must pass|Outbound action/);
+    expect(db.tables.requests[0].status).toBe("ready_to_deliver");
+  });
+});
