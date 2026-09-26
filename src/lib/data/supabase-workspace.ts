@@ -839,11 +839,9 @@ export class SupabaseWorkspaceRepository {
     const { data: planApprovals } = await db.from("approvals").select("id").eq("request_id", req.id).eq("kind", "execution_plan");
     const next = reapprovalAfterRaise(req.status, Boolean(planApprovals?.length));
     if (!next.requestApprovals) return;
-    await db
-      .from("approvals")
-      .update({ action_class: req.approvalLevel, risk_level: req.riskLevel })
-      .eq("request_id", req.id)
-      .eq("status", "pending");
+    // Pending approvals keep the class they were requested at, so a decision on
+    // one records what the customer was shown. Fresh approvals are requested at
+    // the raised class; the lower-class ones can no longer authorize the work.
     const required = requiredApprovals({ ...req, actionClass: req.approvalLevel });
     for (const kind of required.kinds.filter((k) => k !== "execution_plan")) {
       await this.createApprovalRecord(
@@ -1016,6 +1014,7 @@ export class SupabaseWorkspaceRepository {
       .eq("request_id", req.id)
       .eq("kind", input.kind)
       .eq("status", "pending")
+      .eq("action_class", input.actionClass)
       .maybeSingle();
     if (existing) {
       await this.advanceRequestForApproval(db, req, input.kind, options);
@@ -1054,9 +1053,13 @@ export class SupabaseWorkspaceRepository {
       .from("approvals")
       .update({ status: decision, decided_by: actor.id, decision_note: note, decided_at: nowIso() })
       .eq("id", approvalId)
+      .eq("status", "pending")
+      .eq("action_class", approval.action_class)
       .select("*")
-      .single();
+      .maybeSingle();
     if (error) dbFail(error);
+    // The row changed after it was read (decided elsewhere, or its class moved).
+    if (!data) throw new DomainError("Approval changed before it was decided; reload and decide again");
     const req = await this.getRequest(actor, approval.request_id);
     const planOutstanding = await this.planApprovalOutstanding(db, req);
     let next = req.status;

@@ -1443,12 +1443,9 @@ export class MemoryStore {
       this.data.approvals.some((a) => a.requestId === req.id && a.kind === "execution_plan"),
     );
     if (!next.requestApprovals) return;
-    for (const approval of this.data.approvals) {
-      if (approval.requestId === req.id && approval.status === "pending") {
-        approval.actionClass = req.approvalLevel;
-        approval.riskLevel = req.riskLevel;
-      }
-    }
+    // Pending approvals keep the class they were requested at, so a decision on
+    // one records what the customer was shown. Fresh approvals are requested at
+    // the raised class; the lower-class ones can no longer authorize the work.
     const required = requiredApprovals({ ...req, actionClass: req.approvalLevel });
     for (const kind of required.kinds) {
       if (kind === "execution_plan") continue;
@@ -1615,7 +1612,7 @@ export class MemoryStore {
   ) {
     if (!canRequestCustomerApproval(actor) && !isClientRole(actor.role)) throw new AuthzError();
     const existing = this.data.approvals.find(
-      (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending",
+      (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending" && a.actionClass === input.actionClass,
     );
     const advance = options?.advanceStatus !== false;
     if (existing) {

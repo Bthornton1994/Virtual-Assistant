@@ -742,3 +742,61 @@ describe("every path to delivered passes the delivery checks", () => {
     expect(db.tables.requests[0].status).toBe("ready_to_deliver");
   });
 });
+
+describe("a decision records the class the customer was shown", () => {
+  it("in-memory store: approving a plan requested before a raise does not approve the raised work", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const manager = store.actorFromUser("usr_manager")!;
+    const created = await store.createRequest(founder, {
+      ...FUNDS_TRANSFER,
+      title: "Research brief",
+      objective: "Prepare the draft",
+      description: "Draft a research brief comparing three vendors with pricing details.",
+      deliverable: "Draft",
+    });
+    const id = created.request.id;
+    const shown = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "execution_plan")!;
+    expect(shown).toMatchObject({ status: "pending", actionClass: "prepare_only" });
+
+    store.updateRequestScope(manager, id, { description: "Draft the brief, then wire the $40k deposit from the operating bank account." });
+    // The customer submits the approval they opened before the raise.
+    store.decideApproval(founder, shown.id, "approved", "ok");
+
+    const bundle = store.getRequestBundle(founder, id);
+    expect(bundle.approvals.find((a) => a.id === shown.id)).toMatchObject({ status: "approved", actionClass: "prepare_only" });
+    expect(bundle.approvals.some((a) => a.kind === "execution_plan" && a.status === "pending" && a.actionClass === "sensitive_execution")).toBe(true);
+    expect(bundle.request.status).toBe("awaiting_plan_approval");
+    expect(() => store.transitionRequest(manager, id, "queued")).toThrow(/must be approved/);
+  });
+
+  it("Supabase workspace: a raise between reading and deciding an approval fails the decision", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const ORG = "11111111-1111-4111-8111-111111111111";
+    const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "o@example.com", name: "O", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+    db = createFakeDb({ workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "B", status: "active", created_at: "", updated_at: "" }] });
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, { ...FUNDS_TRANSFER, title: "Research brief", objective: "Prepare the draft", description: "Draft a research brief comparing three vendors with pricing details.", deliverable: "Draft" });
+    const plan = db.tables.approvals.find((a) => a.kind === "execution_plan")!;
+    // Simulate a concurrent change to the row after decideApproval has read it.
+    const from = db.from.bind(db);
+    db.from = (table: string) => {
+      const builder = from(table);
+      if (table === "approvals") {
+        const update = builder.update.bind(builder);
+        builder.update = (patch: Record<string, unknown>) => {
+          if ("decided_at" in patch) {
+            // Replace the row, as a real database would return a copy to the reader.
+            const rows = db.tables.approvals;
+            rows[rows.indexOf(plan)] = { ...plan, action_class: "sensitive_execution" };
+          }
+          return update(patch);
+        };
+      }
+      return builder;
+    };
+    await expect(repo.decideApproval(client, String(plan.id), "approved", "ok")).rejects.toThrow(/changed before it was decided/);
+    expect(db.tables.approvals.find((a) => a.id === plan.id)).toMatchObject({ status: "pending", action_class: "sensitive_execution" });
+  });
+});
