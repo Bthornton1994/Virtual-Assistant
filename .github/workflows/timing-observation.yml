@@ -1,7 +1,7 @@
 # The scanner timing observation. ADVISORY under DECISION_LOG.md § D-019.
 #
 # This is not the release gate. `verify` (verify.yml) is, and it runs every
-# blocking test, `proof:claim-guard`, the build and the full `proof:sql` suite
+# blocking test, `proof:claim-guard`, `proof:rr-internal`, the build and the full `proof:sql` suite
 # (D-012, D-018). This workflow runs only the wall-clock growth and 2,000ms
 # assertions that D-019 moved out of `npm test`, as its own check named
 # `timing-observation`, so its result is visible on every pull request and its
