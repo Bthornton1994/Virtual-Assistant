@@ -223,8 +223,12 @@ export function ownerForAuthority(owner: RequestStep["owner"], actionClass: Acti
   return actionClass !== "prepare_only" && (owner === "ai" || owner === "automation") ? "operator" : owner;
 }
 
-const TERMINAL_STATUSES: readonly RequestStatus[] = ["delivered", "accepted", "cancelled"];
-const PRE_PLAN_STATUSES: readonly RequestStatus[] = ["draft", "triage", "needs_clarification"];
+// Accepted and cancelled requests cannot move again. A delivered request can
+// be reopened, so a raise puts it back to plan approval like active work.
+const TERMINAL_STATUSES: readonly RequestStatus[] = ["accepted", "cancelled"];
+// Before the plan is put to the customer; answering the last clarification
+// creates the plan approval at the request's (raised) class.
+const PRE_PLAN_STATUSES: readonly RequestStatus[] = ["draft", "needs_clarification"];
 
 /**
  * What a raise in authority requires of a request in a given status.
@@ -241,9 +245,16 @@ export function reapprovalAfterRaise(status: RequestStatus): "record" | "approva
 }
 
 /**
- * A plan approval authorizes the class it was given at. An approval recorded
- * at a lower class than the request now holds does not let the request queue.
+ * An approval authorizes the class it was given at. One recorded at a lower
+ * class than the request now holds (because its scope was raised since) does
+ * not satisfy any gate. An unknown class covers nothing.
  */
-export function planApprovalCovers(approval: { actionClass: ActionClass }, request: { approvalLevel: ActionClass }): boolean {
-  return rank(ACTION_CLASSES, approval.actionClass) >= rank(ACTION_CLASSES, request.approvalLevel);
+export function approvalCovers(approval: { actionClass: ActionClass | null | undefined }, request: { approvalLevel: ActionClass }): boolean {
+  const given = rank(ACTION_CLASSES, approval.actionClass);
+  return given >= 0 && given >= rank(ACTION_CLASSES, request.approvalLevel);
+}
+
+/** The class to record on a new approval: its own class, or the request's if stricter. */
+export function approvalClassFor(actionClass: ActionClass, request: { approvalLevel: ActionClass }): ActionClass {
+  return stricter(ACTION_CLASSES, request.approvalLevel, actionClass);
 }
