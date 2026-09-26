@@ -138,14 +138,14 @@ Read `.claude/skills/design-taste-frontend/SKILL.md` when the task sets visual d
 
 For UI work, use the vendored `ui-skills-root` routing layer to select the smallest useful context. Use `baseline-ui` on product interfaces for spacing, hierarchy, typography, touch targets, and interaction polish; `fixing-accessibility` for controls, forms, focus, and semantics; `fixing-motion-performance` for animation and scroll-linked behavior; and `improve-ui` for evidence-backed surface audits and bounded implementation plans.
 
-These files are vendored from `https://github.com/ibelick/ui-skills` at commit `f2dadf221a166a79606b337d08ce0b04d0d2bfd9` and are reference material, not a runtime dependency. Existing Emil, Jakub, and Leon guidance, `VISION.md`, Delegation Specs, security, tenant isolation, and release controls remain authoritative.
+These files are vendored from `https://github.com/ibelick/ui-skills` at commit `f2dadf221a166a79606b337d08ce0b04d0d2bfd9` and are reference material, not a runtime dependency. `VISION.md`, Delegation Specs, security, tenant isolation, and release controls remain authoritative. Where `baseline-ui` and the Leon `design-taste-frontend` guidance disagree, the surface decides, as `docs/DESIGN_ENGINEERING.md` sets out.
 
 Apply this guidance to product interfaces, shared UI primitives, and responsive navigation. On marketing routes, `design-taste-frontend` governs visual direction where the two conflict, as `docs/DESIGN_ENGINEERING.md` sets out. Preserve operational density and explicit outcome, access, approval, logging, verification, and tenant-isolation language. UI polish must not imply autonomous authority or hidden execution.
 
 
 ## External agent stack from linked Grok and Cursor setup
 
-For UI, copy, source verification, and completion claims, read `docs/EXTERNAL-AGENT-SKILLS.md` and load only the smallest relevant vendored skill. Use `frontend-ui-engineering` for interface implementation, `source-driven-development` for framework-specific decisions, `no-ai-slop` for visible copy, `no-ai-design-slop` for product-specific UI audits, and `verification-before-completion` before claiming a fix or passing check.
+For UI, copy, source verification, and completion claims, read `docs/EXTERNAL-AGENT-SKILLS.md` and load only the smallest relevant vendored skill. Use `frontend-ui-engineering` when building or restructuring components, layouts, or interface states, `source-driven-development` for framework-specific decisions, `no-ai-slop` for visible copy, `no-ai-design-slop` for product-specific UI audits, and `verification-before-completion` before claiming a fix or passing check.
 
 Apply this stack to marketing routes, shared UI primitives, and responsive navigation. Existing project vision, product boundaries, security, privacy, accessibility, methodology, tenant isolation, and release controls remain authoritative. The vendored files are source material, not runtime dependencies, and they do not authorize autonomous execution, production access, external actions, merges, or deployments.
 
