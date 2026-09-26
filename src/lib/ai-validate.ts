@@ -1,17 +1,14 @@
 import {
   ACTION_CLASSES,
-  APPROVAL_KINDS,
   DomainError,
   PRIORITIES,
   RISK_LEVELS,
   type ActionClass,
-  type ApprovalKind,
   type ExecutionPlan,
   type Priority,
   type RiskLevel,
 } from "@/lib/domain";
 import type {
-  ApprovalRequirement,
   AutomationOpportunity,
   PlaybookDraft,
   TriageResult,
@@ -93,19 +90,6 @@ export function validateExecutionPlan(value: unknown): ExecutionPlan {
 export function validateMissingContext(value: unknown): { missing: string[] } {
   if (!isRecord(value)) fail("AI missing-context");
   return { missing: asStringArray(value.missing) };
-}
-
-export function validateApprovalRequirement(value: unknown): ApprovalRequirement {
-  if (!isRecord(value)) fail("AI approval requirements");
-  const kinds = asStringArray(value.kinds).filter((kind): kind is ApprovalKind =>
-    (APPROVAL_KINDS as readonly string[]).includes(kind),
-  );
-  if (!kinds.includes("execution_plan")) kinds.unshift("execution_plan");
-  return {
-    kinds: [...new Set(kinds)],
-    reasons: asStringArray(value.reasons),
-    requiresCustomerDecision: asBool(value.requiresCustomerDecision, true),
-  };
 }
 
 export function validatePlaybookDraft(value: unknown): PlaybookDraft {

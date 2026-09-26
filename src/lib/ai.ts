@@ -13,7 +13,6 @@ import {
   resolveApprovalRequirements,
   resolveRequestRisk,
   restrictModelStepOwners,
-  routeForActionClass,
 } from "@/lib/ai-authority";
 
 export type TriageResult = {
@@ -92,11 +91,6 @@ export interface DelegationAI {
     actionClass: ActionClass;
     externalCommunication: boolean;
   }): Promise<ApprovalRequirement>;
-  suggestExecutor(input: {
-    actionClass: ActionClass;
-    workstreamName?: string;
-    title: string;
-  }): Promise<RoutingSuggestion>;
   generatePlaybook(input: {
     title: string;
     objective: string;
@@ -160,10 +154,6 @@ export const mockAI: DelegationAI = {
     return requiredApprovals(input);
   },
 
-  async suggestExecutor(input) {
-    return routeForActionClass(input.actionClass);
-  },
-
   async generateExecutionPlan(input) {
     const template = WORKSTREAM_TEMPLATES.find((t) => t.name === input.workstreamName);
     const approvalsRequired = planRequiresApproval(input.actionClass);
@@ -175,7 +165,9 @@ export const mockAI: DelegationAI = {
           ? "critical"
           : input.actionClass === "external_execution"
             ? "high"
-            : "low",
+            : input.actionClass === "low_risk_execution"
+              ? "medium"
+              : "low",
       steps: [
         {
           title: "Clarify outcome and authority",
@@ -346,10 +338,6 @@ export const delegationAI: DelegationAI = {
     );
     return resolveApprovalRequirements(input, suggestion);
   },
-  async suggestExecutor(input) {
-    // Routing is decided by the action class alone; no model call.
-    return routeForActionClass(input.actionClass);
-  },
   async generatePlaybook(input) {
     const live = parseJson<PlaybookDraft>(
       await liveComplete(`Playbook JSON {title, objective, steps, clientPreferences, warnings}. Input: ${JSON.stringify(input)}`),
@@ -371,7 +359,6 @@ export {
   generateExecutionPlan,
   classifyRisk,
   determineApprovalRequirements,
-  suggestExecutor,
   generatePlaybook,
   identifyAutomationOpportunity,
 };
@@ -393,9 +380,6 @@ async function classifyRisk(input: Parameters<DelegationAI["classifyRisk"]>[0]) 
 }
 async function determineApprovalRequirements(input: Parameters<DelegationAI["determineApprovalRequirements"]>[0]) {
   return delegationAI.determineApprovalRequirements(input);
-}
-async function suggestExecutor(input: Parameters<DelegationAI["suggestExecutor"]>[0]) {
-  return delegationAI.suggestExecutor(input);
 }
 async function generatePlaybook(input: Parameters<DelegationAI["generatePlaybook"]>[0]) {
   return delegationAI.generatePlaybook(input);

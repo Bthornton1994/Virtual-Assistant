@@ -181,11 +181,10 @@ describe("live model output through delegationAI", () => {
     expect(approvals.kinds).toEqual(expect.arrayContaining(["execution_plan", "sensitive_action"]));
   });
 
-  it("routes executors without calling the model", async () => {
-    const { prompts } = stubModel(HOSTILE);
-    const route = await delegationAI.suggestExecutor({ actionClass: "sensitive_execution", title: FUNDS_TRANSFER.title });
-    expect(route).toMatchObject({ executor: "specialist", humanRequired: true });
-    expect(prompts).toEqual([]);
+  it("offers no model-backed executor routing", () => {
+    // Routing lives in routeForActionClass; the model interface has no routing method.
+    expect("suggestExecutor" in delegationAI).toBe(false);
+    expect("suggestRouting" in delegationAI).toBe(false);
   });
 });
 
@@ -281,5 +280,110 @@ describe("Supabase workspace", () => {
     expect(db.tables.requests[0]).toMatchObject({ approval_level: "sensitive_execution", risk_level: "critical" });
     const benign = await repo.updateRequestScope(actor, id, { description: "Draft a summary of vendor options." });
     expect(benign.approvalLevel).toBe("sensitive_execution");
+  });
+});
+
+describe("the floor reads every field the requester wrote", () => {
+  it("classifies consequential wording in the objective or deliverable", () => {
+    const decision = resolveRequestRisk(
+      {
+        title: "Vendor prep",
+        objective: "Wire $50,000 to the new vendor bank account",
+        description: "Get this done this week.",
+        deliverable: "Completed wire transfer",
+        externalCommunication: false,
+      },
+      { actionClass: "prepare_only", riskLevel: "low" },
+    );
+    expect(decision).toMatchObject({ actionClass: "sensitive_execution", riskLevel: "critical" });
+  });
+});
+
+describe("mock path (no model key)", () => {
+  it("gives a low-risk execution plan the class's risk level", async () => {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const bundle = await store.createRequest(founder, {
+      ...FUNDS_TRANSFER,
+      title: "Update the team calendar",
+      objective: "Move the weekly standup",
+      description: "Move the weekly standup to Tuesday for the whole team, starting next week.",
+      deliverable: "Updated calendar invite",
+    });
+    expect(bundle.request).toMatchObject({ approvalLevel: "low_risk_execution", riskLevel: "medium" });
+    expect(bundle.plan?.riskLevel).toBe("medium");
+  });
+});
+
+describe("raising authority after the plan was approved", () => {
+  const WIRE_EDIT = "Research the vendors, then wire the $40k deposit from the operating bank account.";
+
+  it("in-memory store: returns the request to plan approval at the raised class", async () => {
+    stubModel({ ...HOSTILE, plan: undefined, approvals: undefined });
+    const store = new MemoryStore(seedData());
+    const founder = store.actorFromUser("usr_founder")!;
+    const manager = store.actorFromUser("usr_manager")!;
+    const created = await store.createRequest(founder, {
+      ...FUNDS_TRANSFER,
+      title: "Research brief on vendor options",
+      objective: "Research brief",
+      description: "Draft a research brief comparing three vendors with sources and pricing details for Q3.",
+      deliverable: "Brief",
+    });
+    const id = created.request.id;
+    expect(created.request.approvalLevel).toBe("prepare_only");
+    const planApproval = store.getRequestBundle(founder, id).approvals.find((a) => a.kind === "execution_plan")!;
+    store.decideApproval(founder, planApproval.id, "approved", "ok");
+    expect(store.getRequestBundle(founder, id).request.status).toBe("queued");
+    expect(store.getRequestBundle(founder, id).steps.map((s) => s.owner)).toContain("ai");
+
+    store.updateRequestScope(manager, id, { description: WIRE_EDIT });
+
+    const bundle = store.getRequestBundle(founder, id);
+    expect(bundle.request).toMatchObject({ status: "awaiting_plan_approval", approvalLevel: "sensitive_execution", riskLevel: "critical" });
+    expect(bundle.plan).toMatchObject({ actionClass: "sensitive_execution", riskLevel: "critical", approvalsRequired: true });
+    expect(bundle.steps.map((s) => s.owner)).not.toContain("ai");
+    const pending = bundle.approvals.filter((a) => a.status === "pending");
+    expect(pending.map((a) => a.kind).sort()).toEqual(["execution_plan", "sensitive_action"]);
+    expect(pending.every((a) => a.actionClass === "sensitive_execution")).toBe(true);
+    // The approval given at prepare_only no longer lets the request queue.
+    expect(() => store.transitionRequest(manager, id, "queued")).toThrow(/must be approved/);
+    store.decideApproval(founder, pending.find((a) => a.kind === "execution_plan")!.id, "approved", "ok");
+    expect(store.getRequestBundle(founder, id).request.status).not.toBe("awaiting_plan_approval");
+  });
+
+  it("Supabase workspace: returns the request to plan approval at the raised class", async () => {
+    const ORG = "11111111-1111-4111-8111-111111111111";
+    const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "owner@example.com", name: "Owner", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+    const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "ops@example.com", name: "Ops", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+    db = createFakeDb({
+      workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "Back office", status: "active", created_at: "", updated_at: "" }],
+    });
+    stubModel(HOSTILE);
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, {
+      ...FUNDS_TRANSFER,
+      title: "Research brief",
+      objective: "Summarize vendors",
+      description: "Draft a summary of vendor options.",
+      deliverable: "Brief",
+    });
+    const id = String(db.tables.requests[0].id);
+    // The customer approved the prepare_only plan and the request was queued.
+    const approved = db.tables.approvals.find((a) => a.kind === "execution_plan")!;
+    Object.assign(approved, { status: "approved" });
+    Object.assign(db.tables.requests[0], { status: "queued" });
+    expect(db.tables.request_steps.map((s) => s.owner)).toContain("ai");
+
+    await repo.updateRequestScope(manager, id, { description: WIRE_EDIT });
+
+    expect(db.tables.requests[0]).toMatchObject({ status: "awaiting_plan_approval", approval_level: "sensitive_execution", risk_level: "critical" });
+    expect(db.tables.execution_plans[0].plan).toMatchObject({ actionClass: "sensitive_execution", riskLevel: "critical", approvalsRequired: true });
+    expect(db.tables.request_steps.map((s) => s.owner)).not.toContain("ai");
+    const pending = db.tables.approvals.filter((a) => a.status === "pending");
+    expect(pending.map((a) => a.kind).sort()).toEqual(["execution_plan", "sensitive_action"]);
+    expect(pending.every((a) => a.action_class === "sensitive_execution")).toBe(true);
+    await expect(repo.transitionRequest(manager, id, "queued")).rejects.toThrow(/must be approved/);
   });
 });

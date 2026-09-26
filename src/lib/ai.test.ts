@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mockAI } from "@/lib/ai";
+import { routeForActionClass } from "@/lib/ai-authority";
 
 describe("AI abstraction (deterministic mock)", () => {
   it("classifies payment language as sensitive", async () => {
@@ -13,10 +14,7 @@ describe("AI abstraction (deterministic mock)", () => {
   });
 
   it("never routes sensitive work to unsupervised AI", async () => {
-    const route = await mockAI.suggestExecutor({
-      actionClass: "sensitive_execution",
-      title: "Pay vendor",
-    });
+    const route = routeForActionClass("sensitive_execution");
     expect(route.humanRequired).toBe(true);
     expect(route.executor).toBe("specialist");
   });
@@ -49,10 +47,7 @@ describe("AI abstraction (deterministic mock)", () => {
       recurring: true,
     });
     expect(auto.requiresHumanApproval).toBe(true);
-    const exec = await mockAI.suggestExecutor({
-      actionClass: "sensitive_execution",
-      title: "Pay vendor",
-    });
+    const exec = routeForActionClass("sensitive_execution");
     expect(exec.humanRequired).toBe(true);
     expect(exec.executor).not.toBe("ai");
   });

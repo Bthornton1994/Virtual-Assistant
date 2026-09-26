@@ -1,4 +1,4 @@
-import type { ActionClass, ApprovalKind, ExecutionPlan, RiskLevel } from "@/lib/domain";
+import type { ActionClass, ApprovalKind, ExecutionPlan, RequestStatus, RequestStep, RiskLevel } from "@/lib/domain";
 import { ACTION_CLASSES, APPROVAL_KINDS, RISK_LEVELS, blocksWithoutApproval } from "@/lib/domain";
 import type { ApprovalRequirement, RoutingSuggestion } from "@/lib/ai";
 
@@ -39,13 +39,21 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
 
-/** The deterministic classification of a request from its own text and flags. */
-export function classifyRequestRisk(input: {
+type RequestText = {
   title: string;
   description: string;
+  objective?: string;
+  deliverable?: string;
   externalCommunication: boolean;
-}): RiskDecision {
-  const text = `${input.title} ${input.description}`;
+};
+
+/**
+ * The deterministic classification of a request from its own text and flags.
+ * Every field the requester wrote is read, so consequential wording in the
+ * objective or deliverable is not missed.
+ */
+export function classifyRequestRisk(input: RequestText): RiskDecision {
+  const text = [input.title, input.objective, input.description, input.deliverable].filter(Boolean).join(" ");
   if (SENSITIVE.test(text)) {
     return {
       actionClass: "sensitive_execution",
@@ -67,10 +75,7 @@ export function classifyRequestRisk(input: {
  * is the floor; a model suggestion is used only where it is a known, stricter
  * value. The risk level never falls below the floor for the final action class.
  */
-export function resolveRequestRisk(
-  input: { title: string; description: string; externalCommunication: boolean },
-  suggestion: unknown,
-): RiskDecision {
+export function resolveRequestRisk(input: RequestText, suggestion: unknown): RiskDecision {
   const floor = classifyRequestRisk(input);
   const proposed = isRecord(suggestion) ? suggestion : {};
   const actionClass = stricter(ACTION_CLASSES, floor.actionClass, proposed.actionClass);
@@ -88,13 +93,7 @@ export function resolveRequestRisk(
  * decision when the edited text calls for a stricter class or risk level than
  * the request holds, and null otherwise. It never lowers either.
  */
-export function raiseRiskForScope(request: {
-  title: string;
-  description: string;
-  externalCommunication: boolean;
-  approvalLevel: ActionClass;
-  riskLevel: RiskLevel;
-}): RiskDecision | null {
+export function raiseRiskForScope(request: RequestText & { approvalLevel: ActionClass; riskLevel: RiskLevel }): RiskDecision | null {
   const decision = resolveRequestRisk(request, { actionClass: request.approvalLevel, riskLevel: request.riskLevel });
   const raised = decision.actionClass !== request.approvalLevel || decision.riskLevel !== request.riskLevel;
   return raised ? decision : null;
@@ -217,4 +216,34 @@ export function restrictModelStepOwners<T>(plan: T, actionClass: ActionClass): T
       isRecord(step) && (step.owner === "ai" || step.owner === "automation") ? { ...step, owner: "operator" } : step,
     ),
   };
+}
+
+/** The step owner policy allows for a request's action class. */
+export function ownerForAuthority(owner: RequestStep["owner"], actionClass: ActionClass): RequestStep["owner"] {
+  return actionClass !== "prepare_only" && (owner === "ai" || owner === "automation") ? "operator" : owner;
+}
+
+const TERMINAL_STATUSES: readonly RequestStatus[] = ["delivered", "accepted", "cancelled"];
+const PRE_PLAN_STATUSES: readonly RequestStatus[] = ["draft", "triage", "needs_clarification"];
+
+/**
+ * What a raise in authority requires of a request in a given status.
+ * - "record": the request is finished; stored records are realigned only.
+ * - "approvals": the plan has not been put to the customer yet (it will be,
+ *   at the raised class); newly required action approvals are requested.
+ * - "reapprove": the customer approved, or is approving, a plan at the lower
+ *   class; the request returns to plan approval at the raised class.
+ */
+export function reapprovalAfterRaise(status: RequestStatus): "record" | "approvals" | "reapprove" {
+  if (TERMINAL_STATUSES.includes(status)) return "record";
+  if (PRE_PLAN_STATUSES.includes(status)) return "approvals";
+  return "reapprove";
+}
+
+/**
+ * A plan approval authorizes the class it was given at. An approval recorded
+ * at a lower class than the request now holds does not let the request queue.
+ */
+export function planApprovalCovers(approval: { actionClass: ActionClass }, request: { approvalLevel: ActionClass }): boolean {
+  return rank(ACTION_CLASSES, approval.actionClass) >= rank(ACTION_CLASSES, request.approvalLevel);
 }
