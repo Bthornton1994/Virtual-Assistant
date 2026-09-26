@@ -945,6 +945,17 @@ describe("Supabase workspace: a raise that lands mid-action is not overwritten",
     expect(req.status).not.toBe("in_progress");
   });
 
+  it("assignOperator does not overwrite a concurrent raise", async () => {
+    const { repo, req, id } = await setup();
+    db.tables.operators = [{ id: "44444444-4444-4444-8444-444444444444", organization_id: ORG }];
+    const plan = db.tables.approvals.find((a) => a.kind === "execution_plan")!;
+    await repo.decideApproval(client, String(plan.id), "approved", "ok");
+    expect(req.status).toBe("queued");
+    raiseBeforeStatusWrite("assigned", () => repo.updateRequestScope(manager, id, WIRE));
+    await expect(repo.assignOperator(manager, id, "44444444-4444-4444-8444-444444444444")).rejects.toThrow(/changed while this action ran/);
+    expect(req).toMatchObject({ approval_level: "sensitive_execution", status: "awaiting_plan_approval" });
+  });
+
   it("answerClarification does not overwrite a concurrent raise, and a retry asks at the raised class", async () => {
     const { repo, req, id } = await setup({ ...OUT, description: "Short.", deliverable: "" });
     expect(req.status).toBe("needs_clarification");
@@ -960,5 +971,76 @@ describe("Supabase workspace: a raise that lands mid-action is not overwritten",
     await repo.answerClarification(client, String(questions.at(-1)!.id), "Answered");
     expect(req.status).toBe("awaiting_plan_approval");
     expect(db.tables.approvals.find((a) => a.kind === "execution_plan")).toMatchObject({ status: "pending", action_class: "sensitive_execution" });
+  });
+});
+
+describe("Supabase workspace: a raise passes the requests table triggers", () => {
+  const ORG = "11111111-1111-4111-8111-111111111111";
+  const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "o@example.com", name: "O", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+  const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "p@example.com", name: "P", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+  const BRIEF = { ...FUNDS_TRANSFER, title: "Research brief", objective: "Prepare the draft", description: "Draft a research brief comparing three vendors with pricing details.", deliverable: "Draft" };
+
+  /**
+   * Emulate the BEFORE UPDATE triggers on public.requests
+   * (enforce_sensitive_approval, enforce_external_delivery): an update whose
+   * resulting row is in_progress at sensitive_execution, or delivered as
+   * outbound work, is rejected without the matching approved approval.
+   */
+  function emulateRequestTriggers() {
+    const from = db.from.bind(db);
+    db.from = (table: string) => {
+      const builder = from(table);
+      if (table !== "requests") return builder;
+      const update = builder.update.bind(builder);
+      builder.update = (patch: Record<string, unknown>) => {
+        const query = update(patch);
+        const then = query.then.bind(query);
+        query.then = ((ok, bad) => {
+          const row = { ...db.tables.requests[0], ...patch };
+          const approved = (test: (a: Record<string, unknown>) => boolean) =>
+            db.tables.approvals.some((a) => a.request_id === row.id && a.status === "approved" && test(a));
+          const sensitive =
+            row.status === "in_progress" && row.approval_level === "sensitive_execution" &&
+            !approved((a) => a.kind === "sensitive_action" || a.action_class === "sensitive_execution");
+          const outbound =
+            row.status === "delivered" && (row.approval_level === "external_execution" || row.external_communication === true) &&
+            !approved((a) => a.kind === "external_email");
+          if (sensitive || outbound) {
+            return Promise.resolve({ data: null, error: { message: sensitive ? "Sensitive execution cannot proceed" : "Outbound action requires approval" } }).then(ok, bad);
+          }
+          return then(ok, bad);
+        }) as typeof query.then;
+        return query;
+      };
+      return builder;
+    };
+  }
+
+  async function started() {
+    vi.stubEnv("XAI_API_KEY", "");
+    db = createFakeDb({ workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "B", status: "active", created_at: "", updated_at: "" }] });
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, BRIEF);
+    const id = String(db.tables.requests[0].id);
+    for (const a of db.tables.approvals.filter((x) => x.status === "pending")) await repo.decideApproval(client, String(a.id), "approved", "ok");
+    await repo.transitionRequest(manager, id, "in_progress");
+    emulateRequestTriggers();
+    return { repo, id, req: db.tables.requests[0] };
+  }
+
+  it("raises in-progress work to sensitive without tripping the sensitive trigger", async () => {
+    const { repo, id, req } = await started();
+    await repo.updateRequestScope(manager, id, { description: "Draft the brief, then wire the $40k deposit from the operating bank account." });
+    expect(req).toMatchObject({ status: "awaiting_plan_approval", approval_level: "sensitive_execution" });
+  });
+
+  it("raises delivered work to external without tripping the delivery trigger", async () => {
+    const { repo, id, req } = await started();
+    await repo.transitionRequest(manager, id, "qa");
+    await repo.createQaReview(manager, id, { passed: true, score: 90, notes: "" });
+    await repo.deliverRequest(manager, id, { summary: "p", deliverables: ["x"], attachments: [], actionsTaken: [], exceptions: [], unresolvedDecisions: [], nextStep: "" });
+    expect(req.status).toBe("delivered");
+    await repo.updateRequestScope(manager, id, { description: "Draft the brief, then send to the client list." });
+    expect(req).toMatchObject({ status: "awaiting_plan_approval", approval_level: "external_execution" });
   });
 });

@@ -49,6 +49,7 @@ import {
   raiseRiskForScope,
   reapprovalAfterRaise,
   requiredApprovals,
+  type RaisePlan,
   resolveApprovalRequirements,
   resolveRequestRisk,
   routeForActionClass,
@@ -744,6 +745,14 @@ export class SupabaseWorkspaceRepository {
       description: text("description"),
       deliverable: text("deliverable"),
     });
+    // Decide what the raise requires before writing, so the raised class and
+    // the return to plan approval land in one update. The requests triggers
+    // reject an intermediate row such as in_progress at sensitive_execution.
+    let raisePlan: RaisePlan | null = null;
+    if (raised) {
+      const { data: planApprovals } = await db.from("approvals").select("id").eq("request_id", req.id).eq("kind", "execution_plan");
+      raisePlan = reapprovalAfterRaise(req.status, Boolean(planApprovals?.length));
+    }
     const data = await this.writeRequestIfUnchanged(db, req, {
       title: patch.title ?? req.title,
       objective: patch.objective ?? req.objective,
@@ -751,6 +760,7 @@ export class SupabaseWorkspaceRepository {
       deliverable: patch.deliverable ?? req.deliverable,
       due_at: patch.dueAt === undefined ? req.dueAt : patch.dueAt,
       ...(raised ? { approval_level: raised.actionClass, risk_level: raised.riskLevel } : {}),
+      ...(raisePlan?.returnToPlanApproval && req.status !== "awaiting_plan_approval" ? { status: "awaiting_plan_approval" } : {}),
     });
     const metadata: Record<string, unknown> = { ...patch };
     if (raised) {
@@ -761,8 +771,15 @@ export class SupabaseWorkspaceRepository {
     }
     await this.audit(actor, "request.scope_updated", "request", id, req.organizationId, metadata);
     const updated = this.mapRequest(data);
-    if (raised) {
-      await this.applyRaisedAuthority(actor, updated);
+    if (raised && raisePlan) {
+      if (raisePlan.returnToPlanApproval && req.status !== "awaiting_plan_approval") {
+        await this.audit(actor, "request.status_changed", "request", id, req.organizationId, {
+          from: req.status,
+          to: "awaiting_plan_approval",
+          reason: "authority_raised",
+        });
+      }
+      await this.applyRaisedAuthority(actor, updated, raisePlan);
       return this.getRequest(actor, id);
     }
     return updated;
@@ -833,7 +850,7 @@ export class SupabaseWorkspaceRepository {
   }
 
   /** Bring a request's plan, steps and approvals up to its raised authority. */
-  private async applyRaisedAuthority(actor: Actor, req: RequestRecord) {
+  private async applyRaisedAuthority(actor: Actor, req: RequestRecord, next: RaisePlan) {
     const db = await this.client();
     const authority = { actionClass: req.approvalLevel, riskLevel: req.riskLevel };
     const { data: planRow } = await db.from("execution_plans").select("*").eq("request_id", req.id).maybeSingle();
@@ -853,8 +870,6 @@ export class SupabaseWorkspaceRepository {
         await db.from("request_steps").update({ owner }).eq("id", step.id);
       }
     }
-    const { data: planApprovals } = await db.from("approvals").select("id").eq("request_id", req.id).eq("kind", "execution_plan");
-    const next = reapprovalAfterRaise(req.status, Boolean(planApprovals?.length));
     if (!next.requestApprovals) return;
     // Pending approvals keep the class they were requested at, so a decision on
     // one records what the customer was shown. Fresh approvals are requested at
@@ -880,15 +895,9 @@ export class SupabaseWorkspaceRepository {
           riskLevel: bound?.riskLevel ?? req.riskLevel,
           actionClass: req.approvalLevel,
         },
-        { advanceStatus: next.returnToPlanApproval },
+        // The status already moved in the same write that raised the class.
+        { advanceStatus: false },
       );
-      if (next.returnToPlanApproval && req.status !== "awaiting_plan_approval") {
-        await this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
-          from: req.status,
-          to: "awaiting_plan_approval",
-          reason: "authority_raised",
-        });
-      }
     }
   }
 
@@ -938,13 +947,7 @@ export class SupabaseWorkspaceRepository {
     const { data: op } = await db.from("operators").select("id").eq("id", operatorId).maybeSingle();
     if (!op) throw new DomainError("Operator not found");
     const nextStatus = req.status === "triage" || req.status === "queued" ? "assigned" : req.status;
-    const { data, error } = await db
-      .from("requests")
-      .update({ assigned_operator_id: operatorId, status: nextStatus, updated_at: nowIso() })
-      .eq("id", requestId)
-      .select("*")
-      .single();
-    if (error) dbFail(error);
+    const data = await this.writeRequestIfUnchanged(db, req, { assigned_operator_id: operatorId, status: nextStatus });
     await db.from("request_assignments").insert({
       organization_id: req.organizationId,
       request_id: requestId,

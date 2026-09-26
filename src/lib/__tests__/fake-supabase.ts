@@ -9,7 +9,7 @@ export type FakeDb = {
   from(table: string): Builder;
 };
 
-class Builder implements PromiseLike<{ data: unknown; error: null }> {
+class Builder implements PromiseLike<{ data: unknown; error: { message: string } | null }> {
   private filters: Filter[] = [];
   private op: "select" | "insert" | "update" | "upsert" | "delete" = "select";
   private payload: Row[] = [];
@@ -50,7 +50,7 @@ class Builder implements PromiseLike<{ data: unknown; error: null }> {
     const data = this.mode === "many" ? out : (out[0] ?? null);
     return { data, error: null, count: out.length };
   }
-  then<A, B>(ok?: (v: { data: unknown; error: null }) => A | PromiseLike<A>, bad?: (e: unknown) => B | PromiseLike<B>) {
+  then<A, B>(ok?: (v: { data: unknown; error: { message: string } | null }) => A | PromiseLike<A>, bad?: (e: unknown) => B | PromiseLike<B>) {
     return Promise.resolve().then(() => this.run()).then(ok, bad);
   }
 }
