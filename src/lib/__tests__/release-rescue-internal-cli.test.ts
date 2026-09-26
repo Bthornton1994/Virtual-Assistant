@@ -34,6 +34,7 @@ vi.mock("@/lib/release-rescue-internal/run", async (original) => {
   };
 });
 
+import { DEFAULT_ALLOWLIST_PATH, allowlistPath, findAllowlisted, loadAllowlist } from "@/lib/release-rescue-internal/allowlist";
 import { main } from "@/lib/release-rescue-internal/cli";
 import { addOperator } from "@/lib/release-rescue-internal/local-identity";
 import { signRunAsLocalOperator } from "@/lib/release-rescue-internal/review";
@@ -60,6 +61,7 @@ beforeEach(() => {
   const allowlistPath = join(work, "allowlist.json");
   writeAllowlist(allowlistPath, fixtureAllowlist());
   process.env.RELEASE_RESCUE_ALLOWLIST = allowlistPath;
+  process.env.RELEASE_RESCUE_TEST_FIXTURES = "1";
   saveCheckout(FIXTURE_REPOSITORY, repo.path);
   started.count = 0;
   stdout = [];
@@ -83,6 +85,7 @@ afterEach(() => {
   process.exitCode = 0;
   staging.fixed = null;
   delete process.env.RELEASE_RESCUE_ALLOWLIST;
+  delete process.env.RELEASE_RESCUE_TEST_FIXTURES;
   // A regression that took a stray option as a file name would write it in the
   // working directory, which is the repository. Asserted absent in each
   // refusal; removed here so a failing run leaves nothing behind.
@@ -343,6 +346,33 @@ describe("export reports a file it cannot write, and delivers nothing", () => {
     await main(["export", record.runId, "--out", join(work, "report.json")]);
     expect(loadRun(record.runId)!.deliveredAt, "control: a writable path delivers").not.toBeNull();
   });
+});
+
+describe("the allowlist a run reads", () => {
+  it("is the committed file unless the test-fixture marker is set, whatever RELEASE_RESCUE_ALLOWLIST says", async () => {
+    const committed = loadAllowlist(DEFAULT_ALLOWLIST_PATH);
+    expect(findAllowlisted(committed, FIXTURE_REPOSITORY), "control: the fixture repository is not committed").toBeNull();
+    expect(allowlistPath({ RELEASE_RESCUE_ALLOWLIST: "/tmp/other.json" })).toBe(DEFAULT_ALLOWLIST_PATH);
+    expect(allowlistPath({ RELEASE_RESCUE_ALLOWLIST: "/tmp/other.json", RELEASE_RESCUE_TEST_FIXTURES: "true" })).toBe(DEFAULT_ALLOWLIST_PATH);
+    expect(allowlistPath({ RELEASE_RESCUE_ALLOWLIST: "/tmp/other.json", RELEASE_RESCUE_TEST_FIXTURES: "1" })).toBe("/tmp/other.json");
+    expect(allowlistPath({})).toBe(DEFAULT_ALLOWLIST_PATH);
+
+    // Through the real launcher: a temporary list naming an unreviewed
+    // repository, without the marker, is not read, so nothing is configured.
+    const before = localState();
+    const target = join(work, "clone");
+    delete process.env.RELEASE_RESCUE_TEST_FIXTURES;
+    try {
+      const refused = await launch(["checkout:set", FIXTURE_REPOSITORY, target]);
+      expect(refused).toEqual({ status: 1, stdout: "", stderr: "That repository is not on the internal allowlist.\n" });
+      expect(localState()).toEqual(before);
+    } finally {
+      process.env.RELEASE_RESCUE_TEST_FIXTURES = "1";
+    }
+    // Control: with the marker, the same list is read.
+    const accepted = await launch(["checkout:set", FIXTURE_REPOSITORY, target]);
+    expect(accepted.status, accepted.stderr).toBe(0);
+  }, 30_000);
 });
 
 describe("an operator id or run id that names nothing", () => {

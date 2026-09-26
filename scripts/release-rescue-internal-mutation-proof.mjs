@@ -17,6 +17,7 @@
  * those files has uncommitted changes, so a restore can never discard work.
  *
  *   npm run proof:rr-internal
+ *   npm run proof:rr-internal -- --only M-ALLOWLIST-TEST-ONLY
  */
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -29,6 +30,7 @@ const TAR = "src/lib/release-rescue-internal/tar-source.ts";
 const GZIP = "src/lib/release-rescue-internal/gzip-members.ts";
 const CLI = "src/lib/release-rescue-internal/cli.ts";
 const REVIEW = "src/lib/release-rescue-internal/review.ts";
+const ALLOWLIST = "src/lib/release-rescue-internal/allowlist.ts";
 const LAUNCHER = "scripts/release-rescue-local.mjs";
 
 const CLAIM_SUITE = "src/lib/__tests__/release-rescue-claim-guard.test.ts";
@@ -229,6 +231,15 @@ const MUTANTS = [
     suite: CLI_SUITE,
   },
   {
+    id: "M-ALLOWLIST-TEST-ONLY",
+    guard: "RELEASE_RESCUE_ALLOWLIST is read only with the test-fixture marker; otherwise the committed allowlist is",
+    file: ALLOWLIST,
+    // The predecessor honoured the override in every run.
+    from: "  return override !== undefined && env[TEST_FIXTURES_ENV] === \"1\" ? override : DEFAULT_ALLOWLIST_PATH;\n",
+    to: "  return override ?? DEFAULT_ALLOWLIST_PATH;\n",
+    suite: CLI_SUITE,
+  },
+  {
     id: "M-NAME-FIRST",
     guard: "operator:add checks the display name before the passphrase prompt",
     file: CLI,
@@ -295,6 +306,21 @@ const MUTANTS = [
     control: true,
   },
 ];
+
+// `--only M-A,M-B` runs just those mutants and the control, so a guard added
+// later can be proved without re-running every other mutant.
+const onlyArg = process.argv.indexOf("--only");
+const ONLY = onlyArg >= 0 ? new Set((process.argv[onlyArg + 1] ?? "").split(",").filter(Boolean)) : null;
+if (ONLY) {
+  const unknown = [...ONLY].filter((id) => !MUTANTS.some((mutant) => mutant.id === id));
+  if (unknown.length > 0 || ONLY.size === 0) {
+    console.error(`Unknown or missing mutant ids for --only: ${unknown.join(", ") || "(none given)"}`);
+    process.exit(1);
+  }
+  for (let index = MUTANTS.length - 1; index >= 0; index -= 1) {
+    if (!MUTANTS[index].control && !ONLY.has(MUTANTS[index].id)) MUTANTS.splice(index, 1);
+  }
+}
 
 const FILES = [...new Set(MUTANTS.map((mutant) => mutant.file))];
 

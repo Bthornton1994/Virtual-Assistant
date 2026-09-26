@@ -82,6 +82,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   process.exitCode = 0;
   delete process.env.RELEASE_RESCUE_ALLOWLIST;
+  delete process.env.RELEASE_RESCUE_TEST_FIXTURES;
 });
 
 async function runOnFixture() {
@@ -195,6 +196,7 @@ describe("the CLI says which stage failed, not that nothing was analysed", () =>
     const allowlistPath = join(tempDir("rr-internal-failure-allowlist-"), "allowlist.json");
     writeAllowlist(allowlistPath, fixtureAllowlist());
     process.env.RELEASE_RESCUE_ALLOWLIST = allowlistPath;
+    process.env.RELEASE_RESCUE_TEST_FIXTURES = "1";
     saveCheckout(FIXTURE_REPOSITORY, repo.path);
     await main([
       "run",

@@ -16,4 +16,6 @@ export const E2E_ENV = {
   RELEASE_RESCUE_INTERNAL: "local",
   RELEASE_RESCUE_LOCAL_DIR: E2E_LOCAL_DIR,
   RELEASE_RESCUE_ALLOWLIST: E2E_ALLOWLIST,
+  // The allowlist override is read only in a test-harness process.
+  RELEASE_RESCUE_TEST_FIXTURES: "1",
 };
