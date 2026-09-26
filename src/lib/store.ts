@@ -64,6 +64,7 @@ import {
   ownerForAuthority,
   approvalClassFor,
   approvalCovers,
+  qaCountsForAuthority,
   raiseRiskForScope,
   reapprovalAfterRaise,
   requiredApprovals,
@@ -1398,6 +1399,16 @@ export class MemoryStore {
     return approved.length > 0 && !approved.some((a) => approvalCovers(a, req));
   }
 
+  /** Whether a passed QA review stands for the request's current authority. */
+  private hasCurrentPassedQa(req: RequestRecord) {
+    const decided = this.data.approvals
+      .filter((a) => a.requestId === req.id && a.kind === "execution_plan" && a.status === "approved" && approvalCovers(a, req) && a.decidedAt)
+      .map((a) => a.decidedAt as string)
+      .sort();
+    const planDecidedAt = decided.at(-1) ?? null;
+    return this.data.qaReviews.some((q) => q.requestId === req.id && q.passed && qaCountsForAuthority(q, planDecidedAt));
+  }
+
   /** Bring a request's plan, steps and approvals up to its raised authority. */
   private applyRaisedAuthority(actor: Actor, req: RequestRecord) {
     const authority = { actionClass: req.approvalLevel, riskLevel: req.riskLevel };
@@ -1646,11 +1657,14 @@ export class MemoryStore {
       } else if (decision === "rejected") {
         req.status = "blocked";
       } else if (approval.kind === "sensitive_action") {
-        req.status = "in_progress";
-      } else if (this.data.qaReviews.some((q) => q.requestId === req.id && q.passed)) {
+        if (approvalCovers(approval, req)) req.status = "in_progress";
+      } else if (req.status === "awaiting_action_approval" && this.hasCurrentPassedQa(req)) {
         req.status = "ready_to_deliver";
       } else if (req.status === "awaiting_action_approval") {
-        req.status = req.assignedOperatorId ? "in_progress" : "queued";
+        // Resuming work passes the same sensitive gate as transitionRequest.
+        const resume = req.assignedOperatorId ? "in_progress" : "queued";
+        const sensitiveHeld = resume === "in_progress" && blocksWithoutApproval(req.approvalLevel) && !this.hasCoveringApproval(req, "sensitive_action");
+        if (!sensitiveHeld) req.status = resume;
       }
       req.updatedAt = nowIso();
       this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
@@ -1756,7 +1770,7 @@ export class MemoryStore {
     if (req.status !== "ready_to_deliver" && req.status !== "qa") {
       throw new DomainError("Only checked work can be delivered");
     }
-    if (!this.data.qaReviews.some((q) => q.requestId === req.id && q.passed)) {
+    if (!this.hasCurrentPassedQa(req)) {
       throw new DomainError("QA must pass before delivery");
     }
     if (this.planApprovalOutstanding(req)) {
