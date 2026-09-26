@@ -42,7 +42,11 @@ import {
 import { delegationAI, mockAI } from "@/lib/ai";
 import {
   bindPlanToAuthority,
+  ownerForAuthority,
+  planApprovalCovers,
   raiseRiskForScope,
+  reapprovalAfterRaise,
+  requiredApprovals,
   resolveApprovalRequirements,
   resolveRequestRisk,
   routeForActionClass,
@@ -709,10 +713,15 @@ export class SupabaseWorkspaceRepository {
     const req = await this.getRequest(actor, id);
     if (!canMutateOpsQueue(actor) && actor.id !== req.createdBy && actor.role !== "client_admin") throw new AuthzError();
     const db = await this.client();
-    const title = typeof patch.title === "string" ? patch.title : req.title;
-    const description = typeof patch.description === "string" ? patch.description : req.description;
+    const text = (key: "title" | "objective" | "description" | "deliverable") => (typeof patch[key] === "string" ? patch[key] : req[key]);
     // Edited scope can raise the request's authority, never lower it.
-    const raised = raiseRiskForScope({ ...req, title, description });
+    const raised = raiseRiskForScope({
+      ...req,
+      title: text("title"),
+      objective: text("objective"),
+      description: text("description"),
+      deliverable: text("deliverable"),
+    });
     const { data, error } = await db
       .from("requests")
       .update({
@@ -736,7 +745,61 @@ export class SupabaseWorkspaceRepository {
       };
     }
     await this.audit(actor, "request.scope_updated", "request", id, req.organizationId, metadata);
-    return this.mapRequest(data);
+    const updated = this.mapRequest(data);
+    if (raised) {
+      await this.applyRaisedAuthority(actor, updated);
+      return this.getRequest(actor, id);
+    }
+    return updated;
+  }
+
+  /** Bring a request's plan, steps and approvals up to its raised authority. */
+  private async applyRaisedAuthority(actor: Actor, req: RequestRecord) {
+    const db = await this.client();
+    const authority = { actionClass: req.approvalLevel, riskLevel: req.riskLevel };
+    const { data: planRow } = await db.from("execution_plans").select("*").eq("request_id", req.id).maybeSingle();
+    let plan: ExecutionPlan | null = null;
+    try {
+      plan = planRow ? validateExecutionPlan(planRow.plan) : null;
+    } catch {
+      plan = null; // An unreadable stored plan is left as is; the approvals below still apply.
+    }
+    if (plan) {
+      await db.from("execution_plans").update({ plan: bindPlanToAuthority(plan, authority) }).eq("request_id", req.id);
+    }
+    const { data: steps } = await db.from("request_steps").select("*").eq("request_id", req.id);
+    for (const step of steps ?? []) {
+      const owner = ownerForAuthority(step.owner, req.approvalLevel);
+      if (step.status !== "done" && owner !== step.owner) {
+        await db.from("request_steps").update({ owner }).eq("id", step.id);
+      }
+    }
+    const next = reapprovalAfterRaise(req.status);
+    if (next === "record") return;
+    await db
+      .from("approvals")
+      .update({ action_class: req.approvalLevel, risk_level: req.riskLevel })
+      .eq("request_id", req.id)
+      .eq("status", "pending");
+    const required = requiredApprovals({ ...req, actionClass: req.approvalLevel });
+    for (const kind of required.kinds.filter((k) => k !== "execution_plan")) {
+      await this.createApprovalRecord(
+        actor,
+        req,
+        { kind, action: kind.replaceAll("_", " "), description: required.reasons.join(" "), riskLevel: req.riskLevel, actionClass: req.approvalLevel },
+        { advanceStatus: false },
+      );
+    }
+    if (next === "reapprove") {
+      const bound = plan ? bindPlanToAuthority(plan, authority) : null;
+      await this.createApprovalRecord(actor, req, {
+        kind: "execution_plan",
+        action: "Approve execution plan",
+        description: bound?.summary ?? "Scope changed; the plan needs approval at the raised authority.",
+        riskLevel: bound?.riskLevel ?? req.riskLevel,
+        actionClass: req.approvalLevel,
+      });
+    }
   }
 
   async transitionRequest(actor: Actor, id: string, to: RequestStatus, note?: string) {
@@ -748,8 +811,9 @@ export class SupabaseWorkspaceRepository {
     if (!canTransition(req.status, to)) throw new DomainError(`Cannot move ${req.status} → ${to}`);
     const db = await this.client();
     if (to === "queued" && req.status === "awaiting_plan_approval") {
-      const { data } = await db.from("approvals").select("id").eq("request_id", id).eq("kind", "execution_plan").eq("status", "approved");
-      if (!data?.length) throw new DomainError("Execution plan must be approved before the request enters the queue");
+      const { data } = await db.from("approvals").select("id, action_class").eq("request_id", id).eq("kind", "execution_plan").eq("status", "approved");
+      const covering = (data ?? []).filter((a) => planApprovalCovers({ actionClass: a.action_class as ActionClass }, req));
+      if (!covering.length) throw new DomainError("Execution plan must be approved before the request enters the queue");
     }
     if (to === "delivered") {
       const { data } = await db.from("deliveries").select("id").eq("request_id", id);

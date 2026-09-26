@@ -61,7 +61,11 @@ import {
 import { delegationAI, mockAI } from "@/lib/ai";
 import {
   bindPlanToAuthority,
+  ownerForAuthority,
+  planApprovalCovers,
   raiseRiskForScope,
+  reapprovalAfterRaise,
+  requiredApprovals,
   resolveApprovalRequirements,
   resolveRequestRisk,
   routeForActionClass,
@@ -1369,7 +1373,45 @@ export class MemoryStore {
       req.riskLevel = raised.riskLevel;
     }
     this.audit(actor, "request.scope_updated", "request", id, req.organizationId, metadata);
+    if (raised) this.applyRaisedAuthority(actor, req);
     return req;
+  }
+
+  /** Bring a request's plan, steps and approvals up to its raised authority. */
+  private applyRaisedAuthority(actor: Actor, req: RequestRecord) {
+    const authority = { actionClass: req.approvalLevel, riskLevel: req.riskLevel };
+    const plan = this.data.plans[req.id];
+    if (plan) this.data.plans[req.id] = bindPlanToAuthority(plan, authority);
+    for (const step of this.data.steps) {
+      if (step.requestId === req.id && step.status !== "done") step.owner = ownerForAuthority(step.owner, req.approvalLevel);
+    }
+    const next = reapprovalAfterRaise(req.status);
+    if (next === "record") return;
+    for (const approval of this.data.approvals) {
+      if (approval.requestId === req.id && approval.status === "pending") {
+        approval.actionClass = req.approvalLevel;
+        approval.riskLevel = req.riskLevel;
+      }
+    }
+    const required = requiredApprovals({ ...req, actionClass: req.approvalLevel });
+    for (const kind of required.kinds) {
+      if (kind === "execution_plan") continue;
+      this.createApprovalRecord(
+        actor,
+        req,
+        { kind, action: kind.replaceAll("_", " "), description: required.reasons.join(" "), riskLevel: req.riskLevel, actionClass: req.approvalLevel },
+        { advanceStatus: false },
+      );
+    }
+    if (next === "reapprove") {
+      this.createApprovalRecord(actor, req, {
+        kind: "execution_plan",
+        action: "Approve execution plan",
+        description: this.data.plans[req.id]?.summary ?? "Scope changed; the plan needs approval at the raised authority.",
+        riskLevel: this.data.plans[req.id]?.riskLevel ?? req.riskLevel,
+        actionClass: req.approvalLevel,
+      });
+    }
   }
 
   transitionRequest(actor: Actor, id: string, to: RequestStatus, note?: string) {
@@ -1383,7 +1425,7 @@ export class MemoryStore {
     }
     if (to === "queued" && req.status === "awaiting_plan_approval") {
       const approved = this.data.approvals.some(
-        (a) => a.requestId === req.id && a.kind === "execution_plan" && a.status === "approved",
+        (a) => a.requestId === req.id && a.kind === "execution_plan" && a.status === "approved" && planApprovalCovers(a, req),
       );
       if (!approved) {
         throw new DomainError("Execution plan must be approved before the request enters the queue");

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DomainError } from "@/lib/domain";
 import { mockAI } from "@/lib/ai";
+import { resolveApprovalRequirements } from "@/lib/ai-authority";
 import {
-  validateApprovalRequirement,
   validateExecutionPlan,
   validatePlaybookDraft,
   validateTriage,
@@ -39,7 +39,10 @@ describe("AI output validation", () => {
   });
 
   it("always keeps execution_plan in approval kinds", () => {
-    const reqs = validateApprovalRequirement({ kinds: ["external_email"], reasons: ["Outbound"], requiresCustomerDecision: true });
+    const reqs = resolveApprovalRequirements(
+      { title: "Update", description: "Status note", actionClass: "prepare_only", externalCommunication: false },
+      { kinds: ["external_email"], reasons: ["Outbound"], requiresCustomerDecision: true },
+    );
     expect(reqs.kinds[0]).toBe("execution_plan");
     expect(reqs.kinds).toContain("external_email");
   });
