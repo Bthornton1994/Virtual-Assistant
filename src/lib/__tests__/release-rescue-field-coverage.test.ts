@@ -5,6 +5,7 @@ import {
   enumerateSchemaStringPaths,
   enumerateStringFields,
   normalizeFieldPath,
+  unusedPolicyPaths,
 } from "@/lib/release-rescue-field-policy";
 import {
   buildReleaseRescueReport,
@@ -377,5 +378,19 @@ describe("a populated modelId does not reach the customer's copy", () => {
     // The customer is still told HOW it was prepared, which is the disclosure
     // the AI-assisted opt-in requires — just not by which model.
     expect(view.preparedByKind).toBe("agent");
+  });
+});
+
+describe("unusedPolicyPaths keeps the policy from drifting into fiction", () => {
+  it("does not report a path that a real report already exercises", () => {
+    const unused = unusedPolicyPaths(REAL_REPORTS);
+    expect(unused).not.toContain("$.engagementId");
+    expect(unused).not.toContain("$.findings[].observationCode");
+  });
+
+  it("names a policy entry no supplied report ever walks", () => {
+    const unused = unusedPolicyPaths([{ harmless: "only" }]);
+    expect(unused).toContain("$.engagementId");
+    expect(unused.length).toBe(Object.keys(REPORT_FIELD_POLICY).length);
   });
 });

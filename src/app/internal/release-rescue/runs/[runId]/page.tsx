@@ -10,6 +10,7 @@ import { hashReleaseRescueReviewSubject } from "@/lib/release-rescue-report";
 import { INTERNAL_PATH, requireOperator } from "@/lib/release-rescue-internal/request-guard";
 import { deliveryForRun } from "@/lib/release-rescue-internal/review";
 import { isRunId, loadRun, sealIntact, sweepRetention } from "@/lib/release-rescue-internal/store";
+import { describeAcquisitionLimits } from "@/lib/release-rescue-internal/snapshot";
 import { modelAnalysisReason } from "@/lib/release-rescue-internal/summary";
 
 const REFUSALS: Record<string, string> = {
@@ -40,6 +41,7 @@ export default async function InternalRunPage({
 
   const draftIntact = record.draft ? sealIntact("draft", runId, record.draft) : false;
   const delivery = record.status === "signed" ? deliveryForRun(runId) : null;
+  const acquisitionLimits = describeAcquisitionLimits(record.acquisition);
   const base = `${INTERNAL_PATH}/runs/${runId}`;
 
   return (
@@ -78,6 +80,8 @@ export default async function InternalRunPage({
           {record.acquisition.totals.rejectedCount} entries not read, {record.acquisition.totals.streamBytes} bytes
           received in total. Limits are enforced on the bytes actually read.
         </p>
+        <p className="text-sm text-ink-soft">{acquisitionLimits.limits}</p>
+        <p className="text-sm text-ink-soft">{acquisitionLimits.ratio}</p>
         {Object.keys(record.acquisition.rejectedByReason).length > 0 ? (
           <ul className="list-disc pl-5 text-sm">
             {Object.entries(record.acquisition.rejectedByReason).map(([reason, count]) => (

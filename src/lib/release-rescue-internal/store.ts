@@ -11,8 +11,9 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { RETENTION_DAYS, type RetentionPolicy } from "@/lib/release-rescue-intake";
 import { hashReleaseRescueReport, type ReleaseRescueReportV1 } from "@/lib/release-rescue-report";
+import { SNAPSHOT_LIMITS_VERSION } from "@/lib/release-rescue-snapshot-limits";
 import type { AnalysisNotes, CheckRun } from "@/lib/release-rescue-internal/checks";
-import type { AcquisitionRefusal, MeasuredTotals, SnapshotSourceKind } from "@/lib/release-rescue-internal/snapshot";
+import type { AcquisitionRefusal, MeasuredRatio, MeasuredTotals, SnapshotSourceKind } from "@/lib/release-rescue-internal/snapshot";
 
 // The local, gitignored store for internal runs.
 //
@@ -138,6 +139,16 @@ export type RunRecord = {
   status: "blocked" | "awaiting_review" | "signed" | "purged";
   acquisition: {
     status: "acquired" | "blocked";
+    /**
+     * Shared limits contract (`SNAPSHOT_LIMITS` and `evaluateSnapshot`).
+     * Absent on a record written before this field was stored.
+     */
+    limitsVersion?: typeof SNAPSHOT_LIMITS_VERSION;
+    /**
+     * The measured expansion-ratio rule, and whether it judged this source.
+     * Absent on a record written before the rule was named.
+     */
+    measuredRatio?: MeasuredRatio;
     totals: MeasuredTotals;
     refusals: AcquisitionRefusal[];
     rejectedByReason: Record<string, number>;

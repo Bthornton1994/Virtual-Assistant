@@ -4,7 +4,7 @@ import { analyzeSnapshot, type Analysis } from "@/lib/release-rescue-internal/ch
 import { buildDraftReport } from "@/lib/release-rescue-internal/draft-report";
 import { readGitCommit, verifyArchiveAgainstTree } from "@/lib/release-rescue-internal/git-source";
 import type { LocalOperator } from "@/lib/release-rescue-internal/local-identity";
-import { blockedBeforeReading, type SnapshotOutcome } from "@/lib/release-rescue-internal/snapshot";
+import { blockedBeforeReading, refusedAfterReading, type SnapshotOutcome } from "@/lib/release-rescue-internal/snapshot";
 import { checkoutFor, newRunId, saveRun, sealReport, type RunRecord } from "@/lib/release-rescue-internal/store";
 import { readTarArchive } from "@/lib/release-rescue-internal/tar-source";
 
@@ -110,10 +110,9 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
           snapshot,
         );
         if (!verification.matches) {
-          snapshot = {
-            ...blockedBeforeReading("tar_archive", snapshot.commitSha, verification.refusal.reason, verification.refusal.detail),
-            totals: snapshot.totals,
-          };
+          // Refused after it was read, so the record keeps what reading
+          // measured, including whether the ratio rule judged it.
+          snapshot = refusedAfterReading(snapshot, verification.refusal);
         } else {
           // The archive's own record of what it did not read is not what the
           // run reports; the pinned tree's is. They differ only by submodules.
@@ -147,6 +146,8 @@ export async function startInternalRun(input: StartRunInput): Promise<RunRecord>
     status: "blocked",
     acquisition: {
       status: snapshot.status,
+      limitsVersion: snapshot.limitsVersion,
+      measuredRatio: snapshot.measuredRatio,
       totals: snapshot.totals,
       refusals: snapshot.status === "blocked" ? snapshot.refusals : [],
       // Measured at acquisition, so it is on the record whether or not the

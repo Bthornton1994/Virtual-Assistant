@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { beforeEach, describe, expect, it } from "vitest";
 import { hashReleaseRescueReviewSubject } from "@/lib/release-rescue-report";
-import { SNAPSHOT_LIMITS } from "@/lib/release-rescue-snapshot-limits";
+import { SNAPSHOT_LIMITS, SNAPSHOT_LIMITS_VERSION } from "@/lib/release-rescue-snapshot-limits";
 import { internalModeDecision, isLoopbackRequest } from "@/lib/release-rescue-internal/mode";
 import {
   addOperator,
@@ -18,7 +18,7 @@ import {
 } from "@/lib/release-rescue-internal/local-identity";
 import { deliveryForRun, recordDelivery, signRunAsLocalOperator } from "@/lib/release-rescue-internal/review";
 import { verifyArchiveAgainstTree } from "@/lib/release-rescue-internal/git-source";
-import { blobId } from "@/lib/release-rescue-internal/snapshot";
+import { MEASURED_EXPANSION_RATIO_RULE, blobId, describeAcquisitionLimits } from "@/lib/release-rescue-internal/snapshot";
 import { CLI_INITIATOR, RunRefused, initiatorFromOperator, startInternalRun } from "@/lib/release-rescue-internal/run";
 import { runSummary } from "@/lib/release-rescue-internal/summary";
 import { listRuns, loadRun, localDir, purgeAfter, saveCheckout, sweepRetention } from "@/lib/release-rescue-internal/store";
@@ -428,6 +428,8 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     const record = await archiveRun(repo, out);
     expect(record.status).toBe("awaiting_review");
     expect(record.source).toBe("tar_archive");
+    expect(record.acquisition.limitsVersion).toBe(SNAPSHOT_LIMITS_VERSION);
+    expect(record.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: false });
   });
 
   // A `.tar.gz` is judged on the whole archive's ratio, so a small repository
@@ -483,6 +485,9 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     expect(archived.checkRuns).toEqual(checkout.checkRuns);
     expect(archived.acquisition.totals.acceptedFileCount).toBe(checkout.acquisition.totals.acceptedFileCount);
     expect(archived.acquisition.totals.acceptedBytes).toBe(checkout.acquisition.totals.acceptedBytes);
+    expect(archived.acquisition.limitsVersion).toBe(SNAPSHOT_LIMITS_VERSION);
+    expect(archived.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: true });
+    expect(checkout.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: false });
   });
 
   it("refuses an archive that only claims the pinned commit", async () => {
@@ -519,6 +524,117 @@ describe("an archive is accepted only when it is the pinned commit of the allowl
     const record = await archiveRun(repo, out);
     expect(record.status).toBe("blocked");
     expect(record.acquisition.refusals[0].reason).toBe("checkout_not_configured");
+  });
+
+  // Whether the ratio rule judged a `.tar.gz` depends on whether it was read,
+  // not on how the run ended: one read and then refused keeps the rule, one
+  // refused before a byte of it was read does not. The page quotes the record.
+  const RATIO_APPLIED = "Expansion ratio rule whole-archive/compressed-data/16MiB-floor. It was applied to this source.";
+  const RATIO_NOT_APPLIED =
+    "Expansion ratio rule whole-archive/compressed-data/16MiB-floor. It was not applied to this source. It applies only to a compressed archive that is read.";
+  const tarGzOf = (repo: { path: string }) => {
+    const dir = tempDir("rr-internal-archive-");
+    const tar = join(dir, "commit.tar");
+    gitArchive(repo, tar);
+    const tgz = join(dir, "commit.tar.gz");
+    writeFileSync(tgz, gzipSync(readFileSync(tar)));
+    return tgz;
+  };
+
+  const readThenRefused: Array<[string, string, (repo: { path: string }) => string]> = [
+    ["does not match the pinned commit", "archive_commit_unverified", (repo) => repo.path],
+    ["cannot be checked against a clone that is gone", "checkout_not_configured", () => join(tempDir("rr-internal-gone-"), "clone")],
+  ];
+  it.each(readThenRefused)("keeps the ratio rule on a .tar.gz that was read and then refused because it %s", async (_name, reason, clone) => {
+    const repo = makeFixtureRepo({ ".gitattributes": "hidden.ts export-ignore\n", "src/a.ts": "a\n", "hidden.ts": "h\n" });
+    saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, clone(repo));
+    const tgz = tarGzOf(repo);
+
+    const record = await archiveRun(repo, tgz);
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals.map((refusal) => refusal.reason)).toEqual([reason]);
+    expect(record.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: true });
+    expect(record.acquisition.totals.streamBytes).toBe(statSync(tgz).size);
+    expect(record.acquisition.totals.expandedBytes).toBeGreaterThan(record.acquisition.totals.streamBytes);
+    const stored = loadRun(record.runId);
+    expect(stored?.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: true });
+    expect(describeAcquisitionLimits(stored!.acquisition).ratio).toBe(RATIO_APPLIED);
+  });
+
+  const refusedBeforeReading: Array<
+    [string, string, string, (repo: { path: string; commitSha: string }, tgz: string) => ReturnType<typeof startInternalRun>]
+  > = [
+    [
+      "no clone is configured to check it against",
+      "checkout_not_configured",
+      "No local checkout is configured for this repository.",
+      (repo, tgz) => archiveRun(repo, tgz),
+    ],
+    [
+      "its path does not name a file",
+      "checkout_not_configured",
+      "The archive path must be an existing absolute file.",
+      (repo, tgz) => {
+        saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+        return archiveRun(repo, `${tgz}.missing.tar.gz`);
+      },
+    ],
+    [
+      "the file is over the archive limit",
+      "archive_too_large",
+      `over the ${SNAPSHOT_LIMITS.maxArchiveBytes} limit`,
+      (repo, tgz) => {
+        saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+        truncateSync(tgz, SNAPSHOT_LIMITS.maxArchiveBytes + 1);
+        return archiveRun(repo, tgz);
+      },
+    ],
+    [
+      "its commit sha is malformed",
+      "commit_sha_malformed",
+      "A full 40-character lowercase commit sha is required.",
+      (repo, tgz) => {
+        saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+        return archiveRun(repo, tgz, repo.commitSha.toUpperCase());
+      },
+    ],
+    [
+      "it is empty",
+      "malformed_input",
+      "The archive is not valid gzip.",
+      (repo, tgz) => {
+        saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+        writeFileSync(tgz, "");
+        return archiveRun(repo, tgz);
+      },
+    ],
+  ];
+  it.each(refusedBeforeReading)("says the ratio rule was not applied to a .tar.gz refused before a byte of it was read, because %s", async (_name, reason, detail, run) => {
+    const repo = makeFixtureRepo({ "src/a.ts": "a\n" });
+    const record = await run(repo, tarGzOf(repo));
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals.map((refusal) => refusal.reason)).toEqual([reason]);
+    expect(record.acquisition.refusals[0].detail).toContain(detail);
+    expect(record.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: false });
+    expect(record.acquisition.totals.streamBytes).toBe(0);
+    expect(record.acquisition.totals.expandedBytes).toBe(0);
+    const stored = loadRun(record.runId);
+    expect(stored?.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: false });
+    expect(describeAcquisitionLimits(stored!.acquisition).ratio).toBe(RATIO_NOT_APPLIED);
+  });
+
+  it("records the ratio rule as applied once a byte of a .tar.gz is read, even if none of it decompresses", async () => {
+    const repo = makeFixtureRepo({ "src/a.ts": "a\n" });
+    saveCheckout(fixtureAllowlist().repositories[0].repositoryRef, repo.path);
+    const tgz = tarGzOf(repo);
+    writeFileSync(tgz, "not gzip at all");
+    const record = await archiveRun(repo, tgz);
+    expect(record.status).toBe("blocked");
+    expect(record.acquisition.refusals).toEqual([{ reason: "malformed_input", detail: "The archive is not valid gzip." }]);
+    expect(record.acquisition.totals.streamBytes).toBe(statSync(tgz).size);
+    expect(record.acquisition.totals.expandedBytes).toBe(0);
+    expect(record.acquisition.measuredRatio).toEqual({ rule: MEASURED_EXPANSION_RATIO_RULE, applied: true });
+    expect(describeAcquisitionLimits(loadRun(record.runId)!.acquisition).ratio).toBe(RATIO_APPLIED);
   });
 
   const tarOf = (commitSha: string, entries: Parameters<typeof buildTar>[0]) => {
@@ -869,6 +985,31 @@ describe("a record written by the previous version still says why it is BLOCKED"
     expect(loaded.processingFailure).toEqual({ stage: "draft_assembly", message: legacy.draftFailure });
     expect("draftFailure" in loaded).toBe(false);
     expect(runSummary(loaded).processingFailure?.message).toBe(legacy.draftFailure);
+  });
+
+  it("loads a record written before the ratio rule was stored, and does not invent one", async () => {
+    const repo = makeFixtureRepo({ "a.ts": "a\n" });
+    const record = await startInternalRun({
+      initiatedBy: CLI_INITIATOR,
+      repositoryRef: FIXTURE_REPOSITORY,
+      commitSha: repo.commitSha,
+      retentionPolicy: "minimum_7_day",
+      ownershipConfirmed: true,
+      source: { kind: "checkout", path: repo.path },
+      allowlist: fixtureAllowlist(),
+    });
+    const stored = JSON.parse(readFileSync(storedRunPath(record.runId), "utf8"));
+    delete stored.acquisition.limitsVersion;
+    delete stored.acquisition.measuredRatio;
+    writeFileSync(storedRunPath(record.runId), JSON.stringify(stored));
+
+    const loaded = loadRun(record.runId)!;
+    expect(loaded.acquisition.limitsVersion).toBeUndefined();
+    expect(loaded.acquisition.measuredRatio).toBeUndefined();
+    expect(describeAcquisitionLimits(loaded.acquisition)).toEqual({
+      limits: "This record does not store a shared limits version.",
+      ratio: "This record does not name an expansion ratio rule.",
+    });
   });
 
   it("keeps a processingFailure the record already has, whatever a legacy field says", async () => {
