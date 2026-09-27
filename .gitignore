@@ -53,3 +53,5 @@ next-env.d.ts
 
 # Release Rescue internal local workflow: operators, sessions key, runs, outputs
 /.release-rescue-local/
+# Store backups belong outside the repository; this catches one written here by mistake.
+/rr-local-*.tar.gz

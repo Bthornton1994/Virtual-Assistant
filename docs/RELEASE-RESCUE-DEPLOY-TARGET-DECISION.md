@@ -41,6 +41,7 @@ These stay open. This packet does not decide them.
 | **G-03** Host | The blank row in the decision table. |
 | **G-04** Rubric scope | Whether paid use can stay at two automated checks plus a human reading, or needs more deterministic checks, or an authorized model provider. No provider is authorized now. |
 | **G-07** Claim language | Whether the recorded claim-guard residuals stay, or which named misses to close before any paid marketing. Marketing must not say the guard is complete. |
+| **G-08** Gzip residuals | Whether to tighten the recorded ratio residuals: gzip framing after the data, and deflate data that decodes to nothing. The caps still hold, and `docs/RELEASE-RESCUE-INTERNAL.md` states their bounds. |
 | **G-10** Allowlist | How a shared production target list is governed. The local tool reads the working tree. |
 | **G-11** Non-loopback | Covered by the hosting row. A host that is not loopback-bound cannot treat client headers as isolation. |
 | **G-12** `pg_net` | Whether a production database must provide `pg_net`. The CI proof image does not, and skips that one non-Release-Rescue migration. |

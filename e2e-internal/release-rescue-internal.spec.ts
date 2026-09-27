@@ -133,7 +133,7 @@ test("the full journey: acquire, analyze, review, sign exactly what is shown, ex
   await expect(page.getByRole("heading", { name: "Source acquisition: ACQUIRED" })).toBeVisible();
   await expect(
     page.getByText(
-      "Expansion ratio rule whole-archive/compressed-data/16MiB-floor. It was not applied, because this source is not a compressed archive.",
+      "Expansion ratio rule whole-archive/compressed-data/16MiB-floor. It was not applied to this source. It applies only to a compressed archive that is read.",
     ),
   ).toBeVisible();
   await expect(

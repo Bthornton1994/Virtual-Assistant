@@ -26,7 +26,8 @@ import {
 // `evaluateSnapshot` rules, both unchanged. It does not name how this reader
 // measures the ratio. The run record does, in `measuredRatio`: the rule id
 // below, and whether that rule judged this source. A compressed archive is
-// judged by it. A git checkout or a plain tar is not.
+// judged by it once a byte of it is read. A git checkout, a plain tar, and an
+// archive refused before a byte of it is read are not.
 //
 // Source lives in memory only, for the length of one run. Nothing here writes a
 // file, and nothing here returns bytes to a caller that persists them.
@@ -222,7 +223,7 @@ export const MEASURED_EXPANSION_RATIO_RULE = "whole-archive/compressed-data/16Mi
 
 export type MeasuredRatio = {
   rule: typeof MEASURED_EXPANSION_RATIO_RULE;
-  /** True only when the source was compressed, so this rule judged its bytes. */
+  /** True only when the source was compressed and a byte of it was read, so this rule judged its bytes. */
   applied: boolean;
 };
 
@@ -242,7 +243,7 @@ export function describeAcquisitionLimits(acquisition: {
     ? "This record does not name an expansion ratio rule."
     : acquisition.measuredRatio.applied
       ? `Expansion ratio rule ${acquisition.measuredRatio.rule}. It was applied to this source.`
-      : `Expansion ratio rule ${acquisition.measuredRatio.rule}. It was not applied, because this source is not a compressed archive.`;
+      : `Expansion ratio rule ${acquisition.measuredRatio.rule}. It was not applied to this source. It applies only to a compressed archive that is read.`;
   return { limits, ratio };
 }
 
@@ -447,6 +448,14 @@ export class SnapshotBudget {
   }
 
   /**
+   * The ratio rule judged this source only if it is compressed and a byte of it
+   * arrived. An archive that could not be opened, or was empty, was not judged.
+   */
+  private recordedRatio(): MeasuredRatio {
+    return measuredRatio(this.compressed && this.totals.streamBytes > 0);
+  }
+
+  /**
    * The final decision. The archive limits were enforced on the measured
    * stream as it was read, and the ratio is decided here over the whole input.
    * The entry and whole-snapshot rules are the same `evaluateSnapshot` the claim
@@ -467,7 +476,7 @@ export class SnapshotBudget {
         source,
         commitSha,
         limitsVersion: SNAPSHOT_LIMITS_VERSION,
-        measuredRatio: measuredRatio(this.compressed),
+        measuredRatio: this.recordedRatio(),
         refusals: decision.refusals.map((refusal) => ({ reason: refusal.reason, detail: refusal.detail })),
         totals: this.totals,
       };
@@ -477,7 +486,7 @@ export class SnapshotBudget {
       source,
       commitSha,
       limitsVersion: SNAPSHOT_LIMITS_VERSION,
-      measuredRatio: measuredRatio(this.compressed),
+      measuredRatio: this.recordedRatio(),
       files: [...this.files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
       rejected: this.rejected,
       totals: this.totals,
@@ -491,7 +500,7 @@ export class SnapshotBudget {
       source,
       commitSha,
       limitsVersion: SNAPSHOT_LIMITS_VERSION,
-      measuredRatio: measuredRatio(this.compressed),
+      measuredRatio: this.recordedRatio(),
       refusals: [refusal],
       totals: this.totals,
     };
@@ -512,5 +521,23 @@ export function blockedBeforeReading(
     measuredRatio: measuredRatio(false),
     refusals: [{ reason, detail }],
     totals: emptyTotals(),
+  };
+}
+
+/**
+ * Refuses a snapshot that was read in full, for a reason found afterwards: an
+ * archive that is not the pinned tree. What reading measured stays on the
+ * record, the totals and whether the ratio rule judged the bytes, because that
+ * reading happened.
+ */
+export function refusedAfterReading(snapshot: AcquiredSnapshot, refusal: AcquisitionRefusal): BlockedSnapshot {
+  return {
+    status: "blocked",
+    source: snapshot.source,
+    commitSha: snapshot.commitSha,
+    limitsVersion: snapshot.limitsVersion,
+    measuredRatio: snapshot.measuredRatio,
+    refusals: [refusal],
+    totals: snapshot.totals,
   };
 }

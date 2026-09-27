@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { createGzip, crc32, deflateRawSync } from "node:zlib";
@@ -544,6 +544,17 @@ describe("the expansion ratio is the whole archive's, whatever the order of its 
     expect(outcome.status).toBe("blocked");
     if (outcome.status === "blocked") expect(outcome.refusals[0].reason).toBe("archive_too_large");
     expect(outcome.totals.streamBytes).toBe(0);
+    // Nothing was read, so the ratio rule judged nothing.
+    expect(outcome.measuredRatio.applied).toBe(false);
+  });
+
+  it("does not record the ratio rule as applied to an archive that could not be opened", async () => {
+    const missing = join(tempDir("rr-internal-ratio-"), "gone.tar.gz");
+    const outcome = await readTarStream(createReadStream(missing), SHA, { gzip: true, inputBytes: 100 });
+    expect(outcome.status).toBe("blocked");
+    if (outcome.status === "blocked") expect(outcome.refusals[0].reason).toBe("reader_failed");
+    expect(outcome.totals.streamBytes).toBe(0);
+    expect(outcome.measuredRatio.applied).toBe(false);
   });
 
   it("does not apply the ratio below the floor, and does above it", async () => {

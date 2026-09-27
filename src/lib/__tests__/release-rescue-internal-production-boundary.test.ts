@@ -42,7 +42,7 @@ describe("internal limits identity", () => {
         measuredRatio: { rule: MEASURED_EXPANSION_RATIO_RULE, applied: false },
       }).ratio,
     ).toBe(
-      "Expansion ratio rule whole-archive/compressed-data/16MiB-floor. It was not applied, because this source is not a compressed archive.",
+      "Expansion ratio rule whole-archive/compressed-data/16MiB-floor. It was not applied to this source. It applies only to a compressed archive that is read.",
     );
     expect(describeAcquisitionLimits({})).toEqual({
       limits: "This record does not store a shared limits version.",
