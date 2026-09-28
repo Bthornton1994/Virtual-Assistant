@@ -10,6 +10,7 @@ import {
   type ApprovalKind,
   type RequestStatus,
   type WorkstreamSchedule,
+  parseApprovalDecision,
 } from "@/lib/domain";
 import { getWorkspace } from "@/lib/workspace";
 
@@ -96,9 +97,9 @@ export async function cancelRequestAction(formData: FormData) {
 export async function decideApprovalAction(formData: FormData) {
   const actor = await requireClient();
   const id = String(formData.get("approvalId") || "");
-  const decision = String(formData.get("decision") || "") as "approved" | "rejected";
   let requestId = "";
   try {
+    const decision = parseApprovalDecision(formData.get("decision"));
     const approval = await getWorkspace(actor).decideApproval(actor, id, decision, String(formData.get("note") || ""));
     requestId = approval.requestId;
   } catch (error) {

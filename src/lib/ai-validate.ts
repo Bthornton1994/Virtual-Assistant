@@ -1,21 +1,16 @@
 import {
   ACTION_CLASSES,
-  APPROVAL_KINDS,
   DomainError,
   PRIORITIES,
   RISK_LEVELS,
   type ActionClass,
-  type ApprovalKind,
   type ExecutionPlan,
   type Priority,
   type RiskLevel,
 } from "@/lib/domain";
 import type {
-  ApprovalRequirement,
   AutomationOpportunity,
   PlaybookDraft,
-  QaResult,
-  RoutingSuggestion,
   TriageResult,
 } from "@/lib/ai";
 
@@ -95,44 +90,6 @@ export function validateExecutionPlan(value: unknown): ExecutionPlan {
 export function validateMissingContext(value: unknown): { missing: string[] } {
   if (!isRecord(value)) fail("AI missing-context");
   return { missing: asStringArray(value.missing) };
-}
-
-export function validateApprovalRequirement(value: unknown): ApprovalRequirement {
-  if (!isRecord(value)) fail("AI approval requirements");
-  const kinds = asStringArray(value.kinds).filter((kind): kind is ApprovalKind =>
-    (APPROVAL_KINDS as readonly string[]).includes(kind),
-  );
-  if (!kinds.includes("execution_plan")) kinds.unshift("execution_plan");
-  return {
-    kinds: [...new Set(kinds)],
-    reasons: asStringArray(value.reasons),
-    requiresCustomerDecision: asBool(value.requiresCustomerDecision, true),
-  };
-}
-
-export function validateRouting(value: unknown): RoutingSuggestion {
-  if (!isRecord(value)) fail("AI routing");
-  const executor = asString(value.executor);
-  if (!["ai", "automation", "operator", "specialist"].includes(executor)) fail("AI routing executor");
-  return {
-    executor: executor as RoutingSuggestion["executor"],
-    skillHints: asStringArray(value.skillHints),
-    reason: asString(value.reason),
-    humanRequired: asBool(value.humanRequired, true),
-  };
-}
-
-export function validateQaResult(value: unknown): QaResult {
-  if (!isRecord(value)) fail("AI QA");
-  const checklist = Array.isArray(value.checklist)
-    ? value.checklist.filter(isRecord).map((row) => ({ item: asString(row.item), ok: asBool(row.ok) }))
-    : [];
-  return {
-    passed: asBool(value.passed),
-    score: Math.min(100, Math.max(0, asNumber(value.score))),
-    checklist,
-    residualRisk: asString(value.residualRisk),
-  };
 }
 
 export function validatePlaybookDraft(value: unknown): PlaybookDraft {

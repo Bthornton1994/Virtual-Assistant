@@ -5,6 +5,7 @@ import {
   type ActionClass,
   type Actor,
   type Approval,
+  type ApprovalDecision,
   type ApprovalKind,
   type Clarification,
   type CreateRequestInput,
@@ -38,15 +39,28 @@ import {
   formatOperatingMemory,
   isClientRole,
   nowIso,
+  parseApprovalDecision,
 } from "@/lib/domain";
 import { delegationAI, mockAI } from "@/lib/ai";
 import {
-  validateApprovalRequirement,
+  bindPlanToAuthority,
+  ownerForAuthority,
+  approvalClassFor,
+  approvalCovers,
+  qaCountsForAuthority,
+  raiseRiskForScope,
+  reapprovalAfterRaise,
+  requiredApprovals,
+  type RaisePlan,
+  resolveApprovalRequirements,
+  resolveRequestRisk,
+  routeForActionClass,
+} from "@/lib/ai-authority";
+import {
   validateAutomation,
   validateExecutionPlan,
   validateMissingContext,
   validatePlaybookDraft,
-  validateRouting,
   validateTriage,
   validatedOrFallback,
 } from "@/lib/ai-validate";
@@ -76,7 +90,27 @@ export class SupabaseWorkspaceRepository {
   ) {
     if (options?.advanceStatus === false || req.status === "cancelled") return;
     const next = kind === "execution_plan" ? "awaiting_plan_approval" : "awaiting_action_approval";
-    await db.from("requests").update({ status: next, updated_at: nowIso() }).eq("id", req.id);
+    await this.writeRequestIfUnchanged(db, req, { status: next });
+  }
+
+  /**
+   * Write request fields only if the request still has the status and action
+   * class the caller checked its gates against. Supabase calls here are not
+   * one transaction, so a concurrent change (such as a scope raise) between
+   * the check and the write makes the write fail instead of overwriting it.
+   */
+  private async writeRequestIfUnchanged(db: SupabaseClient, req: RequestRecord, patch: Record<string, unknown>) {
+    const { data, error } = await db
+      .from("requests")
+      .update({ ...patch, updated_at: nowIso() })
+      .eq("id", req.id)
+      .eq("status", req.status)
+      .eq("approval_level", req.approvalLevel)
+      .select("*")
+      .maybeSingle();
+    if (error) dbFail(error);
+    if (!data) throw new DomainError("The request changed while this action ran; reload and try again");
+    return data;
   }
 
   private mapOrg(row: Record<string, unknown>): Organization {
@@ -544,8 +578,10 @@ export class SupabaseWorkspaceRepository {
       workstreams.find((w) => WORKSTREAM_TEMPLATES.find((t) => t.id === w.templateId)?.slug === classified.workstreamSlug) ||
       workstreams[0] ||
       null;
-    const actionClass =
-      input.externalCommunication && risk.actionClass === "prepare_only" ? "external_execution" : risk.actionClass;
+    // Authority is decided in code: the model's classification can only raise
+    // the deterministic floor derived from the request itself.
+    const authority = resolveRequestRisk(input, risk);
+    const actionClass = authority.actionClass;
     const playbook = input.playbookId ? (await db.from("playbooks").select("*").eq("id", input.playbookId).maybeSingle()).data : null;
     if (playbook) assertOrgAccess(actor, playbook.organization_id);
     const pbVersion = playbook
@@ -565,7 +601,7 @@ export class SupabaseWorkspaceRepository {
       deliverable: input.deliverable,
       priority: triage.priority,
       status: missingContext.length ? "needs_clarification" : "awaiting_plan_approval",
-      risk_level: risk.riskLevel,
+      risk_level: authority.riskLevel,
       approval_level: actionClass,
       due_at: input.dueAt,
       created_by: actor.id,
@@ -589,55 +625,35 @@ export class SupabaseWorkspaceRepository {
     };
     const { error } = await db.from("requests").insert(row);
     if (error) dbFail(error);
-    const [planRaw, approvalRaw, routingRaw, automationRaw] = await Promise.all([
-      delegationAI.generateExecutionPlan({
-        title: input.title,
-        objective: input.objective,
-        description: input.description,
-        deliverable: input.deliverable,
-        workstreamName: ws?.name,
-        actionClass,
-      }),
-      delegationAI.determineApprovalRequirements({
-        title: input.title,
-        description: input.description,
-        actionClass,
-        externalCommunication: input.externalCommunication,
-      }),
-      delegationAI.suggestExecutor({
-        actionClass,
-        workstreamName: ws?.name,
-        title: input.title,
-      }),
+    const planInput = {
+      title: input.title,
+      objective: input.objective,
+      description: input.description,
+      deliverable: input.deliverable,
+      workstreamName: ws?.name,
+      actionClass,
+    };
+    const approvalInput = {
+      title: input.title,
+      description: input.description,
+      actionClass,
+      externalCommunication: input.externalCommunication,
+    };
+    const [planRaw, approvalRaw, automationRaw] = await Promise.all([
+      delegationAI.generateExecutionPlan(planInput),
+      delegationAI.determineApprovalRequirements(approvalInput),
       delegationAI.identifyAutomationOpportunity({
         title: input.title,
         actionClass,
         recurring: input.recurring,
       }),
     ]);
-    const plan = validatedOrFallback(
-      planRaw,
-      validateExecutionPlan,
-      await mockAI.generateExecutionPlan({
-        title: input.title,
-        objective: input.objective,
-        description: input.description,
-        deliverable: input.deliverable,
-        workstreamName: ws?.name,
-        actionClass,
-      }),
+    const plan = bindPlanToAuthority(
+      validatedOrFallback(planRaw, validateExecutionPlan, await mockAI.generateExecutionPlan(planInput)),
+      authority,
     );
-    const approvalNeeds = validatedOrFallback(
-      approvalRaw,
-      validateApprovalRequirement,
-      await mockAI.determineApprovalRequirements({
-        title: input.title,
-        description: input.description,
-        actionClass,
-        externalCommunication: input.externalCommunication,
-      }),
-    );
-    const routing = validatedOrFallback(routingRaw, validateRouting, await mockAI.suggestExecutor({ actionClass, workstreamName: ws?.name, title: input.title }));
+    const approvalNeeds = resolveApprovalRequirements(approvalInput, approvalRaw);
+    const routing = routeForActionClass(actionClass);
     const automation = validatedOrFallback(
       automationRaw,
       validateAutomation,
@@ -722,22 +738,184 @@ export class SupabaseWorkspaceRepository {
     const req = await this.getRequest(actor, id);
     if (!canMutateOpsQueue(actor) && actor.id !== req.createdBy && actor.role !== "client_admin") throw new AuthzError();
     const db = await this.client();
+    const text = (key: "title" | "objective" | "description" | "deliverable") => (typeof patch[key] === "string" ? patch[key] : req[key]);
+    // Edited scope can raise the request's authority, never lower it.
+    const raised = raiseRiskForScope({
+      ...req,
+      title: text("title"),
+      objective: text("objective"),
+      description: text("description"),
+      deliverable: text("deliverable"),
+    });
+    // Decide what the raise requires before writing, so the raised class and
+    // the return to plan approval land in one update. The requests triggers
+    // reject an intermediate row such as in_progress at sensitive_execution.
+    let raisePlan: RaisePlan | null = null;
+    if (raised) {
+      const { data: planApprovals, error } = await db.from("approvals").select("id").eq("request_id", req.id).eq("kind", "execution_plan");
+      if (error) dbFail(error);
+      raisePlan = reapprovalAfterRaise(req.status, Boolean(planApprovals?.length));
+    }
+    const data = await this.writeRequestIfUnchanged(db, req, {
+      title: patch.title ?? req.title,
+      objective: patch.objective ?? req.objective,
+      description: patch.description ?? req.description,
+      deliverable: patch.deliverable ?? req.deliverable,
+      due_at: patch.dueAt === undefined ? req.dueAt : patch.dueAt,
+      ...(raised ? { approval_level: raised.actionClass, risk_level: raised.riskLevel } : {}),
+      ...(raisePlan?.returnToPlanApproval && req.status !== "awaiting_plan_approval" ? { status: "awaiting_plan_approval" } : {}),
+    });
+    const metadata: Record<string, unknown> = { ...patch };
+    if (raised) {
+      metadata.authorityRaised = {
+        from: { actionClass: req.approvalLevel, riskLevel: req.riskLevel },
+        to: { actionClass: raised.actionClass, riskLevel: raised.riskLevel },
+      };
+    }
+    await this.audit(actor, "request.scope_updated", "request", id, req.organizationId, metadata);
+    const updated = this.mapRequest(data);
+    if (raised && raisePlan) {
+      if (raisePlan.returnToPlanApproval && req.status !== "awaiting_plan_approval") {
+        await this.audit(actor, "request.status_changed", "request", id, req.organizationId, {
+          from: req.status,
+          to: "awaiting_plan_approval",
+          reason: "authority_raised",
+        });
+      }
+      await this.applyRaisedAuthority(actor, updated, raisePlan);
+      return this.getRequest(actor, id);
+    }
+    return updated;
+  }
+
+  /** Whether the request holds an approved approval of this kind at its current class. */
+  private async hasCoveringApproval(db: SupabaseClient, req: RequestRecord, kind: ApprovalKind) {
     const { data, error } = await db
-      .from("requests")
-      .update({
-        title: patch.title ?? req.title,
-        objective: patch.objective ?? req.objective,
-        description: patch.description ?? req.description,
-        deliverable: patch.deliverable ?? req.deliverable,
-        due_at: patch.dueAt === undefined ? req.dueAt : patch.dueAt,
-        updated_at: nowIso(),
-      })
-      .eq("id", id)
-      .select("*")
-      .single();
+      .from("approvals")
+      .select("id, action_class")
+      .eq("request_id", req.id)
+      .eq("kind", kind)
+      .eq("status", "approved");
     if (error) dbFail(error);
-    await this.audit(actor, "request.scope_updated", "request", id, req.organizationId, patch);
-    return this.mapRequest(data);
+    return (data ?? []).some((a) => approvalCovers({ kind, actionClass: a.action_class as ActionClass }, req));
+  }
+
+  /**
+   * The checks every path to "delivered" must pass, whether through
+   * deliverRequest or transitionRequest: current QA, the plan approved at the
+   * current class, and covering outbound and sensitive approvals.
+   */
+  private async assertDeliverable(db: SupabaseClient, req: RequestRecord) {
+    if (!(await this.hasCurrentPassedQa(db, req))) throw new DomainError("QA must pass before delivery");
+    if (await this.planApprovalOutstanding(db, req)) {
+      throw new DomainError("The execution plan must be approved at the request's current authority before delivery");
+    }
+    if ((req.approvalLevel === "external_execution" || req.externalCommunication) && !(await this.hasCoveringApproval(db, req, "external_email"))) {
+      throw new DomainError("Outbound action requires customer approval before delivery");
+    }
+    if (req.approvalLevel === "sensitive_execution" && !(await this.hasCoveringApproval(db, req, "sensitive_action"))) {
+      throw new DomainError("Sensitive action requires customer approval before delivery");
+    }
+  }
+
+  /** Whether a passed QA review stands for the request's current authority. */
+  private async hasCurrentPassedQa(db: SupabaseClient, req: RequestRecord) {
+    const { data: plans, error: plansError } = await db
+      .from("approvals")
+      .select("action_class, decided_at")
+      .eq("request_id", req.id)
+      .eq("kind", "execution_plan")
+      .eq("status", "approved");
+    // A failed read is not "no plan decision": that would make every QA pass current.
+    if (plansError) dbFail(plansError);
+    const decided = (plans ?? [])
+      .filter((a) => a.decided_at && approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req))
+      .map((a) => String(a.decided_at))
+      .sort();
+    // The earliest covering decision: re-approving at the same class does not
+    // void QA, while a raise (whose first covering decision is newer) does.
+    const planDecidedAt = decided[0] ?? null;
+    const { data: reviews, error: reviewsError } = await db.from("qa_reviews").select("created_at").eq("request_id", req.id).eq("passed", true);
+    if (reviewsError) dbFail(reviewsError);
+    return (reviews ?? []).some((q) => qaCountsForAuthority({ createdAt: String(q.created_at) }, planDecidedAt));
+  }
+
+  /**
+   * Whether the request's plan approval is outstanding at its current class:
+   * a plan approval is pending, or plan approvals exist and none covers the
+   * class (the scope was raised after they were given). A request that never
+   * had a plan approval is not held here.
+   */
+  private async planApprovalOutstanding(db: SupabaseClient, req: RequestRecord) {
+    const { data, error } = await db.from("approvals").select("status, action_class").eq("request_id", req.id).eq("kind", "execution_plan");
+    // A failed read is not "no plan approvals": that would pass the gate.
+    if (error) dbFail(error);
+    const plans = data ?? [];
+    const covers = (a: { action_class: unknown }) => approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req);
+    if (plans.some((a) => a.status === "pending" && covers(a))) return true;
+    // Once any plan approval exists, the request is held until one is approved
+    // at its current class, whatever state the other plan approvals are in.
+    return plans.length > 0 && !plans.some((a) => a.status === "approved" && covers(a));
+  }
+
+  /** Bring a request's plan, steps and approvals up to its raised authority. */
+  private async applyRaisedAuthority(actor: Actor, req: RequestRecord, next: RaisePlan) {
+    const db = await this.client();
+    const authority = { actionClass: req.approvalLevel, riskLevel: req.riskLevel };
+    // The raised class and the return to plan approval are already written, so
+    // a failure here stops before new approvals are requested and the gates
+    // keep holding the request. It never requests approval of a plan that
+    // still shows the lower class.
+    const { data: planRow, error: planError } = await db.from("execution_plans").select("*").eq("request_id", req.id).maybeSingle();
+    if (planError) dbFail(planError);
+    let plan: ExecutionPlan | null = null;
+    try {
+      plan = planRow ? validateExecutionPlan(planRow.plan) : null;
+    } catch {
+      plan = null; // An unreadable stored plan is left as is; the approvals below still apply.
+    }
+    if (plan) {
+      const { error } = await db.from("execution_plans").update({ plan: bindPlanToAuthority(plan, authority) }).eq("request_id", req.id);
+      if (error) dbFail(error);
+    }
+    const { data: steps, error: stepsError } = await db.from("request_steps").select("*").eq("request_id", req.id);
+    if (stepsError) dbFail(stepsError);
+    for (const step of steps ?? []) {
+      const owner = ownerForAuthority(step.owner, req.approvalLevel);
+      if (step.status !== "done" && owner !== step.owner) {
+        const { error } = await db.from("request_steps").update({ owner }).eq("id", step.id);
+        if (error) dbFail(error);
+      }
+    }
+    if (!next.requestApprovals) return;
+    // Pending approvals keep the class they were requested at, so a decision on
+    // one records what the customer was shown. Fresh approvals are requested at
+    // the raised class; the lower-class ones can no longer authorize the work.
+    const required = requiredApprovals({ ...req, actionClass: req.approvalLevel });
+    for (const kind of required.kinds.filter((k) => k !== "execution_plan")) {
+      await this.createApprovalRecord(
+        actor,
+        req,
+        { kind, action: kind.replaceAll("_", " "), description: required.reasons.join(" "), riskLevel: req.riskLevel, actionClass: req.approvalLevel },
+        { advanceStatus: false },
+      );
+    }
+    if (next.newPlanApproval) {
+      const bound = plan ? bindPlanToAuthority(plan, authority) : null;
+      await this.createApprovalRecord(
+        actor,
+        req,
+        {
+          kind: "execution_plan",
+          action: "Approve execution plan",
+          description: bound?.summary ?? "Scope changed; the plan needs approval at the raised authority.",
+          riskLevel: bound?.riskLevel ?? req.riskLevel,
+          actionClass: req.approvalLevel,
+        },
+        // The status already moved in the same write that raised the class.
+        { advanceStatus: false },
+      );
+    }
   }
 
   async transitionRequest(actor: Actor, id: string, to: RequestStatus, note?: string) {
@@ -748,17 +926,22 @@ export class SupabaseWorkspaceRepository {
     if (!isClientRole(actor.role) && !canMutateOpsQueue(actor)) throw new AuthzError();
     if (!canTransition(req.status, to)) throw new DomainError(`Cannot move ${req.status} → ${to}`);
     const db = await this.client();
-    if (to === "queued" && req.status === "awaiting_plan_approval") {
-      const { data } = await db.from("approvals").select("id").eq("request_id", id).eq("kind", "execution_plan").eq("status", "approved");
-      if (!data?.length) throw new DomainError("Execution plan must be approved before the request enters the queue");
+    if (to === "queued") {
+      const held =
+        (await this.planApprovalOutstanding(db, req)) ||
+        (req.status === "awaiting_plan_approval" && !(await this.hasCoveringApproval(db, req, "execution_plan")));
+      if (held) throw new DomainError("Execution plan must be approved before the request enters the queue");
+    }
+    if (to === "in_progress" && (await this.planApprovalOutstanding(db, req))) {
+      throw new DomainError("The execution plan must be approved at the request's current authority before work starts");
     }
     if (to === "delivered") {
       const { data } = await db.from("deliveries").select("id").eq("request_id", id);
       if (!data?.length) throw new DomainError("Deliver through a delivery package that records the outcome");
+      await this.assertDeliverable(db, req);
     }
     if (to === "in_progress" && blocksWithoutApproval(req.approvalLevel)) {
-      const { data } = await db.from("approvals").select("id").eq("request_id", id).eq("kind", "sensitive_action").eq("status", "approved");
-      if (!data?.length) {
+      if (!(await this.hasCoveringApproval(db, req, "sensitive_action"))) {
         await this.createApprovalRecord(actor, req, {
           kind: "sensitive_action",
           action: "Begin sensitive execution",
@@ -769,8 +952,7 @@ export class SupabaseWorkspaceRepository {
         throw new DomainError("Sensitive execution cannot proceed without explicit approval");
       }
     }
-    const { data, error } = await db.from("requests").update({ status: to, updated_at: nowIso() }).eq("id", id).select("*").single();
-    if (error) dbFail(error);
+    const data = await this.writeRequestIfUnchanged(db, req, { status: to });
     await this.audit(actor, "request.status_changed", "request", id, req.organizationId, { from: req.status, to, note });
     return this.mapRequest(data);
   }
@@ -782,13 +964,7 @@ export class SupabaseWorkspaceRepository {
     const { data: op } = await db.from("operators").select("id").eq("id", operatorId).maybeSingle();
     if (!op) throw new DomainError("Operator not found");
     const nextStatus = req.status === "triage" || req.status === "queued" ? "assigned" : req.status;
-    const { data, error } = await db
-      .from("requests")
-      .update({ assigned_operator_id: operatorId, status: nextStatus, updated_at: nowIso() })
-      .eq("id", requestId)
-      .select("*")
-      .single();
-    if (error) dbFail(error);
+    const data = await this.writeRequestIfUnchanged(db, req, { assigned_operator_id: operatorId, status: nextStatus });
     await db.from("request_assignments").insert({
       organization_id: req.organizationId,
       request_id: requestId,
@@ -856,7 +1032,7 @@ export class SupabaseWorkspaceRepository {
       action: reason,
       description: reason,
       riskLevel: req.riskLevel,
-      actionClass,
+      actionClass: approvalClassFor(actionClass, req),
     });
   }
 
@@ -868,13 +1044,18 @@ export class SupabaseWorkspaceRepository {
   ) {
     if (!canRequestCustomerApproval(actor) && !isClientRole(actor.role)) throw new AuthzError();
     const db = await this.client();
-    const { data: existing } = await db
+    // Reuse a pending approval of this kind only if it covers the request; one
+    // requested before a raise does not, so a fresh one is requested.
+    const { data: pendingOfKind, error: pendingError } = await db
       .from("approvals")
       .select("*")
       .eq("request_id", req.id)
       .eq("kind", input.kind)
-      .eq("status", "pending")
-      .maybeSingle();
+      .eq("status", "pending");
+    if (pendingError) dbFail(pendingError);
+    const existing = (pendingOfKind ?? []).find((a) =>
+      approvalCovers({ kind: input.kind, actionClass: a.action_class as ActionClass }, req),
+    );
     if (existing) {
       await this.advanceRequestForApproval(db, req, input.kind, options);
       return this.mapApproval(existing);
@@ -901,8 +1082,9 @@ export class SupabaseWorkspaceRepository {
     return this.mapApproval(data);
   }
 
-  async decideApproval(actor: Actor, approvalId: string, decision: "approved" | "rejected", note: string) {
+  async decideApproval(actor: Actor, approvalId: string, input: ApprovalDecision, note: string) {
     if (!canDecideApproval(actor)) throw new AuthzError("Only the customer can decide approvals");
+    const decision = parseApprovalDecision(input);
     const db = await this.client();
     const { data: approval } = await db.from("approvals").select("*").eq("id", approvalId).maybeSingle();
     if (!approval) throw new DomainError("Approval not found");
@@ -912,20 +1094,37 @@ export class SupabaseWorkspaceRepository {
       .from("approvals")
       .update({ status: decision, decided_by: actor.id, decision_note: note, decided_at: nowIso() })
       .eq("id", approvalId)
+      .eq("status", "pending")
+      .eq("action_class", approval.action_class)
       .select("*")
-      .single();
+      .maybeSingle();
     if (error) dbFail(error);
+    // The row changed after it was read (decided elsewhere, or its class moved).
+    if (!data) throw new DomainError("Approval changed before it was decided; reload and decide again");
     const req = await this.getRequest(actor, approval.request_id);
+    const planOutstanding = await this.planApprovalOutstanding(db, req);
     let next = req.status;
-    if (approval.kind === "execution_plan") next = decision === "approved" ? "queued" : "cancelled";
-    else if (decision === "rejected") next = "blocked";
-    else if (approval.kind === "sensitive_action") next = "in_progress";
-    else {
-      const { data: qa } = await db.from("qa_reviews").select("id").eq("request_id", req.id).eq("passed", true);
-      if (qa?.length) next = "ready_to_deliver";
-      else if (req.status === "awaiting_action_approval") next = req.assignedOperatorId ? "in_progress" : "queued";
+    if (!approvalCovers({ kind: approval.kind as ApprovalKind, actionClass: approval.action_class as ActionClass }, req)) {
+      // An approval requested before a raise no longer covers the request:
+      // its decision is recorded but does not queue, block or cancel it.
+    } else if (approval.kind === "execution_plan") {
+      next = decision === "approved" ? "queued" : "cancelled";
+    } else if (planOutstanding || req.status === "awaiting_plan_approval") {
+      // The plan must be approved first; an action approval does not move the request past it.
+    } else if (decision !== "approved") next = "blocked";
+    else if (approval.kind === "sensitive_action") {
+      if (approvalCovers({ kind: "sensitive_action", actionClass: approval.action_class as ActionClass }, req)) next = "in_progress";
+    } else if (req.status === "awaiting_action_approval") {
+      if (await this.hasCurrentPassedQa(db, req)) next = "ready_to_deliver";
+      else {
+        // Resuming work passes the same sensitive gate as transitionRequest.
+        const resume = req.assignedOperatorId ? "in_progress" : "queued";
+        const sensitiveHeld =
+          resume === "in_progress" && blocksWithoutApproval(req.approvalLevel) && !(await this.hasCoveringApproval(db, req, "sensitive_action"));
+        if (!sensitiveHeld) next = resume;
+      }
     }
-    await db.from("requests").update({ status: next, updated_at: nowIso() }).eq("id", req.id);
+    await this.writeRequestIfUnchanged(db, req, { status: next });
     await this.audit(actor, "approval.decided", "approval", approvalId, approval.organization_id, { decision, kind: approval.kind });
     await this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, { from: req.status, to: next });
     return this.mapApproval(data);
@@ -972,7 +1171,7 @@ export class SupabaseWorkspaceRepository {
       .select("*")
       .single();
     if (error) dbFail(error);
-    await db.from("requests").update({ status: "needs_clarification", updated_at: nowIso() }).eq("id", requestId);
+    await this.writeRequestIfUnchanged(db, req, { status: "needs_clarification" });
     return data as Clarification;
   }
 
@@ -988,8 +1187,10 @@ export class SupabaseWorkspaceRepository {
       .eq("id", clarificationId);
     const { data: open } = await db.from("clarifications").select("id").eq("request_id", row.request_id).is("answer", null);
     if (!open?.length) {
-      const req = await this.getRequest(actor, row.request_id);
-      await db.from("requests").update({ missing_context: [], status: "awaiting_plan_approval", updated_at: nowIso() }).eq("id", req.id);
+      const current = await this.getRequest(actor, row.request_id);
+      const moved = await this.writeRequestIfUnchanged(db, current, { missing_context: [], status: "awaiting_plan_approval" });
+      // The plan approval is requested at the class the request holds now.
+      const req = this.mapRequest(moved);
       const { data: plan } = await db.from("execution_plans").select("plan").eq("request_id", req.id).maybeSingle();
       await this.createApprovalRecord(actor, req, {
         kind: "execution_plan",
@@ -1075,25 +1276,19 @@ export class SupabaseWorkspaceRepository {
     if (error) dbFail(error);
     if (input.notes) await this.addComment(actor, requestId, input.notes, "internal");
     if (!input.passed) {
-      await db.from("requests").update({ status: "revision_required", updated_at: nowIso() }).eq("id", requestId);
+      await this.writeRequestIfUnchanged(db, req, { status: "revision_required" });
     } else {
       const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
-      const { data: outbound } = await db
-        .from("approvals")
-        .select("id")
-        .eq("request_id", requestId)
-        .eq("kind", "external_email")
-        .eq("status", "approved");
-      if (needsOutbound && !outbound?.length) {
+      if (needsOutbound && !(await this.hasCoveringApproval(db, req, "external_email"))) {
         await this.createApprovalRecord(actor, req, {
           kind: "external_email",
           action: "Send prepared outbound follow-up",
           description: "QA passed. Outbound communication still requires explicit customer approval before delivery.",
           riskLevel: req.riskLevel,
-          actionClass: "external_execution",
+          actionClass: approvalClassFor("external_execution", req),
         });
       } else {
-        await db.from("requests").update({ status: "ready_to_deliver", updated_at: nowIso() }).eq("id", requestId);
+        await this.writeRequestIfUnchanged(db, req, { status: "ready_to_deliver" });
       }
     }
     const after = await this.getRequest(actor, requestId);
@@ -1114,26 +1309,14 @@ export class SupabaseWorkspaceRepository {
     if (!canDeliverRequest(actor, req)) throw new AuthzError();
     const db = await this.client();
     const { data: existing } = await db.from("deliveries").select("*").eq("request_id", requestId).maybeSingle();
-    if (existing) {
-      if (req.status !== "delivered") {
-        await db.from("requests").update({ status: "delivered", updated_at: nowIso() }).eq("id", requestId);
-        await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, {
-          from: req.status,
-          to: "delivered",
-        });
-      }
-      return existing;
-    }
+    if (existing && req.status === "delivered") return existing;
     if (req.status !== "ready_to_deliver" && req.status !== "qa") throw new DomainError("Only checked work can be delivered");
-    const { data: passedQa } = await db.from("qa_reviews").select("id").eq("request_id", requestId).eq("passed", true).limit(1);
-    if (!passedQa?.length) throw new DomainError("QA must pass before delivery");
-    if (req.approvalLevel === "external_execution" || req.externalCommunication) {
-      const { data } = await db.from("approvals").select("id").eq("request_id", requestId).eq("kind", "external_email").eq("status", "approved");
-      if (!data?.length) throw new DomainError("Outbound action requires customer approval before delivery");
-    }
-    if (req.approvalLevel === "sensitive_execution") {
-      const { data } = await db.from("approvals").select("id").eq("request_id", requestId).eq("kind", "sensitive_action").eq("status", "approved");
-      if (!data?.length) throw new DomainError("Sensitive action requires customer approval before delivery");
+    await this.assertDeliverable(db, req);
+    if (existing) {
+      // A reopened request is redelivered with its original package once the checks above pass.
+      await this.writeRequestIfUnchanged(db, req, { status: "delivered" });
+      await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, { from: req.status, to: "delivered" });
+      return existing;
     }
     const { data, error } = await db
       .from("deliveries")
@@ -1158,7 +1341,7 @@ export class SupabaseWorkspaceRepository {
       }
       dbFail(error);
     }
-    await db.from("requests").update({ status: "delivered", updated_at: nowIso() }).eq("id", requestId);
+    await this.writeRequestIfUnchanged(db, req, { status: "delivered" });
     await this.audit(actor, "request.status_changed", "request", requestId, req.organizationId, { from: req.status, to: "delivered" });
     return data;
   }

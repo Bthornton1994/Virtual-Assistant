@@ -34,6 +34,7 @@ import {
   type WorkstreamTemplate,
   type Clarification,
   type DeliveryPackage,
+  type ApprovalDecision,
   type ApprovalKind,
   type OperatingMemory,
   type Priority,
@@ -56,9 +57,24 @@ import {
   inferApprovalKind,
   isClientRole,
   nowIso,
+  parseApprovalDecision,
   uid,
 } from "@/lib/domain";
-import { delegationAI } from "@/lib/ai";
+import { delegationAI, mockAI } from "@/lib/ai";
+import {
+  bindPlanToAuthority,
+  ownerForAuthority,
+  approvalClassFor,
+  approvalCovers,
+  qaCountsForAuthority,
+  raiseRiskForScope,
+  reapprovalAfterRaise,
+  requiredApprovals,
+  resolveApprovalRequirements,
+  resolveRequestRisk,
+  routeForActionClass,
+} from "@/lib/ai-authority";
+import { validateExecutionPlan, validatedOrFallback } from "@/lib/ai-validate";
 
 export type StoreData = {
   users: UserRecord[];
@@ -1155,10 +1171,10 @@ export class MemoryStore {
       this.data.workstreams.find((w) => w.organizationId === organizationId) ||
       null;
 
-    const actionClass =
-      input.externalCommunication && risk.actionClass === "prepare_only"
-        ? "external_execution"
-        : risk.actionClass;
+    // Authority is decided in code: the model's classification can only raise
+    // the deterministic floor derived from the request itself.
+    const authority = resolveRequestRisk(input, risk);
+    const actionClass = authority.actionClass;
 
     const playbook = input.playbookId ? this.data.playbooks.find((p) => p.id === input.playbookId) : null;
     if (playbook) assertOrgAccess(actor, playbook.organizationId);
@@ -1182,7 +1198,7 @@ export class MemoryStore {
       deliverable: input.deliverable,
       priority: triage.priority,
       status: missingContext.length ? "needs_clarification" : "awaiting_plan_approval",
-      riskLevel: risk.riskLevel,
+      riskLevel: authority.riskLevel,
       approvalLevel: actionClass,
       dueAt: input.dueAt,
       createdBy: actor.id,
@@ -1212,32 +1228,35 @@ export class MemoryStore {
       updatedAt: nowIso(),
     };
 
-    const [plan, approvalNeeds, routing, automation] = await Promise.all([
-      delegationAI.generateExecutionPlan({
-        title: request.title,
-        objective: request.objective,
-        description: request.description,
-        deliverable: request.deliverable,
-        workstreamName: ws?.name,
-        actionClass,
-      }),
-      delegationAI.determineApprovalRequirements({
-        title: request.title,
-        description: request.description,
-        actionClass,
-        externalCommunication: input.externalCommunication,
-      }),
-      delegationAI.suggestExecutor({
-        actionClass,
-        workstreamName: ws?.name,
-        title: request.title,
-      }),
+    const planInput = {
+      title: request.title,
+      objective: request.objective,
+      description: request.description,
+      deliverable: request.deliverable,
+      workstreamName: ws?.name,
+      actionClass,
+    };
+    const approvalInput = {
+      title: request.title,
+      description: request.description,
+      actionClass,
+      externalCommunication: input.externalCommunication,
+    };
+    const [planRaw, approvalRaw, automation] = await Promise.all([
+      delegationAI.generateExecutionPlan(planInput),
+      delegationAI.determineApprovalRequirements(approvalInput),
       delegationAI.identifyAutomationOpportunity({
         title: request.title,
         actionClass,
         recurring: input.recurring,
       }),
     ]);
+    const plan = bindPlanToAuthority(
+      validatedOrFallback(planRaw, validateExecutionPlan, await mockAI.generateExecutionPlan(planInput)),
+      authority,
+    );
+    const approvalNeeds = resolveApprovalRequirements(approvalInput, approvalRaw);
+    const routing = routeForActionClass(actionClass);
     if (pbVersion) {
       plan.steps = pbVersion.steps.map((title) => ({
         title,
@@ -1273,7 +1292,7 @@ export class MemoryStore {
     }
     this.audit(actor, "request.created", "request", request.id, organizationId, { title: request.title });
     this.audit(actor, "ai.action", "request", request.id, organizationId, {
-      fn: "triageRequest+classifyWorkstream+identifyMissingContext+generateExecutionPlan+classifyRisk+determineApprovalRequirements+suggestExecutor+identifyAutomationOpportunity",
+      fn: "triageRequest+classifyWorkstream+identifyMissingContext+generateExecutionPlan+classifyRisk+determineApprovalRequirements+identifyAutomationOpportunity",
       actionClass,
       missingContext,
       workstreamSlug: classified.workstreamSlug,
@@ -1346,8 +1365,120 @@ export class MemoryStore {
       throw new AuthzError();
     }
     Object.assign(req, patch, { updatedAt: nowIso() });
-    this.audit(actor, "request.scope_updated", "request", id, req.organizationId, patch as Record<string, unknown>);
+    // Edited scope can raise the request's authority, never lower it.
+    const raised = raiseRiskForScope(req);
+    const metadata: Record<string, unknown> = { ...patch };
+    if (raised) {
+      metadata.authorityRaised = {
+        from: { actionClass: req.approvalLevel, riskLevel: req.riskLevel },
+        to: { actionClass: raised.actionClass, riskLevel: raised.riskLevel },
+      };
+      req.approvalLevel = raised.actionClass;
+      req.riskLevel = raised.riskLevel;
+    }
+    this.audit(actor, "request.scope_updated", "request", id, req.organizationId, metadata);
+    if (raised) this.applyRaisedAuthority(actor, req);
     return req;
+  }
+
+  /** Whether the request holds an approved approval of this kind at its current class. */
+  private hasCoveringApproval(req: RequestRecord, kind: ApprovalKind) {
+    return this.data.approvals.some(
+      (a) => a.requestId === req.id && a.kind === kind && a.status === "approved" && approvalCovers(a, req),
+    );
+  }
+
+  /**
+   * Whether the request's plan approval is outstanding at its current class:
+   * a plan approval is pending, or plan approvals exist and none covers the
+   * class (the scope was raised after they were given). A request that never
+   * had a plan approval is not held here.
+   */
+  private planApprovalOutstanding(req: RequestRecord) {
+    const plans = this.data.approvals.filter((a) => a.requestId === req.id && a.kind === "execution_plan");
+    if (plans.some((a) => a.status === "pending" && approvalCovers(a, req))) return true;
+    // Once any plan approval exists, the request is held until one is approved
+    // at its current class, whatever state the other plan approvals are in.
+    return plans.length > 0 && !plans.some((a) => a.status === "approved" && approvalCovers(a, req));
+  }
+
+  /**
+   * The checks every path to "delivered" must pass, whether through
+   * deliverRequest or transitionRequest: current QA, the plan approved at the
+   * current class, and covering outbound and sensitive approvals.
+   */
+  private assertDeliverable(req: RequestRecord) {
+    if (!this.hasCurrentPassedQa(req)) {
+      throw new DomainError("QA must pass before delivery");
+    }
+    if (this.planApprovalOutstanding(req)) {
+      throw new DomainError("The execution plan must be approved at the request's current authority before delivery");
+    }
+    const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
+    if (needsOutbound && !this.hasCoveringApproval(req, "external_email")) {
+      throw new DomainError("Outbound action requires customer approval before delivery");
+    }
+    if (req.approvalLevel === "sensitive_execution" && !this.hasCoveringApproval(req, "sensitive_action")) {
+      throw new DomainError("Sensitive action requires customer approval before delivery");
+    }
+  }
+
+  /** Whether a passed QA review stands for the request's current authority. */
+  private hasCurrentPassedQa(req: RequestRecord) {
+    const decided = this.data.approvals
+      .filter((a) => a.requestId === req.id && a.kind === "execution_plan" && a.status === "approved" && approvalCovers(a, req) && a.decidedAt)
+      .map((a) => a.decidedAt as string)
+      .sort();
+    // The earliest covering decision: re-approving at the same class does not
+    // void QA, while a raise (whose first covering decision is newer) does.
+    const planDecidedAt = decided[0] ?? null;
+    return this.data.qaReviews.some((q) => q.requestId === req.id && q.passed && qaCountsForAuthority(q, planDecidedAt));
+  }
+
+  /** Bring a request's plan, steps and approvals up to its raised authority. */
+  private applyRaisedAuthority(actor: Actor, req: RequestRecord) {
+    const authority = { actionClass: req.approvalLevel, riskLevel: req.riskLevel };
+    const plan = this.data.plans[req.id];
+    if (plan) this.data.plans[req.id] = bindPlanToAuthority(plan, authority);
+    for (const step of this.data.steps) {
+      if (step.requestId === req.id && step.status !== "done") step.owner = ownerForAuthority(step.owner, req.approvalLevel);
+    }
+    const next = reapprovalAfterRaise(
+      req.status,
+      this.data.approvals.some((a) => a.requestId === req.id && a.kind === "execution_plan"),
+    );
+    if (!next.requestApprovals) return;
+    // Pending approvals keep the class they were requested at, so a decision on
+    // one records what the customer was shown. Fresh approvals are requested at
+    // the raised class; the lower-class ones can no longer authorize the work.
+    const required = requiredApprovals({ ...req, actionClass: req.approvalLevel });
+    for (const kind of required.kinds) {
+      if (kind === "execution_plan") continue;
+      this.createApprovalRecord(
+        actor,
+        req,
+        { kind, action: kind.replaceAll("_", " "), description: required.reasons.join(" "), riskLevel: req.riskLevel, actionClass: req.approvalLevel },
+        { advanceStatus: false },
+      );
+    }
+    if (next.newPlanApproval) {
+      const from = req.status;
+      this.createApprovalRecord(
+        actor,
+        req,
+        {
+          kind: "execution_plan",
+          action: "Approve execution plan",
+          description: this.data.plans[req.id]?.summary ?? "Scope changed; the plan needs approval at the raised authority.",
+          riskLevel: this.data.plans[req.id]?.riskLevel ?? req.riskLevel,
+          actionClass: req.approvalLevel,
+        },
+        { advanceStatus: next.returnToPlanApproval },
+      );
+      if (req.status !== from) {
+        this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, { from, to: req.status, reason: "authority_raised" });
+      }
+    }
   }
 
   transitionRequest(actor: Actor, id: string, to: RequestStatus, note?: string) {
@@ -1359,22 +1490,22 @@ export class MemoryStore {
     if (!canTransition(req.status, to)) {
       throw new DomainError(`Cannot move ${req.status} → ${to}`);
     }
-    if (to === "queued" && req.status === "awaiting_plan_approval") {
-      const approved = this.data.approvals.some(
-        (a) => a.requestId === req.id && a.kind === "execution_plan" && a.status === "approved",
-      );
-      if (!approved) {
-        throw new DomainError("Execution plan must be approved before the request enters the queue");
-      }
+    if (to === "queued") {
+      const held =
+        this.planApprovalOutstanding(req) || (req.status === "awaiting_plan_approval" && !this.hasCoveringApproval(req, "execution_plan"));
+      if (held) throw new DomainError("Execution plan must be approved before the request enters the queue");
     }
-    if (to === "delivered" && !this.data.deliveries.some((d) => d.requestId === req.id)) {
-      throw new DomainError("Deliver through a delivery package that records the outcome");
+    if (to === "in_progress" && this.planApprovalOutstanding(req)) {
+      throw new DomainError("The execution plan must be approved at the request's current authority before work starts");
+    }
+    if (to === "delivered") {
+      if (!this.data.deliveries.some((d) => d.requestId === req.id)) {
+        throw new DomainError("Deliver through a delivery package that records the outcome");
+      }
+      this.assertDeliverable(req);
     }
     if (to === "in_progress" && blocksWithoutApproval(req.approvalLevel)) {
-      const approved = this.data.approvals.some(
-        (a) => a.requestId === req.id && a.kind === "sensitive_action" && a.status === "approved",
-      );
-      if (!approved) {
+      if (!this.hasCoveringApproval(req, "sensitive_action")) {
         this.createApprovalRecord(actor, req, {
           kind: "sensitive_action",
           action: "Begin sensitive execution",
@@ -1474,7 +1605,7 @@ export class MemoryStore {
       action: reason,
       description: reason,
       riskLevel: req.riskLevel,
-      actionClass,
+      actionClass: approvalClassFor(actionClass, req),
     });
   }
 
@@ -1485,8 +1616,10 @@ export class MemoryStore {
     options?: { advanceStatus?: boolean },
   ) {
     if (!canRequestCustomerApproval(actor) && !isClientRole(actor.role)) throw new AuthzError();
+    // Reuse a pending approval of this kind only if it covers the request; one
+    // requested before a raise does not, so a fresh one is requested.
     const existing = this.data.approvals.find(
-      (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending",
+      (a) => a.requestId === req.id && a.kind === input.kind && a.status === "pending" && approvalCovers(a, req),
     );
     const advance = options?.advanceStatus !== false;
     if (existing) {
@@ -1529,8 +1662,9 @@ export class MemoryStore {
     return approval;
   }
 
-  decideApproval(actor: Actor, approvalId: string, decision: "approved" | "rejected", note: string) {
+  decideApproval(actor: Actor, approvalId: string, input: ApprovalDecision, note: string) {
     if (!canDecideApproval(actor)) throw new AuthzError("Only the customer can decide approvals");
+    const decision = parseApprovalDecision(input);
     const approval = this.data.approvals.find((a) => a.id === approvalId);
     if (!approval) throw new DomainError("Approval not found");
     assertOrgAccess(actor, approval.organizationId);
@@ -1542,16 +1676,26 @@ export class MemoryStore {
     const req = this.data.requests.find((r) => r.id === approval.requestId);
     if (req) {
       const from = req.status;
-      if (approval.kind === "execution_plan") {
+      const planOutstanding = this.planApprovalOutstanding(req);
+      if (!approvalCovers(approval, req)) {
+        // An approval requested before a raise no longer covers the request:
+        // its decision is recorded but does not queue, block or cancel it.
+      } else if (approval.kind === "execution_plan") {
+        // A plan approved below the request's class does not queue it.
         req.status = decision === "approved" ? "queued" : "cancelled";
-      } else if (decision === "rejected") {
+      } else if (planOutstanding || req.status === "awaiting_plan_approval") {
+        // The plan must be approved first; an action approval does not move the request past it.
+      } else if (decision !== "approved") {
         req.status = "blocked";
       } else if (approval.kind === "sensitive_action") {
-        req.status = "in_progress";
-      } else if (this.data.qaReviews.some((q) => q.requestId === req.id && q.passed)) {
+        if (approvalCovers(approval, req)) req.status = "in_progress";
+      } else if (req.status === "awaiting_action_approval" && this.hasCurrentPassedQa(req)) {
         req.status = "ready_to_deliver";
       } else if (req.status === "awaiting_action_approval") {
-        req.status = req.assignedOperatorId ? "in_progress" : "queued";
+        // Resuming work passes the same sensitive gate as transitionRequest.
+        const resume = req.assignedOperatorId ? "in_progress" : "queued";
+        const sensitiveHeld = resume === "in_progress" && blocksWithoutApproval(req.approvalLevel) && !this.hasCoveringApproval(req, "sensitive_action");
+        if (!sensitiveHeld) req.status = resume;
       }
       req.updatedAt = nowIso();
       this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, {
@@ -1653,37 +1797,20 @@ export class MemoryStore {
     const req = this.getRequest(actor, requestId);
     if (!canDeliverRequest(actor, req)) throw new AuthzError();
     const existing = this.data.deliveries.find((d) => d.requestId === requestId);
-    if (existing) {
-      if (req.status !== "delivered") {
-        const from = req.status;
-        req.status = "delivered";
-        req.updatedAt = nowIso();
-        this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, { from, to: "delivered" });
-      }
-      return existing;
-    }
+    if (existing && req.status === "delivered") return existing;
     if (req.status !== "ready_to_deliver" && req.status !== "qa") {
       throw new DomainError("Only checked work can be delivered");
     }
-    if (!this.data.qaReviews.some((q) => q.requestId === req.id && q.passed)) {
-      throw new DomainError("QA must pass before delivery");
-    }
+    this.assertDeliverable(req);
     const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
-    const outboundApproved = this.data.approvals.some(
-      (a) => a.requestId === req.id && a.kind === "external_email" && a.status === "approved",
-    );
-    if (needsOutbound && !outboundApproved) {
-      throw new DomainError("Outbound action requires customer approval before delivery");
-    }
-    if (req.approvalLevel === "sensitive_execution") {
-      const sensitiveApproved = this.data.approvals.some(
-        (a) => a.requestId === req.id && a.kind === "sensitive_action" && a.status === "approved",
-      );
-      if (!sensitiveApproved) {
-        throw new DomainError("Sensitive action requires customer approval before delivery");
-      }
-    }
     const from = req.status;
+    if (existing) {
+      // A reopened request is redelivered with its original package once the checks above pass.
+      req.status = "delivered";
+      req.updatedAt = nowIso();
+      this.audit(actor, "request.status_changed", "request", req.id, req.organizationId, { from, to: "delivered" });
+      return existing;
+    }
     const delivery: DeliveryPackage = {
       id: uid("dl"),
       organizationId: req.organizationId,
@@ -2034,16 +2161,13 @@ export class MemoryStore {
       req.status = "revision_required";
     } else {
       const needsOutbound = req.approvalLevel === "external_execution" || req.externalCommunication;
-      const outboundApproved = this.data.approvals.some(
-        (a) => a.requestId === req.id && a.kind === "external_email" && a.status === "approved",
-      );
-      if (needsOutbound && !outboundApproved) {
+      if (needsOutbound && !this.hasCoveringApproval(req, "external_email")) {
         this.createApprovalRecord(actor, req, {
           kind: "external_email",
           action: "Send prepared outbound follow-up",
           description: "QA passed. Outbound communication still requires explicit customer approval before delivery.",
           riskLevel: req.riskLevel,
-          actionClass: "external_execution",
+          actionClass: approvalClassFor("external_execution", req),
         });
         req.status = "awaiting_action_approval";
       } else {
