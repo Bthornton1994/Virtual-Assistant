@@ -506,6 +506,19 @@ export class DomainError extends Error {
   }
 }
 
+export const APPROVAL_DECISIONS = ["approved", "rejected"] as const;
+export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
+
+/**
+ * An approval decision is an explicit approve or reject. Any other value,
+ * including "pending" or an empty form field, is refused before anything is
+ * recorded, so it can neither queue a request nor start sensitive work.
+ */
+export function parseApprovalDecision(value: unknown): ApprovalDecision {
+  if (value === "approved" || value === "rejected") return value;
+  throw new DomainError("Approve or reject the approval to record a decision");
+}
+
 export function isClientRole(role: Role) {
   return CLIENT_ROLES.includes(role);
 }

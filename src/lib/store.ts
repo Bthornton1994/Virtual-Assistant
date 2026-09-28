@@ -34,6 +34,7 @@ import {
   type WorkstreamTemplate,
   type Clarification,
   type DeliveryPackage,
+  type ApprovalDecision,
   type ApprovalKind,
   type OperatingMemory,
   type Priority,
@@ -56,6 +57,7 @@ import {
   inferApprovalKind,
   isClientRole,
   nowIso,
+  parseApprovalDecision,
   uid,
 } from "@/lib/domain";
 import { delegationAI, mockAI } from "@/lib/ai";
@@ -1660,8 +1662,9 @@ export class MemoryStore {
     return approval;
   }
 
-  decideApproval(actor: Actor, approvalId: string, decision: "approved" | "rejected", note: string) {
+  decideApproval(actor: Actor, approvalId: string, input: ApprovalDecision, note: string) {
     if (!canDecideApproval(actor)) throw new AuthzError("Only the customer can decide approvals");
+    const decision = parseApprovalDecision(input);
     const approval = this.data.approvals.find((a) => a.id === approvalId);
     if (!approval) throw new DomainError("Approval not found");
     assertOrgAccess(actor, approval.organizationId);
@@ -1679,10 +1682,10 @@ export class MemoryStore {
         // its decision is recorded but does not queue, block or cancel it.
       } else if (approval.kind === "execution_plan") {
         // A plan approved below the request's class does not queue it.
-        req.status = decision === "rejected" ? "cancelled" : "queued";
+        req.status = decision === "approved" ? "queued" : "cancelled";
       } else if (planOutstanding || req.status === "awaiting_plan_approval") {
         // The plan must be approved first; an action approval does not move the request past it.
-      } else if (decision === "rejected") {
+      } else if (decision !== "approved") {
         req.status = "blocked";
       } else if (approval.kind === "sensitive_action") {
         if (approvalCovers(approval, req)) req.status = "in_progress";

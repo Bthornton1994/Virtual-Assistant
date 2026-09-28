@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Actor } from "@/lib/domain";
+import { DomainError, type Actor } from "@/lib/domain";
 import { createFakeDb, type FakeDb } from "./fake-supabase";
 
 let db: FakeDb;
@@ -1042,5 +1042,150 @@ describe("Supabase workspace: a raise passes the requests table triggers", () =>
     expect(req.status).toBe("delivered");
     await repo.updateRequestScope(manager, id, { description: "Draft the brief, then send to the client list." });
     expect(req).toMatchObject({ status: "awaiting_plan_approval", approval_level: "external_execution" });
+  });
+});
+
+describe("only an explicit approve or reject decides an approval", () => {
+  const ORG = "11111111-1111-4111-8111-111111111111";
+  const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "o@example.com", name: "O", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+  const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "p@example.com", name: "P", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+  const BRIEF = { ...FUNDS_TRANSFER, title: "Research brief", objective: "Prepare the draft", description: "Draft a research brief comparing three vendors with pricing details.", deliverable: "Draft" };
+  // What a form or caller can send that is not an explicit decision.
+  const NOT_DECISIONS: unknown[] = ["pending", "", "APPROVED", "approve", undefined, null];
+
+  function memory() {
+    vi.stubEnv("XAI_API_KEY", "");
+    const store = new MemoryStore(seedData());
+    return { store, founder: store.actorFromUser("usr_founder")!, manager: store.actorFromUser("usr_manager")! };
+  }
+
+  async function supabase(input: typeof FUNDS_TRANSFER) {
+    vi.stubEnv("XAI_API_KEY", "");
+    db = createFakeDb({ workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "B", status: "active", created_at: "", updated_at: "" }] });
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, input);
+    return { repo, req: db.tables.requests[0], id: String(db.tables.requests[0].id) };
+  }
+
+  it("in-memory store: a plan decision that is not approved or rejected neither queues nor records", async () => {
+    const { store, founder } = memory();
+    const id = (await store.createRequest(founder, BRIEF)).request.id;
+    const plan = store.data.approvals.find((a) => a.requestId === id && a.kind === "execution_plan")!;
+    expect(store.getRequest(founder, id).status).toBe("awaiting_plan_approval");
+    for (const decision of NOT_DECISIONS) {
+      expect(() => store.decideApproval(founder, plan.id, decision as never, "x")).toThrow(DomainError);
+      expect(plan).toMatchObject({ status: "pending", decidedBy: null, decidedAt: null });
+      expect(store.getRequest(founder, id).status).toBe("awaiting_plan_approval");
+    }
+    expect(store.data.audits.some((e) => e.entityId === plan.id && e.action === "approval.decided")).toBe(false);
+    store.decideApproval(founder, plan.id, "approved", "ok");
+    expect(store.getRequest(founder, id).status).toBe("queued");
+  });
+
+  it("in-memory store: a sensitive decision that is not approved does not start sensitive work", async () => {
+    const { store, founder, manager } = memory();
+    const id = (await store.createRequest(founder, FUNDS_TRANSFER)).request.id;
+    const plan = store.data.approvals.find((a) => a.requestId === id && a.kind === "execution_plan")!;
+    store.decideApproval(founder, plan.id, "approved", "ok");
+    store.data.requests.find((r) => r.id === id)!.assignedOperatorId = store.data.operators[0].id;
+    expect(() => store.transitionRequest(manager, id, "in_progress")).toThrow(/Sensitive execution/);
+    expect(store.getRequest(founder, id).status).toBe("awaiting_action_approval");
+    const sensitive = store.data.approvals.find((a) => a.requestId === id && a.kind === "sensitive_action" && a.status === "pending")!;
+    for (const decision of NOT_DECISIONS) {
+      expect(() => store.decideApproval(founder, sensitive.id, decision as never, "x")).toThrow(DomainError);
+      expect(sensitive.status).toBe("pending");
+      expect(store.getRequest(founder, id).status).toBe("awaiting_action_approval");
+    }
+    store.decideApproval(founder, sensitive.id, "approved", "ok");
+    expect(store.getRequest(founder, id).status).toBe("in_progress");
+  });
+
+  it("Supabase workspace: a plan decision that is not approved or rejected neither queues nor records", async () => {
+    const { repo, req } = await supabase(BRIEF);
+    const plan = db.tables.approvals.find((a) => a.kind === "execution_plan")!;
+    expect(req.status).toBe("awaiting_plan_approval");
+    for (const decision of NOT_DECISIONS) {
+      await expect(repo.decideApproval(client, String(plan.id), decision as never, "x")).rejects.toThrow(DomainError);
+      expect(plan.status).toBe("pending");
+      expect(plan.decided_at ?? null).toBeNull();
+      expect(req.status).toBe("awaiting_plan_approval");
+    }
+    expect((db.tables.audit_events ?? []).some((e) => e.entity_id === plan.id && e.action === "approval.decided")).toBe(false);
+    await repo.decideApproval(client, String(plan.id), "approved", "ok");
+    expect(req.status).toBe("queued");
+  });
+
+  it("Supabase workspace: a sensitive decision that is not approved does not start sensitive work", async () => {
+    const { repo, req, id } = await supabase(FUNDS_TRANSFER);
+    const plan = db.tables.approvals.find((a) => a.kind === "execution_plan")!;
+    await repo.decideApproval(client, String(plan.id), "approved", "ok");
+    req.assigned_operator_id = "44444444-4444-4444-8444-444444444444";
+    await expect(repo.transitionRequest(manager, id, "in_progress")).rejects.toThrow(/Sensitive execution/);
+    Object.assign(req, { status: "awaiting_action_approval" });
+    const sensitive = db.tables.approvals.find((a) => a.kind === "sensitive_action" && a.status === "pending")!;
+    for (const decision of NOT_DECISIONS) {
+      await expect(repo.decideApproval(client, String(sensitive.id), decision as never, "x")).rejects.toThrow(DomainError);
+      expect(sensitive.status).toBe("pending");
+      expect(req.status).toBe("awaiting_action_approval");
+    }
+    await repo.decideApproval(client, String(sensitive.id), "approved", "ok");
+    expect(req.status).toBe("in_progress");
+  });
+});
+
+// request-authority-gates.test.ts covers the gate helpers' own reads. These
+// cover the other reads and writes that a raise and an approval request depend on.
+describe("Supabase workspace: a failed read or write on the raise path stops it", () => {
+  const ORG = "11111111-1111-4111-8111-111111111111";
+  const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "o@example.com", name: "O", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+  const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "p@example.com", name: "P", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+  const BRIEF = { ...FUNDS_TRANSFER, title: "Research brief", objective: "Prepare the draft", description: "Draft a research brief comparing three vendors with pricing details.", deliverable: "Draft" };
+  const TO_CLIENTS = { description: "Draft the brief, then send to the client list." };
+
+  async function created() {
+    vi.stubEnv("XAI_API_KEY", "");
+    db = createFakeDb({ workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "B", status: "active", created_at: "", updated_at: "" }] });
+    const repo = new SupabaseWorkspaceRepository();
+    await repo.createRequest(client, BRIEF);
+    return { repo, req: db.tables.requests[0], id: String(db.tables.requests[0].id) };
+  }
+
+  async function queued() {
+    const setup = await created();
+    for (const a of db.tables.approvals.filter((x) => x.status === "pending")) await setup.repo.decideApproval(client, String(a.id), "approved", "ok");
+    expect(setup.req.status).toBe("queued");
+    return setup;
+  }
+
+  it("refuses the scope edit when it cannot read whether the request had a plan approval", async () => {
+    const { repo, req, id } = await queued();
+    db.failReads = (table, columns) => table === "approvals" && columns === "id";
+    await expect(repo.updateRequestScope(manager, id, TO_CLIENTS)).rejects.toThrow(/read of approvals failed/);
+    expect(req).toMatchObject({ approval_level: "prepare_only", status: "queued", description: BRIEF.description });
+  });
+
+  it.each([
+    ["the plan cannot be read", () => { db.failReads = (table, columns) => table === "execution_plans" && columns === "*"; }],
+    ["the plan cannot be rebound to the raised class", () => { db.failUpdates = (table) => table === "execution_plans"; }],
+    ["the steps cannot be read", () => { db.failReads = (table, columns) => table === "request_steps" && columns === "*"; }],
+  ])("requests no approval of the raised work when %s", async (_, fail) => {
+    const { repo, req, id } = await queued();
+    fail();
+    await expect(repo.updateRequestScope(manager, id, TO_CLIENTS)).rejects.toThrow(/failed/);
+    // The raise is written and holds the request; nothing is put to the
+    // customer, so no plan is approved while it still shows the lower class.
+    expect(req).toMatchObject({ approval_level: "external_execution", status: "awaiting_plan_approval" });
+    expect(db.tables.approvals.filter((a) => a.status === "pending")).toHaveLength(0);
+    db.failReads = null;
+    db.failUpdates = null;
+    await expect(repo.transitionRequest(manager, id, "queued")).rejects.toThrow(/must be approved/);
+  });
+
+  it("does not request a duplicate approval when the pending approvals cannot be read", async () => {
+    const { repo, id } = await created();
+    const count = db.tables.approvals.length;
+    db.failReads = (table, columns) => table === "approvals" && columns === "*";
+    await expect(repo.createApproval(manager, id, "prepare_only", "Confirm the plan", "execution_plan")).rejects.toThrow(/read of approvals failed/);
+    expect(db.tables.approvals).toHaveLength(count);
   });
 });

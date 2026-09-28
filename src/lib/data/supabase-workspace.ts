@@ -5,6 +5,7 @@ import {
   type ActionClass,
   type Actor,
   type Approval,
+  type ApprovalDecision,
   type ApprovalKind,
   type Clarification,
   type CreateRequestInput,
@@ -38,6 +39,7 @@ import {
   formatOperatingMemory,
   isClientRole,
   nowIso,
+  parseApprovalDecision,
 } from "@/lib/domain";
 import { delegationAI, mockAI } from "@/lib/ai";
 import {
@@ -750,7 +752,8 @@ export class SupabaseWorkspaceRepository {
     // reject an intermediate row such as in_progress at sensitive_execution.
     let raisePlan: RaisePlan | null = null;
     if (raised) {
-      const { data: planApprovals } = await db.from("approvals").select("id").eq("request_id", req.id).eq("kind", "execution_plan");
+      const { data: planApprovals, error } = await db.from("approvals").select("id").eq("request_id", req.id).eq("kind", "execution_plan");
+      if (error) dbFail(error);
       raisePlan = reapprovalAfterRaise(req.status, Boolean(planApprovals?.length));
     }
     const data = await this.writeRequestIfUnchanged(db, req, {
@@ -859,7 +862,12 @@ export class SupabaseWorkspaceRepository {
   private async applyRaisedAuthority(actor: Actor, req: RequestRecord, next: RaisePlan) {
     const db = await this.client();
     const authority = { actionClass: req.approvalLevel, riskLevel: req.riskLevel };
-    const { data: planRow } = await db.from("execution_plans").select("*").eq("request_id", req.id).maybeSingle();
+    // The raised class and the return to plan approval are already written, so
+    // a failure here stops before new approvals are requested and the gates
+    // keep holding the request. It never requests approval of a plan that
+    // still shows the lower class.
+    const { data: planRow, error: planError } = await db.from("execution_plans").select("*").eq("request_id", req.id).maybeSingle();
+    if (planError) dbFail(planError);
     let plan: ExecutionPlan | null = null;
     try {
       plan = planRow ? validateExecutionPlan(planRow.plan) : null;
@@ -867,13 +875,16 @@ export class SupabaseWorkspaceRepository {
       plan = null; // An unreadable stored plan is left as is; the approvals below still apply.
     }
     if (plan) {
-      await db.from("execution_plans").update({ plan: bindPlanToAuthority(plan, authority) }).eq("request_id", req.id);
+      const { error } = await db.from("execution_plans").update({ plan: bindPlanToAuthority(plan, authority) }).eq("request_id", req.id);
+      if (error) dbFail(error);
     }
-    const { data: steps } = await db.from("request_steps").select("*").eq("request_id", req.id);
+    const { data: steps, error: stepsError } = await db.from("request_steps").select("*").eq("request_id", req.id);
+    if (stepsError) dbFail(stepsError);
     for (const step of steps ?? []) {
       const owner = ownerForAuthority(step.owner, req.approvalLevel);
       if (step.status !== "done" && owner !== step.owner) {
-        await db.from("request_steps").update({ owner }).eq("id", step.id);
+        const { error } = await db.from("request_steps").update({ owner }).eq("id", step.id);
+        if (error) dbFail(error);
       }
     }
     if (!next.requestApprovals) return;
@@ -1035,12 +1046,13 @@ export class SupabaseWorkspaceRepository {
     const db = await this.client();
     // Reuse a pending approval of this kind only if it covers the request; one
     // requested before a raise does not, so a fresh one is requested.
-    const { data: pendingOfKind } = await db
+    const { data: pendingOfKind, error: pendingError } = await db
       .from("approvals")
       .select("*")
       .eq("request_id", req.id)
       .eq("kind", input.kind)
       .eq("status", "pending");
+    if (pendingError) dbFail(pendingError);
     const existing = (pendingOfKind ?? []).find((a) =>
       approvalCovers({ kind: input.kind, actionClass: a.action_class as ActionClass }, req),
     );
@@ -1070,8 +1082,9 @@ export class SupabaseWorkspaceRepository {
     return this.mapApproval(data);
   }
 
-  async decideApproval(actor: Actor, approvalId: string, decision: "approved" | "rejected", note: string) {
+  async decideApproval(actor: Actor, approvalId: string, input: ApprovalDecision, note: string) {
     if (!canDecideApproval(actor)) throw new AuthzError("Only the customer can decide approvals");
+    const decision = parseApprovalDecision(input);
     const db = await this.client();
     const { data: approval } = await db.from("approvals").select("*").eq("id", approvalId).maybeSingle();
     if (!approval) throw new DomainError("Approval not found");
@@ -1095,10 +1108,10 @@ export class SupabaseWorkspaceRepository {
       // An approval requested before a raise no longer covers the request:
       // its decision is recorded but does not queue, block or cancel it.
     } else if (approval.kind === "execution_plan") {
-      next = decision === "rejected" ? "cancelled" : "queued";
+      next = decision === "approved" ? "queued" : "cancelled";
     } else if (planOutstanding || req.status === "awaiting_plan_approval") {
       // The plan must be approved first; an action approval does not move the request past it.
-    } else if (decision === "rejected") next = "blocked";
+    } else if (decision !== "approved") next = "blocked";
     else if (approval.kind === "sensitive_action") {
       if (approvalCovers({ kind: "sensitive_action", actionClass: approval.action_class as ActionClass }, req)) next = "in_progress";
     } else if (req.status === "awaiting_action_approval") {

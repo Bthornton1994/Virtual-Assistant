@@ -8,6 +8,8 @@ export type FakeDb = {
   inserts: Array<{ table: string; rows: Row[] }>;
   /** When set, a read of `table` selecting exactly `columns` returns an error instead of rows. */
   failReads: ((table: string, columns: string) => boolean) | null;
+  /** When set, an update of `table` returns an error and changes nothing. */
+  failUpdates: ((table: string) => boolean) | null;
   from(table: string): Builder;
 };
 
@@ -41,6 +43,9 @@ class Builder implements PromiseLike<{ data: unknown; error: { message: string }
     if (this.op === "select" && this.db.failReads?.(this.table, this.columns)) {
       return { data: null, error: { message: `read of ${this.table} failed` }, count: null };
     }
+    if (this.op === "update" && this.db.failUpdates?.(this.table)) {
+      return { data: null, error: { message: `update of ${this.table} failed` }, count: null };
+    }
     const t = this.rows();
     let out: Row[];
     if (this.op === "insert" || this.op === "upsert") {
@@ -66,6 +71,7 @@ export function createFakeDb(seed: Record<string, Row[]> = {}): FakeDb {
     tables: structuredClone(seed),
     inserts: [],
     failReads: null,
+    failUpdates: null,
     from: (table: string) => new Builder(db, table),
   };
   return db;
