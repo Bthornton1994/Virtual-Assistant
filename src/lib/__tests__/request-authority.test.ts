@@ -9,8 +9,10 @@ vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => null }));
 
 import { delegationAI } from "@/lib/ai";
 import {
+  approvalCovers,
   bindPlanToAuthority,
   raiseRiskForScope,
+  reapprovalAfterRaise,
   resolveApprovalRequirements,
   resolveRequestRisk,
   restrictModelStepOwners,
@@ -154,6 +156,22 @@ describe("deterministic authority rules", () => {
     expect(bound).toMatchObject({ actionClass: "sensitive_execution", riskLevel: "critical", approvalsRequired: true });
     expect(restrictModelStepOwners(plan, "sensitive_execution").steps.map((s) => s.owner)).toEqual(["operator"]);
     expect(restrictModelStepOwners(plan, "prepare_only").steps.map((s) => s.owner)).toEqual(["ai"]);
+  });
+
+  it("an approval with an unknown class covers nothing", () => {
+    for (const actionClass of [null, undefined, "yolo"] as never[]) {
+      for (const approvalLevel of ["prepare_only", "yolo"] as never[]) {
+        expect(approvalCovers({ kind: "execution_plan", actionClass }, { approvalLevel })).toBe(false);
+        expect(approvalCovers({ kind: "external_email", actionClass }, { approvalLevel })).toBe(false);
+      }
+    }
+    expect(approvalCovers({ kind: "execution_plan", actionClass: "prepare_only" }, { approvalLevel: "prepare_only" })).toBe(true);
+  });
+
+  it("a raise on an accepted or cancelled request only realigns its records", () => {
+    for (const status of ["accepted", "cancelled"] as const) {
+      expect(reapprovalAfterRaise(status, true)).toEqual({ requestApprovals: false, newPlanApproval: false, returnToPlanApproval: false });
+    }
   });
 
   it("raises authority when edited scope is stricter, and never lowers it", () => {
@@ -1168,6 +1186,14 @@ describe("Supabase workspace: a failed read or write on the raise path stops it"
     ["the plan cannot be read", () => { db.failReads = (table, columns) => table === "execution_plans" && columns === "*"; }],
     ["the plan cannot be rebound to the raised class", () => { db.failUpdates = (table) => table === "execution_plans"; }],
     ["the steps cannot be read", () => { db.failReads = (table, columns) => table === "request_steps" && columns === "*"; }],
+    [
+      "a step cannot be re-routed to an operator",
+      () => {
+        // A step the raise must take from an unsupervised executor.
+        db.tables.request_steps[0].owner = "ai";
+        db.failUpdates = (table) => table === "request_steps";
+      },
+    ],
   ])("requests no approval of the raised work when %s", async (_, fail) => {
     const { repo, req, id } = await queued();
     fail();
@@ -1187,5 +1213,93 @@ describe("Supabase workspace: a failed read or write on the raise path stops it"
     db.failReads = (table, columns) => table === "approvals" && columns === "*";
     await expect(repo.createApproval(manager, id, "prepare_only", "Confirm the plan", "execution_plan")).rejects.toThrow(/read of approvals failed/);
     expect(db.tables.approvals).toHaveLength(count);
+  });
+});
+
+// Each test isolates one gate that no other test holds on its own: every other
+// check the action passes is satisfied, so the test fails if that gate alone
+// is removed.
+describe("plan-approval holds and the delivery package, each on its own", () => {
+  const ORG = "11111111-1111-4111-8111-111111111111";
+  const client: Actor = { id: "22222222-2222-4222-8222-222222222222", email: "o@example.com", name: "O", role: "client_admin", organizationId: ORG, operatorId: null, source: "supabase" };
+  const manager: Actor = { id: "33333333-3333-4333-8333-333333333333", email: "p@example.com", name: "P", role: "ops_manager", organizationId: ORG, operatorId: null, source: "supabase" };
+  const BRIEF = { ...FUNDS_TRANSFER, title: "Research brief", objective: "Prepare the draft", description: "Draft a research brief comparing three vendors with pricing details.", deliverable: "Draft" };
+
+  describe("in-memory store", () => {
+    async function created() {
+      vi.stubEnv("XAI_API_KEY", "");
+      const store = new MemoryStore(seedData());
+      const founder = store.actorFromUser("usr_founder")!;
+      const ops = store.actorFromUser("usr_manager")!;
+      const id = (await store.createRequest(founder, BRIEF)).request.id;
+      return { store, founder, ops, id, req: store.data.requests.find((r) => r.id === id)! };
+    }
+
+    it("a plan approval given below the request's class holds the start", async () => {
+      const { store, founder, ops, id, req } = await created();
+      for (const a of store.getRequestBundle(founder, id).approvals) store.decideApproval(founder, a.id, "approved", "ok");
+      expect(req.status).toBe("queued");
+      // A raise whose re-approvals were never written: only the lower-class plan approval exists.
+      req.approvalLevel = "external_execution";
+      expect(() => store.transitionRequest(ops, id, "in_progress")).toThrow(/plan must be approved/);
+      expect(req.status).toBe("queued");
+    });
+
+    it("a request awaiting plan approval with no plan approval on record is not queued", async () => {
+      const { store, ops, id, req } = await created();
+      store.data.approvals = store.data.approvals.filter((a) => a.requestId !== id);
+      expect(req.status).toBe("awaiting_plan_approval");
+      expect(() => store.transitionRequest(ops, id, "queued")).toThrow(/must be approved before the request enters the queue/);
+    });
+  });
+
+  describe("Supabase workspace", () => {
+    async function created() {
+      vi.stubEnv("XAI_API_KEY", "");
+      db = createFakeDb({ workstreams: [{ id: "ws1", organization_id: ORG, template_id: null, name: "B", status: "active", created_at: "", updated_at: "" }] });
+      const repo = new SupabaseWorkspaceRepository();
+      await repo.createRequest(client, BRIEF);
+      return { repo, req: db.tables.requests[0], id: String(db.tables.requests[0].id) };
+    }
+
+    async function queued() {
+      const setup = await created();
+      for (const a of db.tables.approvals.filter((x) => x.status === "pending")) await setup.repo.decideApproval(client, String(a.id), "approved", "ok");
+      expect(setup.req.status).toBe("queued");
+      return setup;
+    }
+
+    it("a plan approval given below the request's class holds the start", async () => {
+      const { repo, req, id } = await queued();
+      req.approval_level = "external_execution";
+      await expect(repo.transitionRequest(manager, id, "in_progress")).rejects.toThrow(/plan must be approved/);
+      expect(req.status).toBe("queued");
+    });
+
+    it("a pending plan approval at the request's class holds the start beside an approved one", async () => {
+      const { repo, req, id } = await queued();
+      await repo.createApproval(manager, id, "prepare_only", "Confirm the plan again", "execution_plan");
+      // An in-flight row that still holds the undecided re-approval.
+      req.status = "queued";
+      await expect(repo.transitionRequest(manager, id, "in_progress")).rejects.toThrow(/plan must be approved/);
+      expect(req.status).toBe("queued");
+    });
+
+    it("a request awaiting plan approval with no plan approval on record is not queued", async () => {
+      const { repo, req, id } = await created();
+      db.tables.approvals = [];
+      expect(req.status).toBe("awaiting_plan_approval");
+      await expect(repo.transitionRequest(manager, id, "queued")).rejects.toThrow(/must be approved before the request enters the queue/);
+    });
+
+    it("the delivered transition needs a recorded delivery package", async () => {
+      const { repo, req, id } = await queued();
+      await repo.transitionRequest(manager, id, "in_progress");
+      await repo.transitionRequest(manager, id, "qa");
+      await repo.createQaReview(manager, id, { passed: true, score: 90, notes: "" });
+      expect(req.status).toBe("ready_to_deliver");
+      await expect(repo.transitionRequest(manager, id, "delivered")).rejects.toThrow(/delivery package/);
+      expect(req.status).toBe("ready_to_deliver");
+    });
   });
 });
