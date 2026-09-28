@@ -20,7 +20,8 @@
     "verify": "npm run lint && npm run typecheck && npm test && npm run proof:claim-guard && npm run proof:rr-internal && npm run build",
     "proof:claim-guard": "node scripts/claim-guard-mutation-proof.mjs",
     "proof:sql": "node scripts/run-release-rescue-sql-proofs.mjs",
-    "proof:rr-internal": "node scripts/release-rescue-internal-mutation-proof.mjs"
+    "proof:rr-internal": "node scripts/release-rescue-internal-mutation-proof.mjs",
+    "proof:request-authority": "node scripts/request-authority-mutation-proof.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

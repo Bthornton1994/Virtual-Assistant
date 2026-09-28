@@ -6,6 +6,8 @@ type Filter = (row: Row) => boolean;
 export type FakeDb = {
   tables: Record<string, Row[]>;
   inserts: Array<{ table: string; rows: Row[] }>;
+  /** When set, a read of `table` selecting exactly `columns` returns an error instead of rows. */
+  failReads: ((table: string, columns: string) => boolean) | null;
   from(table: string): Builder;
 };
 
@@ -16,9 +18,10 @@ class Builder implements PromiseLike<{ data: unknown; error: { message: string }
   private patch: Row = {};
   private mode: "many" | "single" | "maybe" = "many";
   private max = Infinity;
+  private columns = "*";
   constructor(private db: FakeDb, private table: string) {}
   private rows() { return (this.db.tables[this.table] ??= []); }
-  select() { return this; }
+  select(columns = "*") { this.columns = columns; return this; }
   insert(v: Row | Row[]) {
     this.op = "insert";
     this.payload = (Array.isArray(v) ? v : [v]).map((r) => ({ id: r.id ?? crypto.randomUUID(), created_at: new Date().toISOString(), ...r }));
@@ -35,6 +38,9 @@ class Builder implements PromiseLike<{ data: unknown; error: { message: string }
   single() { this.mode = "single"; return this; }
   maybeSingle() { this.mode = "maybe"; return this; }
   private run() {
+    if (this.op === "select" && this.db.failReads?.(this.table, this.columns)) {
+      return { data: null, error: { message: `read of ${this.table} failed` }, count: null };
+    }
     const t = this.rows();
     let out: Row[];
     if (this.op === "insert" || this.op === "upsert") {
@@ -59,6 +65,7 @@ export function createFakeDb(seed: Record<string, Row[]> = {}): FakeDb {
   const db: FakeDb = {
     tables: structuredClone(seed),
     inserts: [],
+    failReads: null,
     from: (table: string) => new Builder(db, table),
   };
   return db;

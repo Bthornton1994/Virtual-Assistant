@@ -787,12 +787,13 @@ export class SupabaseWorkspaceRepository {
 
   /** Whether the request holds an approved approval of this kind at its current class. */
   private async hasCoveringApproval(db: SupabaseClient, req: RequestRecord, kind: ApprovalKind) {
-    const { data } = await db
+    const { data, error } = await db
       .from("approvals")
       .select("id, action_class")
       .eq("request_id", req.id)
       .eq("kind", kind)
       .eq("status", "approved");
+    if (error) dbFail(error);
     return (data ?? []).some((a) => approvalCovers({ kind, actionClass: a.action_class as ActionClass }, req));
   }
 
@@ -816,12 +817,14 @@ export class SupabaseWorkspaceRepository {
 
   /** Whether a passed QA review stands for the request's current authority. */
   private async hasCurrentPassedQa(db: SupabaseClient, req: RequestRecord) {
-    const { data: plans } = await db
+    const { data: plans, error: plansError } = await db
       .from("approvals")
       .select("action_class, decided_at")
       .eq("request_id", req.id)
       .eq("kind", "execution_plan")
       .eq("status", "approved");
+    // A failed read is not "no plan decision": that would make every QA pass current.
+    if (plansError) dbFail(plansError);
     const decided = (plans ?? [])
       .filter((a) => a.decided_at && approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req))
       .map((a) => String(a.decided_at))
@@ -829,7 +832,8 @@ export class SupabaseWorkspaceRepository {
     // The earliest covering decision: re-approving at the same class does not
     // void QA, while a raise (whose first covering decision is newer) does.
     const planDecidedAt = decided[0] ?? null;
-    const { data: reviews } = await db.from("qa_reviews").select("created_at").eq("request_id", req.id).eq("passed", true);
+    const { data: reviews, error: reviewsError } = await db.from("qa_reviews").select("created_at").eq("request_id", req.id).eq("passed", true);
+    if (reviewsError) dbFail(reviewsError);
     return (reviews ?? []).some((q) => qaCountsForAuthority({ createdAt: String(q.created_at) }, planDecidedAt));
   }
 
@@ -840,7 +844,9 @@ export class SupabaseWorkspaceRepository {
    * had a plan approval is not held here.
    */
   private async planApprovalOutstanding(db: SupabaseClient, req: RequestRecord) {
-    const { data } = await db.from("approvals").select("status, action_class").eq("request_id", req.id).eq("kind", "execution_plan");
+    const { data, error } = await db.from("approvals").select("status, action_class").eq("request_id", req.id).eq("kind", "execution_plan");
+    // A failed read is not "no plan approvals": that would pass the gate.
+    if (error) dbFail(error);
     const plans = data ?? [];
     const covers = (a: { action_class: unknown }) => approvalCovers({ kind: "execution_plan", actionClass: a.action_class as ActionClass }, req);
     if (plans.some((a) => a.status === "pending" && covers(a))) return true;
