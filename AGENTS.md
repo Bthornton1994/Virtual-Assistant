@@ -112,6 +112,10 @@ These principles improve execution quality but grant no authority. They never au
 
 See `docs/ENGINEERING-EXECUTION-PRINCIPLES.md` for the full standard and its relationship to the Gauntlet, evidence, Skills, and earned autonomy.
 
+## CoS portfolio control
+
+For Chief of Staff portfolio coordination, read `docs/cos/PORTFOLIO-CONTROL-PLANE.md` and the `cos-portfolio-control` skill (`.agents/skills/cos-portfolio-control/SKILL.md`, mirrored at `.claude/skills/cos-portfolio-control/SKILL.md`). Classify single, batch, or portfolio before staffing. Deterministic checks live in `src/lib/cos-control-plane.ts`. This pointer does not change model routing and does not open a closed gate.
+
 ## UI design engineering skills
 
 For UI or interaction work, read `docs/DESIGN_ENGINEERING.md` and `.claude/skills/emil-design-eng/SKILL.md` before editing. Use the supporting `animate`, `review-animations`, `improve-animations`, `find-animation-opportunities`, `animation-vocabulary`, `apple-design`, `pick-ui-library`, and `prototype` skills when the task calls for implementation, review, planning, vocabulary, gesture/material guidance, library selection, or genuine variant exploration.

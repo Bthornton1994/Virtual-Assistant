@@ -13,6 +13,8 @@ import { describe, expect, it } from "vitest";
 // `test:e2e:internal` is a blocking step after the build and the SQL proofs.
 // It exercises the local browser journey. It does not make the workflow a
 // production deployment.
+// `cos:validate-skills` and the CoS skill-sync test are blocking steps after
+// `npm test`. They check managed CoS skills only.
 //
 // None of that is visible from inside a test run, so this reads the
 // configuration. It cannot see branch protection: whether a check is REQUIRED
@@ -81,6 +83,8 @@ describe("verify is still the whole release gate", () => {
       "npm run lint",
       "npm run typecheck",
       "npm test",
+      "npm run cos:validate-skills",
+      "node --test scripts/cos-sync-skills.test.mjs",
       "npm run proof:claim-guard",
       "npm run proof:rr-internal",
       "npm run build",
