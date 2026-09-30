@@ -2,16 +2,16 @@
 
 | | |
 | --- | --- |
-| **Status** | Undecided. This packet does not select a host. |
-| **Applies to** | A future production surface for Release Rescue. The internal workflow stays local. |
+| **Status** | Decided: Option A — Operator-only (supported internal tool; no customer URL). |
+| **Applies to** | The supported Release Rescue endpoint. Under option A that is the internal workflow on an operator's own machine. A customer URL or any other host needs a new owner decision. |
 | **Current runtime** | `RELEASE_RESCUE_INTERNAL=local`, `next start --hostname 127.0.0.1 --port 3020`. Any of `VERCEL`, `VERCEL_ENV`, or `VERCEL_URL` refuses the mode. |
 | **Not a decision** | Enabling Release Rescue on the existing Vercel app, widening `config/release-rescue-internal.allowlist.json`, or describing the offer as a penetration test, a compliance certification, or a security guarantee. |
 
-The internal workflow is an operator tool on one machine. It is not evidence that a production host exists. `docs/P0B-RELEASE.md` and the Virtual Assistant Vercel project are not this decision.
+The internal workflow is an operator tool on one machine. Option A keeps it that way. It is not evidence that a production host exists. `docs/P0B-RELEASE.md` and the Virtual Assistant Vercel project are not this decision.
 
 ## Options
 
-Leave the decision row blank. The notes are consequences, not a recommendation.
+The owner chose A. B and C stay listed as the options not taken. Moving to either is a new owner decision and reopens the gates below.
 
 | Option | What it would mean |
 | --- | --- |
@@ -23,27 +23,27 @@ Leave the decision row blank. The notes are consequences, not a recommendation.
 
 | Field | Value |
 | --- | --- |
-| Hosting option (A, B, or C) | |
-| Decided by | |
-| Date | |
-| Notes | |
+| Hosting option (A, B, or C) | A. Operator-only |
+| Decided by | Bryant Thornton |
+| Date | 2026-09-29 |
+| Notes | D1=A: operator-only, loopback-bound, no customer URL. D2=C: identity stays the local `operators.json` and `secret.key`; no identity provider. D3=A: the two automated secrets checks plus a reviewer's reading of the other 30; no model provider is authorized. D4=A: the 48 claim-guard residuals recorded in `src/lib/__tests__/release-rescue-claim-guard-residuals.ts` at this decision stay recorded, and none is closed; marketing must not say the guard is complete. Source: CoS owner packet `2026-09-29-t1723u-rr-d1-d4-decision.md`. |
 
-Filling that table in is an owner action. This change does not fill it in.
+This records the owner's decision. It enables no host and does not change the mode, the `127.0.0.1` bind, the request guard, the `VERCEL` refusal, or the allowlist.
 
-## Still required before any production claim
+## Gates before any production claim
 
-These stay open. This packet does not decide them.
+Rows marked decided hold for the operator-only endpoint only. Open rows are not decided by this packet.
 
-| Gate | Decision still required |
+| Gate | State |
 | --- | --- |
-| **G-01** Data plane | Which governed store production runs write, and whether the local directory remains an operator tool. The internal modules do not open a hosted database client. |
-| **G-02** Identity | Which identity production sign-in uses. Local `operators.json` and `secret.key` are not that identity. Option A above is the only hosting option that keeps them. |
-| **G-03** Host | The blank row in the decision table. |
-| **G-04** Rubric scope | Whether paid use can stay at two automated checks plus a human reading, or needs more deterministic checks, or an authorized model provider. No provider is authorized now. |
-| **G-07** Claim language | Whether the recorded claim-guard residuals stay, or which named misses to close before any paid marketing. Marketing must not say the guard is complete. |
-| **G-08** Gzip residuals | Whether to tighten the recorded ratio residuals: gzip framing after the data, and deflate data that decodes to nothing. The caps still hold, and `docs/RELEASE-RESCUE-INTERNAL.md` states their bounds. |
-| **G-10** Allowlist | How a shared production target list is governed. The local tool reads the working tree. |
-| **G-11** Non-loopback | Covered by the hosting row. A host that is not loopback-bound cannot treat client headers as isolation. |
-| **G-12** `pg_net` | Whether a production database must provide `pg_net`. The CI proof image does not, and skips that one non-Release-Rescue migration. |
+| **G-01** Data plane | Accepted for operator-only: the local directory (`.release-rescue-local/` or `RELEASE_RESCUE_LOCAL_DIR`) remains the store. The internal modules do not open a hosted database client, and this decision opens none. Which governed store a hosted endpoint would write stays open. |
+| **G-02** Identity | Decided (D2=C): sign-in stays the local `operators.json` and `secret.key`. No identity provider is added. Option A is the only hosting option that keeps them. |
+| **G-03** Host | Decided (D1=A): operator-only, bound to `127.0.0.1`. No customer URL, and no host is enabled. |
+| **G-04** Rubric scope | Decided (D3=A): two automated checks, both secrets checks, plus a reviewer's reading of the other 30. No model provider is authorized. This does not activate payment. |
+| **G-07** Claim language | Decided (D4=A): the 48 recorded claim-guard residuals stay, and none is closed. Marketing must not say the guard is complete. |
+| **G-08** Gzip residuals | Open. Whether to tighten the recorded ratio residuals: gzip framing after the data, and deflate data that decodes to nothing. The caps still hold, and `docs/RELEASE-RESCUE-INTERNAL.md` states their bounds. |
+| **G-10** Allowlist | Open. How a shared production target list is governed. The local tool reads the working tree. |
+| **G-11** Non-loopback | Covered by option A: the endpoint stays loopback-bound. Nothing in the code refuses a public bind, so the `--hostname 127.0.0.1` in `rr:local:app` is the control. Client headers are not isolation. |
+| **G-12** `pg_net` | Open. Whether a production database must provide `pg_net`. The CI proof image does not, and skips that one non-Release-Rescue migration. The operator-only endpoint does not use `pg_net`. |
 
 `VISION.md` § Scope and non-goals admits the review as prepare-only, read-only, with deterministic severity and a named human signature. Choosing a host does not by itself authorize payment, production access, or a change to those terms.
