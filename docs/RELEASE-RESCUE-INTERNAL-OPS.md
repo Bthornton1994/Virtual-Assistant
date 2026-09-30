@@ -2,7 +2,7 @@
 
 This is the operator procedure for the local internal workflow described in `docs/RELEASE-RESCUE-INTERNAL.md`. It runs on one machine, bound to `127.0.0.1:3020`. It is not a production deploy, not a customer runbook, and not a paid engagement. A green `verify` check, including `proof:rr-internal` and `test:e2e:internal`, does not make it one.
 
-No host is selected. `docs/RELEASE-RESCUE-DEPLOY-TARGET-DECISION.md` leaves that choice blank. Do not start this mode on Vercel, and do not remove the refusal of `VERCEL`, `VERCEL_ENV`, or `VERCEL_URL` in order to "deploy" it.
+The owner chose option A, operator-only, in `docs/RELEASE-RESCUE-DEPLOY-TARGET-DECISION.md`: this loopback workflow is the supported endpoint, and there is no customer URL. That choice enables no host. Do not start this mode on Vercel, and do not remove the refusal of `VERCEL`, `VERCEL_ENV`, or `VERCEL_URL` in order to "deploy" it.
 
 ## Run
 
@@ -130,7 +130,7 @@ Run records stay at `schemaVersion` `release-rescue-internal-run/v1`. Newer reco
 
 Checking out another SHA leaves the store as it is, so a rollback on its own neither brings back a purged report nor undoes a signature. Extracting a backup undoes both, for everything after it was taken, and Recovery step 5 then puts back what the moved-aside store records. If the new code mis-handled the store, restore the backup from before you first started it, following every Recovery step, then start the older SHA. Under step 5, apply removals and sign-outs again in every case, and copy back only the run records the new code did not damage. A signature, delivery, or purge you do not copy back is recorded only in the moved-aside store.
 
-Do not treat a rollback as permission to start the mode under `VERCEL`, `VERCEL_ENV`, or `VERCEL_URL`, or on an address other than `127.0.0.1`. Only the `VERCEL` variables are refused: with any of them set, every internal route returns 404. Nothing in the code refuses a public bind. The `--hostname 127.0.0.1` in `rr:local:app` is the only control that keeps the server off the network. The request guard reads headers a client can send, so it does not replace the bind. G-11 in `docs/RELEASE-RESCUE-DEPLOY-TARGET-DECISION.md` remains open.
+Do not treat a rollback as permission to start the mode under `VERCEL`, `VERCEL_ENV`, or `VERCEL_URL`, or on an address other than `127.0.0.1`. Only the `VERCEL` variables are refused: with any of them set, every internal route returns 404. Nothing in the code refuses a public bind. The `--hostname 127.0.0.1` in `rr:local:app` is the only control that keeps the server off the network. The request guard reads headers a client can send, so it does not replace the bind. G-11 in `docs/RELEASE-RESCUE-DEPLOY-TARGET-DECISION.md` is covered by option A only while that bind holds.
 
 ## Proof environment
 
