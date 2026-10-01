@@ -8,6 +8,8 @@ This document defines the first multi-executor **work cell**: several replaceabl
 
 It does not replace `VISION.md`, which remains the governing product constitution, nor `docs/GAUNTLET-LOOP.md`, which remains the execution-control loop. A work cell is a staffing arrangement inside one Gauntlet attempt. It grants no authority the Delegation Spec has not already granted.
 
+Proof-carrying work-cell binding is a design boundary on the existing Native Skill, work-cell, Envelope, and Execution Context contracts. It is not a second lifecycle or evidence system. See [Proof-Carrying Work-Cell Binding](NATIVE-SKILL-REGISTRY-V1.md#proof-carrying-work-cell-binding).
+
 ## Vision analysis
 
 **Aligns with constraints.**
