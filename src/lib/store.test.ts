@@ -632,3 +632,207 @@ describe("organization settings", () => {
     expect(() => store.updateOrganization(teammate, "org_northline", { name: "Hijack" })).toThrow(AuthzError);
   });
 });
+
+describe("identity and membership gates", () => {
+  it("rejects a duplicate signup email case-insensitively", () => {
+    const store = new MemoryStore(seedData());
+    expect(() =>
+      store.signup({
+        name: "Elena",
+        email: "FOUNDER@northline.demo",
+        password: "demo",
+        organization: "Clone",
+        industry: "Consulting",
+      }),
+    ).toThrow(/already exists/i);
+  });
+
+  it("ignores removed memberships and unknown users", () => {
+    const store = new MemoryStore(seedData());
+    expect(store.actorFromUser("usr_missing")).toBeNull();
+    const founder = store.data.members.find((m) => m.id === "mem_1")!;
+    founder.status = "removed";
+    const actor = store.actorFromUser("usr_founder");
+    expect(actor?.organizationId).toBeNull();
+    expect(store.data.members.find((m) => m.id === "mem_3")?.status).toBe("removed");
+  });
+
+  it("reactivates an existing member instead of creating a duplicate row", () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    const before = store.data.members.filter((m) => m.userId === "usr_teammate" && m.organizationId === "org_northline");
+    expect(before).toHaveLength(1);
+    store.inviteMember(founder, {
+      email: "TEAMMATE@northline.demo",
+      name: "Marcus Hale",
+      role: "client_admin",
+    });
+    const after = store.data.members.filter((m) => m.userId === "usr_teammate" && m.organizationId === "org_northline");
+    expect(after).toHaveLength(1);
+    expect(after[0].role).toBe("client_admin");
+    expect(after[0].status).toBe("active");
+    expect(store.actorFromUser("usr_teammate")?.role).toBe("client_admin");
+  });
+});
+
+describe("playbook capture and versioning", () => {
+  it("refuses to capture a playbook before delivery", () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    expect(() => store.generatePlaybookFromRequest(founder, "req_inbox", "Too early")).toThrow(/after delivery/i);
+  });
+
+  it("increments playbook versions and blocks members and foreign orgs", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate } = actors(store);
+    const before = store.getPlaybook(founder, "pb_inbox").playbook.currentVersion;
+    const version = store.addPlaybookVersion(founder, "pb_inbox", {
+      steps: ["Triage", "Draft", "Escalate"],
+      preferences: ["No exclamation points"],
+      warnings: ["Never send"],
+    });
+    expect(version.version).toBe(before + 1);
+    expect(store.getPlaybook(founder, "pb_inbox").playbook.currentVersion).toBe(before + 1);
+    expect(() =>
+      store.addPlaybookVersion(teammate, "pb_inbox", {
+        steps: ["Hijack"],
+        preferences: [],
+        warnings: [],
+      }),
+    ).toThrow(AuthzError);
+
+    const stranger = store.signup({
+      name: "Ada",
+      email: "ada@newco.example",
+      password: "demo",
+      organization: "Newco Studio",
+      industry: "Design",
+    });
+    expect(() =>
+      store.addPlaybookVersion(stranger, "pb_inbox", {
+        steps: ["Hijack"],
+        preferences: [],
+        warnings: [],
+      }),
+    ).toThrow(AuthzError);
+  });
+});
+
+describe("request scope and step mutations", () => {
+  it("lets the client admin or ops change scope and blocks other members", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate, manager } = actors(store);
+    expect(() => store.updateRequestScope(teammate, "req_inbox", { title: "Hijack" })).toThrow(AuthzError);
+    store.updateRequestScope(founder, "req_inbox", { title: "Triage founder inbox — revised" });
+    expect(store.getRequest(founder, "req_inbox").title).toBe("Triage founder inbox — revised");
+    store.updateRequestScope(manager, "req_inbox", { priority: "urgent" });
+    expect(store.getRequest(manager, "req_inbox").priority).toBe("urgent");
+  });
+
+  it("lets ops split and update steps and blocks clients", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, manager } = actors(store);
+    expect(() => store.splitStep(founder, "req_inbox", "Secret step")).toThrow(AuthzError);
+    const step = store.splitStep(manager, "req_inbox", "Escalate VIPs", "Keep drafts only");
+    expect(step.title).toBe("Escalate VIPs");
+    expect(() => store.updateStep(founder, step.id, { status: "done" })).toThrow(AuthzError);
+    expect(store.updateStep(manager, step.id, { status: "done" }).status).toBe("done");
+  });
+});
+
+describe("approval status mapping", () => {
+  it("maps action classes onto approval kinds", () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    expect(store.createApproval(manager, "req_inbox", "sensitive_execution", "Begin payment pack").kind).toBe(
+      "sensitive_action",
+    );
+    expect(store.createApproval(manager, "req_inbox", "external_execution", "Send drafted mail").kind).toBe(
+      "external_email",
+    );
+    expect(store.createApproval(manager, "req_brief", "prepare_only", "Approve the brief plan").kind).toBe(
+      "execution_plan",
+    );
+  });
+
+  it("does not un-cancel a request when a new approval is requested", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, manager } = actors(store);
+    store.transitionRequest(founder, "req_inbox", "cancelled");
+    const approval = store.createApproval(manager, "req_inbox", "external_execution", "Send drafted mail");
+    expect(approval.status).toBe("pending");
+    expect(store.getRequest(manager, "req_inbox").status).toBe("cancelled");
+  });
+
+  it("resumes assigned work when outbound is approved before QA", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, manager } = actors(store);
+    const plan = store
+      .listApprovals(founder)
+      .find((a) => a.requestId === "req_conference" && a.kind === "execution_plan");
+    store.decideApproval(founder, plan!.id, "approved", "Prepare the pack. Do not send.");
+    store.assignOperator(manager, "req_conference", "op_maya");
+    store.createApproval(manager, "req_conference", "external_execution", "Send drafted follow-up");
+    expect(store.getRequest(manager, "req_conference").status).toBe("awaiting_action_approval");
+    const outbound = store
+      .listApprovals(founder)
+      .find((a) => a.requestId === "req_conference" && a.kind === "external_email" && a.status === "pending");
+    store.decideApproval(founder, outbound!.id, "approved", "Send the drafts.");
+    expect(store.getRequest(founder, "req_conference").status).toBe("in_progress");
+    expect(store.data.qaReviews.some((q) => q.requestId === "req_conference" && q.passed)).toBe(false);
+  });
+});
+
+describe("tenant-scoped reads and billing", () => {
+  it("keeps hours, subscription, usage, and audit rows inside the caller's org", () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    const stranger = store.signup({
+      name: "Ada",
+      email: "ada@newco.example",
+      password: "demo",
+      organization: "Newco Studio",
+      industry: "Design",
+    });
+
+    expect(store.hoursReturned(founder, "org_northline")).toBeGreaterThan(0);
+    expect(() => store.hoursReturned(founder, "org_harbor")).toThrow(AuthzError);
+    expect(() => store.hoursReturned(stranger, "org_northline")).toThrow(AuthzError);
+
+    expect(store.getSubscription(founder, "org_northline")?.organizationId).toBe("org_northline");
+    expect(() => store.getSubscription(founder, "org_harbor")).toThrow(AuthzError);
+    expect(() => store.getSubscription(stranger, "org_northline")).toThrow(AuthzError);
+
+    expect(store.listUsage(founder).every((row) => row.organizationId === "org_northline")).toBe(true);
+    expect(store.listUsage(stranger).every((row) => row.organizationId === stranger.organizationId)).toBe(true);
+
+    expect(store.listAuditEvents(founder, "org_northline").every((row) => row.organizationId === "org_northline")).toBe(
+      true,
+    );
+    expect(() => store.listAuditEvents(founder, "org_harbor")).toThrow(AuthzError);
+    expect(() => store.exportAudit(stranger, "org_northline")).toThrow(AuthzError);
+  });
+
+  it("lets a client admin set a mock subscription and blocks members", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate } = actors(store);
+    expect(() => store.setMockSubscription(teammate, "growth", 40)).toThrow(AuthzError);
+    const sub = store.setMockSubscription(founder, "growth", 40);
+    expect(sub.plan).toBe("growth");
+    expect(sub.monthlyHours).toBe(40);
+    expect(sub.organizationId).toBe("org_northline");
+  });
+
+  it("lists overdue work and excludes cancelled or delivered rows", () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    const inbox = store.data.requests.find((r) => r.id === "req_inbox")!;
+    inbox.dueAt = new Date(Date.now() - 86400000).toISOString();
+    inbox.status = "queued";
+    expect(store.listRequests(manager, { deadline: "overdue" }).some((r) => r.id === "req_inbox")).toBe(true);
+    inbox.status = "cancelled";
+    expect(store.listRequests(manager, { deadline: "overdue" }).some((r) => r.id === "req_inbox")).toBe(false);
+    inbox.status = "delivered";
+    expect(store.listRequests(manager, { deadline: "overdue" }).some((r) => r.id === "req_inbox")).toBe(false);
+  });
+});
