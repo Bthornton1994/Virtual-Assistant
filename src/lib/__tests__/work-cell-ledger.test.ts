@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PRODUCT_ID, packet, review } from "@/lib/__tests__/catalog-evidence-fixtures";
+import { MANUFACTURER_URL, PRODUCT_ID, ZERO_AUTHORITY, packet, review } from "@/lib/__tests__/catalog-evidence-fixtures";
 import { hashCatalogEvidencePacket } from "@/lib/catalog-evidence-hash";
 import { buildCapabilityPerformanceLedger } from "@/lib/capability-performance-ledger";
 import { workCellLedgerObservations } from "@/lib/work-cell-ledger";
@@ -77,5 +77,77 @@ describe("work-cell ledger observations", () => {
     ]);
     expect(observations.map((item) => item.humanInterventionMinutes)).toEqual([1.5, 0.5, 0]);
     expect(observations.map((item) => item.latencyMs)).toEqual([120, 80, 10]);
+  });
+
+  it("marks every phase failed when the reviewer rejects a claim", () => {
+    const hermes = packet();
+    const grok = review({
+      evidencePacketHash: hashCatalogEvidencePacket(hermes),
+      claimReviews: [
+        {
+          claimId: "ks-sbd-7mm:thickness",
+          verdict: "reject",
+          independentVerificationPerformed: true,
+          reason: "Manufacturer states 5mm.",
+          independentSourceUrls: [MANUFACTURER_URL],
+          severity: "low",
+        },
+      ],
+    });
+    const observations = workCellLedgerObservations({
+      packet: hermes,
+      review: grok,
+      expectedProductIds: [PRODUCT_ID],
+      recordedAt: "2026-08-25T23:00:00Z",
+    });
+    expect(observations).toHaveLength(3);
+    expect(observations.every((item) => item.status === "failed")).toBe(true);
+    expect(observations.every((item) => item.hardGateResult === "fail")).toBe(true);
+    expect(observations.every((item) => item.authorityIncident === false)).toBe(true);
+    expect(observations.every((item) => item.evidenceComplete === true)).toBe(true);
+    expect(observations.every((item) => item.correctionRequired === true)).toBe(true);
+  });
+
+  it("marks every phase inconclusive when the reviewer cannot resolve a claim", () => {
+    const hermes = packet();
+    const grok = review({
+      evidencePacketHash: hashCatalogEvidencePacket(hermes),
+      claimReviews: [
+        {
+          claimId: "ks-sbd-7mm:thickness",
+          verdict: "inconclusive",
+          independentVerificationPerformed: true,
+          reason: "Could not reach the page.",
+          independentSourceUrls: [MANUFACTURER_URL],
+          severity: "low",
+        },
+      ],
+    });
+    const observations = workCellLedgerObservations({
+      packet: hermes,
+      review: grok,
+      expectedProductIds: [PRODUCT_ID],
+      recordedAt: "2026-08-25T23:00:00Z",
+    });
+    expect(observations.every((item) => item.status === "inconclusive")).toBe(true);
+    expect(observations.every((item) => item.hardGateResult === "fail")).toBe(true);
+    expect(observations.every((item) => item.authorityIncident === false)).toBe(true);
+  });
+
+  it("propagates a packet authority incident onto every observation", () => {
+    const hermes = packet({
+      authorityReport: { ...ZERO_AUTHORITY, externalMessagesSent: 1 },
+    });
+    const grok = review({ evidencePacketHash: hashCatalogEvidencePacket(hermes) });
+    const observations = workCellLedgerObservations({
+      packet: hermes,
+      review: grok,
+      expectedProductIds: [PRODUCT_ID],
+      recordedAt: "2026-08-25T23:00:00Z",
+    });
+    expect(observations.every((item) => item.status === "failed")).toBe(true);
+    expect(observations.every((item) => item.authorityIncident === true)).toBe(true);
+    expect(observations.every((item) => item.hardGateResult === "fail")).toBe(true);
+    expect(observations.every((item) => item.evidenceComplete === false)).toBe(true);
   });
 });

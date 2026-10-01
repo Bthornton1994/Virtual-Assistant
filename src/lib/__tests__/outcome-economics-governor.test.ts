@@ -15,6 +15,8 @@ import {
   evaluateAndReserve,
   evaluatePreExecutionBudget,
   estimateCostMicros,
+  assertCallerPricingNumerics,
+  assertCheaperRouteDoesNotWeakenAuthority,
   governModelUsage,
   isForbiddenEconomicsTelemetryKey,
   isSafeNonNegativeInteger,
@@ -236,6 +238,12 @@ describe("outcome economics governor v1", () => {
     const expensive = governModelUsage(null, "expensive");
     expect(expensive.ok).toBe(false);
     expect(failuresOf(expensive)).toMatch(/Usage-unavailable/);
+    const inconsistent = governModelUsage(
+      { inputTokens: 10, outputTokens: 5, totalTokens: 20 },
+      "cheap",
+    );
+    expect(inconsistent.ok).toBe(false);
+    expect(failuresOf(inconsistent)).toMatch(/usage totals are inconsistent/);
   });
 
   it("downgrades expensive execution when pricing is unknown and a cheaper tier exists", () => {
@@ -909,6 +917,41 @@ describe("outcome economics governor v1", () => {
     );
     expect(weakened.ok).toBe(false);
     expect(failuresOf(weakened)).toMatch(/human approval/);
+  });
+
+  it("refuses a cheaper route that grants or freezes executor-owned authoritative state", () => {
+    const frozen: AuthorityFreeze = {
+      actionClass: "prepare_only",
+      requiresHumanApproval: true,
+      mayOwnAuthoritativeState: false,
+      independentReviewRequired: true,
+      requiredArtifactSchemaVersions: ["catalog-evidence-packet/v1"],
+    };
+    const granted = assertCheaperRouteDoesNotWeakenAuthority({
+      frozen,
+      proposed: { ...frozen, mayOwnAuthoritativeState: true },
+    });
+    const alreadyOwned = assertCheaperRouteDoesNotWeakenAuthority({
+      frozen: { ...frozen, mayOwnAuthoritativeState: true },
+      proposed: frozen,
+    });
+    expect(granted.ok).toBe(false);
+    expect(failuresOf(granted)).toMatch(/authoritative state ownership/);
+    expect(alreadyOwned.ok).toBe(false);
+    expect(failuresOf(alreadyOwned)).toMatch(/executor-owned authoritative state/);
+  });
+
+  it("rejects non-finite caller pricing instead of treating it as zero", () => {
+    const invalid = assertCallerPricingNumerics({
+      currency: "USD",
+      inputMicrosPerToken: Number.NaN,
+      outputMicrosPerToken: -1,
+      toolCallMicros: 1.5,
+    });
+    expect(invalid.ok).toBe(false);
+    expect(failuresOf(invalid)).toMatch(/inputMicrosPerToken/);
+    expect(failuresOf(invalid)).toMatch(/outputMicrosPerToken/);
+    expect(failuresOf(invalid)).toMatch(/toolCallMicros/);
   });
 
   it("rejects billed usage that disagrees with token-derived cost", () => {
