@@ -278,7 +278,7 @@ async function insertEvidenceArtifact(
 }
 
 /** Phase suitability: role and executor kind must both match what the phase needs. */
-function assertProfileFitsPhase(profile: ExecutorProfile, phase: ExecutorPhase) {
+export function assertProfileFitsPhase(profile: ExecutorProfile, phase: ExecutorPhase) {
   if (profile.status === "suspended" || profile.status === "retired") {
     throw new DomainError(`Executor "${profile.key}" is ${profile.status} and cannot be assigned new work.`);
   }
