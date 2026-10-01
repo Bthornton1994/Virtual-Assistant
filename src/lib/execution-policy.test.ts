@@ -22,6 +22,16 @@ describe("workstream execution policy", () => {
     expect(finalRunStatusForReceipt("passed", true)).toBe("verified");
     expect(finalRunStatusForReceipt("passed", false)).toBe("failed");
     expect(finalRunStatusForReceipt("failed", true)).toBe("failed");
+    expect(finalRunStatusForReceipt("failed", false)).toBe("failed");
+  });
+
+  it("does not let a run skip verification or reopen after it starts", () => {
+    expect(canTransitionWorkstreamRun("running", "awaiting_verification")).toBe(true);
+    expect(canTransitionWorkstreamRun("running", "verified")).toBe(false);
+    expect(canTransitionWorkstreamRun("planned", "failed")).toBe(false);
+    expect(canTransitionWorkstreamRun("awaiting_verification", "verified")).toBe(true);
+    expect(canTransitionWorkstreamRun("awaiting_verification", "running")).toBe(false);
+    expect(canTransitionWorkstreamRun("awaiting_verification", "cancelled")).toBe(false);
   });
 
   it("requires evidence when the spec defines a verification rule", () => {
