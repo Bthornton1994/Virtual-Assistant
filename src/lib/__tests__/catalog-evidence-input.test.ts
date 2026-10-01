@@ -124,6 +124,16 @@ describe("frozen input manifest", () => {
       expect(validateInputManifest(bad, sha256Hex).ok).toBe(false);
     }
   });
+
+  it("rejects extra top-level keys so a manifest cannot smuggle a second batch", () => {
+    const result = validateInputManifest({ ...manifest(), replacementBatch: ["other-product"] }, sha256Hex);
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a padded runId instead of trimming it into a different identity", () => {
+    const result = validateInputManifest(manifest({ runId: " run-3d-0001 " }), sha256Hex);
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("frozen input records (P1-1)", () => {
