@@ -1016,3 +1016,45 @@ describe("Software Factory reserved-writer accept gates", () => {
     ).toMatch(/packet hash/);
   });
 });
+
+describe("Software Factory owner-decision authorization sources", () => {
+  it("rejects owner decisions that cite the task packet as authorization", () => {
+    const store = createSoftwareFactoryStore();
+    const opened = openRun(store);
+    advanceToAwaitingOwner(store, opened.run.id);
+    expect(getSoftwareFactoryRun(store, manager, opened.run.id).packetHash).toBeTruthy();
+
+    for (const [eventId, sourceRefs] of [
+      ["evt-cite-packet", ["packet"]],
+      ["evt-cite-task-packet", ["task packet"]],
+      ["evt-cite-PACKET", ["PACKET"]],
+      ["evt-cite-mixed", ["packet", "https://github.com/Bthornton1994/Loadout/pull/26"]],
+    ] as const) {
+      const decision = recordSoftwareFactoryOwnerDecision(
+        store,
+        owner,
+        opened.run.id,
+        {
+          kind: "owner_acceptance",
+          status: "approved",
+          rationale: "Packet looks complete.",
+          sourceRefs: [...sourceRefs],
+        },
+        eventId,
+        NOW,
+      );
+      expect(decision.ok).toBe(false);
+      expect(decision.ok ? "" : decision.failures.join(" ")).toMatch(/cannot cite the task packet/);
+    }
+
+    expect(
+      [...store.approvals.values()].some(
+        (row) => row.factoryRunId === opened.run.id && row.status === "approved",
+      ),
+    ).toBe(false);
+    expect(getSoftwareFactoryRun(store, manager, opened.run.id).mergeAuthorizedForHuman).toBe(false);
+    expect(
+      (store.evidenceByRun.get(opened.run.id) ?? []).some((row) => row.kind === "owner_decision"),
+    ).toBe(false);
+  });
+});

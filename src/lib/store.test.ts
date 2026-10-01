@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { delegationAI } from "@/lib/ai";
 import { AuthzError, DomainError } from "@/lib/domain";
 import { MemoryStore, seedData } from "@/lib/store";
 
@@ -630,5 +631,143 @@ describe("organization settings", () => {
     store.updateOrganization(founder, "org_northline", { name: "Northline Advisory LLP" });
     expect(store.getOrganization(founder, "org_northline").name).toBe("Northline Advisory LLP");
     expect(() => store.updateOrganization(teammate, "org_northline", { name: "Hijack" })).toThrow(AuthzError);
+  });
+});
+
+function passQa(store: MemoryStore, requestId: string) {
+  const { manager } = actors(store);
+  store.data.requests.find((r) => r.id === requestId)!.status = "qa";
+  store.createQaReview(manager, requestId, {
+    passed: true,
+    score: 90,
+    notes: "Checked. Customer approval still required before delivery.",
+  });
+}
+
+describe("delivery approval gates", () => {
+  it("refuses outbound delivery when external_email is only pending", () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    passQa(store, "req_outreach");
+    expect(store.getRequest(manager, "req_outreach").status).toBe("awaiting_action_approval");
+    store.data.requests.find((r) => r.id === "req_outreach")!.status = "ready_to_deliver";
+
+    expect(() => store.deliverRequest(manager, "req_outreach", deliveryPack)).toThrow(
+      /Outbound action requires customer approval/,
+    );
+    expect(store.getRequest(manager, "req_outreach").status).toBe("ready_to_deliver");
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_outreach")).toHaveLength(0);
+  });
+
+  it("refuses outbound delivery after the customer rejects send", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, manager } = actors(store);
+    store.decideApproval(founder, "ap_mail", "rejected", "Do not send.");
+    passQa(store, "req_outreach");
+    store.data.requests.find((r) => r.id === "req_outreach")!.status = "ready_to_deliver";
+
+    expect(() => store.deliverRequest(manager, "req_outreach", deliveryPack)).toThrow(
+      /Outbound action requires customer approval/,
+    );
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_outreach")).toHaveLength(0);
+  });
+
+  it("refuses sensitive delivery when sensitive_action is not approved", () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    passQa(store, "req_wire");
+    expect(store.getRequest(manager, "req_wire").status).toBe("ready_to_deliver");
+
+    expect(() => store.deliverRequest(manager, "req_wire", deliveryPack)).toThrow(
+      /Sensitive action requires customer approval/,
+    );
+    expect(store.getRequest(manager, "req_wire").status).toBe("ready_to_deliver");
+    expect(store.data.deliveries.filter((d) => d.requestId === "req_wire")).toHaveLength(0);
+    expect(store.data.approvals.find((a) => a.id === "ap_wire")?.status).toBe("pending");
+  });
+});
+
+describe("internal visibility", () => {
+  it("hides internal comments and notes from clients and coerces client comments to customer", () => {
+    const store = new MemoryStore(seedData());
+    const { founder, teammate, manager } = actors(store);
+
+    const internal = store.addComment(manager, "req_inbox", "CRM duplicate — escalate to Harbor later", "internal");
+    const note = store.addInternalNote(manager, "req_inbox", "Do not mention Harbor in the customer pack");
+    const coerced = store.addComment(founder, "req_inbox", "Please keep this operator-only", "internal");
+
+    expect(internal.visibility).toBe("internal");
+    expect(coerced.visibility).toBe("customer");
+
+    const clientBundle = store.getRequestBundle(founder, "req_inbox");
+    expect(clientBundle.comments.map((c) => c.id)).toContain(coerced.id);
+    expect(clientBundle.comments.map((c) => c.id)).not.toContain(internal.id);
+    expect(clientBundle.internalNotes).toEqual([]);
+
+    const memberBundle = store.getRequestBundle(teammate, "req_inbox");
+    expect(memberBundle.comments.map((c) => c.id)).not.toContain(internal.id);
+    expect(memberBundle.internalNotes).toEqual([]);
+
+    const opsBundle = store.getRequestBundle(manager, "req_inbox");
+    expect(opsBundle.comments.map((c) => c.id)).toEqual(expect.arrayContaining([internal.id, coerced.id]));
+    expect(opsBundle.internalNotes.map((n) => n.id)).toContain(note.id);
+  });
+});
+
+describe("scheduled run idempotency", () => {
+  it("does not create a second same-day scheduled run when the cron fires again", async () => {
+    const store = new MemoryStore(seedData());
+    const { manager } = actors(store);
+    const now = new Date();
+
+    const first = await store.runWorkstreamSchedule(manager, "ws_sales");
+    expect(first.request.title).toMatch(/scheduled run/i);
+    expect(first.request.recurring).toBe(true);
+
+    const sales = store.data.workstreams.find((w) => w.id === "ws_sales")!;
+    sales.nextRunAt = new Date(now.getTime() - 60_000).toISOString();
+    const before = store.data.requests.filter(
+      (r) => r.workstreamId === "ws_sales" && r.recurring && /scheduled run/i.test(r.title),
+    ).length;
+
+    const second = await store.runDueSchedules(manager, now);
+    expect(second).toHaveLength(0);
+    expect(
+      store.data.requests.filter(
+        (r) => r.workstreamId === "ws_sales" && r.recurring && /scheduled run/i.test(r.title),
+      ),
+    ).toHaveLength(before);
+    expect(new Date(sales.nextRunAt!).getTime()).toBeGreaterThan(now.getTime());
+  });
+});
+
+describe("intake action-class elevation", () => {
+  it("upgrades a prepare_only classifier result when the customer flagged outbound work", async () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    const spy = vi.spyOn(delegationAI, "classifyRisk").mockResolvedValue({
+      riskLevel: "low",
+      actionClass: "prepare_only",
+      reasons: ["Live model under-classified outbound work."],
+    });
+
+    try {
+      const bundle = await store.createRequest(founder, {
+        title: "Draft a research brief on boutique firms",
+        objective: "A sourced brief the partners can act on",
+        description:
+          "Research only. Prepare a sourced brief using public material. Do not invent contacts.",
+        deliverable: "PDF brief",
+        dueAt: null,
+        workstreamId: "ws_research",
+        recurring: false,
+        externalCommunication: true,
+      });
+      expect(bundle.request.approvalLevel).toBe("external_execution");
+      expect(bundle.request.externalCommunication).toBe(true);
+      expect(bundle.request.riskLevel).toBe("low");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
