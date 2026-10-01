@@ -51,6 +51,16 @@ describe("public https URL gate", () => {
     expect(isPublicHttpsUrl("https://10.0.0.4/admin")).toBe(false);
     expect(isPublicHttpsUrl("https://169.254.169.254/latest/meta-data")).toBe(false);
     expect(isPublicHttpsUrl("https://localhost/internal")).toBe(false);
+    expect(isPublicHttpsUrl("https://192.168.1.20/admin")).toBe(false);
+    expect(isPublicHttpsUrl("https://172.16.0.8/admin")).toBe(false);
+    expect(isPublicHttpsUrl("https://172.31.255.1/admin")).toBe(false);
+    expect(isPublicHttpsUrl("https://0.0.0.0/")).toBe(false);
+    expect(isPublicHttpsUrl("https://app.localhost/secret")).toBe(false);
+    expect(isPublicHttpsUrl("https://service.local/secret")).toBe(false);
+    expect(isPublicHttpsUrl("https://vault.internal/secret")).toBe(false);
+    expect(isPublicHttpsUrl("https://[::1]/secret")).toBe(false);
+    expect(isPublicHttpsUrl("https://172.15.0.1/public")).toBe(true);
+    expect(isPublicHttpsUrl("https://172.32.0.1/public")).toBe(true);
   });
 
   it("extracts https URLs from a frozen catalog record", () => {
