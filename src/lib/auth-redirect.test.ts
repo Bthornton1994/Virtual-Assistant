@@ -35,12 +35,24 @@ describe("auth redirect loop protection", () => {
   it("never uses /login as a next target", () => {
     expect(sanitizeNext("/login")).toBeNull();
     expect(sanitizeNext("/login?next=/app")).toBeNull();
+    expect(sanitizeNext("https://evil.example/app")).toBeNull();
+    expect(sanitizeNext("//evil.example/app")).toBeNull();
+    expect(sanitizeNext("/signup")).toBeNull();
+    expect(sanitizeNext("/app/approvals")).toBe("/app/approvals");
     expect(
       resolveAuthRedirect({
         pathname: "/login",
         hasSupabaseUser: true,
         hasDemoSession: false,
         nextParam: "/login",
+      }),
+    ).toEqual({ type: "redirect", pathname: "/app/dashboard" });
+    expect(
+      resolveAuthRedirect({
+        pathname: "/login",
+        hasSupabaseUser: true,
+        hasDemoSession: false,
+        nextParam: "//evil.example/app",
       }),
     ).toEqual({ type: "redirect", pathname: "/app/dashboard" });
   });
