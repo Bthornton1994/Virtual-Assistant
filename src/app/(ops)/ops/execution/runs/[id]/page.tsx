@@ -16,7 +16,7 @@ import { requireOps } from "@/lib/auth";
 import { checkEconomicEnvelope } from "@/lib/economic-envelope";
 import { getWorkstreamRunBundle } from "@/lib/execution-primitives";
 import { getSoftwareFactoryOverlay } from "@/lib/software-factory-persist";
-import { isSoftwareFactorySpec } from "@/lib/software-factory-run-manager";
+import { isSoftwareFactorySpec, isSoftwareFactoryTerminal } from "@/lib/software-factory-run-manager";
 import { getSupplierSourcingRunBundle } from "@/lib/supplier-sourcing-run";
 import { isTwlPrepareProofSpec } from "@/lib/twl-prepare-proof";
 import { getRunWorkCell } from "@/lib/work-cell";
@@ -84,6 +84,9 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
   const twlPrepareProof = isTwlPrepareProofSpec(spec);
   const softwareFactory = isSoftwareFactorySpec(spec);
   const softwareFactoryOverlay = softwareFactory ? await getSoftwareFactoryOverlay(actor, id) : null;
+  const factoryTerminal = Boolean(
+    softwareFactoryOverlay && isSoftwareFactoryTerminal(softwareFactoryOverlay.run.lifecycleStatus),
+  );
   const operators = twlPrepareProof ? await getWorkspace(actor).listOperators(actor) : [];
   const supplierRun =
     spec.objective.toLowerCase().includes("supplier sourcing") ||
@@ -226,7 +229,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         </Card>
       </div>
 
-      {run.status === "planned" ? (
+      {run.status === "planned" && !factoryTerminal ? (
         <Card className="p-6">
           <h2 className="font-semibold">Start observed execution</h2>
           <p className="mt-1 max-w-2xl text-sm text-muted">
@@ -271,7 +274,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
           <h2 className="text-lg font-semibold">Evidence</h2>
           <p className="text-sm text-muted">Evidence is append-only. Once the run leaves execution, new evidence cannot be added.</p>
         </div>
-        {run.status === "running" ? (
+        {run.status === "running" && !factoryTerminal ? (
           <Card className="p-6">
             <form action={addEvidenceArtifactAction} className="grid gap-4 lg:grid-cols-2">
               <input type="hidden" name="runId" value={run.id} />
@@ -319,7 +322,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         </div>
       </section>
 
-      {run.status === "running" && submitBlockedByWorkCell && !supplierRun ? (
+      {run.status === "running" && submitBlockedByWorkCell && !supplierRun && !factoryTerminal ? (
         <Card className="p-6">
           <h2 className="font-semibold">Submit for independent verification</h2>
           <p className="mt-1 max-w-2xl text-sm text-muted">
@@ -330,7 +333,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         </Card>
       ) : null}
 
-      {run.status === "running" && !submitBlockedByWorkCell && !supplierRun ? (
+      {run.status === "running" && !submitBlockedByWorkCell && !supplierRun && !factoryTerminal ? (
         <Card className="p-6">
           <h2 className="font-semibold">Submit for independent verification</h2>
           <p className="mt-1 text-sm text-muted">Record actual delivery economics before freezing the run for review.</p>
@@ -360,7 +363,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         </Card>
       ) : null}
 
-      {run.status === "awaiting_verification" && manager ? (
+      {run.status === "awaiting_verification" && manager && !factoryTerminal ? (
         <Card className="p-6">
           <h2 className="font-semibold">Issue Outcome Receipt</h2>
           <p className="mt-1 text-sm text-muted">The verifier decides whether the frozen run actually met its contract. The receipt is immutable.</p>
@@ -396,7 +399,7 @@ async function ExecutionRunContent({ params }: { params: Promise<{ id: string }>
         </Card>
       ) : null}
 
-      {run.status === "awaiting_verification" && !manager ? (
+      {run.status === "awaiting_verification" && !manager && !factoryTerminal ? (
         <Card className="p-5"><p className="text-sm text-muted">This run is frozen. An operations manager must perform independent verification.</p></Card>
       ) : null}
 

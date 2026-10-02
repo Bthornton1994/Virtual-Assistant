@@ -267,6 +267,54 @@ export function mapFactoryStatusToWorkstreamRun(
   }
 }
 
+export function projectSoftwareFactoryWorkstreamStatus(
+  current: WorkstreamRunStatus,
+  factoryStatus: SoftwareFactoryLifecycleStatus,
+): WorkstreamRunStatus {
+  if (current === "verified" || current === "failed" || current === "cancelled") {
+    return current;
+  }
+  const target = mapFactoryStatusToWorkstreamRun(factoryStatus);
+  if (current === target) return current;
+
+  let status = current;
+  if (status === "planned" && target === "cancelled") return "cancelled";
+  if (
+    status === "planned" &&
+    (target === "running" || target === "awaiting_verification" || target === "verified" || target === "failed")
+  ) {
+    status = "running";
+  }
+  if (status === "running" && target === "cancelled") return "cancelled";
+  if (status === "running" && (target === "awaiting_verification" || target === "verified" || target === "failed")) {
+    status = "awaiting_verification";
+  }
+  if (status === "awaiting_verification" && (target === "failed" || target === "cancelled" || target === "verified")) {
+    return target;
+  }
+  return status;
+}
+
+export function latestOwnerAcceptance(
+  approvals: readonly SoftwareFactoryApprovalRequest[],
+  packetHash: string | null,
+): SoftwareFactoryApprovalRequest | null {
+  if (!packetHash) return null;
+  const decided = approvals.filter(
+    (row) =>
+      row.kind === "owner_acceptance" &&
+      (row.status === "approved" || row.status === "rejected") &&
+      row.packetHash === packetHash &&
+      Boolean(row.decidedAt),
+  );
+  decided.sort((left, right) => {
+    const byDecided = Date.parse(right.decidedAt ?? "") - Date.parse(left.decidedAt ?? "");
+    if (byDecided !== 0) return byDecided;
+    return Date.parse(right.createdAt) - Date.parse(left.createdAt);
+  });
+  return decided[0] ?? null;
+}
+
 export const SOFTWARE_FACTORY_CONNECTORS = {
   grok_bot: {
     key: "grok_bot" as const,
@@ -550,6 +598,7 @@ export type SoftwareFactoryRun = {
   frozenAcceptanceCriteria: string[];
   packet: SoftwareFactoryPacket | null;
   packetHash: string | null;
+  packetFreezeVersion: number;
   version: number;
   connectors: SoftwareFactoryConnectorStatus[];
   createdAt: string;
@@ -694,6 +743,7 @@ export function detectSoftwareFactoryProblems(input: {
 
   const conclusionsByKind = new Map<string, Set<string>>();
   for (const record of input.evidence) {
+    if (record.kind === "owner_decision") continue;
     const key = record.kind;
     const set = conclusionsByKind.get(key) ?? new Set<string>();
     set.add(record.conclusion.trim().toLowerCase());
@@ -783,11 +833,11 @@ export function evaluateAcceptance(input: {
       failures.push("Frozen packet hash does not match the packet payload.");
     }
   }
-  const ownerAcceptance = input.approvals.find(
-    (row) => row.kind === "owner_acceptance" && row.status === "approved" && row.packetHash === input.run.packetHash,
-  );
+  const ownerAcceptance = latestOwnerAcceptance(input.approvals, input.run.packetHash);
   if (!ownerAcceptance) {
     failures.push("Explicit owner acceptance must be recorded outside the task packet.");
+  } else if (ownerAcceptance.status !== "approved") {
+    failures.push("The latest owner decision for this packet is not approved.");
   }
   if (input.verifierId && ownerAcceptance?.decidedBy === input.verifierId) {
     failures.push("The owner who accepted this packet cannot issue its Outcome Receipt.");

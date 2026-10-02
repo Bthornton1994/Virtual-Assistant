@@ -10,7 +10,7 @@ import {
   evaluateAcceptance,
   hashSoftwareFactoryPacket,
   isSoftwareFactorySpec,
-  softwareFactoryPacketSchema,
+  validateSoftwareFactoryPacket,
   type SoftwareFactoryApprovalKind,
   type SoftwareFactoryApprovalRequest,
   type SoftwareFactoryConnectorStatus,
@@ -62,6 +62,7 @@ function mapFactoryRun(row: Record<string, unknown>): SoftwareFactoryRun {
     frozenAcceptanceCriteria: asStringList(row.frozen_acceptance_criteria),
     packet,
     packetHash: (row.packet_hash as string) ?? null,
+    packetFreezeVersion: Number(row.packet_freeze_version ?? 0),
     version: Number(row.version ?? 1),
     connectors: Array.isArray(row.connector_status)
       ? (row.connector_status as SoftwareFactoryConnectorStatus[])
@@ -293,17 +294,17 @@ export async function freezePersistedSoftwareFactoryPacket(
   if (!canOperate(actor)) throw new AuthzError("Only operations staff can freeze a Software Factory task packet.");
   const overlay = await getSoftwareFactoryOverlay(actor, workstreamRunId);
   if (!overlay) throw new DomainError("Bind a Software Factory overlay before freezing a packet.");
-  const parsed = softwareFactoryPacketSchema.safeParse(packetInput);
-  if (!parsed.success) {
-    throw new DomainError(parsed.error.issues.map((issue) => issue.message).join(" "));
+  const parsed = validateSoftwareFactoryPacket(packetInput);
+  if (!parsed.ok) {
+    throw new DomainError(parsed.failures.join(" "));
   }
   const client = await db();
   const { error } = await client.rpc("software_factory_freeze_packet", {
     p_factory_run_id: overlay.run.id,
-    p_packet: parsed.data,
+    p_packet: parsed.value,
   });
   if (error) rpcError(error, "The Software Factory packet writer failed.");
-  return hashSoftwareFactoryPacket(parsed.data);
+  return hashSoftwareFactoryPacket(parsed.value);
 }
 
 export async function attachPersistedSoftwareFactoryEvidence(
@@ -364,11 +365,20 @@ export async function rejectPersistedSoftwareFactoryForbiddenAction(
   const overlay = await getSoftwareFactoryOverlay(actor, workstreamRunId);
   if (!overlay) throw new DomainError("Bind a Software Factory overlay before testing a forbidden action.");
   const client = await db();
-  const { error } = await client.rpc("software_factory_reject_forbidden_action", {
+  const { data, error } = await client.rpc("software_factory_reject_forbidden_action", {
     p_factory_run_id: overlay.run.id,
     p_action: action,
   });
-  rpcError(error, "Merge remains blocked. Software Factory Run Manager is prepare_only and does not merge pull requests.");
+  if (error) {
+    rpcError(error, "Merge remains blocked. Software Factory Run Manager is prepare_only and does not merge pull requests.");
+  }
+  const payload = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+  if (payload?.blocked === true) {
+    throw new DomainError(
+      String(payload.message ?? "Merge remains blocked. Software Factory Run Manager is prepare_only and does not merge pull requests."),
+    );
+  }
+  throw new DomainError("Merge remains blocked. Software Factory Run Manager is prepare_only and does not merge pull requests.");
 }
 
 export function defaultSoftwareFactoryPacket(run: SoftwareFactoryRun): SoftwareFactoryPacket {

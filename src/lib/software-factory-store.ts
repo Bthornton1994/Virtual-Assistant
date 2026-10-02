@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AuthzError, DomainError, type Actor } from "@/lib/domain";
 import type { EvidenceArtifact, OutcomeReceipt } from "@/lib/execution-primitives";
-import { canTransitionWorkstreamRun } from "@/lib/execution-policy";
 import {
   SOFTWARE_FACTORY_ACTION_CLASS,
   SOFTWARE_FACTORY_CONNECTORS,
@@ -17,7 +16,7 @@ import {
   forbiddenActionBlockedMessage,
   freezeEvidenceRecord,
   hashSoftwareFactoryPacket,
-  mapFactoryStatusToWorkstreamRun,
+  projectSoftwareFactoryWorkstreamStatus,
   rejectSecrets,
   softwareFactoryConnectorCatalog,
   softwareFactoryCursorExecutionSchema,
@@ -166,24 +165,7 @@ function syncWorkstreamRun(store: SoftwareFactoryStore, run: SoftwareFactoryRun)
   if (!run.workstreamRunId) return;
   const workstream = store.workstreamRuns.get(run.workstreamRunId);
   if (!workstream) return;
-  const next = mapFactoryStatusToWorkstreamRun(run.lifecycleStatus);
-  if (workstream.status === next) return;
-
-  let current = workstream.status;
-  if (current === "planned" && next !== "planned" && next !== "cancelled") {
-    if (canTransitionWorkstreamRun(current, "running")) current = "running";
-  }
-  if (current === "running" && (next === "verified" || next === "failed")) {
-    if (canTransitionWorkstreamRun(current, "awaiting_verification")) current = "awaiting_verification";
-  }
-  if (current === next) {
-    workstream.status = current;
-    return;
-  }
-  if (!canTransitionWorkstreamRun(current, next)) {
-    throw new DomainError(`Cannot project workstream run ${workstream.status} → ${next}`);
-  }
-  workstream.status = next;
+  workstream.status = projectSoftwareFactoryWorkstreamStatus(workstream.status, run.lifecycleStatus);
 }
 
 function bump(run: SoftwareFactoryRun, now: string) {
@@ -273,6 +255,7 @@ export function submitSoftwareWorkRequest(
     frozenAcceptanceCriteria: [...intake.acceptanceCriteria],
     packet: null,
     packetHash: null,
+    packetFreezeVersion: 0,
     version: 1,
     connectors: store.connectorCatalog.map((row) => ({ ...row })),
     createdAt: now,
@@ -502,13 +485,18 @@ export function produceSoftwareFactoryPacket(
       return fail("Packet claimedApprovalIds must cite owner or governance decisions recorded outside the packet.");
     }
   }
+  const nextHash = hashSoftwareFactoryPacket(parsed.value);
+  if (run.packetHash === nextHash) {
+    return ok(parsed.value);
+  }
   run.packet = parsed.value;
-  run.packetHash = hashSoftwareFactoryPacket(parsed.value);
+  run.packetHash = nextHash;
+  run.packetFreezeVersion += 1;
   bump(run, now);
   const packetEvidence = freezeEvidenceRecord({
     evidenceId: randomUUID(),
     kind: "task_packet",
-    summary: `Frozen task packet ${parsed.value.TASK_ID}`,
+    summary: `Frozen task packet ${parsed.value.TASK_ID} version ${run.packetFreezeVersion}`,
     sourceUri: null,
     conclusion: "packet_frozen",
     satisfiedCriteria: ["Structured task packet produced."],
