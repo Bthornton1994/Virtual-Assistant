@@ -32,10 +32,12 @@ const CLI = "src/lib/release-rescue-internal/cli.ts";
 const REVIEW = "src/lib/release-rescue-internal/review.ts";
 const ALLOWLIST = "src/lib/release-rescue-internal/allowlist.ts";
 const LAUNCHER = "scripts/release-rescue-local.mjs";
+const LOCAL_APP = "scripts/release-rescue-local-app.mjs";
 
 const CLAIM_SUITE = "src/lib/__tests__/release-rescue-claim-guard.test.ts";
 const SNAPSHOT_SUITE = "src/lib/__tests__/release-rescue-internal-snapshot.test.ts";
 const CLI_SUITE = "src/lib/__tests__/release-rescue-internal-cli.test.ts";
+const BOUNDARY_SUITE = "src/lib/__tests__/release-rescue-internal-production-boundary.test.ts";
 
 const MUTANTS = [
   {
@@ -295,6 +297,38 @@ const MUTANTS = [
     from: "} catch (error) {\n  // No stack trace",
     to: "} finally {\n}\nif (false) {\n  const error = null;\n  // No stack trace",
     suite: CLI_SUITE,
+  },
+  {
+    id: "M-LOCAL-APP-HOSTNAME",
+    guard: "rr:local:app starts the server on 127.0.0.1",
+    file: LOCAL_APP,
+    from: `const HOSTNAME = "127.0.0.1";`,
+    to: `const HOSTNAME = "0.0.0.0";`,
+    suite: BOUNDARY_SUITE,
+  },
+  {
+    id: "M-LOCAL-APP-ARGS",
+    guard: "rr:local:app refuses every argument but --dry-run, so none can move the bind",
+    file: LOCAL_APP,
+    from: `if (args.some((arg) => arg !== "--dry-run")) return`,
+    to: `if (false) return`,
+    suite: BOUNDARY_SUITE,
+  },
+  {
+    id: "M-LOCAL-APP-HOST-ENV",
+    guard: "rr:local:app refuses a HOST or HOSTNAME that is not loopback",
+    file: LOCAL_APP,
+    from: `if (env[name] && !LOOPBACK.has(env[name])) return`,
+    to: `if (false) return`,
+    suite: BOUNDARY_SUITE,
+  },
+  {
+    id: "M-LOCAL-APP-PORT-ENV",
+    guard: "rr:local:app refuses a PORT other than 3020",
+    file: LOCAL_APP,
+    from: `if (env.PORT && env.PORT !== PORT) return`,
+    to: `if (false) return`,
+    suite: BOUNDARY_SUITE,
   },
   {
     id: "CONTROL",

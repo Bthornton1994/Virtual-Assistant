@@ -14,7 +14,7 @@
     "cos:sync-skills": "node scripts/cos-sync-skills.mjs --dry-run",
     "test:timing-observation": "vitest run --config vitest.timing-observation.config.ts",
     "rr:local": "node --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/release-rescue-local.mjs",
-    "rr:local:app": "next build && RELEASE_RESCUE_INTERNAL=local next start --hostname 127.0.0.1 --port 3020",
+    "rr:local:app": "node scripts/release-rescue-local-app.mjs",
     "test:e2e": "playwright test",
     "test:e2e:internal": "playwright test --config playwright.internal.config.ts",
     "context:read": "node --experimental-strip-types scripts/software-context-shunt.mjs",
