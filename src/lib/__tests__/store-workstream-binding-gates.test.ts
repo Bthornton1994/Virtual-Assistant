@@ -70,6 +70,22 @@ describe("workstream and playbook tenant binding", () => {
     ).toBe(false);
   });
 
+  it("refuses a Harbor playbook on a Northline intake and creates no request", async () => {
+    const store = new MemoryStore(seedData());
+    const { founder } = actors(store);
+    seedHarborBindings(store);
+    const before = store.data.requests.length;
+
+    await expect(
+      store.createRequest(founder, { ...completeIntake, workstreamId: "ws_research", playbookId: "pb_harbor" }),
+    ).rejects.toThrow(AuthzError);
+    expect(store.data.requests).toHaveLength(before);
+    expect(store.data.requests.some((row) => row.title === completeIntake.title)).toBe(false);
+    expect(
+      store.data.requests.some((row) => row.organizationId === "org_northline" && row.playbookId === "pb_harbor"),
+    ).toBe(false);
+  });
+
   it("still binds a Northline workstream on a Northline intake", async () => {
     const store = new MemoryStore(seedData());
     const { founder } = actors(store);
