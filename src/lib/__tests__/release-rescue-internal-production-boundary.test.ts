@@ -147,6 +147,46 @@ describe("the internal workflow is not a production surface", () => {
     });
   });
 
+  it.each(["127.0.0.1", "localhost", "::1"])(
+    "starts when HOST=%s names a loopback address and PORT is unset",
+    (value) => {
+      expect(launchApp([], { HOST: value })).toEqual({
+        status: 0,
+        stdout: "next build\nRELEASE_RESCUE_INTERNAL=local next start --hostname 127.0.0.1 --port 3020\n",
+        stderr: "",
+      });
+    },
+  );
+
+  it("treats an empty HOST or PORT as unset, and still starts when --dry-run is repeated", () => {
+    expect(launchApp(["--dry-run"], { HOST: "", PORT: "" })).toEqual({
+      status: 0,
+      stdout: "next build\nRELEASE_RESCUE_INTERNAL=local next start --hostname 127.0.0.1 --port 3020\n",
+      stderr: "",
+    });
+  });
+
+  it.each([
+    ["HOST", "127.0.0.1 "],
+    ["HOSTNAME", "Localhost"],
+  ])("refuses %s=%j, which is not an exact loopback spelling", (name, value) => {
+    const result = launchApp([], { [name]: value });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(
+      `${name} is set to an address that is not loopback. rr:local:app starts only on 127.0.0.1:3020, so unset it. Nothing was started.\n`,
+    );
+  });
+
+  it.each(["03020", "3020 "])("refuses PORT=%j, which is not exactly 3020", (value) => {
+    const result = launchApp([], { PORT: value });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(
+      "PORT is set to a port other than 3020. rr:local:app starts only on 127.0.0.1:3020, so unset it. Nothing was started.\n",
+    );
+  });
+
   it("runs the browser journey on verify without switching that job into internal mode", () => {
     const workflow = readFileSync(resolve(ROOT, ".github/workflows/verify.yml"), "utf8");
     expect(workflow).not.toMatch(/RELEASE_RESCUE_INTERNAL\s*:/);
