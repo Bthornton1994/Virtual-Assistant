@@ -76,7 +76,7 @@ npm run proof:rr-internal
 npm run build
 ```
 
-Or `npm run verify` to run them all, in this order. `proof:rr-internal` edits source files while it runs and will not start while those files have uncommitted changes; see `docs/RELEASE-RESCUE-INTERNAL.md`.
+Or `npm run verify` to run them all, in this order. Both proofs edit source files while they run and restore them afterwards. `proof:rr-internal` will not start while those files have uncommitted changes; see `docs/RELEASE-RESCUE-INTERNAL.md`. `proof:claim-guard` measures the working-tree copies, uncommitted changes included, and will not start while an earlier run's `*.mutation-proof-original` copy remains; see the header of `scripts/claim-guard-mutation-proof.mjs`.
 
 ### Release Rescue, internal
 
