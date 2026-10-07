@@ -71,10 +71,12 @@ Northline Advisory is a **seeded demonstration organization**, not a public case
 npm run lint
 npm run typecheck
 npm test
+npm run proof:claim-guard
+npm run proof:rr-internal
 npm run build
 ```
 
-Or `npm run verify` to run all four.
+Or `npm run verify` to run them all, in this order. `proof:rr-internal` edits source files while it runs and will not start while those files have uncommitted changes; see `docs/RELEASE-RESCUE-INTERNAL.md`.
 
 ### Release Rescue, internal
 
