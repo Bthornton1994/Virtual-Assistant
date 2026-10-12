@@ -1,8 +1,9 @@
 import { Buffer } from "node:buffer";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   projectRefFromServiceRoleKey,
   serviceRoleMatchesProject,
+  supabaseAdmin,
 } from "@/lib/supabase/admin";
 
 function serviceRoleJwt(ref: string) {
@@ -55,5 +56,46 @@ describe("Supabase privileged credential pairing", () => {
         configuredProjectRef: "project-b",
       }),
     ).toBe(false);
+  });
+});
+
+describe("supabaseAdmin privileged client gate", () => {
+  const ENV_KEYS = [
+    "NEXT_PUBLIC_SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_SERVICE_ROLE_PROJECT_REF",
+  ] as const;
+  const saved = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      const value = saved[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("returns null when the service-role JWT belongs to a different project", () => {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://project-a.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = serviceRoleJwt("project-b");
+    delete process.env.SUPABASE_SERVICE_ROLE_PROJECT_REF;
+    expect(supabaseAdmin()).toBeNull();
+  });
+
+  it("creates a client only when the URL and service-role JWT share a project ref", () => {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://project-a.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = serviceRoleJwt("project-a");
+    delete process.env.SUPABASE_SERVICE_ROLE_PROJECT_REF;
+    const client = supabaseAdmin();
+    expect(client).not.toBeNull();
+    expect(typeof client?.from).toBe("function");
+  });
+
+  it("throws if imported privileged credentials would run in the browser", () => {
+    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://project-a.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = serviceRoleJwt("project-a");
+    (globalThis as { window?: unknown }).window = {};
+    expect(() => supabaseAdmin()).toThrow(/must not run in the browser/);
   });
 });
