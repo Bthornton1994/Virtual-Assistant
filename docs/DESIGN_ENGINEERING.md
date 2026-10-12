@@ -12,7 +12,7 @@ Virtual Assistant uses a focused, vendored subset of Emil Kowalski's UI skills t
 ## How agents use the skills
 
 - Read this file and `VISION.md` before UI work.
-- Read `.claude/skills/emil-design-eng/SKILL.md` for every UI change.
+- Read `.claude/skills/emil-design-eng/SKILL.md` when the change involves interaction, motion, or component craft.
 - Use `animate` for a new interaction, `review-animations` for motion review, and `find-animation-opportunities` or `improve-animations` before proposing additional motion.
 - Use `pick-ui-library` before adding a third-party UI primitive. Use `prototype` only when multiple materially different directions are needed.
 
@@ -63,12 +63,15 @@ This repository vendors a focused subset of Leonxlnx's `taste-skill` collection 
 - Vendored files:
   - `.claude/skills/design-taste-frontend/SKILL.md`
   - `.claude/skills/redesign-existing-projects/SKILL.md`
+- Local modifications to `design-taste-frontend` (against `ccbc15639c97057cbfcf32ecebc38ef716e4bb37`), to carry forward on any upstream update:
+  - Removed every instruction that required remembering a previously generated project, because the agent has no such record: the palette-rotation rule in section 4.2 and its pre-flight question, the rule against reusing a serif across consecutive projects in section 4.1, the "rotate, do not reuse" wording on the default palette alternatives, and the pre-flight question about the previous project's serif. The font pool and palette alternatives remain as options to choose from by fit. The override rule against defaulting to beige and brass, and the pre-flight checks against that default and against Fraunces and Instrument Serif, are unchanged.
+  - The image-generation step in section 4.8 now applies when the brief needs new imagery, the surface is in scope for generated imagery under this repository's instructions, and a tool is available. It is no longer an unconditional requirement whenever any tool exists. Step 2 now applies when generated imagery is unavailable or out of scope.
 
 ### How agents use it
 
-- Start with the core skill's design read and the redesign skill's scan, diagnose, and fix sequence.
+- Load only the one that fits the task. Use the core skill's design read when setting visual direction for a marketing page, and the redesign skill's scan, diagnose, and fix sequence when refining an existing surface.
 - Treat an existing surface as preserve-mode unless an owner explicitly approves an overhaul.
-- Use the core pre-flight for accessibility, mobile collapse, reduced motion, copy clarity, visual hierarchy, and performance. Do not treat its landing-page patterns as requirements for product surfaces.
+- When the core skill is loaded, use its pre-flight for accessibility, mobile collapse, reduced motion, copy clarity, visual hierarchy, and performance. Do not treat its landing-page patterns as requirements for product surfaces.
 - Keep this project's tokens, information architecture, copy voice, data semantics, privacy, safety, and release controls authoritative.
 
 ### Project application map
@@ -96,16 +99,27 @@ The upstream collection also contains image-generation, image-to-code, Stitch, l
 - Use the existing product stack and primitives. Do not add a UI library, migrate animation libraries, add a CLI or runtime dependency, or create a parallel design system solely because the upstream collection mentions one.
 - Use `improve-ui` as an evidence gate for coherent surfaces. It is read-only on product source and plans bounded work; implementation remains governed by this repository's instructions and the owner-approved task.
 
-- Scope: marketing routes, shared UI primitives, and responsive navigation.
+- Scope: product interfaces, shared UI primitives, and responsive navigation. On marketing routes the baseline rules apply where they do not conflict with the marketing visual direction; see Precedence.
 - Preserve: outcome, access, approval, logging, verification, tenant-isolation, and Delegation Spec language.
 - Exclude: operational authority changes, autonomous execution claims, customer-data behavior, and dashboard rewrites.
 
+
+## Precedence
+
+Project-specific instructions come first: `AGENTS.md`, `VISION.md`, `DESIGN.md`, this file, and the governing Delegation Spec. They override every vendored skill.
+
+Below them, two vendored skills split the interface by surface. Neither outranks the other.
+
+- `design-taste-frontend` guides visual direction on marketing pages.
+- `baseline-ui` guides implementation and quality on product interfaces, including the operational app and shared UI primitives.
+
+A direct conflict follows the scope of the surface being changed. A shared primitive keeps the `baseline-ui` rules, because it also renders on product interfaces; a marketing page that needs a different treatment styles its own instance, not the shared primitive. For example, on a marketing page `design-taste-frontend` governs gradients, headline letter-spacing, and whether to add motion. On a product interface the `baseline-ui` rules on those points govern. Rules that do not conflict apply on both kinds of surface.
 
 ## External UI and copy quality gates
 
 - Use the existing design system and the smallest relevant skill from `docs/EXTERNAL-AGENT-SKILLS.md`; do not introduce a parallel visual system.
 - Use `no-ai-design-slop` as a removal-first review. Preserve product-specific identity, useful density, honest placeholders, and explicit states.
 - Use `no-ai-slop` for visible copy. Preserve supported claims and approved disclaimers; do not add invented proof or inflated outcomes.
-- Use `frontend-ui-engineering` for keyboard access, responsive behavior, loading, empty, error, and focus states.
+- Use `frontend-ui-engineering` when building or restructuring components, layouts, or interface states. For a narrower keyboard, focus, or state fix, use the skill that owns it, such as `fixing-accessibility`.
 - Use `source-driven-development` for framework-specific changes and `verification-before-completion` before completion claims.
 - Scope: marketing routes and shared UI primitives. Product behavior, data handling, scoring, benefits, commerce, authority, and release gates remain outside this design layer.
