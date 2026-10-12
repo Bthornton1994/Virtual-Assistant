@@ -10,6 +10,8 @@ Software Factory Run Manager is a Delegation Cloud-owned capability for coordina
 
 It is not a freeform coding bot, agent marketplace, or unrestricted autonomous worker.
 
+Proof-carrying work-cell binding is a design boundary on the existing Native Skill and Software Factory packet/hash contracts. It is not a second lifecycle or evidence system. See [Proof-Carrying Work-Cell Binding](NATIVE-SKILL-REGISTRY-V1.md#proof-carrying-work-cell-binding).
+
 ## Operating model
 
 | Role | Authority in this slice |
