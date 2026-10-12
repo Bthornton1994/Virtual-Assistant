@@ -5,8 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { syncSkills } from "./cos-sync-skills.mjs";
-import { validateSkills } from "./cos-validate-skills.mjs";
+import {
+  isManagedSkillName as syncManagedName,
+  parseSyncArgs,
+  syncSkills,
+} from "./cos-sync-skills.mjs";
+import {
+  isManagedSkillName,
+  isSafeSkillName,
+  parseFrontMatter,
+  validateSkills,
+} from "./cos-validate-skills.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const syncScript = path.join(repoRoot, "scripts/cos-sync-skills.mjs");
@@ -226,3 +235,149 @@ test("repo skill mirror validates and dry-run sync reports no changes twice", ()
   assert.equal(validateCli.status, 0, validateCli.stderr);
   assert.match(validateCli.stdout, /Validated \d+ skill\(s\)\./);
 });
+
+test("managed names stay aligned and refuse path-escape shapes", () => {
+  const names = [
+    "test-audit",
+    "cos-one",
+    "cos-foo.bar",
+    "cos-..",
+    "../cos-one",
+    "cos/one",
+    "-cos",
+    "better-ui",
+    "",
+    "cos-",
+  ];
+  for (const name of names) {
+    assert.equal(isManagedSkillName(name), syncManagedName(name), name);
+  }
+  assert.equal(isManagedSkillName("test-audit"), true);
+  assert.equal(isManagedSkillName("cos-one"), true);
+  assert.equal(isSafeSkillName("cos-one"), true);
+  assert.equal(isManagedSkillName("cos-.."), false);
+  assert.equal(isSafeSkillName("cos-.."), false);
+  assert.equal(isManagedSkillName("../cos-one"), false);
+  assert.equal(isManagedSkillName("better-ui"), false);
+  assert.equal(isSafeSkillName("-cos"), false);
+});
+
+test("parseFrontMatter refuses an unopened, unclosed, or non-field document", () => {
+  assert.equal(parseFrontMatter("# no opener\n").ok, false);
+  assert.equal(parseFrontMatter("---\nname: cos-one\n").ok, false);
+  assert.equal(parseFrontMatter("---\n- not a field\n---\n").ok, false);
+  assert.match(parseFrontMatter(" ---\nname: cos-one\n---\n").error ?? "", /front matter must start/);
+});
+
+test("parseFrontMatter accepts quoted, commented, CRLF, folded, and literal fields", () => {
+  const quoted = parseFrontMatter('---\nname: "cos-one"\ndescription: \'quoted\'\n---\nbody\n');
+  assert.equal(quoted.ok, true);
+  if (quoted.ok) {
+    assert.equal(quoted.data.name, "cos-one");
+    assert.equal(quoted.data.description, "quoted");
+  }
+
+  const commented = parseFrontMatter("---\n# comment\n\nname: cos-one\ndescription: ok\n---\n");
+  assert.equal(commented.ok, true);
+  if (commented.ok) assert.equal(commented.data.name, "cos-one");
+
+  const crlf = parseFrontMatter("---\r\nname: cos-one\r\ndescription: crlf\r\n---\r\n");
+  assert.equal(crlf.ok, true);
+  if (crlf.ok) assert.equal(crlf.data.description, "crlf");
+
+  const folded = parseFrontMatter("---\nname: cos-one\ndescription: >\n  line one\n  line two\n---\n");
+  assert.equal(folded.ok, true);
+  if (folded.ok) assert.equal(folded.data.description, "line one line two");
+
+  const literal = parseFrontMatter("---\nname: cos-one\ndescription: |\n  line one\n  line two\n---\n");
+  assert.equal(literal.ok, true);
+  if (literal.ok) assert.equal(literal.data.description, "line one\nline two");
+});
+
+test("validator reports name mismatch, missing SKILL.md, and a mirror without a canonical", () => {
+  withTmp((root) => {
+    const agents = path.join(root, ".agents", "skills", "cos-one");
+    const claude = path.join(root, ".claude", "skills", "cos-one");
+    fs.mkdirSync(agents, { recursive: true });
+    fs.mkdirSync(claude, { recursive: true });
+    fs.writeFileSync(path.join(agents, "SKILL.md"), skillText("cos-other"));
+    fs.writeFileSync(path.join(claude, "SKILL.md"), skillText("cos-other"));
+    const mismatch = validateSkills({ repoRoot: root });
+    assert.equal(mismatch.ok, false);
+    assert.match(mismatch.errors.join("\n"), /does not match directory cos-one/);
+
+    const missingDir = path.join(root, ".agents", "skills", "cos-empty");
+    fs.mkdirSync(missingDir, { recursive: true });
+    const missing = validateSkills({ repoRoot: root });
+    assert.match(missing.errors.join("\n"), /cos-empty: missing SKILL.md/);
+
+    fs.rmSync(path.join(root, ".agents", "skills", "cos-one"), { recursive: true, force: true });
+    const orphan = validateSkills({ repoRoot: root });
+    assert.match(orphan.errors.join("\n"), /mirror without \.agents\/skills canonical/);
+  });
+});
+
+test("validator ignores protocol links and refuses a null-byte or undecodable href", () => {
+  withTmp((root) => {
+    writeSkillPair(root, "cos-one", "See [docs](https://example.com/a) and [proto](//cdn.example/x).\n");
+    const ok = validateSkills({ repoRoot: root });
+    assert.equal(ok.ok, true, ok.errors.join("\n"));
+
+    const agents = path.join(root, ".agents", "skills", "cos-one", "SKILL.md");
+    const claude = path.join(root, ".claude", "skills", "cos-one", "SKILL.md");
+    const bad = skillText("cos-one", "[bad](./%E0%A4%A.md)\n[nul](./a%00b.md)\n");
+    fs.writeFileSync(agents, bad);
+    fs.writeFileSync(claude, bad);
+    const refused = validateSkills({ repoRoot: root });
+    assert.equal(refused.ok, false);
+    assert.match(refused.errors.join("\n"), /broken relative ref/);
+  });
+});
+
+test("sync ignores unmanaged trees, manages test-audit, and refuses a missing named skill", () => {
+  withTmp((root) => {
+    const source = path.join(root, "source");
+    const dest = path.join(root, "dest");
+    fs.mkdirSync(path.join(source, "better-ui"), { recursive: true });
+    fs.writeFileSync(path.join(source, "better-ui", "SKILL.md"), skillText("better-ui"));
+    fs.mkdirSync(path.join(source, "test-audit"), { recursive: true });
+    fs.writeFileSync(path.join(source, "test-audit", "SKILL.md"), skillText("test-audit"));
+
+    const applied = syncSkills({ sourceRoot: source, destRoot: dest, dryRun: false });
+    assert.equal(applied.exitCode, 0);
+    assert.equal(fs.existsSync(path.join(dest, "better-ui")), false);
+    assert.equal(fs.lstatSync(path.join(dest, "test-audit")).isSymbolicLink(), true);
+
+    const missing = syncSkills({ sourceRoot: source, destRoot: dest, names: ["cos-absent"] });
+    assert.equal(missing.exitCode, 2);
+    assert.match(missing.error ?? "", /missing skill: cos-absent/);
+
+    const notDir = syncSkills({ sourceRoot: path.join(root, "nope"), destRoot: dest });
+    assert.equal(notDir.exitCode, 2);
+    assert.match(notDir.error ?? "", /source root is not a directory|parent does not exist/);
+  });
+});
+
+test("CLI parsers refuse unknown flags, missing values, and help mixed with other args", () => {
+  assert.equal(parseSyncArgs(["--unknown"]).ok, false);
+  assert.equal(parseSyncArgs(["--name"]).ok, false);
+  assert.equal(parseSyncArgs(["--source"]).ok, false);
+  assert.equal(parseSyncArgs(["--help", "--dry-run"]).ok, false);
+
+  const help = spawnSync(process.execPath, [validateScript, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /usage:/);
+
+  const unknown = spawnSync(process.execPath, [validateScript, "--nope"], { encoding: "utf8" });
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stderr, /unknown argument/);
+
+  const missingRoot = spawnSync(process.execPath, [validateScript, "--root"], { encoding: "utf8" });
+  assert.equal(missingRoot.status, 2);
+  assert.match(missingRoot.stderr, /missing value for --root/);
+
+  const syncUnknown = spawnSync(process.execPath, [syncScript, "--wat"], { encoding: "utf8" });
+  assert.equal(syncUnknown.status, 2);
+  assert.match(syncUnknown.stderr, /unknown argument/);
+});
+
