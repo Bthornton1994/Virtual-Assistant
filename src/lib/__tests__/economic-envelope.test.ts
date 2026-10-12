@@ -116,4 +116,28 @@ describe("economic envelope guard", () => {
     expect(check.ok).toBe(false);
     expect(check.ok ? [] : check.failures.join(" ")).toContain("aiCostMicros");
   });
+
+  it("rejects non-finite or negative observed minutes and tool costs", () => {
+    const minutes = checkEconomicEnvelope({}, {
+      ...ZERO_TOTALS,
+      humanMinutes: Number.NaN,
+      ownerMinutes: -1,
+    });
+    const tools = checkEconomicEnvelope({}, {
+      ...ZERO_TOTALS,
+      toolCostMicros: 1.5,
+    });
+    const infinite = checkEconomicEnvelope({}, {
+      ...ZERO_TOTALS,
+      humanMinutes: Number.POSITIVE_INFINITY,
+    });
+
+    expect(minutes.ok).toBe(false);
+    expect(minutes.ok ? "" : minutes.failures.join(" ")).toMatch(/humanMinutes/);
+    expect(minutes.ok ? "" : minutes.failures.join(" ")).toMatch(/ownerMinutes/);
+    expect(tools.ok).toBe(false);
+    expect(tools.ok ? "" : tools.failures.join(" ")).toMatch(/toolCostMicros/);
+    expect(infinite.ok).toBe(false);
+    expect(infinite.ok ? "" : infinite.failures.join(" ")).toMatch(/humanMinutes/);
+  });
 });

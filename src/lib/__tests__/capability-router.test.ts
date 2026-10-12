@@ -124,6 +124,48 @@ describe("capability router v1", () => {
     });
   });
 
+  it("records isolated rejection reasons for ceiling, contract, cost, and health gates", () => {
+    const cases: Array<{ executorKey: string; implementation: Partial<RouterImplementation>; reason: string }> = [
+      { executorKey: "mismatch-v1", implementation: { capabilityKey: "independent_evidence_review" }, reason: "capability_mismatch" },
+      { executorKey: "inactive-v1", implementation: { capabilityStatus: "retired" }, reason: "capability_inactive" },
+      { executorKey: "output-v1", implementation: { outputContractVersions: ["other/v1"] }, reason: "output_contract_incompatible" },
+      { executorKey: "authority-v1", implementation: { maxAuthorityClass: "prepare_only" }, reason: "authority_ceiling" },
+      { executorKey: "sensitivity-v1", implementation: { maxDataSensitivity: "public" }, reason: "data_sensitivity_ceiling" },
+      { executorKey: "cost-v1", implementation: { estimatedCostMicros: 5000 }, reason: "cost_ceiling" },
+      { executorKey: "invalid-cost-v1", implementation: { estimatedCostMicros: Number.NaN }, reason: "invalid_cost" },
+      { executorKey: "invalid-latency-v1", implementation: { estimatedLatencyMs: -1 }, reason: "invalid_latency" },
+    ];
+
+    for (const item of cases) {
+      const decision = routeCapability(
+        request({
+          authorityClass: item.reason === "authority_ceiling" ? "sensitive_execution" : "prepare_only",
+          dataSensitivity: item.reason === "data_sensitivity_ceiling" ? "restricted" : "public",
+          implementations: [{ ...HASHLESS, executorKey: item.executorKey, ...item.implementation }],
+        }),
+      );
+      expect(decision.status).toBe("blocked");
+      expect(decision.rejected[0]?.reasons).toContain(item.reason);
+    }
+  });
+
+  it("records a missing manual pin instead of substituting another executor", () => {
+    const decision = routeCapability(
+      request({
+        manualExecutorKey: "missing-v1",
+        implementations: [{ ...HASHLESS, executorKey: "healthy-v1" }],
+      }),
+    );
+    expect(decision.status).toBe("blocked");
+    expect(decision.reason).toBe("manual_pin_ineligible");
+    expect(decision.selectedExecutorKey).toBeNull();
+    expect(decision.eligibleExecutorKeys).toEqual(["healthy-v1"]);
+    expect(decision.rejected).toContainEqual({
+      executorKey: "missing-v1",
+      reasons: ["manual_pin_not_found"],
+    });
+  });
+
   it("uses a stable tie-break when the same candidates are presented in another order", () => {
     const a = routeCapability(
       request({

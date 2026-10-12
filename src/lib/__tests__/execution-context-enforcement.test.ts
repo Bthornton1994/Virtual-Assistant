@@ -1028,4 +1028,15 @@ describe("execution context enforcement v1 adversarial fail-closed gates", () =>
     expect(persistence).toMatch(/SECRET_METADATA_KEY_PATTERN/);
     expect(persistence).toMatch(/assertOrgAccess/);
   });
+
+  it("15. work-cell persistence cannot raise the assignment action class above the spec ceiling", () => {
+    expect(() =>
+      assertWorkCellPhasePersistAllowed(
+        persistGate({
+          specActionClass: "prepare_only",
+          assignmentActionClass: "external_execution",
+        }),
+      ),
+    ).toThrow(/action class exceeds the Delegation Spec ceiling/);
+  });
 });
