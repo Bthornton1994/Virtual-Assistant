@@ -223,6 +223,7 @@ function mapSoftwareFactoryRun(row: Record<string, unknown>): SoftwareFactoryRun
     frozenAcceptanceCriteria: asStringArray(row.frozen_acceptance_criteria),
     packet,
     packetHash: (row.packet_hash as string) ?? null,
+    packetFreezeVersion: Number(row.packet_freeze_version ?? 0),
     version: Number(row.version ?? 1),
     connectors: Array.isArray(row.connector_status) ? (row.connector_status as SoftwareFactoryRun["connectors"]) : [],
     createdAt: String(row.created_at),

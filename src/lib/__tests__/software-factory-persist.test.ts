@@ -7,6 +7,8 @@ vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: () => supabaseServer(),
 }));
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { getSoftwareFactoryOverlay, listSoftwareFactoryOwnerQueue } from "@/lib/software-factory-persist";
 
 const demoOwner: Actor = {
@@ -41,5 +43,12 @@ describe("Software Factory persist demo boundary", () => {
     await expect(
       listSoftwareFactoryOwnerQueue({ ...demoOwner, source: "supabase", organizationId: "230533c4-a1cf-4f4e-a825-d7cf93134a30" }),
     ).resolves.toEqual([]);
+  });
+
+  it("binds freeze and forbidden-action persist callers to secret validation and blocked JSON results", () => {
+    const persistSource = readFileSync(resolve(process.cwd(), "src/lib/software-factory-persist.ts"), "utf8");
+    expect(persistSource).toContain("validateSoftwareFactoryPacket");
+    expect(persistSource).not.toMatch(/softwareFactoryPacketSchema\.safeParse/);
+    expect(persistSource).toContain("payload?.blocked === true");
   });
 });
