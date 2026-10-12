@@ -237,6 +237,32 @@ describe("public PR reader", () => {
         checkRuns: [{ status: "completed", conclusion: "failure" }],
       }),
     ).toBe("failure");
+    expect(
+      deriveCiConclusion({
+        checkRuns: [{ status: "completed", conclusion: "cancelled" }],
+      }),
+    ).toBe("failure");
+    expect(
+      deriveCiConclusion({
+        checkRuns: [{ status: "completed", conclusion: "timed_out" }],
+      }),
+    ).toBe("failure");
+    expect(
+      deriveCiConclusion({
+        checkRuns: [{ status: "completed", conclusion: "startup_failure" }],
+      }),
+    ).toBe("failure");
+    expect(
+      deriveCiConclusion({
+        checkRuns: [
+          { status: "completed", conclusion: "success" },
+          { status: "completed", conclusion: "skipped" },
+          { status: "completed", conclusion: "neutral" },
+        ],
+      }),
+    ).toBe("success");
+    expect(deriveCiConclusion({ combinedState: "error", checkRuns: [] })).toBe("error");
+    expect(deriveCiConclusion({ checkRuns: [] })).toBeNull();
   });
 
   it("reads number, SHAs, HTML URL, and CI through GET-only fetches", async () => {
